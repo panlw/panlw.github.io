@@ -105,321 +105,197 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15246678052226.html">
+                <a class="clearlink" href="15274398936380.html">
                 
-                  <h1>阿里云Redis开发规范</h1>
+                  <h1>电商平台备战促销季的运维秘诀——高可用服务层</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://yq.aliyun.com/articles/531067">https://yq.aliyun.com/articles/531067</a></p>
+<p>曹林华 纯洁的微笑 2018/5/26</p>
+
+<p><a href="https://mp.weixin.qq.com/s/5vVXBXkd-Ilh7zk5G6Wxcg">原文地址</a></p>
+
+<p>高可用设计是互联网系统架构的基础之一，以天猫双十二交易数据为例，支付宝峰值支付次数超过 8 万笔。大家设想一下，如果这个时候系统出现不可用的情况，那后果将不可想象。<br/>
+而解决这个问题的根本就是服务层的高可用。</p>
 </blockquote>
 
-<h2 id="toc_0">一、键值设计</h2>
+<h2 id="toc_0">什么是服务层</h2>
 
-<h3 id="toc_1">1. key名设计</h3>
-
-<ul>
-<li>  (1)【建议】: 可读性和可管理性</li>
-</ul>
-
-<p>以业务名(或数据库名)为前缀(防止key冲突)，用冒号分隔，比如业务名:表名:id</p>
-
-<pre><code>ugc:video:1
-</code></pre>
+<p>众所周知，服务层主要用来处理网站业务逻辑的，是大型业务网站的核心。比如下面三个业务系统就是典型的服务层，提供基础服务功能的聚合</p>
 
 <ul>
-<li>  (2)【建议】：简洁性</li>
+<li><p>用户中心：主要负责用户注册、登录、获取用户用户信息功能</p></li>
+<li><p>交易中心：主要包括正向订单生成、逆向订单、查询、金额计算等功能</p></li>
+<li><p>支付中心：主要包括订单支付、收银台、对账等功能</p></li>
 </ul>
 
-<p>保证语义的前提下，控制key的长度，当key较多时，内存占用也不容忽视，例如：</p>
+<p><img src="https://mmbiz.qpic.cn/mmbiz_png/PgqYrEEtEnpebqWGB1ZhMvUTOhUfsMdlialgfhicgwy6oEeNHT1HKDxoPpnY0JKoKLZsfKd0Z7zxcfiaSzf0DdSqA/640?wx_fmt=png" alt=""/>电商平台备战促销季的运维秘诀——高可用服务层</p>
 
-<pre><code>user:{uid}:friends:messages:{mid}简化为u:{uid}:fr:m:{mid}。
-</code></pre>
+<h2 id="toc_1">整体架构</h2>
+
+<p>业务发展初期主要以业务为导向，一般采用 「ALL IN ONE」的架构方式来开发产品，这个阶段用一句话概括就是 「糙猛快」。当发展起来之后就会遇到下面这些问题</p>
 
 <ul>
-<li>  (3)【强制】：不要包含特殊字符</li>
+<li><p>文件大：一个代码文件出现超过 2000 行以上</p></li>
+<li><p>耦合性严重：不相关业务都直接堆积在 Serivce 层中</p></li>
+<li><p>维护代价高：人员离职后，根本没有人了解里面的业务逻辑</p></li>
+<li><p>牵一发动全身：改动少量业务逻辑，需要重新把所有依赖包打包并发布</p></li>
 </ul>
 
-<p>反例：包含空格、换行、单双引号以及其他转义字符</p>
+<p>遇到这些问题，主要还是通过「拆」来解决</p>
 
-<h3 id="toc_2">2. value设计</h3>
+<p><img src="https://mmbiz.qpic.cn/mmbiz_png/PgqYrEEtEnpebqWGB1ZhMvUTOhUfsMdlR3f0gpEglmktfDdT7JZsPNts8y6PwIDvpoVzYzXjriaLYicTz9sib2IYQ/640?wx_fmt=png" alt=""/>电商平台备战促销季的运维秘诀——高可用服务层</p>
+
+<p>具体拆的方式，主要根据业务领域划分单元，进行垂直拆分。拆分开来的好处很明显，主要有以下这些：</p>
 
 <ul>
-<li>  (1)【强制】：拒绝bigkey(防止网卡流量、慢查询)</li>
+<li><p>每个业务一个独立的业务模块</p></li>
+<li><p>业务间完全解耦</p></li>
+<li><p>业务间互不影响</p></li>
+<li><p>业务模块独立</p></li>
+<li><p>单独开发、上线、运维</p></li>
+<li><p>效率高</p></li>
 </ul>
 
-<p>string类型控制在10KB以内，hash、list、set、zset元素个数不要超过5000。</p>
+<h2 id="toc_2">无状态设计</h2>
 
-<p>反例：一个包含200万个元素的list。</p>
+<p>对于业务逻辑服务层，一般会设计成无状态化的服务，无状态化也就是服务模块只处理业务逻辑，而无需关心业务请求的上下文信息。所以无状态化的服务器之间是相互平等且独立的。</p>
 
-<p>非字符串的bigkey，不要使用del删除，使用hscan、sscan、zscan方式渐进式删除，同时要注意防止bigkey过期时间自动删除问题(例如一个200万的zset设置1小时过期，会触发del操作，造成阻塞，而且该操作不会不出现在慢查询中(latency可查))，<a href="#cc1">查找方法</a>和<a href="#cc2">删除方法</a></p>
+<p>只有服务变为无状态的时候，故障转移才会变的很轻松。通常故障转移就是在某一个应用服务器不能服务用户请求的时候，通过负责均衡的方式，转移用户请求到其他应用服务器上来进行业务逻辑处理</p>
+
+<p><img src="https://mmbiz.qpic.cn/mmbiz_png/PgqYrEEtEnpebqWGB1ZhMvUTOhUfsMdlrVLkBKpJZja8eqMrcYwM3Mh3TVhgibEniaQickmJw3W7IiccBmMFm5sZAw/640?wx_fmt=png" alt=""/>电商平台备战促销季的运维秘诀——高可用服务层</p>
+
+<h2 id="toc_3">超时设置</h2>
+
+<p>一般网站服务都会有主调服务和被调服务之分。超时设置就是主调服务在调用被调服务的时候，设置一个超时等待时间 Timeout。主调服务发现超时后，就进入超时处理流程。</p>
+
+<p><img src="https://mmbiz.qpic.cn/mmbiz_png/PgqYrEEtEnpebqWGB1ZhMvUTOhUfsMdlBhI38T15JZ8gV0fNRfWcjqFibk2VjNPedQAwdy5DOETk1TV43qic5aVA/640?wx_fmt=png" alt=""/>电商平台备战促销季的运维秘诀——高可用服务层</p>
+
+<ol>
+<li><p>主调服务 A 调用被调服务 B 时，设置超时等待时间为 3 秒，可能由于 B 服务宕机、网络情况不好或程序 BUG 之类，导致 B 服务不能及时响应 A 服务的调用。</p></li>
+<li><p>此时 A 服务在等待 3 秒后，将触发超时逻辑而不再关心 B 服务的回复情况。</p></li>
+<li><p>A 服务的超时逻辑可以依据情况而定，比如可以采取重试，对另一个对等的 B 服务去请求，或直接放弃结束这个请求调用。</p></li>
+</ol>
+
+<p>超时设置的好处在于当某个服务不可用时，不至于整个系统发生雪崩反应。</p>
+
+<h2 id="toc_4">异步调用</h2>
+
+<p>一般请求调用分为同步与异步两种。同步请求就像打电话，需要实时响应，而异步请求就像发送邮件一样，不需要马上回复。</p>
+
+<p>这两种调用各有优劣，主要看面对哪种业务场景。比如在面对并发性能要求比较高的场景，异步调用就比同步调用有比较大的优势，这就好比一个人不能同时打多个电话，但是可以发送很多邮件。</p>
+
+<p><img src="https://mmbiz.qpic.cn/mmbiz_png/PgqYrEEtEnpebqWGB1ZhMvUTOhUfsMdlrMaqR6L2RGN4ZNKoX60pk0ckuAypBfThcu227jxF2rbN8XENfgbLTg/640?wx_fmt=png" alt=""/>电商平台备战促销季的运维秘诀——高可用服务层</p>
+
+<blockquote>
+<p>那我们什么时候该采用异步调用？</p>
+</blockquote>
+
+<p>其实主要看业务场景，如果业务允许延迟处理，那就采用异步的方式处理</p>
+
+<blockquote>
+<p>那我们该怎么实现异步调用呢？</p>
+</blockquote>
+
+<p>通常采用队列的方式来实现业务上的延迟处理，比如像订单中心调用配送中心，这种场景下面，业务是能接受延迟处理的。</p>
+
+<p>那消息队列主要有哪些功能呢？</p>
 
 <ul>
-<li>  (2)【推荐】：选择适合的数据类型。</li>
+<li><p>异步处理 - 增加吞吐量</p></li>
+<li><p>削峰填谷 - 提高系统稳定性</p></li>
+<li><p>系统解耦 - 业务边界隔离</p></li>
+<li><p>数据同步 - 最终一致性保证</p></li>
 </ul>
 
-<p>例如：实体类型(要合理控制和使用数据结构内存编码优化配置,例如ziplist，但也要注意节省内存和性能之间的平衡)</p>
-
-<p>反例：</p>
-
-<pre><code>set user:1:name tom
-set user:1:age 19
-set user:1:favor football
-</code></pre>
-
-<p>正例:</p>
-
-<pre><code>hmset user:1 name tom age 19 favor football
-</code></pre>
-
-<h3 id="toc_3">3.【推荐】：控制key的生命周期，redis不是垃圾桶。</h3>
-
-<p>建议使用expire设置过期时间(条件允许可以打散过期时间，防止集中过期)，不过期的数据重点关注idletime。</p>
-
-<h3 id="toc_4">二、命令使用</h3>
-
-<h3 id="toc_5">1.【推荐】 O(N)命令关注N的数量</h3>
-
-<p>例如hgetall、lrange、smembers、zrange、sinter等并非不能使用，但是需要明确N的值。有遍历的需求可以使用hscan、sscan、zscan代替。</p>
-
-<h3 id="toc_6">2.【推荐】：禁用命令</h3>
-
-<p>禁止线上使用keys、flushall、flushdb等，通过redis的rename机制禁掉命令，或者使用scan的方式渐进式处理。</p>
-
-<h3 id="toc_7">3.【推荐】合理使用select</h3>
-
-<p>redis的多数据库较弱，使用数字进行区分，很多客户端支持较差，同时多业务用多数据库实际还是单线程处理，会有干扰。</p>
-
-<h3 id="toc_8">4.【推荐】使用批量操作提高效率</h3>
-
-<pre><code>原生命令：例如mget、mset。
-非原生命令：可以使用pipeline提高效率。
-</code></pre>
-
-<p>但要注意控制一次批量操作的<strong>元素个数</strong>(例如500以内，实际也和元素字节数有关)。</p>
-
-<p>注意两者不同：</p>
-
-<pre><code>1\. 原生是原子操作，pipeline是非原子操作。
-2\. pipeline可以打包不同的命令，原生做不到
-3\. pipeline需要客户端和服务端同时支持。
-</code></pre>
-
-<h3 id="toc_9">5.【建议】Redis事务功能较弱，不建议过多使用</h3>
-
-<p>Redis的事务功能较弱(不支持回滚)，而且集群版本(自研和官方)要求一次事务操作的key必须在一个slot上(可以使用hashtag功能解决)</p>
-
-<h3 id="toc_10">6.【建议】Redis集群版本在使用Lua上有特殊要求：</h3>
+<p>那到底有多少种队列呢？其实主要看处理业务的范围大小</p>
 
 <ul>
-<li>  1.所有key都应该由 KEYS 数组来传递，redis.call/pcall 里面调用的redis命令，key的位置，必须是KEYS array, 否则直接返回error，&quot;-ERR bad lua script for redis cluster, all the keys that the script uses should be passed using the KEYS array&quot;</li>
-<li>  2.所有key，必须在1个slot上，否则直接返回error, &quot;-ERR eval/evalsha command keys must in same slot&quot;</li>
+<li><p>应用内部 - 采用线程池，比如 Java ThreadPool 中 BlockingQueue 来做任务级别的缓冲与处理</p></li>
+<li><p>应用外部 - 比如 RabbitMQ 、ActiveMQ 就是做应用级别的队列，方便进行业务边界隔离与提高吞吐量</p></li>
 </ul>
 
-<h3 id="toc_11">7.【建议】必要情况下使用monitor命令时，要注意不要长时间使用。</h3>
+<p><img src="https://mmbiz.qpic.cn/mmbiz_png/PgqYrEEtEnpebqWGB1ZhMvUTOhUfsMdlvaSzVuYpLsyDzfC4AJF2X5Ww7L1iaaQceaRwoSjwhL05oJdibvVMQIrw/640?wx_fmt=png" alt=""/>电商平台备战促销季的运维秘诀——高可用服务层</p>
 
-<h3 id="toc_12">三、客户端使用</h3>
-
-<h3 id="toc_13">1.【推荐】</h3>
-
-<p>避免多个应用使用一个Redis实例</p>
-
-<p>正例：不相干的业务拆分，公共数据做服务化。</p>
-
-<h3 id="toc_14">2.【推荐】</h3>
-
-<p>使用带有连接池的数据库，可以有效控制连接，同时提高效率，标准使用方式：</p>
-
-<pre><code>执行命令如下：
-Jedis jedis = null;
-try {
-    jedis = jedisPool.getResource();
-    //具体的命令
-    jedis.executeCommand()
-} catch (Exception e) {
-    logger.error(&quot;op key {} error: &quot; + e.getMessage(), key, e);
-} finally {
-    //注意这里不是关闭连接，在JedisPool模式下，Jedis会被归还给资源池。
-    if (jedis != null) 
-        jedis.close();
-}
-</code></pre>
-
-<p>下面是JedisPool优化方法的文章:</p>
+<p>同时，技术上来讲，消息队列一般分为两种模型：Pull VS Push</p>
 
 <ul>
-<li>  <a href="https://yq.aliyun.com/articles/236384">Jedis常见异常汇总</a></li>
-<li>  <a href="https://yq.aliyun.com/articles/236383">JedisPool资源池优化</a></li>
+<li><p>Pull 模型：消费者主动请求消息队列，获取队列中的消息。</p></li>
+<li><p>Push 模型：消息队列主动推送消息到消费者</p></li>
 </ul>
 
-<h3 id="toc_15">3.【建议】</h3>
+<p>其中 Pull 模式可以控制消费速度，不必担心自己处理不了消息，只需要维护队列中偏移量 Offset。所以对于消费量有限并且推送到队列的生产者不均匀的情况下，采用 Pull 模式比较合适。</p>
 
-<p>高并发下建议客户端添加熔断功能(例如netflix hystrix)</p>
+<p>Push 比较适合实时性要求比较高的情况，只要生产者消息发送到消息队列中，队列就会主动 Push 消息到消费者，不过这种模式对消费者的能力要求就提高很多，如果出现队列给消费者推送一些不能处理的消息，消费者出现 Exception 情况下，就会再次入队列，造成消费堵塞的情况。</p>
 
-<h3 id="toc_16">4.【推荐】</h3>
+<p>不过互联网业界比较成熟的队列主要以采用 Pull 模式为主，像 Kafka、RabbitMQ（两种方式都支持）、RocketMQ 等</p>
 
-<p>设置合理的密码，如有必要可以使用SSL加密访问（阿里云Redis支持）</p>
+<h2 id="toc_5">幂等</h2>
 
-<h3 id="toc_17">5.【建议】</h3>
+<blockquote>
+<p>什么是幂等设计呢？</p>
+</blockquote>
 
-<p>根据自身业务类型，选好maxmemory-policy(最大内存淘汰策略)，设置好过期时间。</p>
+<p>其实很简单，就是一次请求和多个请求的作用是一样的。用数学上的术语，即是 f(x) = f(f(x))。</p>
 
-<p>默认策略是volatile-lru，即超过最大内存后，在过期键中使用lru算法进行key的剔除，保证不过期数据不被删除，但是可能会出现OOM问题。</p>
+<p>那我们为什么要做幂等性的设计呢？主要是因为现在的系统都是采用分布式的方式设计系统，在分布式系统中调用一般分为 3 个状态：成功、失败、超时。</p>
 
-<h4 id="toc_18">其他策略如下：</h4>
+<p>如果调用是成功或者失败都不要紧，因为状态是明确和清晰，但是如果出现超时的情况，就不知道请求是成功还是失败的。</p>
+
+<p><img src="https://mmbiz.qpic.cn/mmbiz_png/PgqYrEEtEnpebqWGB1ZhMvUTOhUfsMdla3ufL6yQt2W78GGKeq8M06eN6dmOWia6bSn1BwHwtdrw0gZf33g66wA/640?wx_fmt=png" alt=""/>电商平台备战促销季的运维秘诀——高可用服务层</p>
+
+<p>如果出现这种情况，我们该怎么办呢？一般采取重试的操作，重新请求对应接口。如果请求接口是 Get 操作的话，那到还好，因为请求多次的效果是一样的。但是如果是 Post 、Put 操作的话，就会造成数据不一致，甚至数据覆盖等问题。</p>
+
+<p>举个例子：在支付收银台页面进行支付的时候，因为网络超时的问题导致支付失败，这个时候我们都会再进行一次支付操作，但是当支付成功后，发现你的账户余额被减了 2 次，这个时候心里肯定很不爽，心里都要开始骂娘了…</p>
+
+<p>造成这个问题的关键是：网络超时后，不知道支付是什么状态？成功还是失败呢？所以说幂等性设计是必须的，尤其在电商、金融、银行等对数据要求比较高的行业中。</p>
+
+<p>一般在这种场景下我们该怎么解决呢？</p>
+
+<ol>
+<li><p>请求方一般会生产一个唯一性 ID 标识，这个标识可以具有业务一样，比如订单号或者支付流水号，在发起请求时候带上唯一性 ID。</p></li>
+<li><p>接收者在收到请求后，第一步通过获取唯一性 ID 来查询接收端是否有对应的记录，如果有的话，就直接将上次请求的结果返回，如果没有的话，就进行操作，并在操作完成后记录到对应的表里</p></li>
+</ol>
+
+<p><img src="https://mmbiz.qpic.cn/mmbiz_png/PgqYrEEtEnpebqWGB1ZhMvUTOhUfsMdlCPmk4LiaX77Zhuuv3dgZDc6PR9elSx8CEGQGRfXaeuoWPMlScROZGfA/640?wx_fmt=png" alt=""/>电商平台备战促销季的运维秘诀——高可用服务层</p>
+
+<h2 id="toc_6">服务降级</h2>
+
+<p>服务降级主要解决资源不足和访问量过大的问题，比如电商平台在双十一、618 等高峰时候采用部分服务不提供访问，减少对系统的影响。</p>
+
+<p>那降级的方式有哪些呢？</p>
 
 <ul>
-<li>  allkeys-lru：根据LRU算法删除键，不管数据有没有设置超时属性，直到腾出足够空间为止。</li>
-<li>  allkeys-random：随机删除所有键，直到腾出足够空间为止。</li>
-<li>  volatile-random:随机删除过期键，直到腾出足够空间为止。</li>
-<li>  volatile-ttl：根据键值对象的ttl属性，删除最近将要过期数据。如果没有，回退到noeviction策略。</li>
-<li>  noeviction：不会剔除任何数据，拒绝所有写入操作并返回客户端错误信息&quot;(error) OOM command not allowed when used memory&quot;，此时Redis只响应读操作。</li>
+<li><p>延迟服务：比如春晚，微信发红包就出现抢到红包，但是账号余额并没有增加，要过几天才能加上去。其实这是微信内部采用延迟服务的方式来保证服务的稳定，通过队列实现记录流水账单</p></li>
+<li><p>功能降级：停止不重要的功能是非常有用的方式，把相对不重要的功能暂停掉，让系统释放更多的资源。比如关闭相关文章的推荐、用户的评论功能等等，等高峰过去之后，在把服务恢复回来。</p></li>
+<li><p>降低数据一致性：在大促的时候，我们发现页面上不显示真实库存的数据，只显示到底有还是没有库存这两种状态。</p></li>
 </ul>
 
-<h3 id="toc_19">四、相关工具</h3>
+<p><img src="https://mmbiz.qpic.cn/mmbiz_png/PgqYrEEtEnpebqWGB1ZhMvUTOhUfsMdl8ZZdFwaAib5B4yibFvXffcW1I3libeD2icxf1AaNmfYuyT85pTke7wBU3Q/640?wx_fmt=png" alt=""/>电商平台备战促销季的运维秘诀——高可用服务层</p>
 
-<h4 id="toc_20">1.【推荐】：数据同步</h4>
+<p>刚刚说了降级的方式，那我们操作降级的时候有哪些注意点呢？</p>
 
-<p>redis间数据同步可以使用：redis-port</p>
+<ol>
+<li><p>清晰定义降级级别： 比如出现吞吐量超过 X，单位时间内响应时间超过 Y 秒、失败次数超过 Z 次等，这些阈值需要在准备的时候，通过压测的方式来确定。</p></li>
+<li><p>梳理业务级别：降级之前，首先需要确定哪些业务是必须有，哪些业务是可以有的，哪些业务是可有可无的。</p></li>
+<li><p>降级开关：可以通过接入配置中心（比如携程 Apollo、百度 Disconf ）的方式直接后台降级。但是如果公司没有配置中心的话，可以封装一个 API 接口来切分，不过该 API 接口要做成幂等的方式，同时需要做一些简单的签名，来保证其一定的安全性。</p></li>
+</ol>
 
-<p><a></a></p>
+<h2 id="toc_7">总结</h2>
 
-<h4 id="toc_21">2.【推荐】：big key搜索</h4>
-
-<p><a href="https://yq.aliyun.com/articles/117042">redis大key搜索工具</a></p>
-
-<h4 id="toc_22">3.【推荐】：热点key寻找(内部实现使用monitor，所以建议短时间使用)</h4>
-
-<p><a href="https://github.com/facebookarchive/redis-faina">facebook的redis-faina</a></p>
-
-<pre><code>阿里云Redis已经在内核层面解决热点key问题，欢迎使用。
-</code></pre>
-
-<p><a></a></p>
-
-<h2 id="toc_23">五 附录：删除bigkey</h2>
-
-<pre><code>1\. 下面操作可以使用pipeline加速。
-2\. redis 4.0已经支持key的异步删除，欢迎使用。
-</code></pre>
-
-<h4 id="toc_24">1. Hash删除: hscan + hdel</h4>
-
-<pre><code>public void delBigHash(String host, int port, String password, String bigHashKey) {
-    Jedis jedis = new Jedis(host, port);
-    if (password != null &amp;&amp; !&quot;&quot;.equals(password)) {
-        jedis.auth(password);
-    }
-    ScanParams scanParams = new ScanParams().count(100);
-    String cursor = &quot;0&quot;;
-    do {
-        ScanResult&lt;Entry&lt;String, String&gt;&gt; scanResult = jedis.hscan(bigHashKey, cursor, scanParams);
-        List&lt;Entry&lt;String, String&gt;&gt; entryList = scanResult.getResult();
-        if (entryList != null &amp;&amp; !entryList.isEmpty()) {
-            for (Entry&lt;String, String&gt; entry : entryList) {
-                jedis.hdel(bigHashKey, entry.getKey());
-            }
-        }
-        cursor = scanResult.getStringCursor();
-    } while (!&quot;0&quot;.equals(cursor));
-
-    //删除bigkey
-    jedis.del(bigHashKey);
-}
-</code></pre>
-
-<h4 id="toc_25">2. List删除: ltrim</h4>
-
-<pre><code>public void delBigList(String host, int port, String password, String bigListKey) {
-    Jedis jedis = new Jedis(host, port);
-    if (password != null &amp;&amp; !&quot;&quot;.equals(password)) {
-        jedis.auth(password);
-    }
-    long llen = jedis.llen(bigListKey);
-    int counter = 0;
-    int left = 100;
-    while (counter &lt; llen) {
-        //每次从左侧截掉100个
-        jedis.ltrim(bigListKey, left, llen);
-        counter += left;
-    }
-    //最终删除key
-    jedis.del(bigListKey);
-}
-</code></pre>
-
-<h4 id="toc_26">3. Set删除: sscan + srem</h4>
-
-<pre><code>public void delBigSet(String host, int port, String password, String bigSetKey) {
-    Jedis jedis = new Jedis(host, port);
-    if (password != null &amp;&amp; !&quot;&quot;.equals(password)) {
-        jedis.auth(password);
-    }
-    ScanParams scanParams = new ScanParams().count(100);
-    String cursor = &quot;0&quot;;
-    do {
-        ScanResult&lt;String&gt; scanResult = jedis.sscan(bigSetKey, cursor, scanParams);
-        List&lt;String&gt; memberList = scanResult.getResult();
-        if (memberList != null &amp;&amp; !memberList.isEmpty()) {
-            for (String member : memberList) {
-                jedis.srem(bigSetKey, member);
-            }
-        }
-        cursor = scanResult.getStringCursor();
-    } while (!&quot;0&quot;.equals(cursor));
-
-    //删除bigkey
-    jedis.del(bigSetKey);
-}
-</code></pre>
-
-<h4 id="toc_27">4. SortedSet删除: zscan + zrem</h4>
-
-<pre><code>public void delBigZset(String host, int port, String password, String bigZsetKey) {
-    Jedis jedis = new Jedis(host, port);
-    if (password != null &amp;&amp; !&quot;&quot;.equals(password)) {
-        jedis.auth(password);
-    }
-    ScanParams scanParams = new ScanParams().count(100);
-    String cursor = &quot;0&quot;;
-    do {
-        ScanResult&lt;Tuple&gt; scanResult = jedis.zscan(bigZsetKey, cursor, scanParams);
-        List&lt;Tuple&gt; tupleList = scanResult.getResult();
-        if (tupleList != null &amp;&amp; !tupleList.isEmpty()) {
-            for (Tuple tuple : tupleList) {
-                jedis.zrem(bigZsetKey, tuple.getElement());
-            }
-        }
-        cursor = scanResult.getStringCursor();
-    } while (!&quot;0&quot;.equals(cursor));
-
-    //删除bigkey
-    jedis.del(bigZsetKey);
-}
-</code></pre>
-
-<h3 id="toc_28">招聘：<a href="https://job.alibaba.com/zhaopin/position_detail.htm?positionId=40132">阿里云-技术专家-KVstore</a></h3>
-
-<p>岗位描述：</p>
+<p>总结一下今天分享的主要内容</p>
 
 <ul>
-<li>  负责阿里云Redis源码开发维护</li>
-<li>  负责阿里云Redis cluster开发与设计</li>
+<li><p>整体架构：根据业务属性进行垂直拆分，减少项目依赖，单独开发、上线、运维</p></li>
+<li><p>无状态设计：应用服务中不能保存用户状态数据，如果有状态就会出现难以扩容、单点等问题</p></li>
+<li><p>超时设置：当某个服务不可用时，不至于整个系统发生连锁反应</p></li>
+<li><p>异步调用：同步调用改成异步调用，解决远程调用故障或调用超时对系统的影响</p></li>
+<li><p>服务降级：牺牲非核心业务，保证核心业务的高可用</p></li>
 </ul>
 
-<p>岗位要求：</p>
-
-<ul>
-<li>  精通C/C++，熟悉TCP， Linux Kernel等优先</li>
-<li>  数据结构，算法等基础知识扎实</li>
-<li>  5年后台系统的设计与开发，或3年分布式系统的设计与开发，运维过大型分布式系统</li>
-<li>  精通至少一项开源NoSQL产品。Redis，mongodb,memcached等优先。</li>
-<li>  有云服务产品或基于SSD的系统开发经验优先</li>
-<li>  善于创新，乐于挑战，有责任心，良好团队精神</li>
-<li>  良好的表达能力，能够清晰和准确地描述问题，发现并解决问题能力</li>
-</ul>
+<p>所有好的架构设计首要的原则并不是追求先进，而是合理性，要与公司的业务规模和发展趋势相匹配，任何一个公司，哪怕是现在看来规模非常大的公司，比如 BAT 之类，在一开始，其系统架构也应简单和清晰的。</p>
 
                         
                       </div>
@@ -428,10 +304,10 @@ try {
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/4/25</span>
+                    <span class="date">2018/5/28</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Middleware.html'>Middleware</a></span>
+          					    <span class="posted-in"><a href='Microservice.html'>Microservice</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -455,7 +331,7 @@ try {
 			  </div>
 			  <div class="large-6 columns">
 			<p class="text-right" style="padding-top:25px;">
-			
+			 <a href="Archtect_1.html">&raquo; Next Page</a> 
 			</p>
 			  </div>
 			</div>
@@ -521,33 +397,41 @@ try {
 	      
 		      
 			      <li class="post">
-			        <a href="15262259555946.html">A Guide To NIO2 Asynchronous File Channel</a>
+			        <a href="15274398936380.html">电商平台备战促销季的运维秘诀——高可用服务层</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15262258657164.html">飞哥教你使用异步编程提升服务性能</a>
+			        <a href="15274396845490.html">面试-线程池的成长之路</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15262240665064.html">Spring Boot で WebSocket (STOMPではなく、TextWebSocketHandler)を試してみる</a>
+			        <a href="15274395979385.html">不理解Zookeeper一致性原理，谈何异地多活改造</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15248848757950.html">Learn to visualize data with this free D3.js course</a>
+			        <a href="15274392082175.html">消息队列之 RabbitMQ</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15248846042998.html">Modularizing your GraphQL schema code</a>
+			        <a href="15274391142573.html">RPC 原理及 RPC 实例分析 - God is a Coder..</a>
 			      </li>
 		     
+		  
+		      
+		  
+		      
+		  
+		      
+		  
+		      
 		  
 		      
 		  
