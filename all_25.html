@@ -105,422 +105,490 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15248840485977.html">
+                <a class="clearlink" href="15262258657164.html">
                 
-                  <h1>The Basics of Web Workers - HTML5 Rocks</h1>
+                  <h1>飞哥教你使用异步编程提升服务性能</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://www.html5rocks.com/en/tutorials/workers/basics/">https://www.html5rocks.com/en/tutorials/workers/basics/</a></p>
-
-<p>Eric Bidelman, July 26th, 2010</p>
+<p><a href="https://mp.weixin.qq.com/s/kchPiySDDu1FMF3tuEggiw">https://mp.weixin.qq.com/s/kchPiySDDu1FMF3tuEggiw</a></p>
 </blockquote>
 
-<h2 id="toc_0">The Problem: JavaScript Concurrency</h2>
+<p>作者：肖飞，2011 年加入京东，目前在交易平台，主导交易平台核心系统的架构优化和技术攻关，以及公共技术组件和平台的建设。</p>
 
-<p>There are a number of bottlenecks preventing interesting applications from being ported (say, from server-heavy implementations) to client-side JavaScript. Some of these include browser compatibility, static typing, accessibility, and performance. Fortunately, the latter is quickly becoming a thing of the past as browser vendors rapidly improve the speed of their JavaScript engines.</p>
+<p>庞大复杂的系统通常会采用服务化组件来实现。系统越复杂，组件之间的依赖和调用关系也会越复杂。对于处于底层的基础服务，直接和间接的调用所带来的流量压力非常大。处于中间层的聚合型服务，面对的挑战则是依赖的服务太多，后端个别服务的性能延迟就会影响其吞吐量。性能优化是我们系统稳定性中的重要一环，这其中，调用所依赖的 RPC 服务或后端数据是重点之一。</p>
 
-<p>One thing that&#39;s remained a hindrance for JavaScript is actually the language itself. JavaScript is a single-threaded environment, meaning multiple scripts cannot run at the same time. As an example, imagine a site that needs to handle UI events, query and process large amounts of API data, and manipulate the DOM. Pretty common, right? Unfortunately all of that can&#39;t be simultaneous due to limitations in browsers&#39; JavaScript runtime. Script execution happens within a single thread.</p>
+<p>目前，除了传统 JDBC 这样从 API 到主流驱动实现就是阻塞式的类库之外，其他常用的 RPC/HTTP 服务、MQ、Redis、Mongodb、Kafka 等系统都提供了成熟的基于 NIO 的客户端库，也有相应的异步 API。</p>
 
-<p>Developers mimic &#39;concurrency&#39; by using techniques like <code>setTimeout()</code>, <code>setInterval()</code>, <code>XMLHttpRequest</code>, and event handlers. Yes, all of these features run asynchronously, but non-blocking doesn&#39;t necessarily mean concurrency. Asynchronous events are processed after the current executing script has yielded. The good news is that HTML5 gives us something better than these hacks!</p>
+<p>但是目前交易平台的大多数中台服务系统，还在习惯性使用着这些库的同步 API，并不能充分的利用 CPU，这也给我们带来了一定的优化空间。从 16 年开始我们在一些核心的但是服务逻辑相对简单的系统中使用异步方式来实现，虽然暂时还做不到完全的异步化，但是也取得了比较好的效果。这篇文章虽然更多是一个简介性质，但是也涵盖了我们在异步编程中需要关注的要点。希望大家能够习惯和拥抱异步编程。</p>
 
-<h2 id="toc_1">Introducing Web Workers: Bring Threading to JavaScript</h2>
+<h2 id="toc_0"><strong>一、相关概念介绍</strong></h2>
 
-<p>The <a href="http://www.whatwg.org/specs/web-workers/current-work/">Web Workers</a> specification defines an API for spawning background scripts in your web application. Web Workers allow you to do things like fire up long-running scripts to handle computationally intensive tasks, but without blocking the UI or other scripts to handle user interactions. They&#39;re going to help put and end to that nasty &#39;unresponsive script&#39; dialog that we&#39;ve all come to love:</p>
+<p>同步 (Synchronous)/ 异步 (Asynchronous)，通常是指函数调用中的消息通信的两种不同模式。</p>
 
-<p><img src="/static/images/screenshots/workers/unresponsive_script.gif" alt="Unresponsive script dialog" title="Unresponsive script dialog"/> Common unresponsive script dialog.</p>
+<h3 id="toc_1"><strong>1、异步和同步的区别</strong></h3>
 
-<p>Workers utilize thread-like message passing to achieve parallelism. They&#39;re perfect for keeping your UI refresh, performant, and responsive for users.</p>
+<p>函数调用发生时，消息 (参数) 从 caller 传递到 callee，控制权 (指令执行) 从 caller 转移到 callee。调用返回时，控制权从 callee 转移到 caller。两者的区别在于，callee 是否需要等待执行完成才将控制权转移给 caller。</p>
 
-<h3 id="toc_2">Types of Web Workers</h3>
+<p>在 RPC 这种更复杂的场景下，本质上并没有不同。</p>
 
-<p>It&#39;s worth noting that the <a href="http://www.whatwg.org/specs/web-workers/current-work/">specification</a> discusses two kinds of Web Workers, <a href="http://www.whatwg.org/specs/web-workers/current-work/#dedicated-workers-and-the-worker-interface">Dedicated Workers</a> and <a href="http://www.whatwg.org/specs/web-workers/current-work/#sharedworker">Shared Workers</a>. This article will only cover dedicated workers and I&#39;ll refer to them as &#39;web workers&#39; or &#39;workers&#39; throughout.</p>
+<p>◆ 同步</p>
 
-<h2 id="toc_3">Getting Started</h2>
+<p><img src="https://mmbiz.qpic.cn/mmbiz_png/MrFJyDNenF8OUIRCOltzbKCk6yXqAJP3BYu3bYrc81Uak1E6HfspC1tnU2KGnthJwVLAOaqr2OzlfVQhO1LqEg/640?wx_fmt=png" alt=""/></p>
 
-<p>Web Workers run in an isolated thread. As a result, the code that they execute needs to be contained in a separate file. But before we do that, the first thing to do is create a new <code>Worker</code> object in your main page. The constructor takes the name of the worker script:</p>
+<p>1.callee 执行完成才返回<br/>
+2. 返回值即结果</p>
 
-<pre><code class="language-js">var worker = new Worker(&#39;task.js&#39;);
-</code></pre>
+<p>◆ 异步</p>
 
-<p>If the specified file exists, the browser will spawn a new worker thread, which is downloaded asynchronously. The worker will not begin until the file has completely downloaded and executed. If the path to your worker returns an 404, the worker will fail silently.</p>
+<p><img src="https://mmbiz.qpic.cn/mmbiz_png/MrFJyDNenF8OUIRCOltzbKCk6yXqAJP3ENZ7lSUyf8z1icwTJr6rwVLiaNGLWfrrFHOa8kSfLQNVd8ch5dZiaoRsw/640?wx_fmt=png" alt=""/></p>
 
-<p>After creating the worker, start it by calling the <code>postMessage()</code> method:</p>
+<p>1.callee 不需要执行完成就可返回<br/>
+2.caller 要获取结果，需要通过轮询、回调等机制</p>
 
-<pre><code class="language-js">worker.postMessage(); // Start the worker.
-</code></pre>
+<h4 id="toc_2">◆ 同步 RPC</h4>
 
-<h3 id="toc_4">Communicating with a Worker via Message Passing</h3>
+<p><img src="https://mmbiz.qpic.cn/mmbiz_png/MrFJyDNenF8OUIRCOltzbKCk6yXqAJP3jPWsYVcxUuMPzdeJ6sichCQjFM9iceIqvic0yHHKg1Oibexuwn7USoA3oA/640?wx_fmt=png" alt=""/></p>
 
-<p>Communication between a work and its parent page is done using an event model and the <code>postMessage()</code> method. Depending on your browser/version, <code>postMessage()</code> can accept either a string or JSON object as its single argument. The latest versions of the modern browsers support passing a JSON object.</p>
+<h4 id="toc_3">◆ 异步 RPC</h4>
 
-<p>Below is a example of using a string to pass &#39;Hello World&#39; to a worker in doWork.js. The worker simply returns the message that is passed to it.</p>
+<p><img src="https://mmbiz.qpic.cn/mmbiz_png/MrFJyDNenF8OUIRCOltzbKCk6yXqAJP33QaY0TSkO7pMFQwLRglBPiadzQBF2SpJxa8RDrGSKfRWCkuyUWXCGMg/640?wx_fmt=png" alt=""/></p>
 
-<p>Main script:</p>
+<p>可以看到，在异步 RPC 的场景下，客户端和服务端用于处理 IO 的 CPU 能得到充分利用，通常只需要远低于 caller 请求数量的线程就可以了，这就是多路复用。</p>
 
-<pre><code class="language-js">var worker = new Worker(&#39;doWork.js&#39;);
+<h3 id="toc_4"><strong>2、callee 执行机制</strong></h3>
 
-worker.addEventListener(&#39;message&#39;, function(e) {
-  console.log(&#39;Worker said: &#39;, e.data);
-}, false);
+<p>上图中 callee 的 background execute 通常是采用池化线程来完成的，比如 ThreadPoolExecutor 或 EventLoop1。</p>
 
-worker.postMessage(&#39;Hello World&#39;); // Send data to our worker.
-</code></pre>
+<h3 id="toc_5"><strong>3、caller 获取执行结果</strong></h3>
 
-<p>doWork.js (the worker):</p>
+<p>caller 调用 callee 时，如果需要获取执行结果（消息双向传递），或者获知执行是否完成（消息单向传递无返回值），在异步模式下，主要依靠下面两种机制。</p>
 
-<pre><code class="language-js">self.addEventListener(&#39;message&#39;, function(e) {
-  self.postMessage(e.data);
-}, false);
-</code></pre>
+<h4 id="toc_6">◆ 轮询 (Polling)</h4>
 
-<p>When <code>postMessage()</code> is called from the main page, our worker handles that message by defining an <code>onmessage</code> handler for the <code>message</code> event. The message payload (in this case &#39;Hello World&#39;) is accessible in <code>Event.data</code>. Although this particular example isn&#39;t very exciting, it demonstrates that <code>postMessage()</code> is also your means for passing data back to the main thread. Convenient!</p>
+<p>比如 Java 的 Future 就提供了 isDone() 这种询问机制。</p>
 
-<p>Messages passed between the main page and workers are copied, not shared. For example, in the next example the &#39;msg&#39; property of the JSON message is accessible in both locations. It appears that the object is being passed directly to the worker even though it&#39;s running in a separate, dedicated space. In actuality, what is happening is that the object is being serialized as it&#39;s handed to the worker, and subsequently, de-serialized on the other end. The page and worker do not share the same instance, so the end result is that a duplicate is created on each pass. Most browsers implement this feature by automatically JSON encoding/decoding the value on either end.</p>
-
-<p>The following is a more complex example that passes messages using JSON objects.</p>
-
-<p>Main script:</p>
-
-<pre><code class="language-js">&lt;button onclick=&quot;sayHI()&quot;&gt;Say HI&lt;/button&gt;
-&lt;button onclick=&quot;unknownCmd()&quot;&gt;Send unknown command&lt;/button&gt;
-&lt;button onclick=&quot;stop()&quot;&gt;Stop worker&lt;/button&gt;
-&lt;output id=&quot;result&quot;&gt;&lt;/output&gt;
-
-&lt;script&gt;
-  function sayHI() {
-    worker.postMessage({&#39;cmd&#39;: &#39;start&#39;, &#39;msg&#39;: &#39;Hi&#39;});
-  }
-
-  function stop() {
-    // worker.terminate() from this script would also stop the worker.
-    worker.postMessage({&#39;cmd&#39;: &#39;stop&#39;, &#39;msg&#39;: &#39;Bye&#39;});
-  }
-
-  function unknownCmd() {
-    worker.postMessage({&#39;cmd&#39;: &#39;foobard&#39;, &#39;msg&#39;: &#39;???&#39;});
-  }
-
-  var worker = new Worker(&#39;doWork2.js&#39;);
-
-  worker.addEventListener(&#39;message&#39;, function(e) {
-    document.getElementById(&#39;result&#39;).textContent = e.data;
-  }, false);
-&lt;/script&gt;
-</code></pre>
-
-<p>doWork2.js:</p>
-
-<pre><code class="language-js">self.addEventListener(&#39;message&#39;, function(e) {
-  var data = e.data;
-  switch (data.cmd) {
-    case &#39;start&#39;:
-      self.postMessage(&#39;WORKER STARTED: &#39; + data.msg);
-      break;
-    case &#39;stop&#39;:
-      self.postMessage(&#39;WORKER STOPPED: &#39; + data.msg +
-                       &#39;. (buttons will no longer work)&#39;);
-      self.close(); // Terminates the worker.
-      break;
-    default:
-      self.postMessage(&#39;Unknown command: &#39; + data.msg);
-  };
-}, false);
-</code></pre>
-
-<p><strong>Note</strong>: There are two ways to stop a worker: by calling <code>worker.terminate()</code> from the main page or by calling <code>self.close()</code> inside of the worker itself.</p>
-
-<p><strong>Example</strong>: Run this worker!</p>
-
-<p><button onclick="sayHI()">Say HI</button> <button onclick="unknownCmd()">Send unknown command</button> <button onclick="stop()">Stop worker</button></p>
-
-<h2 id="toc_5">Transferrable objects</h2>
-
-<p>Most browsers implement the <a href="http://updates.html5rocks.com/2011/09/Workers-ArrayBuffer">structured cloning</a> algorithm, which allows you to pass more complex types in/out of Workers such as <code>File</code>, <code>Blob</code>, <code>ArrayBuffer</code>, and JSON objects. However, when passing these types of data using <code>postMessage()</code>, a copy is still made. Therefore, if you&#39;re passing a large 50MB file (for example), there&#39;s a noticeable overhead in getting that file between the worker and the main thread.</p>
-
-<p>Structured cloning is great, but a copy can take hundreds of milliseconds. To combat the perf hit, you can use <a href="http://www.w3.org/html/wg/drafts/html/master/infrastructure.html#transferable-objects">Transferable Objects</a>.</p>
-
-<p>With Transferable Objects, data is transferred from one context to another. It is zero-copy, which vastly improves the performance of sending data to a Worker. Think of it as pass-by-reference if you&#39;re from the C/C++ world. However, unlike pass-by-reference, the &#39;version&#39; from the calling context is no longer available once transferred to the new context. For example, when transferring an ArrayBuffer from your main app to Worker, the original <code>ArrayBuffer</code> is cleared and no longer usable. Its contents are (quiet literally) transferred to the Worker context.</p>
-
-<p>To use transferrable objects, use a slightly different signature of <code>postMessage()</code>:</p>
-
-<pre><code class="language-js">worker.postMessage(arrayBuffer, [arrayBuffer]);
-window.postMessage(arrayBuffer, targetOrigin, [arrayBuffer]);
-</code></pre>
-
-<p>The worker case, the first argument is the data and the second is the list of items that should be transferred. The first argument doesn&#39;t have to be an <code>ArrayBuffer</code> by the way. For example, it can be a JSON object:</p>
-
-<pre><code class="language-js">worker.postMessage({data: int8View, moreData: anotherBuffer},
-                   [int8View.buffer, anotherBuffer]);
-</code></pre>
-
-<p>The important point being: the second argument must be an array of <code>ArrayBuffer</code>s. This is your list of transferrable items.</p>
-
-<p>To see the speed improvement of transferrables, check out this <a href="http://html5-demos.appspot.com/static/workers/transferables/index.html">DEMO</a>. For more information on transferrables, see our <a href="http://updates.html5rocks.com/2011/12/Transferable-Objects-Lightning-Fast">HTML5Rock post</a>.</p>
-
-<h2 id="toc_6">The Worker Environment</h2>
-
-<h3 id="toc_7">Worker Scope</h3>
-
-<p>In the context of a worker, both <code>self</code> and <code>this</code> reference the global scope for the worker. Thus, the previous example could also be written as:</p>
-
-<pre><code class="language-js">addEventListener(&#39;message&#39;, function(e) {
-  var data = e.data;
-  switch (data.cmd) {
-    case &#39;start&#39;:
-      postMessage(&#39;WORKER STARTED: &#39; + data.msg);
-      break;
-    case &#39;stop&#39;:
-  ...
-}, false);
-</code></pre>
-
-<p>Alternatively, you could set the <code>onmessage</code> event handler directly (though <code>addEventListener</code> is always encouraged by JavaScript ninjas).</p>
-
-<pre><code class="language-js">onmessage = function(e) {
-  var data = e.data;
-  ...
-};
-</code></pre>
-
-<h3 id="toc_8">Features Available to Workers</h3>
-
-<p>Due to their multi-threaded behavior, web workers only has access to a subset of JavaScript&#39;s features:</p>
-
-<ul>
-<li>  The <code>navigator</code> object</li>
-<li>  The <code>location</code> object (read-only)</li>
-<li>  <code>XMLHttpRequest</code></li>
-<li>  <code>setTimeout()/clearTimeout()</code> and <code>setInterval()/clearInterval()</code></li>
-<li>  The <a href="/tutorials/appcache/beginner/">Application Cache</a></li>
-<li>  Importing external scripts using the <code>importScripts()</code> method</li>
-<li>  <a href="#toc-enviornment-subworkers">Spawning other web workers</a></li>
-</ul>
-
-<p>Workers do NOT have access to:</p>
-
-<ul>
-<li>  The DOM (it&#39;s not thread-safe)</li>
-<li>  The <code>window</code> object</li>
-<li>  The <code>document</code> object</li>
-<li>  The <code>parent</code> object</li>
-</ul>
-
-<h3 id="toc_9">Loading External Scripts</h3>
-
-<p>You can load external script files or libraries into a worker with the <code>importScripts()</code> function. The method takes zero or more strings representing the filenames for the resources to import.</p>
-
-<p>This example loads <code>script1.js</code> and <code>script2.js</code> into the worker:</p>
-
-<p>worker.js:</p>
-
-<pre><code class="language-js">importScripts(&#39;script1.js&#39;);
-importScripts(&#39;script2.js&#39;);
-</code></pre>
-
-<p>Which can also be written as a single import statement:</p>
-
-<pre><code class="language-js">importScripts(&#39;script1.js&#39;, &#39;script2.js&#39;);
-</code></pre>
-
-<h3 id="toc_10">Subworkers</h3>
-
-<p>Workers have the ability to spawn child workers. This is great for further breaking up large tasks at runtime. However, subworkers come with a few caveats:</p>
-
-<ul>
-<li>  Subworkers must be hosted within the same origin as the parent page.</li>
-<li>  URIs within subworkers are resolved relative to their parent worker&#39;s location (as opposed to the main page).</li>
-</ul>
-
-<p>Keep in mind most browsers spawn separate processes for each worker. Before you go spawning a worker farm, be cautious about hogging too many of the user&#39;s system resources. One reason for this is that messages passed between main pages and workers are copied, not shared. See <a href="#toc-gettingstarted-workercomm">Communicating with a Worker via Message Passing</a>.</p>
-
-<p>For an sample of how to spawn a subworker, see <a href="http://www.whatwg.org/specs/web-workers/current-work/#delegation">the example</a> in the specification.</p>
-
-<h2 id="toc_11">Inline Workers</h2>
-
-<p>What if you want to create your worker script on the fly, or create a self-contained page without having to create separate worker files? With <code>Blob()</code>, you can &quot;inline&quot; your worker in the same HTML file as your main logic by creating a URL handle to the worker code as a string:</p>
-
-<pre><code class="language-js">var blob = new Blob([&quot;onmessage = function(e) { postMessage(&#39;msg from worker&#39;); }&quot;]);
-
-// Obtain a blob URL reference to our worker &#39;file&#39;.
-var blobURL = window.URL.createObjectURL(blob);
-
-var worker = new Worker(blobURL);
-worker.onmessage = function(e) {
-  // e.data == &#39;msg from worker&#39;
-};
-worker.postMessage(); // Start the worker.
-</code></pre>
-
-<h3 id="toc_12">Blob URLs</h3>
-
-<p>The magic comes with the call to <a href="http://dev.w3.org/2006/webapi/FileAPI/#dfn-createObjectURL"><code>window.URL.createObjectURL()</code></a>. This method creates a simple URL string which can be used to reference data stored in a DOM <code>File</code> or <code>Blob</code> object. For example:</p>
-
-<pre><code class="language-js">blob:http://localhost/c745ef73-ece9-46da-8f66-ebes574789b1
-</code></pre>
-
-<p>Blob URLs are unique and last for the lifetime of your application (e.g. until the <code>document</code> is unloaded). If you&#39;re creating many Blob URLs, it&#39;s a good idea to release references that are no longer needed. You can explicitly release a Blob URLs by passing it to <a href="http://dev.w3.org/2006/webapi/FileAPI/#dfn-revokeObjectURL"><code>window.URL.revokeObjectURL()</code></a>:</p>
-
-<pre><code class="language-js">window.URL.revokeObjectURL(blobURL);
-</code></pre>
-
-<p>In Chrome, there&#39;s a nice page to view all of the created blob URLs: <code>chrome://blob-internals/</code>.</p>
-
-<h3 id="toc_13">Full Example</h3>
-
-<p>Taking this one step further, we can get clever with how the worker&#39;s JS code is inlined in our page. This technique uses a <code>&lt;script&gt;</code> tag to define the worker:</p>
-
-<pre><code class="language-js">&lt;!DOCTYPE html&gt;
-&lt;html&gt;
-&lt;head&gt;
-  &lt;meta charset=&quot;utf-8&quot; /&gt;
-&lt;/head&gt;
-&lt;body&gt;
-
-  &lt;div id=&quot;log&quot;&gt;&lt;/div&gt;
-
-  &lt;script id=&quot;worker1&quot; type=&quot;javascript/worker&quot;&gt;
-    // This script won&#39;t be parsed by JS engines
-    // because its type is javascript/worker.
-    self.onmessage = function(e) {
-      self.postMessage(&#39;msg from worker&#39;);
-    };
-    // Rest of your worker code goes here.
-  &lt;/script&gt;
-
-  &lt;script&gt;
-    function log(msg) {
-      // Use a fragment: browser will only render/reflow once.
-      var fragment = document.createDocumentFragment();
-      fragment.appendChild(document.createTextNode(msg));
-      fragment.appendChild(document.createElement(&#39;br&#39;));
-
-      document.querySelector(&quot;#log&quot;).appendChild(fragment);
+<pre><code class="language-java">//Caller.java
+void call() {
+     Future&lt;Void&gt; f = callee.asyncCall(param);
+     // do some other things
+     while (true) {
+          if (f.isDone()) break;
+        //do some other things or sleep or timeout
     }
-
-    var blob = new Blob([document.querySelector(&#39;#worker1&#39;).textContent]);
-
-    var worker = new Worker(window.URL.createObjectURL(blob));
-    worker.onmessage = function(e) {
-      log(&quot;Received: &quot; + e.data);
-    }
-    worker.postMessage(); // Start the worker.
-  &lt;/script&gt;
-&lt;/body&gt;
-&lt;/html&gt;
+}
 </code></pre>
 
-<p>In my opinion, this new approach is a bit cleaner and more legible. It defines a script tag with <var>id=&quot;worker1&quot;</var> and <var>type=&#39;javascript/worker&#39;</var> (so the browser doesn&#39;t parse the JS). That code is extracted as a string using <code>document.querySelector(&#39;#worker1&#39;).textContent</code> and passed to <code>Blob()</code> to create the file.</p>
+<p>或阻塞版本</p>
 
-<h3 id="toc_14">Loading External Scripts</h3>
+<pre><code class="language-java">//Caller.java
+void call() {
+    Future&lt;Void&gt; f = callee.asyncCall(param);
+    // do some other things
+    f.get(timeout, TimeUnit.SECONDS);
+}
+</code></pre>
 
-<p>When using these techniques to inline your worker code, <code>importScripts()</code> will only work if you supply an absolute URI. If you attempt to pass a relative URI, the browser will complain with a security error. The reason being: the worker (now created from a blob URL) will be resolved with a <code>blob:</code> prefix, while your app will be running from a different (presumably <code>http://</code>) scheme. Hence, the failure will be due to cross origin restrictions.</p>
+<p>轮询的控制逻辑在 caller 端。</p>
 
-<p>One way to utilize <code>importScripts()</code> in an inline worker is to &quot;inject&quot; the current url of your main script is running from by passing it to the inline worker and constructing the absolute URL manually. This will insure the external script is imported from the same origin. Assuming your main app is running from <a href="http://example.com/index.html">http://example.com/index.html</a>:</p>
+<h4 id="toc_7">◆ 回调 (Callback)</h4>
 
-<pre><code class="language-js">...
-&lt;script id=&quot;worker2&quot; type=&quot;javascript/worker&quot;&gt;
-self.onmessage = function(e) {
-  var data = e.data;
+<p>caller 设置一个回调函数，供 callee 执行完成后调用这个函数。回调的控制是反转的，通常由 callee 端控制。</p>
 
-  if (data.url) {
-    var url = data.url.href;
-    var index = url.indexOf(&#39;index.html&#39;);
-    if (index != -1) {
-      url = url.substring(0, index);
-    }
-    importScripts(url + &#39;engine.js&#39;);
-  }
-  ...
+<pre><code class="language-java">//Caller.java
+void call() {
+    callee.asyncCall(param, new AsyncHandler&lt;Response&lt;Message&gt;&gt;() {
+        @Override public void handleResponse(Response&lt;Message&gt; response) {
+            msg = response.get();
+            // process the msg...
+        }
+    });
+    // do some other things
+}
+</code></pre>
+
+<h3 id="toc_8"><strong>4、异步模式的场景</strong></h3>
+
+<h4 id="toc_9">◆ 阻塞</h4>
+
+<p>阻塞 (Blocking)/ 非阻塞(Non-Blocking) 是用来描述，在等待调用结果时 caller 线程的状态。阻塞，通常意味着 caller 线程不再使用 CPU 时间，处于可被 OS 调度的状态(注意与 Java 线程状态 2 的区别)。 磁盘 IO 和网络 IO 是常见的会引起线程阻塞的场景 3。受制于底层 OS 的同步阻塞式 IO 系统函数，调用 Java OIO(Old blocking IO) API 无疑是会阻塞的。对于 DiskIO，Java NIO2 提供了异步 API。对于 SocketIO，Java NIO2 以及 NIO 框架 Netty，都提供了异步 API。</p>
+
+<blockquote>
+<p>◆ Linux 提供了异步 IO 系统函数，只能用于 DiskIO，还有一些限制 4，Java NIO2 AsynchronousFileChannel 内部仍然使用线程池 + 阻塞式 API 的实现。</p>
+
+<p>◆ Linux 为 SocketIO 准备就绪阶段提供了非阻塞式 API(select/poll/epoll)，但是 IO 执行阶段仍然是同步阻塞的，因此主流的 Java NIO 框架的 Reactor 模式内部实现使用了线程池。</p>
+</blockquote>
+
+<h4 id="toc_10">◆ 并行</h4>
+
+<p>比如需要调用多个没有依赖关系的服务，或者访问分散在多个存储分片中的数据，如果服务接口或数据访问接口实现了异步 API，那么就很方便实现并行调用，减少总体调用耗时。</p>
+
+<h4 id="toc_11">◆ 速度不匹配</h4>
+
+<p>使用中间队列解偶 caller 和 callee 的速度不匹配问题，削峰填谷。</p>
+
+<h4 id="toc_12">◆ 批量</h4>
+
+<p>使用中间队列解偶 caller 和 callee 的速度不匹配问题，削峰填谷。</p>
+
+<h2 id="toc_13"><strong>二、异步 API 的几种风格</strong></h2>
+
+<h3 id="toc_14"><strong>1、Callback</strong></h3>
+
+<p>这个比较传统，比如 zookeeper 客户端提供的基于回调的异步 API:</p>
+
+<pre><code class="language-java">try {
+    zookeeper.create(path, data, acl, createMode, new StringCallback() {
+        public void processResult(int rc, String path, Object ctx, String name) {
+            if (rc != KeeperException.Code.OK.intValue()) {
+                // error handle
+            } else {
+                // success process
+                // 如果需要在成功后再发起基于回调的异步调用，会形成callback hell
+            }
+        }
+    }, ctx);
+} catch( Throwable e) {
+    // error handle
+}
+</code></pre>
+
+<blockquote>
+<p>◆ Callback 通常是无状态的 </p>
+
+<p>◆ 要获取 Callback 的计算结果，通常需要 closure </p>
+
+<p>◆ 异常处理比较分散 </p>
+
+<p>◆ 在有多个异步调用链的时候，容易造成 Callback hell</p>
+</blockquote>
+
+<h3 id="toc_15"><strong>2、Future/Promise</strong></h3>
+
+<p>Promise 是 callee 给 caller 的凭证，代表未完成但承诺完成（成功或失败）的结果。Promise 本身是有状态的，通常由 callee 端维护。其状态转移如下（术语参考 Promise/A + 和 ES6）：</p>
+
+<p><img src="https://mmbiz.qpic.cn/mmbiz_png/MrFJyDNenF8OUIRCOltzbKCk6yXqAJP3dnnIwboxWueXlrTo9wSvNYa6AfRIfwibZobCqckibNSvwyEzLd3GyO9Q/640?wx_fmt=png" alt=""/></p>
+
+<blockquote>
+<p>Promise 的状态只能转移一次，因此如果有 callback，那么. then(callback) 或. catch(callback) 也只被执行一次。</p>
+</blockquote>
+
+<p>JDK5 的 Future 只能用轮询或者阻塞的方式获取结果，caller 端处理比较繁琐。Guava 的 ListenableFuture，特别是 JDK8 的 CompletableFuture，则是完整实现了 Promise 风格的异步 API。 个人认为 Promise 是更好的 Callback，ListenableFuture 接口只是比 Future 多了一个 void addListener(Runnable, Executor) 方法。 Promise 提供了比 Callback 更易用更清晰的编程模式，尤其是涉及多个异步 API 的串行调用（chaining 或 pipelining )、组合调用（并行、合并）、异常处理等方面有很大的优势。</p>
+
+<blockquote>
+<p><strong>引申阅读</strong> </p>
+
+<p>◆ 这篇文章谈到了 Future 和 Promise 的细微区别、相关历史和技术。 </p>
+
+<p>◆ 这里有一些讨论：Aren’t promises just callbacks?,Is there really a fundamental difference between callbacks and Promises?。 </p>
+
+<p>◆ Promise 借鉴了函数式中的一些概念: 从函数式编程到 Promise。 </p>
+
+<p>◆ 这篇文章简要对比了几种语言中的 Promise 框架。</p>
+</blockquote>
+
+<h3 id="toc_16"><strong>3、ReactiveX</strong></h3>
+
+<p>其官方网站的介绍</p>
+
+<blockquote>
+<p>An API for asynchronous programming with observable streams</p>
+</blockquote>
+
+<p>其关键的概念 Observable 比较 Promise 来说：</p>
+
+<p>◆ Promise 代表一个异步计算值，而 Observable 代表着一系列值 (stream)。 </p>
+
+<p>◆ Promise 的值只能产生一次，而 Observable 的事件可以不断产生。因此 Rx 首先流行在前端 UI 场景：事件来源多，数据变化影响多个 UI 组件的变更。</p>
+
+<p>Rx 的学习曲线比 Promise 要高得多，而且目前 Promise 风格的异步编程能够满足我们大部分的服务端开发场景，因此我们这里主要关注 Promise。</p>
+
+<h2 id="toc_17"><strong>三、Promise 在服务端的应用</strong></h2>
+
+<p>下面穿插着以 JDK8 的 CompletableFuture 和 Guava 的 ListenableFuture（适用 JDK6）为例介绍 Promise 的用法。</p>
+
+<h3 id="toc_18"><strong>1、符合 Promise 风格的方法签名</strong></h3>
+
+<p>Promise 风格的方法签名，有个不成文的规则是不抛出异常，因为异常是 Promise 对象本身就能携带的两种状态之一。比如我们想把一个 Callback 风格的异步 API 包装成 Promise 风格的（通常在使用一个较老的类库时需要这样的包装），可以这样：</p>
+
+<pre><code class="language-java">//caller.java
+CompletableFuture&lt;String&gt; asyncCall(final String msg) {
+    CompletableFuture&lt;String&gt; promise = new CompletableFuture&lt;&gt;();
+    try {
+        callee.asyncCall(msg, new Callback&lt;String&gt;() {
+            public void onSuccess(String r) { promise.complete(r); }
+            public void onFail(Throwable t) { promise.completeExceptionally(t); }
+        });
+    } catch (Throwable e) {
+        promise.completeExceptionally(t);
+    }
+    return promise;
+}
+</code></pre>
+
+<p>下面是使用 ListenableFuture 的实现异步发送消息的 API。</p>
+
+<pre><code class="language-java">//LocalMessageEngine.java
+static class WriteTask {
+    // SettableFuture是Guava中一种可设置状态的Promise类型。
+    final SettableFuture&lt;Boolean&gt; promise = SettableFuture.create();
+    final byte[] message;
+    WriteTask(byte[] message) {
+        this.message = message;
+    }
+}
+public Producer createProducer() {
+    return new Producer() {
+        public ListenableFuture&lt;Boolean&gt; asyncProduce(byte[] message) {
+            if (!Engine.this.started) {
+                // 返回前已完成
+                return Futures.immediateFailedFuture(new IllegalStateException(&quot;Message engine was stopped or not started&quot;));
+            }
+
+            WriteTask task = new WriteTask(message);
+            boolean queued = writeTaskQueue.offer(task);
+            if (!queued) {
+                task.promise.set(Boolean.FALSE);
+            }
+            return task.promise;
+        }
+    };
+}
+</code></pre>
+
+<p>上面两个例子，描述了如何创建一个 Promise 对象返回给 caller，以及如何在 callee 端 fulfill 或 reject 这个 Promise。你可能会发现，返回给 caller 之前 Promise 是可以处于完成状态的。在继续下面的使用介绍前，先简单的看下 ListenableFuture 和 CompletableFuture 的几个主要 API。</p>
+
+<p><img src="https://mmbiz.qpic.cn/mmbiz_png/MrFJyDNenF8OUIRCOltzbKCk6yXqAJP3ibyDlfaV7ZWzC5wCKpCF3S5ia5bicPE3gnEUibA9xWOafp3uOnPiaxrLLhQ/640?wx_fmt=png" alt=""/></p>
+
+<p><strong>2、串行调用</strong></p>
+
+<p>ListenableFuture 没有提供 then 方法，而是通过 Futures 的一系列静态方法来实现 Promise 风格的 API。由于两者有大部分的 API 是可以相互转化的，限于篇幅下面就不全部演示了。Promse 的 callback 就是其 then 或 catch 方法的函数型参数，当 Promise 被 resolve 时执行这个 callback 函数。这个 callback 函数的输入，就是 Promise 的 resolved 值。根据 callback 函数的输出的不同，需要采取不同的 then 方法。</p>
+
+<h4 id="toc_19">◆ callback 无输出</h4>
+
+<p>Futures.addCallback 和 CompletableFuture.thenAccept 接受无输出的 callback。</p>
+
+<pre><code class="language-java">// Guava
+ListenableFuture&lt;QueryResult&gt; promise1 = ...;
+Futures.addCallback(promise1, new FutureCallback&lt;QueryResult&gt;() {
+    public void onSuccess(QueryResult result) {
+        storeInLocalCache(result);
+    }
+    public void onFailure(Throwable t) {
+        reportError(t);
+    }
+});
+</code></pre>
+
+<pre><code class="language-java">// CompletableFuture
+CompletableFuture&lt;QueryResult&gt; promise1 = ...;
+CompletableFuture&lt;Void&gt; promise2 = promise1.thenAccept(result -&gt; storeInLocalCache(result));
+return promise2;
+//return promise1.thenAccept(result -&gt; storeInLocalCache(result));//thenAccept返回另一个Promise实例
+</code></pre>
+
+<p>先忽略异常处理。对比下这种场景下的 ListenableFuture 和 CompletableFuture：前者采取了更传统的 callback 风格，后者则返回一个新的 Promise 实例，callback 计算完毕则 promise2 被 fulfilled，很容易通过 promise2 来获取 callback 执行完毕与否，不需要 closure。</p>
+
+<h4 id="toc_20">◆ callback 输出一个普通计算值</h4>
+
+<p>这种情况下 callback 就是一个转换函数，输入是前一个 Promise 的 fulfilled 值，输出则作为新 Promise 的 fulfilled 值。Futures.transform 和 CompletableFuture.thenApply 接收这样的 callback 函数。</p>
+
+<pre><code class="language-java">// CompletableFuture
+CompletableFuture&lt;QueryResult&gt; queryFuture = ...;
+CompletableFuture&lt;List&lt;Row&gt;&gt; rowsFuture = queryFuture.thenApply(result -&gt; result.getRows());
+return rowsFuture;
+</code></pre>
+
+<h4 id="toc_21">◆ callback 输出一个异步计算值，即一个 Promise</h4>
+
+<p>乍一看，这种情况下的输出跟上一种好像没什么区别。但实际上，输出一个 Promise 值和输出一个普通的值有根本的区别。还记得吧，Promise 代表着一个未完成的并且承诺完成的值。通常这种情况下，意味着 callback 里调用了另外一个 Promise 风格的异步 API。比如下面的例子中 indexService.lookUp 和 dataService.read 方法，由于涉及到 IO，都设计为异步 API。</p>
+
+<pre><code class="language-java">//Guava
+ListenableFuture&lt;RowKey&gt; rowKeyFuture = indexService.lookUp(query);
+AsyncFunction&lt;RowKey, QueryResult&gt; queryFunction = new AsyncFunction&lt;RowKey, QueryResult&gt;() {
+    public ListenableFuture&lt;QueryResult&gt; apply(RowKey rowKey) {
+        return dataService.read(rowKey);
+    }
 };
-&lt;/script&gt;
-&lt;script&gt;
-  var worker = new Worker(window.URL.createObjectURL(bb.getBlob()));
-  worker.postMessage(**{url: document.location}**);
-&lt;/script&gt;
+ListenableFuture&lt;QueryResult&gt; queryFuture = Futures.transformAsync(rowKeyFuture, queryFunction);
+return queryFuture;
 </code></pre>
 
-<h2 id="toc_15">Handling Errors</h2>
+<p>Futures.transformAsync 和 CompletableFuture.thenCompose 接收这样的 callback 函数。</p>
 
-<p>As with any JavaScript logic, you&#39;ll want to handle any errors that are thrown in your web workers. If an error occurs while a worker is executing, the an <code>ErrorEvent</code> is fired. The interface contains three useful properties for figuring out what went wrong: <code>filename</code> - the name of the worker script that caused the error, <code>lineno</code> - the line number where the error occurred, and <code>message</code> - a meaningful description of the error. Here is an example of setting up an <code>onerror</code> event handler to print the properties of the error:</p>
+<p>设想一下，如果某个逻辑中需要调用的多个 Promise 风格的异步方法（比如多个 RPC 调用），并且有先后依赖关系，即上一个方法的执行结果作为下一个方法的输入。就可以用 thenCompose 把他们串起来。</p>
 
-<pre><code class="language-js">&lt;output id=&quot;error&quot; style=&quot;color: red;&quot;&gt;&lt;/output&gt;
-&lt;output id=&quot;result&quot;&gt;&lt;/output&gt;
-
-&lt;script&gt;
-  function onError(e) {
-    document.getElementById(&#39;error&#39;).textContent = [
-      &#39;ERROR: Line &#39;, e.lineno, &#39; in &#39;, e.filename, &#39;: &#39;, e.message
-    ].join(&#39;&#39;);
-  }
-
-  function onMsg(e) {
-    document.getElementById(&#39;result&#39;).textContent = e.data;
-  }
-
-  var worker = new Worker(&#39;workerWithError.js&#39;);
-  worker.addEventListener(&#39;message&#39;, onMsg, false);
-  worker.addEventListener(&#39;error&#39;, onError, false);
-  worker.postMessage(); // Start worker without a message.
-&lt;/script&gt;
+<pre><code class="language-java">//CompletableFuture
+CompletableFuture&lt;RPC4Result&gt; promise4 = rpc1.call(input) //promise1
+    .thenCompose(rpc1Result -&gt; rpc2.call(rpc1Result)) //promise2
+    .thenCompose(rpc2Result -&gt; rpc3.call(rpc2Result)) //promise3
+    .thenCompose(rpc3Result -&gt; rpc4.call(rpc3Result)) //promise4
+return promise4;
 </code></pre>
 
-<p><strong>Example</strong>: workerWithError.js tries to perform 1/x, where x is undefined.</p>
+<p>不要被链式调用给忽悠了，你还是可以正常使用普通的风格。</p>
 
-<p><button onclick="startErrorWorker()">Run it</button></p>
+<p>单纯看来，上述的串行调用场景下使用 Promise 风格的 API 好像只是消除了 Callback hell。那么采用同步 API 就既没有 Callback hell 的问题，又符合数据依赖关系。可是，你会发现，上面的举例中结尾都返回了 Promise，就是说，包含这段代码的方法被设计为异步 API。而使用同步 API，则会强制这个方法的调用者只能使用同步方式调用。</p>
 
-<p>workerWithError.js:</p>
+<h3 id="toc_22"><strong>3、并行调用</strong></h3>
 
-<pre><code class="language-js">self.addEventListener(&#39;message&#39;, function(e) {
-  postMessage(1/x); // Intentional error.
-};
+<p>异步 API 很适合并行调用。caller 在调用多个没有依赖关系的异步 API 时，可以先依次发起调用而不用等待每个调用真正执行完成，从 callee 的角度来讲，执行是并行的。caller 可以对调用结果进行合并处理，关键是，合并也是异步风格的。</p>
+
+<pre><code class="language-java">//Guava
+List&lt;ListenableFuture&lt;QueryResult&gt;&gt; partialPromises = new ArrayList&lt;ListenableFuture&lt;QueryResult&gt;&gt;(nodes.size());
+for (Node node : nodes) {
+    partialPromises.add(lookupHandler(node).query());
+}
+ListenableFuture&lt;List&lt;Row&gt;&gt; mergedPromise = Futures.transform(Futures.allAsList(partialPromises), new Function&lt;List&lt;List&lt;Row&gt;&gt;, List&lt;Row&gt;&gt;() {
+    @Override public Long apply(List&lt;List&lt;Row&gt;&gt; input) {
+        return merge(input);
+    }
+})
+return mergedPromise;
 </code></pre>
 
-<h2 id="toc_16">A Word on Security</h2>
+<p>Futures.allAsList 是并行执行所有的 promises，若有一个 promise 异常完成则尝试 reject 尚未 resolved 的 promise。也可以使用 Futures.successfulAsList，区别在于后者并不会 reject 尚未 resolved 的 promise。CompletableFuture 的对应物是 allOf 和 anyOf。</p>
 
-<h3 id="toc_17">Restrictions with Local Access</h3>
+<h3 id="toc_23"><strong>4、调用编排</strong></h3>
 
-<p>Due to Google Chrome&#39;s security restrictions, workers will not run locally (e.g. from <code>file://</code>) in the latest versions of the browser. Instead, they fail silently! To run your app from the <code>file://</code> scheme, run Chrome with the <code>--allow-file-access-from-files</code> flag set. <strong>NOTE</strong>: It is not recommended to run your primary browser with this flag set. It should only be used for testing purposes and not regular browsing.</p>
+<p>合并结果设计为异步风格的好处在于，很方便做合并、串行混合调用编排，比如某个逻辑中需要调用四个个 RPC 服务 A、B、C、D，其中：A 的输出作为 B、C 的输入，B、C 可并行，B、C 的输出合并后作为 D 的输入。</p>
 
-<p>Other browsers do not impose the same restriction.</p>
+<pre><code class="language-java">//CompletableFuture
+CompletableFuture&lt;AResult&gt; promiseA = rpcA.call(input);
+CompletableFuture&lt;DResult&gt; promiseD = promiseA.thenCompose(aResult -&gt; {
+    CompletableFuture&lt;BResult&gt; promiseB = rpcB.call(aResult);
+    CompletableFuture&lt;CResult&gt; promiseC = rpcC.call(aResult);
+    CompletableFuture&lt;MergedResult&gt; mergedPromise = promiseB.thenCombine(promiseC, (bResult, cResult) -&gt; {
+        return merge(bResult, cResult)
+    });
+    return mergedPromise;
+}).thenCompose(mergedResult -&gt; rpcD.call(mergedResult));
+return promiseD;
+</code></pre>
 
-<h3 id="toc_18">Same Origin Considerations</h3>
+<h3 id="toc_24"><strong>5、异常处理</strong></h3>
 
-<p>Worker scripts must be external files with the same scheme as their calling page. Thus, you cannot load a script from a <code>data:</code> URL or <code>javascript:</code> URL, and an <code>https:</code> page cannot start worker scripts that begin with <code>http:</code> URLs.</p>
+<p>上面提到过 Callback 风格的异步 API，异常处理比较分散。而 Promise 风格的异常处理则优雅得多。我们需要记住，异常是 Promise 携带的两种状态之一。那么异常可以作为 callback 函数的输入。</p>
 
-<h2 id="toc_19">Use Cases</h2>
+<h4 id="toc_25">◆ 通用异常处理</h4>
 
-<p>So what kind app would utilize web workers? Unfortunately, web workers are still relatively new and the majority of samples/tutorials out there involve computing prime numbers. Although that isn&#39;t very interesting, it&#39;s useful for understanding the concepts of web workers. Here are a few more ideas to get your brain churning:</p>
+<p>Futures.catching 和 CompletableFuture.exceptionally 接收异常值为参数的 callback 函数。</p>
 
-<ul>
-<li>  Prefetching and/or caching data for later use</li>
-<li>  Code syntax highlighting or other real-time text formatting</li>
-<li>  Spell checker</li>
-<li>  Analyzing video or audio data</li>
-<li>  Background I/O or polling of webservices</li>
-<li>  Processing large arrays or humungous JSON responses</li>
-<li>  Image filtering in <code>&lt;canvas/&gt;</code></li>
-<li>  Updating many rows of a local web database</li>
-</ul>
+<pre><code class="language-java">//Guava
+ListenableFuture&lt;Integer&gt; fetchCounterPromise = ...;
+// Falling back to a zero counter in case an exception happens when
+// processing the RPC to fetch counters.
+ListenableFuture&lt;Integer&gt; faultTolerantPromise = Futures.catching(
+    fetchCounterPromise, FetchException.class,
+    new Function&lt;FetchException, Integer&gt;() {
+        public Integer apply(FetchException e) {
+            return 0;
+        }
+    });
+</code></pre>
 
-<h2 id="toc_20">Demos</h2>
+<p>我们再看一个更复杂的例子。</p>
 
-<ul>
-<li>  Example from <a href="http://slides.html5rocks.com/#web-workers">HTML5Rocks slides</a></li>
-<li>  <a href="http://htmlfive.appspot.com/static/tracker1.html">Motion tracker</a></li>
-<li>  <a href="http://people.mozilla.com/%7Eprouget/demos/worker_and_simulatedannealing/index.xhtml">Simulated Annealing</a></li>
-<li>  <a href="http://html5demos.com/worker">HTML5demos sample</a></li>
-</ul>
+<pre><code class="language-java">//CompletableFuture
+CompletableFuture&lt;FaultTolerantResult&gt; faultTolerantPromise = rpc1.call(input) //promise1
+    .thenCompose(rpc1Result -&gt; rpc2.call(rpc1Result)) //promise2
+    .thenCompose(rpc2Result -&gt; rpc3.call(rpc2Result)) //promise3
+    .thenCompose(rpc3Result -&gt; rpc4.call(rpc3Result)) //promise4
+    .exceptionally(err -&gt; {
+        // process err
+        return faultTolerantValue;
+    });  //faultTolerantPromise
+return faultTolerantPromise;
+</code></pre>
 
-<h2 id="toc_21">References</h2>
+<p>再提醒一遍，不要被链式调用迷惑了。这个例子里面，rpc1/rpc2/rpc3/rpc4 都有可能发生异常，但我们只需要在最后统一处理（返回异常值或转换为一个默认正常值）。比如 rpc2 发生异常，那么 rpc3/rpc4 的逻辑（接收正常值的 callback 函数）都不会执行，但是 rpc2 的异常会传递给 promise3/promise4。</p>
 
-<ul>
-<li>  <a href="http://www.whatwg.org/specs/web-workers/current-work/">Web Workers</a> specification</li>
-<li>  <a href="http://developer.mozilla.org/en/Using_web_workers">&quot;Using web workers&quot;</a> from Mozilla Developer Network</li>
-<li>  <a href="http://dev.opera.com/articles/view/web-workers-rise-up/">&quot;Web Workers rise up!&quot;</a> from Dev.Opera</li>
-</ul>
+<h4 id="toc_26">◆ 恢复</h4>
+
+<p>假设在读取某个数据存储发生异常，我们需要某种恢复机制，比如读取另一个 backup 的数据存储（某种重试），那么可以使用 Futures.cachingAsync 和 CompletableFuture.handle。</p>
+
+<pre><code class="language-java">//CompletableFuture
+public &lt;V&gt; CompletableFuture&lt;V&gt; dispatch(final Command&lt;V&gt; command) {
+    final CompletableFuture&lt;V&gt; dispatched = loadbalance.selectHandler().dispatch(command);
+    if (maxTries &gt; 0) {
+        final AtomicInteger leftTries = new AtomicInteger(maxTries);
+        final BiFunction&lt;CompletableFuture&lt;V&gt;, Throwable, CompletableFuture&lt;V&gt;&gt; fallback = new BiFunction&lt;CompletableFuture&lt;V&gt;, Throwable, CompletableFuture&lt;V&gt;&gt;() {
+            @Override
+            public CompletableFuture&lt;V&gt; apply(CompletableFuture&lt;V&gt; input, Throwable cause) {
+                if (cause == null) return input;
+                if (cause instanceof RecoverableException &amp;&amp; leftTries.getAndDecrement() &gt; 0) {
+                    final CompletableFuture&lt;V&gt; next = loadbalance.selectHandler().dispatch(new Command&lt;V&gt;(command.type, command.args));
+                    return next.handle((v, err) -&gt; err).thenCompose(err -&gt; apply(next, err));
+                }
+                CompletableFuture&lt;V&gt; errFuture = new CompletableFuture&lt;&gt;();
+                errFuture.completeExceptionally(cause);
+                return errFuture;
+            }
+        };
+        return dispatched.handle((v, err) -&gt; err).thenCompose(err -&gt; fallback.apply(dispatched, err));
+    }
+    return dispatched;
+}
+</code></pre>
+
+<h4 id="toc_27">◆ 超时</h4>
+
+<p>Promise 是一个承诺完成（成功或失败）的结果，但是并不承诺完成时间。所以，通常需要一种超时机制，幸运的是 ListenableFuture 和 CompletableFuture 都实现了 Future 接口。</p>
+
+<pre><code class="language-java">CompletableFuture&lt;FaultTolerantResult&gt; faultTolerantPromise = ...;
+try {
+    FaultTolerantResult result = faultTolerantPromise.get(1000, TimeUnit.SECONDS);
+    // process result
+} catch (TimeoutException e) {
+    //尝试取消执行尚未开始的callback函数
+    faultTolerantPromise.cancel(false);` 
+
+}
+</code></pre>
+
+<h2 id="toc_28"><strong>四、Promise 异步编程的注意点</strong></h2>
+
+<p>异步编程比同步编程困难。异步编程通常主要解决一小部分问题，比如阻塞。Promise 借鉴了函数式编程的风格，大量的逻辑会分散在各种 callback 函数来实现。因此对于习惯了同步编程的 OO 式或命令式编程风格的开发人员，需要一定的习惯时间。</p>
+
+<p>上面谈到 callee 执行机制的时候，谈到了线程池，那么 callee 计算完成时，callback 函数的执行通常是池中 resolve Promise 的线程执行。但是，如果 caller 在设置 callback 的时候，Promise 已经完成，那么 callback 的执行线程则是 caller 线程。因此，请特别关注 callback 函数的执行线程的差别。请遵循：</p>
+
+<p>◆ callback 尽量轻量 </p>
+
+<p>◆ callback 避免阻塞 </p>
+
+<p>◆ 否则请指定执行线程</p>
+
+<p>如果 callback 执行了大量的计算，甚至执行了阻塞式操作，那么就很有可能阻塞住 Promise 的 resolve 线程，通常这类线程都是极少的，比如执行 IO 的 EventLoop 线程，有可能造成其他 Promise 得不到执行。</p>
+
+<blockquote>
+<p>摘自 ListenableFuture 的文档： </p>
+
+<p>Note: For fast, lightweight listeners that would be safe to execute in any thread, consider MoreExecutors.directExecutor. Otherwise, avoid it. Heavyweight directExecutor listeners can cause problems, and these problems can be difficult to reproduce because they depend on timing. For example: </p>
+
+<p>◆ The listener may be executed by the caller of addListener. That caller may be a UI thread or other latency-sensitive thread. This can harm UI responsiveness. </p>
+
+<p>◆ The listener may be executed by the thread that completes this Future. That thread may be an internal system thread such as an RPC network thread. Blocking that thread may stall progress of the whole system. It may even cause a deadlock. </p>
+
+<p>◆ The listener may delay other listeners, even listeners that are not themselves directExecutor listeners.</p>
+</blockquote>
+
+<p>我们也的确碰到过使用 MoreExecutors.directExecutor 时，由于编写了太过复杂的 callback 链，导致线程死锁的问题。</p>
+
+<p>CompletableFuture 和 ListenableFuture 都有指定 callback 执行线程的方法：</p>
+
+<pre><code class="language-java">//使用内置的通用ForkJoin线程池
+completableFuture.thenAcceptAsync(callback);
+//使用指定的线程执行器
+completableFuture.thenAcceptAsync(callback, executor);
+//使用指定的线程执行器
+Futures.transform(input, callback, executor);
+</code></pre>
+
+<p>正因为异步编程的复杂性，因此目前我们也尽量在业务逻辑相对简单的应用上进行异步化改造。后续，我们也会评估 Quasar 等协程框架。</p>
+
+<p>完~</p>
 
                         
                       </div>
@@ -529,10 +597,10 @@ self.onmessage = function(e) {
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/4/28</span>
+                    <span class="date">2018/5/13</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Node.js.html'>Node.js</a></span>
+          					    <span class="posted-in"><a href='Java.html'>Java</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -622,31 +690,31 @@ self.onmessage = function(e) {
 	      
 		      
 			      <li class="post">
+			        <a href="15277861393795.html">深入浅出Netty - EventLoop, EventLoopGroup</a>
+			      </li>
+		     
+		  
+		      
+			      <li class="post">
+			        <a href="15277856731195.html">Functor and monad examples in plain Java</a>
+			      </li>
+		     
+		  
+		      
+			      <li class="post">
+			        <a href="15277854106004.html">我必须得告诉大家的 MySQL 优化原理</a>
+			      </li>
+		     
+		  
+		      
+			      <li class="post">
+			        <a href="15277850962764.html">Leaf——美团点评分布式ID生成系统</a>
+			      </li>
+		     
+		  
+		      
+			      <li class="post">
 			        <a href="15277835170976.html">蚂蚁通信框架实践</a>
-			      </li>
-		     
-		  
-		      
-			      <li class="post">
-			        <a href="15277833297034.html">揭秘JDBC超时机制</a>
-			      </li>
-		     
-		  
-		      
-			      <li class="post">
-			        <a href="15277832551515.html">【原创】分布式之redis复习精讲</a>
-			      </li>
-		     
-		  
-		      
-			      <li class="post">
-			        <a href="15277824520436.html">【RPC 专栏】深入理解 RPC 之动态代理篇</a>
-			      </li>
-		     
-		  
-		      
-			      <li class="post">
-			        <a href="15277821532847.html">Aspect-Oriented Programming in Spring Boot Part 2: Spring JDK Proxies vs CGLIB vs AspectJ</a>
 			      </li>
 		     
 		  

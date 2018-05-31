@@ -4,13 +4,1503 @@
   <title><![CDATA[Junkman]]></title>
   <link href="http://panlw.github.io/atom.xml" rel="self"/>
   <link href="http://panlw.github.io/"/>
-  <updated>2018-05-28T00:54:25+08:00</updated>
+  <updated>2018-06-01T00:39:57+08:00</updated>
   <id>http://panlw.github.io/</id>
   <author>
     <name><![CDATA[]]></name>
     
   </author>
   <generator uri="http://www.mweb.im/">MWeb</generator>
+  
+  <entry>
+    <title type="html"><![CDATA[深入浅出Netty - EventLoop, EventLoopGroup]]></title>
+    <link href="http://panlw.github.io/15277861393795.html"/>
+    <updated>2018-06-01T01:02:19+08:00</updated>
+    <id>http://panlw.github.io/15277861393795.html</id>
+    <content type="html"><![CDATA[
+<blockquote>
+<p>DECEMBER 24 2016<br/>
+<a href="https://caorong.github.io/2016/12/24/head-first-netty-1/">https://caorong.github.io/2016/12/24/head-first-netty-1/</a></p>
+
+<p>本文由 <a href="http://ksria.com/simpread/">简悦 SimpRead</a> 转码， 原文地址 <a href="https://caorong.github.io/2016/12/24/head-first-netty-1/">https://caorong.github.io/2016/12/24/head-first-netty-1/</a></p>
+</blockquote>
+
+<p>近年来netty 十分流行，至于为何那么流行，因为它性能好，能更有效的利用系统资源。</p>
+
+<p>但是， netty 很容易上手， 但是很多时候却无法理解设计的初衷， 比如为什么会有 EventLoop 这个东东， 本文从历史阐述原因。</p>
+
+<h2 id="toc_0"><a href="#%E5%90%8C%E6%AD%A5%E7%BD%91%E7%BB%9C%E6%A8%A1%E5%9E%8B" title="同步网络模型"></a>同步网络模型</h2>
+
+<p>首先说说同步模型， 也就是常说的 bio， bio 是基于 stream 的。 网上找到一个图如下</p>
+
+<p><img src="media/15277861393795/15277864485883.jpg" alt=""/></p>
+
+<p>从图可知，对于bio 来说，我的程序何时处理完需要靠 看 datasource 何时发完数据。</p>
+
+<p>这是非常坑爹的， 举个例子， 如果我的服务是一个多线程的 bio 的服务(比如 10个线程)，然后某个黑客建10个 telnet 连上你的server， holding住 不发数据，那么你的服务就down了。</p>
+
+<p>那么如何解决这种问题？ 如果 waiting client 发的数据不阻塞 worker 线程不就行了？</p>
+
+<p>于是出现了 异步网络模型</p>
+
+<h2 id="toc_1"><a href="#%E5%BC%82%E6%AD%A5%E7%BD%91%E7%BB%9C%E6%A8%A1%E5%9E%8B" title="异步网络模型"></a>异步网络模型</h2>
+
+<p>异步网络模型， 也就是非阻塞IO， 在java 中由于 jdk1.4 之后才被引入所以被称之为 Nio (New IO)</p>
+
+<p>网上同样找到个图</p>
+
+<p><img src="media/15277861393795/15277864586815.jpg" alt=""/></p>
+
+<p>由图可知， 实现异步的原理是 系统帮你给每一个连接(channel) 都维护了一个 <code>buffer</code>。<br/>
+将 client 发来的数据暂存到 <code>buffer</code> 中, 待 java 进程需要的时候一次性做一次内存拷贝，在 java 进程中使用。</p>
+
+<p>当然， 写出也是同样的 写到 <code>buffer</code> 中，当 <code>buffer</code> 满 或者 手动调用 <code>flush</code> 写出去。</p>
+
+<p>下面有个简单的 非阻塞 echo server demo， 当读到 q 时关闭连接。</p>
+
+<pre><code class="language-java">ServerSocketChannel serverSocketChannel = ServerSocketChannel.open();
+
+serverSocketChannel.socket().bind(new InetSocketAddress(9999));
+serverSocketChannel.configureBlocking(false);
+
+final List&lt;SocketChannel&gt; socketChannelList = Lists.newLinkedList();
+
+new Thread(new Runnable() {
+  @Override
+  public void run() {
+    while (true) {
+      // 处理 每个连接是否可读, 这里的逻辑是 读4个字节后切断连接
+      for (SocketChannel socketChannel : Lists.newArrayList(socketChannelList)) {
+        try {
+          ByteBuffer buf = ByteBuffer.allocate(4);
+          int readed = socketChannel.read(buf);
+          System.out.println(readed);
+          System.out.println(Arrays.toString(buf.array()));
+          if (readed &gt; 0 &amp;&amp; buf.array()[0] == &#39;q&#39;) {
+            // close
+            socketChannel.close();
+            // remove from list
+            socketChannelList.remove(socketChannel);
+          }
+        } catch (Throwable e) {
+          e.printStackTrace();
+        }
+      }
+      try {
+        Thread.sleep(100);
+      } catch (InterruptedException e) {
+      }
+    }
+  }
+}, &quot;server-handler-thread&quot;).start();
+
+// 等待新连接连进来
+while (true) {
+  SocketChannel socketChannel = serverSocketChannel.accept();
+  if (socketChannel != null) {
+    socketChannelList.add(socketChannel);
+  }
+  Thread.sleep(1000);
+}
+</code></pre>
+
+<p>简单分析下上面的代码，</p>
+
+<ol>
+<li> 由于 accept 是非阻塞的， 所以我们要一直轮询 判断是否有新连接进来。</li>
+<li> 连接进来后，由于我们不知道 client 何时能发完数据， 所以我们维护了一个列表 <code>socketChannelList</code> 定期去轮询列表，看是否有数据可读。</li>
+</ol>
+
+<p>但是后来大家发现， 每当用 nonblocking socket 的时候都要做类似的操作， 于是想把它们提出来，提取成一个通用模块， 让代码实现更容易，</p>
+
+<p>在 <a href="https://en.wikipedia.org/wiki/Berkeley_sockets">berkeley socket</a> 中这个模块被称为 select, poll, epoll. (后面2个是加强版)</p>
+
+<p>而在java中， java 在他们之上抽象成 Selector</p>
+
+<h2 id="toc_2"><a href="#Selector-select-poll-epoll" title="Selector(select, poll, epoll)"></a>Selector(select, poll, epoll)</h2>
+
+<p>既然 select 是一个使用 nonblocking io 的通用封装， 那么在 linux 中， 为什么要有 select, poll, epoll 这么多的选择呢？</p>
+
+<p>我猜测，最早其实只有 select， 然后由于linux 是一个开源， 所以， 后来别人实现了性能更好的 poll, 再之后 epoll 也是这样。</p>
+
+<p>但是, 由于它们都在 linux 2.6.12 之前就已经被实现了， 在github上 都看不到具体提交历史了。。</p>
+
+<p><a href="https://github.com/torvalds/linux/commits/a379f71a30dddbd2e7393624e455ce53c87965d1/fs/select.c?after=Y3Vyc29yOqN59xow3dvS5zk2JORVzlPIeWXRKzY5">select.c</a>,<br/>
+<a href="https://github.com/torvalds/linux/commits/5924bbecd0267d87c24110cbe2041b5075173a25/include/linux/poll.h">poll.h</a>,<br/>
+<a href="https://github.com/torvalds/linux/commits/5924bbecd0267d87c24110cbe2041b5075173a25/include/linux/eventpoll.h">eventpoll.h</a></p>
+
+<p>我们再来看看 使用了 selector 后的非阻塞 IO 的编码, 同样实现一个 echo server</p>
+
+<pre><code class="language-java">Selector selector = Selector.open();
+ServerSocketChannel servChannel = ServerSocketChannel.open();
+servChannel.configureBlocking(false);
+// 建立一个server socket，到本地端口9999， backlog 1024
+servChannel.socket().setReuseAddress(true);
+servChannel.socket().bind(new InetSocketAddress(9999), 1024);
+// selector 关心 server 上的 ACCEPT 事件
+servChannel.register(selector, SelectionKey.OP_ACCEPT); 
+
+while (start) {
+  try {
+    // 阻塞等待 直到有IO事件可读(系统IO事件队列不为空)
+    selector.select();
+    // 获取 事件 以及 事件所对应的 channel (client server 的连接)
+    Set&lt;SelectionKey&gt; selectedKeys = selector.selectedKeys();
+    Iterator&lt;SelectionKey&gt; it = selectedKeys.iterator();
+    SelectionKey key = null;
+    while (it.hasNext()) {
+      key = it.next();
+      it.remove();
+      try {
+        if (key.isValid()) {
+          // OP_ACCEPT 事件 表示有个新client 完成了三次握手。连接上了本服务器
+          if (key.isAcceptable()) {
+            // Accept the new connection
+            ServerSocketChannel ssc = (ServerSocketChannel) key.channel();
+            SocketChannel sc = ssc.accept();
+            sc.configureBlocking(false);
+            // 将该连接的可读事件 注册到 selector， 到时候他发起请求的时候，我会收到新事件
+            sc.register(selector, SelectionKey.OP_READ);
+          }
+          // OP_READ 事件 说明 client 发的数据已经发到了系统缓冲区，server 可以去读了。
+          if (key.isReadable()) {
+            SocketChannel sc = (SocketChannel) key.channel();
+            // 分配用户台空间, 将数据从内核态 拷贝到 用户态
+            ByteBuffer readBuffer = ByteBuffer.allocate(4);
+            int readBytes = sc.read(readBuffer);
+            if (readBytes &gt; 0) {
+              // 切换读写模式 详见下面的图, 表示自己目前可以读 [position, limit]
+              readBuffer.flip();
+              byte[] bytes = new byte[readBuffer.remaining()];
+              // 将buffer 数据拷贝到 bytes 数组
+              // 如果这里只收到一半的数据怎么办？
+              String body = new String(bytes, &quot;UTF-8&quot;);
+              System.out.println(body);
+              // 将 read的数据 写回去
+              ByteBuffer writeBuffer = ByteBuffer.allocate(bytes.length);
+              writeBuffer.put(bytes);
+              writeBuffer.flip();
+              sc.write(writeBuffer);
+            } else if (readBytes &lt; 0) {
+              // 对端链路关闭
+              key.cancel();
+              sc.close();
+            } else
+              ;
+          }
+        }
+      } catch (Exception e) {
+        if (key != null) {
+          key.cancel();
+          if (key.channel() != null)
+            key.channel().close();
+        }
+      }
+    }
+  } catch (Exception e) {
+    throw e;
+  }
+}
+</code></pre>
+
+<pre><code class="language-sh">~ ᐅ nc localhost 9999
+1
+1
+2
+2
+</code></pre>
+
+<p>但是， 很奇怪的是，代码更长了。。。</p>
+
+<p>因为其实真正的 selector 将所有的socket 的时间都封装进去了。</p>
+
+<p>带来的结果是， java 层的代码 只要一个线程就能处理所有了，(我之前的实现需要2个线程)。</p>
+
+<p>当然还有个问题是， 及时用了 selector， 我们依然认为代码可读性非常差， 代码容易写错。</p>
+
+<p>于是， netty 登场了， 他在 selector 之上， 又封装了一层， 让我们先看下 同样实现 netty 的代码。</p>
+
+<h2 id="toc_3"><a href="#netty-echo-server" title="netty echo server"></a>netty echo server</h2>
+
+<pre><code class="language-java">public class Netty4Demo {
+  public class EchoHandler extends SimpleChannelInboundHandler {
+    @Override
+    public void channelRead0(ChannelHandlerContext ctx, Object msg) throws Exception {
+      // 为什么 这里可以强转String？
+      String in = (String) msg;
+      System.out.print(in);
+      // 将数据写回
+      ctx.writeAndFlush(in);
+    }
+  }
+
+  public void run() throws Exception {
+    EventLoopGroup acceptGroup = new NioEventLoopGroup(1); // 指定 Acceptor 线程池大小
+    EventLoopGroup ioGroup = new NioEventLoopGroup(1); // 指定 NIO线程池大小
+    try {
+      ServerBootstrap b = new ServerBootstrap(); // 创建 ServerBootstrap 对象，他是Netty 用于启动NIO 服务端的辅助启动类，目的是降低服务端的开发复杂度。
+      b.group(acceptGroup, ioGrou).channel(
+          NioServerSocketChannel.class) // 指定使用 java 的NioServerSocketChannel
+          .childHandler(new ChannelInitializer&lt;SocketChannel&gt;() { // 创建 IOThread 的 pipeline
+            @Override
+            public void initChannel(SocketChannel ch) throws Exception {
+              ch.pipeline()
+                .addLast(new StringDecoder())
+                .addLast(new StringEncoder()); // 添加echo Handler
+                .addLast(new EchoHandler())
+            }
+          }).option(ChannelOption.SO_BACKLOG, 128)          // server socket config backlog 设置为 128
+          .childOption(ChannelOption.SO_KEEPALIVE, true); // client socket config 设置 keepalive = true
+      // 绑定端口，开始接收进来的连接
+      ChannelFuture f = b.bind(9999).sync(); // 同步等待绑定本地端口
+
+      // 等待服务器  socket 关闭 。
+      // 在这个例子中，这不会发生，但你可以优雅地关闭你的服务器。
+      f.channel().closeFuture().sync();
+    } finally {
+      // 释放两个线程池
+      acceptGroup.shutdownGracefully();
+      ioGrou.shutdownGracefully();
+    }
+  }
+
+  public static void main(String[] args) throws Exception {
+    new Netty4Demo().run();
+  }
+}
+</code></pre>
+
+<pre><code class="language-sh">~ ᐅ nc localhost 9999
+1
+1
+2
+2
+3
+3
+</code></pre>
+
+<p>代码短了一些， 关键是少了很多 if 判断， 代码可读性更好了。</p>
+
+<p>但是， 可读性提高(抽象)的同时， 又带出了了问题， EventLoop 是什么 , EventloopGroup 是什么？ 为什么要有它们？</p>
+
+<p>这里要解释以上的问题， 要先从 线程模型说起</p>
+
+<h2 id="toc_4"><a href="#%E7%BA%BF%E7%A8%8B%E6%A8%A1%E5%9E%8B" title="线程模型"></a>线程模型</h2>
+
+<p>首先是 单线程模型， 如下图</p>
+
+<p><img src="media/15277861393795/15277864778610.jpg" alt=""/></p>
+
+<p>上面直接用 selector 实现的 echo server 就是单线程模型，<br/>
+还有类似存在 GIL 问题的语言比如 python 的 tornado 也是 单线程模型。</p>
+
+<p>然后是多线程模型</p>
+
+<p><img src="media/15277861393795/15277864864829.jpg" alt=""/></p>
+
+<p>多线程模型的区别就是 让接收连接 和 对连接读写的处理 分别用不同的线程处理。 比如上面的 echo server demo 就可以被称为一个 多线程模型。<br/>
+只不过扩展性差了些。。。</p>
+
+<p>netty 的 EventloopGroup 其实就是线程池， 通过它来配置 接收连接 和 处理连接读写 的线程池大小。</p>
+
+<h2 id="toc_5"><a href="#netty-%E4%B9%8B-EventloopGroup" title="netty 之 EventloopGroup"></a>netty 之 EventloopGroup</h2>
+
+<p><img src="media/15277861393795/15277864950859.jpg" alt=""/></p>
+
+<p>上图就是 EventLoopGroup 的大致模块图。</p>
+
+<p>Boss EventloopGroup 和 worker EventloopGroup 分别 处理 接收连接， 和读写。</p>
+
+<p>而 Eventloop 里则封装了类似上面单线程的 echo server 的模块下面会详细说。</p>
+
+<p>对于开发者来说，主要关心紫色圈出部分。 其余的都已经封装完毕</p>
+
+<p>有几个关键点。</p>
+
+<ol>
+<li> Eventloopsize 建议设置为 2 的次方，dispatch 使用位移，更快。</li>
+<li> 侦听一个端口，只会绑定到 BossEventLoopGroup 中的一个 Eventloop，所以， BossEventLoopGroup 配置多个也无用。</li>
+</ol>
+
+<h2 id="toc_6"><a href="#EventLoop" title="EventLoop"></a>EventLoop</h2>
+
+<p>如果只使用 tcp 和 异步阻塞的话主要关心以下2个 EventLoop (本文也只介绍这2个)</p>
+
+<p>NioEventLoop - 基于java 原生nio</p>
+
+<pre><code>level-triggered （水平触发）
+
+</code></pre>
+
+<p>EpollEventLoop - native jni 直接调用 epoll, only work on linux</p>
+
+<pre><code>edge-triggered （边缘触发）更少的系统调用
+C代码，更少GC，更少synchronized
+暴露了更多的Socket配置参数
+
+</code></pre>
+
+<h3 id="toc_7"><a href="#%E6%B5%81%E7%A8%8B%E5%9B%BE" title="流程图"></a>流程图</h3>
+
+<p><img src="media/15277861393795/15277865072620.jpg" alt=""/></p>
+
+<p>关键点</p>
+
+<ol>
+<li> 整个loop 干的事情就是 <code>select -&gt; processIO -&gt; runAllTask</code></li>
+<li> 这是一个死循环</li>
+<li> 那么这个loop 如何自己优雅退出？ noway，只能通过外部添加 CloseTask， 比如添加到 MpscQueue</li>
+<li> deadline 为 定时任务的触发时间，避免 select 阻塞, 让 定时任务不能及时执行。</li>
+<li> 在select 这一步 解决 epollbug</li>
+</ol>
+
+<p>关于解决 epoll bug的原理是 应当 “阻塞”的 select 变得不再阻塞。<br/>
+所以只需要统计下 select 次数就行了</p>
+
+<p>部分关键代码:</p>
+
+<pre><code class="language-java">for(;;){
+    int selectedKeys = selector.select(timeoutMillis); // select with timeout
+    selectCnt ++;
+    // 我由于 select 阻塞 而等待了 timeoutMillis 毫秒， 说明， 我阻塞了，说明没有bug
+    if (time - TimeUnit.MILLISECONDS.toNanos(timeoutMillis) &gt;= currentTimeNanos) {
+        selectCnt = 1;
+    } else if (SELECTOR_AUTO_REBUILD_THRESHOLD &gt; 0 &amp;&amp;
+            selectCnt &gt;= SELECTOR_AUTO_REBUILD_THRESHOLD) {
+        // 在小于 timeoutMillis 毫秒的时间内 select 的次数超过了 阀值(512) 次
+        rebuildSelector();
+        selector = this.selector;
+
+        selector.selectNow();// Select again
+        selectCnt = 1;
+        break;
+    }
+}
+</code></pre>
+
+<h2 id="toc_8"><a href="#other" title="other"></a>other</h2>
+
+<h3 id="toc_9"><a href="#Selector-wakeup" title="Selector.wakeup()"></a>Selector.wakeup()</h3>
+
+<p>java 的 Selector 在原生的 select api 之上 增加了个 Selector.wakeup()</p>
+
+<p>她的目的是唤醒 阻塞在 <code>select()</code> 的线程, (通过写一个字节)</p>
+
+<p>为什么要唤醒？ 什么时候需要唤醒？</p>
+
+<ol>
+<li>注册了新的 channel 或者事件。</li>
+<li>channel 关闭， 取消注册。</li>
+<li>优先级更高的事件触发（如定时器事件）， 希望及时处理。</li>
+</ol>
+
+<h4 id="toc_10"><a href="#%E5%8E%9F%E7%90%86" title="原理"></a>原理</h4>
+
+<p>Linux上利用pipe调用创建一个管道，Windows上则是一个loopback的tcp连接。这是因为win32的管道无法加入select的fd set，将管道或者TCP连接加入select fd set。</p>
+
+<p>wakeup往管道或者连接写入一个字节，阻塞的select因为有I/O事件就绪，立即返回。可见，wakeup的调用开销不可忽视。</p>
+
+<p>之前看到的 coolshell 也分析过 –&gt; Java NIO类库Selector机制解析（<a href="http://blog.csdn.net/haoel/archive/2008/03/27/2224055.aspx">上</a>，<a href="http://blog.csdn.net/haoel/archive/2008/03/27/2224069.aspx">下</a>，<a href="http://blog.csdn.net/haoel/archive/2008/05/04/2379586.aspx">续</a>）</p>
+
+<h1 id="toc_11"><a href="#reference" title="reference"></a>reference</h1>
+
+<p><a href="http://www.infoq.com/cn/articles/netty-threading-model">http://www.infoq.com/cn/articles/netty-threading-model</a></p>
+
+<p><a href="http://calvin1978.blogcn.com/articles/netty-performance.html">http://calvin1978.blogcn.com/articles/netty-performance.html</a></p>
+
+<p><a href="http://calvin1978.blogcn.com/articles/netty-performance2.html">http://calvin1978.blogcn.com/articles/netty-performance2.html</a></p>
+
+<p><a href="http://tech.meituan.com/nio.html">http://tech.meituan.com/nio.html</a></p>
+
+]]></content>
+  </entry>
+  
+  <entry>
+    <title type="html"><![CDATA[Functor and monad examples in plain Java]]></title>
+    <link href="http://panlw.github.io/15277856731195.html"/>
+    <updated>2018-06-01T00:54:33+08:00</updated>
+    <id>http://panlw.github.io/15277856731195.html</id>
+    <content type="html"><![CDATA[
+<blockquote>
+<p><a href="https://www.nurkiewicz.com/2016/06/functor-and-monad-examples-in-plain-java.html">https://www.nurkiewicz.com/2016/06/functor-and-monad-examples-in-plain-java.html</a><br/>
+June 23, 2016</p>
+</blockquote>
+
+<p>This article was initially an appendix in our <a href="http://amzn.to/28NV8eJ">Reactive Programming with RxJava</a> book. However introduction to monads, albeit very much related to reactive programming, didn&#39;t suit very well. So I decided to take it out and publish separately as a blog post. I am aware that &quot;_my very own, half correct and half complete explanation of monads_&quot; is the new &quot;_Hello, world_&quot; on programming blogs. Yet the article looks at functors and monads from a specific angle of Java data structures and libraries. Thus I thought it&#39;s worthwhile sharing.</p>
+
+<p>RxJava was designed and built on top of very fundamental concepts like <u>functors</u> , <u>monoids</u> and <u>monads</u> . Even though Rx was modeled initially for imperative C# language and we are learning about RxJava, working on top of similarly imperative language, the library has its roots in functional programming. You should not be surprised after you realize how compact RxJava API is. There are pretty much just a handful of core classes, typically immutable, and everything is composed using mostly pure functions.</p>
+
+<p>With a recent rise of functional programming (or functional style), most commonly expressed in modern languages like Scala or Clojure, monads became a widely discussed topic. There is a lot of folklore around them:</p>
+
+<p>A monad is a monoid in the category of endofunctors, what&#39;s the problem?<br/>
+<a href="http://james-iry.blogspot.com/2009/05/brief-incomplete-and-mostly-wrong.html">_James Iry_</a></p>
+
+<p>The curse of the monad is that once you get the epiphany, once you understand - &quot;oh that&#39;s what it is&quot; - you lose the ability to explain it to anybody.<br/>
+<a href="https://www.youtube.com/watch?v=dkZFtimgAcM">_Douglas Crockford_</a></p>
+
+<p>The vast majority of programmers, especially those without functional programming background, tend to believe monads are some arcane computer science concept, so theoretical that it can not possibly help in their programming career. This negative perspective can be attributed to dozens of articles and blog posts being either too abstract or too narrow. But it turns out that monads are all around us, even is standard Java library, especially since Java Development Kit (JDK) 8 (more on that later). What is absolutely brilliant is that once you understand monads for the first time, suddenly several unrelated classes and abstractions, serving entirely different purposes, become familiar.</p>
+
+<p>Monads generalize various seemingly independent concepts so that learning yet another incarnation of monad takes very little time. For example you do not have to learn how <code>CompletableFuture</code> works in Java 8, once you realize it is a monad, you know precisely how it works and what can you expect from its semantics. And then you hear about RxJava which sounds so much different but because <code>Observable</code> is a monad, there is not much to add. There are numerous other examples of monads you already came across without knowing that. Therefore this section will be a useful refresher even if you fail to actually use RxJava.</p>
+
+<h1 id="toc_0">Functors</h1>
+
+<p>Before we explain what a monad is, let&#39;s explore simpler construct called a <u>functor</u> . A functor is a typed data structure that encapsulates some value(s). From syntactic perspective a functor is a container with the following API:</p>
+
+<pre><code class="language-java">import java.util.function.Function;
+ 
+interface Functor&lt;T&gt; {
+     
+    &lt;R&gt; Functor&lt;R&gt; map(Function&lt;T, R&gt; f);
+     
+}
+</code></pre>
+
+<p>But mere syntax is not enough to understand what functor is. The only operation that functor provides is <code>map()</code> that takes a function <code>f</code>. This function receives whatever is inside a box, transforms it and wraps the result as-is into a second functor. Please read that carefully. <code>Functor&lt;T&gt;</code> is always an immutable container, thus <code>map</code> never mutates original object it was executed on. Instead it returns the result (or results - be patient) wrapped in a brand new functor, possibly of different type <code>R</code>. Additionally functors should not perform any actions when identity function is applied, that is <code>map(x -&gt; x)</code>. Such a pattern should always return either the same functor or an equal instance.</p>
+
+<p>Often <code>Functor&lt;T&gt;</code> is compared to a box holding instance of <code>T</code> where the only way of interacting with this value is by transforming it. However there is no idiomatic way of unwrapping or escaping from the functor. The value(s) always stay within the context of functor. Why are functors useful? They generalize multiple common idioms like collections, promises, optionals, etc. with a single, uniform API that works across all of them. Let me introduce a couple of functors to make you more fluent with this API:</p>
+
+<pre><code class="language-java">interface Functor&lt;T,F extends Functor&lt;?,?&gt;&gt; {
+    &lt;R&gt; F map(Function&lt;T,R&gt; f);
+}
+ 
+class Identity&lt;T&gt; implements Functor&lt;T,Identity&lt;?&gt;&gt; {
+ 
+    private final T value;
+ 
+    Identity(T value) { this.value = value; }
+ 
+    public &lt;R&gt; Identity&lt;R&gt; map(Function&lt;T,R&gt; f) {
+        final R result = f.apply(value);
+        return new Identity&lt;&gt;(result);
+    }
+     
+}
+</code></pre>
+
+<p>An extra <code>F</code> type parameter was required to make <code>Identity</code> compile. What you saw in the preceding example was the simplest functor just holding a value. All you can do with that value is transforming it inside <code>map</code> method, but there is no way to extract it. This is considered beyond the scope of pure functor. The only way to interact with functor is by applying sequences of type-safe transformations:</p>
+
+<pre><code class="language-java">Identity&lt;String&gt; idString = new Identity&lt;&gt;(&quot;abc&quot;);
+Identity&lt;Integer&gt; idInt = idString.map(String::length);
+</code></pre>
+
+<p>Or fluently, just like you compose functions:</p>
+
+<pre><code class="language-java">Identity&lt;byte[]&gt; idBytes = new Identity&lt;&gt;(customer)
+        .map(Customer::getAddress)
+        .map(Address::street)
+        .map((String s) -&gt; s.substring(0, 3))
+        .map(String::toLowerCase)
+        .map(String::getBytes);
+</code></pre>
+
+<p>From this perspective mapping over a functor is not much different than just invoking chained functions:</p>
+
+<pre><code class="language-java">byte[] bytes = customer
+        .getAddress()
+        .street()
+        .substring(0, 3)
+        .toLowerCase()
+        .getBytes();
+</code></pre>
+
+<p>Why would you even bother with such verbose wrapping that not only does not provide any added value, but also is not capable of extracting the contents back? Well, it turns out you can model several other concepts using this raw functor abstraction. For example <code>java.util.Optional&lt;T&gt;</code> starting from Java 8 is a functor with <code>map()</code> method. Let us implement it from scratch:</p>
+
+<pre><code class="language-java">class FOptional&lt;T&gt; implements Functor&lt;T,FOptional&lt;?&gt;&gt; {
+ 
+    private final T valueOrNull;
+ 
+    private FOptional(T valueOrNull) {
+        this.valueOrNull = valueOrNull;
+    }
+ 
+    public &lt;R&gt; FOptional&lt;R&gt; map(Function&lt;T,R&gt; f) {
+        if (valueOrNull == null)
+            return empty();
+        else
+            return of(f.apply(valueOrNull));
+    }
+ 
+    public static &lt;T&gt; FOptional&lt;T&gt; of(T a) {
+        return new FOptional&lt;T&gt;(a);
+    }
+ 
+    public static &lt;T&gt; FOptional&lt;T&gt; empty() {
+        return new FOptional&lt;T&gt;(null);
+    }
+ 
+}
+</code></pre>
+
+<p>Now it becomes interesting. An <code>FOptional&lt;T&gt;</code> functor <u>may</u> hold a value, but just as well it might be empty. It&#39;s a type-safe way of encoding <code>null</code>. There are two ways of constructing <code>FOptional</code> - by supplying a value or creating <code>empty()</code> instance. In both cases, just like with <code>Identity</code>, <code>FOptional</code> is immutable and we can only interact with the value from inside. What differs <code>FOptional</code> is that the transformation function <code>f</code> may not be applied to any value if it is empty. This means functor may not necessarily encapsulate exactly one value of type <code>T</code>. It can just as well wrap arbitrary number of values, just like <code>List</code>... functor:</p>
+
+<pre><code class="language-java">import com.google.common.collect.ImmutableList;
+ 
+class FList&lt;T&gt; implements Functor&lt;T, FList&lt;?&gt;&gt; {
+ 
+    private final ImmutableList&lt;T&gt; list;
+ 
+    FList(Iterable&lt;T&gt; value) {
+        this.list = ImmutableList.copyOf(value);
+    }
+ 
+    @Override
+    public &lt;R&gt; FList&lt;?&gt; map(Function&lt;T, R&gt; f) {
+        ArrayList&lt;R&gt; result = new ArrayList&lt;R&gt;(list.size());
+        for (T t : list) {
+            result.add(f.apply(t));
+        }
+        return new FList&lt;&gt;(result);
+    }
+}
+</code></pre>
+
+<p>The API remains the same: you take a functor in a transformation <code>T -&gt; R</code> - but the behavior is much different. Now we apply a transformation on each and every item in the <code>FList</code>, declaratively transforming whole list. So if you have a list of <code>customers</code> and you want a list of their streets, it&#39;s as simple as:</p>
+
+<pre><code class="language-java">import static java.util.Arrays.asList;
+ 
+FList&lt;Customer&gt; customers = new FList&lt;&gt;(asList(cust1, cust2));
+ 
+FList&lt;String&gt; streets = customers
+        .map(Customer::getAddress)
+        .map(Address::street);
+</code></pre>
+
+<p>It&#39;s no longer as simple as saying <code>customers.getAddress().street()</code>, you can&#39;t invoke <code>getAddress()</code> on a collection of customers, you must invoke <code>getAddress()</code> on each individual customer and then place it back in a collection. By the way Groovy found this pattern so common that it actually has a syntax sugar for that: <code>customer*.getAddress()*.street()</code>. This operator, known as spread-dot, is actually a <code>map</code> in disguise. Maybe you are wondering why I iterate over <code>list</code> manually inside <code>map</code> rather than using <code>Stream</code>s from Java 8: <code>list.stream().map(f).collect(toList())</code>? Does this ring a bell? What if I told you <code>java.util.stream.Stream&lt;T&gt;</code> in Java is a functor as well? And by the way, also a monad?</p>
+
+<p>Now you should see the first benefits of functors - they abstract away the internal representation and provide consistent, easy to use API over various data structures. As the last example let me introduce <u>promise</u> functor, similar to <code>Future</code>. <code>Promise</code> &quot;promises&quot; that a value will become available one day. It is not yet there, maybe because some background computation was spawned or we are waiting for external event. But it will appear some time in the future. The mechanics of completing a <code>Promise&lt;T&gt;</code> are not interesting, but the functor nature is:</p>
+
+<pre><code class="language-java">Promise&lt;Customer&gt; customer = //...
+Promise&lt;byte[]&gt; bytes = customer
+        .map(Customer::getAddress)
+        .map(Address::street)
+        .map((String s) -&gt; s.substring(0, 3))
+        .map(String::toLowerCase)
+        .map(String::getBytes);
+</code></pre>
+
+<p>Looks familiar? That is the point! The implementation of <code>Promise</code> functor is beyond the scope of this article and not even important. Enough to say that we are very close to implementing <code>CompletableFuture</code> from Java 8 and we almost discovered <code>Observable</code> from RxJava. But back to functors. <code>Promise&lt;Customer&gt;</code> does not hold a value of <code>Customer</code> just yet. It promises to have such value in the future. But we can still map over such functor, just like we did with <code>FOptional</code> and <code>FList</code> - the syntax and semantics are exactly the same. The behavior follows what the functor represents. Invoking <code>customer.map(Customer::getAddress)</code> yields <code>Promise&lt;Address&gt;</code> which means <code>map</code> is non-blocking. <code>customer.map()</code> will <u>not</u> wait for the underlying <code>customer</code> promise to complete. Instead it returns another promise, of different type. When upstream promise completes, downstream promise applies a function passed to <code>map()</code> and passes the result downstream. Suddenly our functor allows us to pipeline asynchronous computations in a non-blocking manner. But you do not have to understand or learn that - because <code>Promise</code> is a functor, it must follow syntax and laws.</p>
+
+<p>There are many other great examples of functors, for example representing value or error in a compositional manner. But it is high time to look at monads.</p>
+
+<h1 id="toc_1">From functors to monads</h1>
+
+<p>I assume you understand how functors work and why are they a useful abstraction. But functors are not that universal as one might expect. What happens if your transformation function (the one passed as an argument to <code>map()</code>) returns functor instance rather than simple value? Well, functor is just a value as well, so nothing bad happens. Whatever was returned is placed back in a functor so all behaves consistently. However imagine you have this handy method for parsing <code>String</code>s:</p>
+
+<pre><code class="language-java">FOptional&lt;Integer&gt; tryParse(String s) {
+    try {
+        final int i = Integer.parseInt(s);
+        return FOptional.of(i);
+    } catch (NumberFormatException e) {
+        return FOptional.empty();
+    }
+}
+</code></pre>
+
+<p>Exceptions are side-effects that undermine type system and functional purity. In pure functional languages there is no place for exceptions, after all we never heard about throwing exceptions during math classes, right? Errors and illegal conditions are represented explicitly using values and wrappers. For example <code>tryParse()</code> takes a <code>String</code> but does not simply return an <code>int</code> or silently throw an exception at runtime. We explicitly tell, through the type system, that <code>tryParse()</code> can fail, there is nothing exceptional or erroneous in having a malformed string. This semi-failure is represented by optional result. Interestingly Java has checked exceptions, the ones that must be declared and handled, so in some sense Java is purer in that regard, it does not hide side-effects. But for better or worse checked exceptions are often discouraged in Java, so let&#39;s get back to <code>tryParse()</code>. It seems useful to compose <code>tryParse</code> with <code>String</code> already wrapped in <code>FOptional</code>:</p>
+
+<pre><code class="language-java">FOptional&lt;String&gt; str = FOptional.of(&quot;42&quot;);
+FOptional&lt;FOptional&lt;Integer&gt;&gt; num = str.map(this::tryParse);
+</code></pre>
+
+<p>That should not come as a surprise. If <code>tryParse()</code> would return an <code>int</code> you would get <code>FOptional&lt;Integer&gt; num</code>, but because <code>map()</code> function returns <code>FOptional&lt;Integer&gt;</code> itself, it gets wrapped twice into awkward <code>FOptional&lt;FOptional&lt;Integer&gt;&gt;</code>. Please look carefully at the types, you must understand why we got this double wrapper here. Apart from looking horrible, having a functor in functor ruins composition and fluent chaining:</p>
+
+<pre><code class="language-java">FOptional&lt;Integer&gt; num1 = //...
+FOptional&lt;FOptional&lt;Integer&gt;&gt; num2 = //...
+ 
+FOptional&lt;Date&gt; date1 = num1.map(t -&gt; new Date(t));
+ 
+//doesn&#39;t compile!
+FOptional&lt;Date&gt; date2 = num2.map(t -&gt; new Date(t));
+</code></pre>
+
+<p>Here we try to map over the contents of <code>FOptional</code> by turning <code>int</code> into +Date+. Having a function of <code>int -&gt; Date</code> we can easily transform from <code>Functor&lt;Integer&gt;</code> to <code>Functor&lt;Date&gt;</code>, we know how it works. But in case of <code>num2</code> situation becomes complicated. What <code>num2.map()</code> receives as input is no longer an <code>int</code> but an <code>FOoption&lt;Integer&gt;</code> and obviously <code>java.util.Date</code> does not have such a constructor. We broke our functor by double wrapping it. However having a function that returns a functor rather than simple value is so common (like <code>tryParse()</code>) that we can not simply ignore such requirement. One approach is to introduce a special parameterless <code>join()</code> method that &quot;flattens&quot; nested functors:</p>
+
+<pre><code class="language-java">FOptional&lt;Integer&gt; num3 = num2.join()
+</code></pre>
+
+<p>It works but because this pattern is so common, special method named <code>flatMap()</code> was introduced. <code>flatMap()</code> is very similar to <code>map</code> but expects the function received as an argument to return a functor - or <u>monad</u> to be precise:</p>
+
+<pre><code class="language-java">interface Monad&lt;T,M extends Monad&lt;?,?&gt;&gt; extends Functor&lt;T,M&gt; {
+    M flatMap(Function&lt;T,M&gt; f);
+}
+</code></pre>
+
+<p>We simply concluded that <code>flatMap</code> is just a syntactic sugar to allow better composition. But <code>flatMap</code> method (often called <code>bind</code> or <code>&gt;&gt;=</code> from Haskell) makes all the difference since it allows complex transformations to be composed in a pure, functional style. If <code>FOptional</code> was an instance of monad, parsing suddenly works as expected:</p>
+
+<pre><code class="language-java">FOptional&lt;String&gt; num = FOptional.of(&quot;42&quot;);
+FOptional&lt;Integer&gt; answer = num.flatMap(this::tryParse);
+</code></pre>
+
+<p>Monads do not need to implement <code>map</code>, it can be implemented on top of <code>flatMap()</code> easily. As a matter of fact <code>flatMap</code> is the essential operator that enables a whole new universe of transformations. Obviously just like with functors, syntactic compliance is not enough to call some class a monad, the <code>flatMap()</code> operator has to follow monad laws, but they are fairly intuitive like associativity of <code>flatMap()</code> and identity. The latter requires that <code>m(x).flatMap(f)</code> is the same as <code>f(x)</code> for any monad holding a value <code>x</code> and any function <code>f</code>. We are not going to dive too deep into monad theory, instead let&#39;s focus on practical implications. Monads shine when their internal structure is not trivial, for example <code>Promise</code> monad that will hold a value in the future. Can you guess from the type system how <code>Promise</code> will behave in the following program? First all methods that can potentially take some time to complete return a <code>Promise</code>:</p>
+
+<pre><code class="language-java">import java.time.DayOfWeek;
+ 
+ 
+Promise&lt;Customer&gt; loadCustomer(int id) {
+    //...
+}
+ 
+Promise&lt;Basket&gt; readBasket(Customer customer) {
+    //...
+}
+ 
+Promise&lt;BigDecimal&gt; calculateDiscount(Basket basket, DayOfWeek dow) {
+    //...
+}
+</code></pre>
+
+<p>We can now compose these functions as if they were all blocking using monadic operators:</p>
+
+<pre><code class="language-java">Promise&lt;BigDecimal&gt; discount = 
+    loadCustomer(42)
+        .flatMap(this::readBasket)
+        .flatMap(b -&gt; calculateDiscount(b, DayOfWeek.FRIDAY));
+</code></pre>
+
+<p>This becomes interesting. <code>flatMap()</code> must preserve monadic type therefor all intermediate objects are <code>Promise</code>s. It is not just about keeping the types in order - preceding program is suddenly fully asynchronous! <code>loadCustomer()</code> returns a <code>Promise</code> so it does not block. <code>readBasket()</code> takes whatever the <code>Promise</code> has (will have) and applies a function returning another <code>Promise</code> and so on and so forth. Basically we built an asynchronous pipeline of computation where the completion of one step in background automatically triggers next step.</p>
+
+<h1 id="toc_2">Exploring <code>flatMap()</code></h1>
+
+<p>It is very common to have two monads and combining the value they enclose together. However both functors and monads do not allow direct access to their internals, which would be impure. Instead we must carefully apply transformation without escaping the monad. Imagine you have two monads and you want to combine them:</p>
+
+<pre><code class="language-java">import java.time.LocalDate;
+import java.time.Month;
+ 
+ 
+Monad&lt;Month&gt; month = //...
+Monad&lt;Integer&gt; dayOfMonth = //...
+ 
+Monad&lt;LocalDate&gt; date = month.flatMap((Month m) -&gt;
+        dayOfMonth
+                .map((int d) -&gt; LocalDate.of(2016, m, d)));
+</code></pre>
+
+<p>Please take your time to study the preceding pseudo-code. I don&#39;t use any real monad implementation like <code>Promise</code> or <code>List</code> to emphasize the core concept. We have two independent monads, one of type <code>Month</code> and the other of type <code>Integer</code>. In order to build <code>LocalDate</code> out of them we must build a nested transformation that has access to the internals of both monads. Work through the types, especially making sure you understand why we use <code>flatMap</code> in one place and <code>map()</code> in the other. Think how you would structure this code if you had a third <code>Monad&lt;Year&gt;</code> as well. This pattern of applying a function of two arguments (<code>m</code> and <code>d</code> in our case) is so common that in Haskell there is special helper function called <code>liftM2</code> that does exactly this transformation, implemented on top of <code>map</code> and <code>flatMap</code>. In Java pseudo-syntax it would look somewhat like this:</p>
+
+<pre><code class="language-java">Monad&lt;R&gt; liftM2(Monad&lt;T1&gt; t1, Monad&lt;T2&gt; t2, BiFunction&lt;T1, T2, R&gt; fun) {
+    return t1.flatMap((T1 tv1) -&gt;
+            t2.map((T2 tv2) -&gt; fun.apply(tv1, tv2))
+    );
+}
+</code></pre>
+
+<p>You don&#39;t have to implement this method for every monad, <code>flatMap()</code> is enough, moreover it works consistently for all monads. <code>liftM2</code> is extremely useful when you consider how it can be used with various monads. For example <code>liftM2(list1, list2, function)</code> will apply <code>function</code> on every possible pair of items from <code>list1</code> and <code>list2</code> (Cartesian product). On the other hand for optionals it will apply a function only when both optionals are non-empty. Even better, for <code>Promise</code> monad a function will be executed asynchronously when both <code>Promise</code>s are completed. This means we just invented a simple synchronization mechanism (<code>join()</code> in fork-join algorithms) of two asynchronous steps.</p>
+
+<p>Another useful operator that we can easily build on top of <code>flatMap()</code> is <code>filter(Predicate&lt;T&gt;)</code> which takes whatever is inside a monad and discards it entirely if it does not meet certain predicate. In a way it is similar to <code>map</code> but rather than 1-to-1 mapping we have 1-to-0-or-1. Again <code>filter()</code> has the same semantics for every monad but quite amazing functionality depending on which monad we actually use. Obviously it allows filtering out certain elements from a list:</p>
+
+<pre><code class="language-java">FList&lt;Customer&gt; vips = 
+    customers.filter(c -&gt; c.totalOrders &gt; 1_000);
+</code></pre>
+
+<p>But it works just as well e.g. for optionals. In that case we can transform non-empty optional into an empty one if the contents of optional does not meet some criteria. Empty optionals are left intact.</p>
+
+<h1 id="toc_3">From list of monads to monad of list</h1>
+
+<p>Another useful operator that originates from <code>flatMap()</code> is <code>sequence()</code>. You can easily guess what it does simply by looking at type signature:</p>
+
+<pre><code class="language-java">Monad&lt;Iterable&lt;T&gt;&gt; sequence(Iterable&lt;Monad&lt;T&gt;&gt; monads)
+</code></pre>
+
+<p>Often we have a bunch of monads of the same type and we want to have a single monad of a list of that type. This might sounds abstract to you, but it is impressively useful. Imagine you wanted to load a few customers from the database concurrently by ID so you used <code>loadCustomer(id)</code> method several times for different IDs, each invocation returning <code>Promise&lt;Customer&gt;</code>. Now you have a list of <code>Promise</code>s but what you really want is a list of customers, e.g. to be displayed in the web browser. <code>sequence()</code> (in RxJava <code>sequence()</code> is called <code>concat()</code> or <code>merge()</code>, depending on use-case) operator is built just for that:</p>
+
+<pre><code class="language-java">FList&lt;Promise&lt;Customer&gt;&gt; custPromises = FList
+    .of(1, 2, 3)
+    .map(database::loadCustomer);
+ 
+Promise&lt;FList&lt;Customer&gt;&gt; customers = custPromises.sequence();
+ 
+customers.map((FList&lt;Customer&gt; c) -&gt; ...);
+</code></pre>
+
+<p>Having an <code>FList&lt;Integer&gt;</code> representing customer IDs we <code>map</code> over it (do you see how it helps that <code>FList</code> is a functor?) by calling <code>database.loadCustomer(id)</code> for each ID. This leads to rather inconvenient list of <code>Promise</code>s. <code>sequence()</code> saves the day, but once again this is not just a syntactic sugar. Preceding code is fully non-blocking. For different kinds of monads <code>sequence()</code> still makes sense, but in a different computational context. For example it can change a <code>FList&lt;FOptional&lt;T&gt;&gt;</code> into <code>FOptional&lt;FList&lt;T&gt;&gt;</code>. And by the way, you can implement <code>sequence()</code> (just like <code>map()</code>) on top of <code>flatMap()</code>.</p>
+
+<p>This is just the tip of the iceberg when it comes to usefulness of <code>flatMap()</code> and monads in general. Despite coming from rather obscure category theory, monads proved to be extremely useful abstraction even in object-oriented programming languages such as Java. Being able to compose functions returning monads is so universally helpful that dozens of unrelated classes follow monadic behavior.</p>
+
+<p>Moreover once you encapsulate data inside monad, it is often hard to get it out explicitly. Such operation is not part of the monad behavior and often leads to non-idiomatic code. For example <code>Promise.get()</code> on <code>Promise&lt;T&gt;</code> can technically return <code>T</code>, but only by blocking, whereas all operators based on <code>flatMap()</code> are non-blocking. Another example is <code>FOptional.get()</code> that can fail because <code>FOptional</code> may be empty. Even <code>FList.get(idx)</code> that peeks particular element from a list sounds awkward because you can replace <code>for</code> loops with <code>map()</code> quite often.</p>
+
+<p>I hope you now understand why monads are so popular these days. Even in object-oriented(-ish) language like Java they are quite useful abstraction.</p>
+
+]]></content>
+  </entry>
+  
+  <entry>
+    <title type="html"><![CDATA[我必须得告诉大家的 MySQL 优化原理]]></title>
+    <link href="http://panlw.github.io/15277854106004.html"/>
+    <updated>2018-06-01T00:50:10+08:00</updated>
+    <id>http://panlw.github.io/15277854106004.html</id>
+    <content type="html"><![CDATA[
+<blockquote>
+<p><a href="https://www.jianshu.com/p/d7665192aaaf">原文地址</a></p>
+</blockquote>
+
+<p>说起 MySQL 的查询优化，相信大家收藏了一堆奇技淫巧：不能使用<code>SELECT *</code>、不使用 NULL 字段、合理创建索引、为字段选择合适的数据类型..... 你是否真的理解这些优化技巧？是否理解其背后的工作原理？在实际场景下性能真有提升吗？我想未必。因而理解这些优化建议背后的原理就尤为重要，希望本文能让你重新审视这些优化建议，并在实际业务场景下合理的运用。</p>
+
+<h3 id="toc_0">MySQL 逻辑架构</h3>
+
+<p>如果能在头脑中构建一幅 MySQL 各组件之间如何协同工作的架构图，有助于深入理解 MySQL 服务器。下图展示了 MySQL 的逻辑架构图。</p>
+
+<p><img src="https://upload-images.jianshu.io/upload_images/175724-2abdb6fbad8affa0.png" alt=""/></p>
+
+<p>MySQL 逻辑架构整体分为三层，最上层为客户端层，并非 MySQL 所独有，诸如：连接处理、授权认证、安全等功能均在这一层处理。</p>
+
+<p>MySQL 大多数核心服务均在中间这一层，包括查询解析、分析、优化、缓存、内置函数 (比如：时间、数学、加密等函数)。所有的跨存储引擎的功能也在这一层实现：存储过程、触发器、视图等。</p>
+
+<p>最下层为存储引擎，其负责 MySQL 中的数据存储和提取。和 Linux 下的文件系统类似，每种存储引擎都有其优势和劣势。中间的服务层通过 API 与存储引擎通信，这些 API 接口屏蔽了不同存储引擎间的差异。</p>
+
+<h3 id="toc_1">MySQL 查询过程</h3>
+
+<p>我们总是希望 MySQL 能够获得更高的查询性能，最好的办法是弄清楚 MySQL 是如何优化和执行查询的。一旦理解了这一点，就会发现：<strong>很多的查询优化工作实际上就是遵循一些原则让 MySQL 的优化器能够按照预想的合理方式运行而已。</strong></p>
+
+<p>当向 MySQL 发送一个请求的时候，MySQL 到底做了些什么呢？</p>
+
+<p><img src="https://upload-images.jianshu.io/upload_images/175724-cb247a2b90ea9d4d.png" alt=""/></p>
+
+<h4 id="toc_2">客户端 / 服务端通信协议</h4>
+
+<p>MySQL 客户端 / 服务端通信协议是 “半双工” 的：在任一时刻，要么是服务器向客户端发送数据，要么是客户端向服务器发送数据，这两个动作不能同时发生。一旦一端开始发送消息，另一端要接收完整个消息才能响应它，所以我们无法也无须将一个消息切成小块独立发送，也没有办法进行流量控制。</p>
+
+<p>客户端用一个单独的数据包将查询请求发送给服务器，所以当查询语句很长的时候，需要设置<code>max_allowed_packet</code>参数。但是需要注意的是，如果查询实在是太大，服务端会拒绝接收更多数据并抛出异常。</p>
+
+<p>与之相反的是，服务器响应给用户的数据通常会很多，由多个数据包组成。但是当服务器响应客户端请求时，客户端必须完整的接收整个返回结果，而不能简单的只取前面几条结果，然后让服务器停止发送。因而在实际开发中，尽量保持查询简单且只返回必需的数据，减小通信间数据包的大小和数量是一个非常好的习惯，这也是查询中尽量避免使用<code>SELECT *</code>以及加上<code>LIMIT</code>限制的原因之一。</p>
+
+<h4 id="toc_3">查询缓存</h4>
+
+<p>在解析一个查询语句前，如果查询缓存是打开的，那么 MySQL 会检查这个查询语句是否命中查询缓存中的数据。如果当前查询恰好命中查询缓存，在检查一次用户权限后直接返回缓存中的结果。这种情况下，查询不会被解析，也不会生成执行计划，更不会执行。</p>
+
+<p>MySQL 将缓存存放在一个引用表（不要理解成<code>table</code>，可以认为是类似于<code>HashMap</code>的数据结构），通过一个哈希值索引，这个哈希值通过查询本身、当前要查询的数据库、客户端协议版本号等一些可能影响结果的信息计算得来。所以两个查询在任何字符上的不同（例如：空格、注释），都会导致缓存不会命中。</p>
+
+<p>如果查询中包含任何用户自定义函数、存储函数、用户变量、临时表、mysql 库中的系统表，其查询结果<br/>
+都不会被缓存。比如函数<code>NOW()</code>或者<code>CURRENT_DATE()</code>会因为不同的查询时间，返回不同的查询结果，再比如包含<code>CURRENT_USER</code>或者<code>CONNECION_ID()</code>的查询语句会因为不同的用户而返回不同的结果，将这样的查询结果缓存起来没有任何的意义。</p>
+
+<p>既然是缓存，就会失效，那查询缓存何时失效呢？MySQL 的查询缓存系统会跟踪查询中涉及的每个表，如果这些表（数据或结构）发生变化，那么和这张表相关的所有缓存数据都将失效。正因为如此，在任何的写操作时，MySQL 必须将对应表的所有缓存都设置为失效。如果查询缓存非常大或者碎片很多，这个操作就可能带来很大的系统消耗，甚至导致系统僵死一会儿。而且查询缓存对系统的额外消耗也不仅仅在写操作，读操作也不例外：</p>
+
+<ol>
+<li> 任何的查询语句在开始之前都必须经过检查，即使这条 SQL 语句永远不会命中缓存</li>
+<li> 如果查询结果可以被缓存，那么执行完成后，会将结果存入缓存，也会带来额外的系统消耗</li>
+</ol>
+
+<p>基于此，我们要知道并不是什么情况下查询缓存都会提高系统性能，缓存和失效都会带来额外消耗，只有当缓存带来的资源节约大于其本身消耗的资源时，才会给系统带来性能提升。但要如何评估打开缓存是否能够带来性能提升是一件非常困难的事情，也不在本文讨论的范畴内。如果系统确实存在一些性能问题，可以尝试打开查询缓存，并在数据库设计上做一些优化，比如：</p>
+
+<ol>
+<li> 用多个小表代替一个大表，注意不要过度设计</li>
+<li> 批量插入代替循环单条插入</li>
+<li> 合理控制缓存空间大小，一般来说其大小设置为几十兆比较合适</li>
+<li> 可以通过<code>SQL_CACHE</code>和<code>SQL_NO_CACHE</code>来控制某个查询语句是否需要进行缓存</li>
+</ol>
+
+<p>最后的忠告是不要轻易打开查询缓存，特别是写密集型应用。如果你实在是忍不住，可以将<code>query_cache_type</code>设置为<code>DEMAND</code>，这时只有加入<code>SQL_CACHE</code>的查询才会走缓存，其他查询则不会，这样可以非常自由地控制哪些查询需要被缓存。</p>
+
+<p>当然查询缓存系统本身是非常复杂的，这里讨论的也只是很小的一部分，其他更深入的话题，比如：缓存是如何使用内存的？如何控制内存的碎片化？事务对查询缓存有何影响等等，读者可以自行阅读相关资料，这里权当抛砖引玉吧。</p>
+
+<h4 id="toc_4">语法解析和预处理</h4>
+
+<p>MySQL 通过关键字将 SQL 语句进行解析，并生成一颗对应的解析树。这个过程解析器主要通过语法规则来验证和解析。比如 SQL 中是否使用了错误的关键字或者关键字的顺序是否正确等等。预处理则会根据 MySQL 规则进一步检查解析树是否合法。比如检查要查询的数据表和数据列是否存在等等。</p>
+
+<h4 id="toc_5">查询优化</h4>
+
+<p>经过前面的步骤生成的语法树被认为是合法的了，并且由优化器将其转化成查询计划。多数情况下，一条查询可以有很多种执行方式，最后都返回相应的结果。优化器的作用就是找到这其中最好的执行计划。</p>
+
+<p>MySQL 使用基于成本的优化器，它尝试预测一个查询使用某种执行计划时的成本，并选择其中成本最小的一个。在 MySQL 可以通过查询当前会话的<code>last_query_cost</code>的值来得到其计算当前查询的成本。</p>
+
+<pre><code>mysql&gt; select * from t_message limit 10;
+...省略结果集
+
+mysql&gt; show status like &#39;last_query_cost&#39;;
++-----------------+-------------+
+| Variable_name   | Value       |
++-----------------+-------------+
+| Last_query_cost | 6391.799000 |
++-----------------+-------------+
+
+</code></pre>
+
+<p>示例中的结果表示优化器认为大概需要做 6391 个数据页的随机查找才能完成上面的查询。这个结果是根据一些列的统计信息计算得来的，这些统计信息包括：每张表或者索引的页面个数、索引的基数、索引和数据行的长度、索引的分布情况等等。</p>
+
+<p>有非常多的原因会导致 MySQL 选择错误的执行计划，比如统计信息不准确、不会考虑不受其控制的操作成本（用户自定义函数、存储过程）、MySQL 认为的最优跟我们想的不一样（我们希望执行时间尽可能短，但 MySQL 值选择它认为成本小的，但成本小并不意味着执行时间短）等等。</p>
+
+<p>MySQL 的查询优化器是一个非常复杂的部件，它使用了非常多的优化策略来生成一个最优的执行计划：</p>
+
+<ul>
+<li>  重新定义表的关联顺序（多张表关联查询时，并不一定按照 SQL 中指定的顺序进行，但有一些技巧可以指定关联顺序）</li>
+<li>  优化<code>MIN()</code>和<code>MAX()</code>函数（找某列的最小值，如果该列有索引，只需要查找 B+Tree 索引最左端，反之则可以找到最大值，具体原理见下文）</li>
+<li>  提前终止查询（比如：使用 Limit 时，查找到满足数量的结果集后会立即终止查询）</li>
+<li>  优化排序（在老版本 MySQL 会使用两次传输排序，即先读取行指针和需要排序的字段在内存中对其排序，然后再根据排序结果去读取数据行，而新版本采用的是单次传输排序，也就是一次读取所有的数据行，然后根据给定的列排序。对于 I/O 密集型应用，效率会高很多）</li>
+</ul>
+
+<p>随着 MySQL 的不断发展，优化器使用的优化策略也在不断的进化，这里仅仅介绍几个非常常用且容易理解的优化策略，其他的优化策略，大家自行查阅吧。</p>
+
+<h4 id="toc_6">查询执行引擎</h4>
+
+<p>在完成解析和优化阶段以后，MySQL 会生成对应的执行计划，查询执行引擎根据执行计划给出的指令逐步执行得出结果。整个执行过程的大部分操作均是通过调用存储引擎实现的接口来完成，这些接口被称为<code>handler API</code>。查询过程中的每一张表由一个<code>handler</code>实例表示。实际上，MySQL 在查询优化阶段就为每一张表创建了一个<code>handler</code>实例，优化器可以根据这些实例的接口来获取表的相关信息，包括表的所有列名、索引统计信息等。存储引擎接口提供了非常丰富的功能，但其底层仅有几十个接口，这些接口像搭积木一样完成了一次查询的大部分操作。</p>
+
+<h4 id="toc_7">返回结果给客户端</h4>
+
+<p>查询执行的最后一个阶段就是将结果返回给客户端。即使查询不到数据，MySQL 仍然会返回这个查询的相关信息，比如该查询影响到的行数以及执行时间等等。</p>
+
+<p>如果查询缓存被打开且这个查询可以被缓存，MySQL 也会将结果存放到缓存中。</p>
+
+<p>结果集返回客户端是一个增量且逐步返回的过程。有可能 MySQL 在生成第一条结果时，就开始向客户端逐步返回结果集了。这样服务端就无须存储太多结果而消耗过多内存，也可以让客户端第一时间获得返回结果。需要注意的是，结果集中的每一行都会以一个满足①中所描述的通信协议的数据包发送，再通过 TCP 协议进行传输，在传输过程中，可能对 MySQL 的数据包进行缓存然后批量发送。</p>
+
+<p>回头总结一下 MySQL 整个查询执行过程，总的来说分为 6 个步骤：</p>
+
+<ol>
+<li> 客户端向 MySQL 服务器发送一条查询请求</li>
+<li> 服务器首先检查查询缓存，如果命中缓存，则立刻返回存储在缓存中的结果。否则进入下一阶段</li>
+<li> 服务器进行 SQL 解析、预处理、再由优化器生成对应的执行计划</li>
+<li> MySQL 根据执行计划，调用存储引擎的 API 来执行查询</li>
+<li> 将结果返回给客户端，同时缓存查询结果</li>
+</ol>
+
+<h3 id="toc_8">性能优化建议</h3>
+
+<p>看了这么多，你可能会期待给出一些优化手段，是的，下面会从 3 个不同方面给出一些优化建议。但请等等，还有一句忠告要先送给你：<strong>不要听信你看到的关于优化的 “绝对真理”，包括本文所讨论的内容，而应该是在实际的业务场景下通过测试来验证你关于执行计划以及响应时间的假设</strong>。</p>
+
+<h4 id="toc_9">Scheme 设计与数据类型优化</h4>
+
+<p>选择数据类型只要遵循<strong>小而简单</strong>的原则就好，越小的数据类型通常会更快，占用更少的磁盘、内存，处理时需要的 CPU 周期也更少。越简单的数据类型在计算时需要更少的 CPU 周期，比如，整型就比字符操作代价低，因而会使用整型来存储 ip 地址，使用<code>DATETIME</code>来存储时间，而不是使用字符串。</p>
+
+<p>这里总结几个可能容易理解错误的技巧：</p>
+
+<ol>
+<li> 通常来说把可为<code>NULL</code>的列改为<code>NOT NULL</code>不会对性能提升有多少帮助，只是如果计划在列上创建索引，就应该将该列设置为<code>NOT NULL</code>。</li>
+<li> 对整数类型指定宽度，比如<code>INT(11)</code>，没有任何卵用。<code>INT</code>使用 32 位（4 个字节）存储空间，那么它的表示范围已经确定，所以<code>INT(1)</code>和<code>INT(20)</code>对于存储和计算是相同的。</li>
+<li> <code>UNSIGNED</code>表示不允许负值，大致可以使正数的上限提高一倍。比如<code>TINYINT</code>存储范围是 - 128 ~ 127，而<code>UNSIGNED TINYINT</code>存储的范围却是 0 - 255。</li>
+<li> 通常来讲，没有太大的必要使用<code>DECIMAL</code>数据类型。即使是在需要存储财务数据时，仍然可以使用<code>BIGINT</code>。比如需要精确到万分之一，那么可以将数据乘以一百万然后使用<code>BIGINT</code>存储。这样可以避免浮点数计算不准确和<code>DECIMAL</code>精确计算代价高的问题。</li>
+<li> <code>TIMESTAMP</code>使用 4 个字节存储空间，<code>DATETIME</code>使用 8 个字节存储空间。因而，<code>TIMESTAMP</code>只能表示 1970 - 2038 年，比<code>DATETIME</code>表示的范围小得多，而且<code>TIMESTAMP</code>的值因时区不同而不同。</li>
+<li> 大多数情况下没有使用枚举类型的必要，其中一个缺点是枚举的字符串列表是固定的，添加和删除字符串（枚举选项）必须使用<code>ALTER TABLE</code>（如果只只是在列表末尾追加元素，不需要重建表）。</li>
+<li> schema 的列不要太多。原因是存储引擎的 API 工作时需要在服务器层和存储引擎层之间通过行缓冲格式拷贝数据，然后在服务器层将缓冲内容解码成各个列，这个转换过程的代价是非常高的。如果列太多而实际使用的列又很少的话，有可能会导致 CPU 占用过高。</li>
+<li> 大表<code>ALTER TABLE</code>非常耗时，MySQL 执行大部分修改表结果操作的方法是用新的结构创建一个张空表，从旧表中查出所有的数据插入新表，然后再删除旧表。尤其当内存不足而表又很大，而且还有很大索引的情况下，耗时更久。当然有一些奇技淫巧可以解决这个问题，有兴趣可自行查阅。</li>
+</ol>
+
+<h4 id="toc_10">创建高性能索引</h4>
+
+<p>索引是提高 MySQL 查询性能的一个重要途径，但过多的索引可能会导致过高的磁盘使用率以及过高的内存占用，从而影响应用程序的整体性能。应当尽量避免事后才想起添加索引，因为事后可能需要监控大量的 SQL 才能定位到问题所在，而且添加索引的时间肯定是远大于初始添加索引所需要的时间，可见索引的添加也是非常有技术含量的。</p>
+
+<p>接下来将向你展示一系列创建高性能索引的策略，以及每条策略其背后的工作原理。但在此之前，先了解与索引相关的一些算法和数据结构，将有助于更好的理解后文的内容。</p>
+
+<h5 id="toc_11">索引相关的数据结构和算法</h5>
+
+<p>通常我们所说的索引是指<code>B-Tree</code>索引，它是目前关系型数据库中查找数据最为常用和有效的索引，大多数存储引擎都支持这种索引。使用<code>B-Tree</code>这个术语，是因为 MySQL 在<code>CREATE TABLE</code>或其它语句中使用了这个关键字，但实际上不同的存储引擎可能使用不同的数据结构，比如 InnoDB 就是使用的<code>B+Tree</code>。</p>
+
+<p><code>B+Tree</code>中的 B 是指<code>balance</code>，意为平衡。需要注意的是，B + 树索引并不能找到一个给定键值的具体行，它找到的只是被查找数据行所在的页，接着数据库会把页读入到内存，再在内存中进行查找，最后得到要查找的数据。</p>
+
+<p>在介绍<code>B+Tree</code>前，先了解一下二叉查找树，它是一种经典的数据结构，其左子树的值总是小于根的值，右子树的值总是大于根的值，如下图①。如果要在这课树中查找值为 5 的记录，其大致流程：先找到根，其值为 6，大于 5，所以查找左子树，找到 3，而 5 大于 3，接着找 3 的右子树，总共找了 3 次。同样的方法，如果查找值为 8 的记录，也需要查找 3 次。所以二叉查找树的平均查找次数为 (3 + 3 + 3 + 2 + 2 + 1) / 6 = 2.3 次，而顺序查找的话，查找值为 2 的记录，仅需要 1 次，但查找值为 8 的记录则需要 6 次，所以顺序查找的平均查找次数为：(1 + 2 + 3 + 4 + 5 + 6) / 6 = 3.3 次，因此大多数情况下二叉查找树的平均查找速度比顺序查找要快。</p>
+
+<p><img src="https://upload-images.jianshu.io/upload_images/175724-272c1245eba594f5.png" alt=""/></p>
+
+<p>由于二叉查找树可以任意构造，同样的值，可以构造出如图②的二叉查找树，显然这棵二叉树的查询效率和顺序查找差不多。若想二叉查找数的查询性能最高，需要这棵二叉查找树是平衡的，也即平衡二叉树（AVL 树）。</p>
+
+<p>平衡二叉树首先需要符合二叉查找树的定义，其次必须满足任何节点的两个子树的高度差不能大于 1。显然图②不满足平衡二叉树的定义，而图①是一课平衡二叉树。平衡二叉树的查找性能是比较高的（性能最好的是最优二叉树），查询性能越好，维护的成本就越大。比如图①的平衡二叉树，当用户需要插入一个新的值 9 的节点时，就需要做出如下变动。</p>
+
+<p><img src="https://upload-images.jianshu.io/upload_images/175724-c806af2d9defcbab.png" alt=""/></p>
+
+<p>通过一次左旋操作就将插入后的树重新变为平衡二叉树是最简单的情况了，实际应用场景中可能需要旋转多次。至此我们可以考虑一个问题，平衡二叉树的查找效率还不错，实现也非常简单，相应的维护成本还能接受，为什么 MySQL 索引不直接使用平衡二叉树？</p>
+
+<p>随着数据库中数据的增加，索引本身大小随之增加，不可能全部存储在内存中，因此索引往往以索引文件的形式存储的磁盘上。这样的话，索引查找过程中就要产生磁盘 I/O 消耗，相对于内存存取，I/O 存取的消耗要高几个数量级。可以想象一下一棵几百万节点的二叉树的深度是多少？如果将这么大深度的一颗二叉树放磁盘上，每读取一个节点，需要一次磁盘的 I/O 读取，整个查找的耗时显然是不能够接受的。那么如何减少查找过程中的 I/O 存取次数？</p>
+
+<p>一种行之有效的解决方法是减少树的深度，将二叉树变为 m 叉树（多路搜索树），而<code>B+Tree</code>就是一种多路搜索树。理解<code>B+Tree</code>时，只需要理解其最重要的两个特征即可：第一，所有的关键字（可以理解为数据）都存储在叶子节点（<code>Leaf Page</code>），非叶子节点（<code>Index Page</code>）并不存储真正的数据，所有记录节点都是按键值大小顺序存放在同一层叶子节点上。其次，所有的叶子节点由指针连接。如下图为高度为 2 的简化了的<code>B+Tree</code>。</p>
+
+<p><img src="https://upload-images.jianshu.io/upload_images/175724-52306456815a0919.png" alt=""/></p>
+
+<p>怎么理解这两个特征？MySQL 将每个节点的大小设置为一个页的整数倍（原因下文会介绍），也就是在节点空间大小一定的情况下，每个节点可以存储更多的内结点，这样每个结点能索引的范围更大更精确。所有的叶子节点使用指针链接的好处是可以进行区间访问，比如上图中，如果查找大于 20 而小于 30 的记录，只需要找到节点 20，就可以遍历指针依次找到 25、30。如果没有链接指针的话，就无法进行区间查找。这也是 MySQL 使用<code>B+Tree</code>作为索引存储结构的重要原因。</p>
+
+<p>MySQL 为何将节点大小设置为页的整数倍，这就需要理解磁盘的存储原理。磁盘本身存取就比主存慢很多，在加上机械运动损耗（特别是普通的机械硬盘），磁盘的存取速度往往是主存的几百万分之一，为了尽量减少磁盘 I/O，磁盘往往不是严格按需读取，而是每次都会预读，即使只需要一个字节，磁盘也会从这个位置开始，顺序向后读取一定长度的数据放入内存，预读的长度一般为页的整数倍。</p>
+
+<blockquote>
+<p>页是计算机管理存储器的逻辑块，硬件及 OS 往往将主存和磁盘存储区分割为连续的大小相等的块，每个存储块称为一页（许多 OS 中，页的大小通常为 4K）。主存和磁盘以页为单位交换数据。当程序要读取的数据不在主存中时，会触发一个缺页异常，此时系统会向磁盘发出读盘信号，磁盘会找到数据的起始位置并向后连续读取一页或几页载入内存中，然后一起返回，程序继续运行。</p>
+</blockquote>
+
+<p>MySQL 巧妙利用了磁盘预读原理，将一个节点的大小设为等于一个页，这样每个节点只需要一次 I/O 就可以完全载入。为了达到这个目的，每次新建节点时，直接申请一个页的空间，这样就保证一个节点物理上也存储在一个页里，加之计算机存储分配都是按页对齐的，就实现了读取一个节点只需一次 I/O。假设<code>B+Tree</code>的高度为 h，一次检索最多需要<code>h-1</code>次 I/O（根节点常驻内存），复杂度 O(h) = O(logmN)。实际应用场景中，M 通常较大，常常超过 100，因此树的高度一般都比较小，通常不超过 3。</p>
+
+<p>最后简单了解下<code>B+Tree</code>节点的操作，在整体上对索引的维护有一个大概的了解，虽然索引可以大大提高查询效率，但维护索引仍要花费很大的代价，因此合理的创建索引也就尤为重要。</p>
+
+<p>仍以上面的树为例，我们假设每个节点只能存储 4 个内节点。首先要插入第一个节点 28，如下图所示。</p>
+
+<p><img src="https://upload-images.jianshu.io/upload_images/175724-a862bb909a8ed6a0.png" alt=""/></p>
+
+<p>接着插入下一个节点 70，在 Index Page 中查询后得知应该插入到 50 - 70 之间的叶子节点，但叶子节点已满，这时候就需要进行也分裂的操作，当前的叶子节点起点为 50，所以根据中间值来拆分叶子节点，如下图所示。</p>
+
+<p><img src="https://upload-images.jianshu.io/upload_images/175724-ce47c776928bc6b8.png" alt=""/></p>
+
+<p>最后插入一个节点 95，这时候 Index Page 和 Leaf Page 都满了，就需要做两次拆分，如下图所示。</p>
+
+<p><img src="https://upload-images.jianshu.io/upload_images/175724-33cee181795b3dcc.png" alt=""/></p>
+
+<p>拆分后最终形成了这样一颗树。</p>
+
+<p><img src="https://upload-images.jianshu.io/upload_images/175724-5289c6ec5d11216e.png" alt=""/></p>
+
+<p><code>B+Tree</code>为了保持平衡，对于新插入的值需要做大量的拆分页操作，而页的拆分需要 I/O 操作，为了尽可能的减少页的拆分操作，<code>B+Tree</code>也提供了类似于平衡二叉树的旋转功能。当 Leaf Page 已满但其左右兄弟节点没有满的情况下，<code>B+Tree</code>并不急于去做拆分操作，而是将记录移到当前所在页的兄弟节点上。通常情况下，左兄弟会被先检查用来做旋转操作。就比如上面第二个示例，当插入 70 的时候，并不会去做页拆分，而是左旋操作。</p>
+
+<p><img src="https://upload-images.jianshu.io/upload_images/175724-bafd2fbc93cf45ae.png" alt=""/></p>
+
+<p>通过旋转操作可以最大限度的减少页分裂，从而减少索引维护过程中的磁盘的 I/O 操作，也提高索引维护效率。需要注意的是，删除节点跟插入节点类似，仍然需要旋转和拆分操作，这里就不再说明。</p>
+
+<h5 id="toc_12">高性能策略</h5>
+
+<p>通过上文，相信你对<code>B+Tree</code>的数据结构已经有了大致的了解，但 MySQL 中索引是如何组织数据的存储呢？以一个简单的示例来说明，假如有如下数据表：</p>
+
+<pre><code>CREATE TABLE People(
+    last_name varchar(50) not null,
+    first_name varchar(50) not null,
+    dob date not null,
+    gender enum(`m`,`f`) not null,
+    key(last_name,first_name,dob)
+);
+
+</code></pre>
+
+<p>对于表中每一行数据，索引中包含了 last_name、first_name、dob 列的值，下图展示了索引是如何组织数据存储的。</p>
+
+<p><img src="https://upload-images.jianshu.io/upload_images/175724-3ba760afbae4a52d.png" alt=""/></p>
+
+<p>可以看到，索引首先根据第一个字段来排列顺序，当名字相同时，则根据第三个字段，即出生日期来排序，正是因为这个原因，才有了索引的 “最左原则”。</p>
+
+<h6 id="toc_13">1、MySQL 不会使用索引的情况：非独立的列</h6>
+
+<p>“独立的列” 是指索引列不能是表达式的一部分，也不能是函数的参数。比如：</p>
+
+<pre><code>select * from where id + 1 = 5
+
+</code></pre>
+
+<p>我们很容易看出其等价于 id = 4，但是 MySQL 无法自动解析这个表达式，使用函数是同样的道理。</p>
+
+<h6 id="toc_14">2、前缀索引</h6>
+
+<p>如果列很长，通常可以索引开始的部分字符，这样可以有效节约索引空间，从而提高索引效率。</p>
+
+<h6 id="toc_15">3、多列索引和索引顺序</h6>
+
+<p>在多数情况下，在多个列上建立独立的索引并不能提高查询性能。理由非常简单，MySQL 不知道选择哪个索引的查询效率更好，所以在老版本，比如 MySQL5.0 之前就会随便选择一个列的索引，而新的版本会采用合并索引的策略。举个简单的例子，在一张电影演员表中，在 actor_id 和 film_id 两个列上都建立了独立的索引，然后有如下查询：</p>
+
+<pre><code>select film_id,actor_id from film_actor where actor_id = 1 or film_id = 1
+
+</code></pre>
+
+<p>老版本的 MySQL 会随机选择一个索引，但新版本做如下的优化：</p>
+
+<pre><code>select film_id,actor_id from film_actor where actor_id = 1  
+union all 
+select film_id,actor_id from film_actor where film_id = 1 and actor_id &lt;&gt; 1
+
+</code></pre>
+
+<ul>
+<li>  当出现多个索引做相交操作时（多个 AND 条件），通常来说一个包含所有相关列的索引要优于多个独立索引。</li>
+<li>  当出现多个索引做联合操作时（多个 OR 条件），对结果集的合并、排序等操作需要耗费大量的 CPU 和内存资源，特别是当其中的某些索引的选择性不高，需要返回合并大量数据时，查询成本更高。所以这种情况下还不如走全表扫描。</li>
+</ul>
+
+<p>因此<code>explain</code>时如果发现有索引合并（Extra 字段出现<code>Using union</code>），应该好好检查一下查询和表结构是不是已经是最优的，如果查询和表都没有问题，那只能说明索引建的非常糟糕，应当慎重考虑索引是否合适，有可能一个包含所有相关列的多列索引更适合。</p>
+
+<p>前面我们提到过索引如何组织数据存储的，从图中可以看到多列索引时，索引的顺序对于查询是至关重要的，很明显应该把选择性更高的字段放到索引的前面，这样通过第一个字段就可以过滤掉大多数不符合条件的数据。</p>
+
+<blockquote>
+<p><strong>索引选择性</strong>是指不重复的索引值和数据表的总记录数的比值，选择性越高查询效率越高，因为选择性越高的索引可以让 MySQL 在查询时过滤掉更多的行。唯一索引的选择性是 1，这是最好的索引选择性，性能也是最好的。</p>
+</blockquote>
+
+<p>理解索引选择性的概念后，就不难确定哪个字段的选择性较高了，查一下就知道了，比如：</p>
+
+<pre><code>SELECT * FROM payment where staff_id = 2 and customer_id = 584
+
+</code></pre>
+
+<p>是应该创建<code>(staff_id,customer_id)</code>的索引还是应该颠倒一下顺序？执行下面的查询，哪个字段的选择性更接近 1 就把哪个字段索引前面就好。</p>
+
+<pre><code>select count(distinct staff_id)/count(*) as staff_id_selectivity,
+       count(distinct customer_id)/count(*) as customer_id_selectivity,
+       count(*) from payment
+
+</code></pre>
+
+<p>多数情况下使用这个原则没有任何问题，但仍然注意你的数据中是否存在一些特殊情况。举个简单的例子，比如要查询某个用户组下有过交易的用户信息：</p>
+
+<pre><code>select user_id from trade where user_group_id = 1 and trade_amount &gt; 0
+
+</code></pre>
+
+<p>MySQL 为这个查询选择了索引<code>(user_group_id,trade_amount)</code>，如果不考虑特殊情况，这看起来没有任何问题，但实际情况是这张表的大多数数据都是从老系统中迁移过来的，由于新老系统的数据不兼容，所以就给老系统迁移过来的数据赋予了一个默认的用户组。这种情况下，通过索引扫描的行数跟全表扫描基本没什么区别，索引也就起不到任何作用。</p>
+
+<p>推广开来说，经验法则和推论在多数情况下是有用的，可以指导我们开发和设计，但实际情况往往会更复杂，实际业务场景下的某些特殊情况可能会摧毁你的整个设计。</p>
+
+<h6 id="toc_16">4、避免多个范围条件</h6>
+
+<p>实际开发中，我们会经常使用多个范围条件，比如想查询某个时间段内登录过的用户：</p>
+
+<pre><code>select user.* from user where login_time &gt; &#39;2017-04-01&#39; and age between 18 and 30;
+
+</code></pre>
+
+<p>这个查询有一个问题：它有两个范围条件，login_time 列和 age 列，MySQL 可以使用 login_time 列的索引或者 age 列的索引，但无法同时使用它们。</p>
+
+<h6 id="toc_17">5、覆盖索引</h6>
+
+<p>如果一个索引包含或者说覆盖所有需要查询的字段的值，那么就没有必要再回表查询，这就称为覆盖索引。覆盖索引是非常有用的工具，可以极大的提高性能，因为查询只需要扫描索引会带来许多好处：</p>
+
+<ul>
+<li>  索引条目远小于数据行大小，如果只读取索引，极大减少数据访问量</li>
+<li>  索引是有按照列值顺序存储的，对于 I/O 密集型的范围查询要比随机从磁盘读取每一行数据的 IO 要少的多</li>
+</ul>
+
+<h6 id="toc_18">6、使用索引扫描来排序</h6>
+
+<p>MySQL 有两种方式可以生产有序的结果集，其一是对结果集进行排序的操作，其二是按照索引顺序扫描得出的结果自然是有序的。如果 explain 的结果中<code>type</code>列的值为<code>index</code>表示使用了索引扫描来做排序。</p>
+
+<p>扫描索引本身很快，因为只需要从一条索引记录移动到相邻的下一条记录。但如果索引本身不能覆盖所有需要查询的列，那么就不得不每扫描一条索引记录就回表查询一次对应的行。这个读取操作基本上是随机 I/O，因此按照索引顺序读取数据的速度通常要比顺序地全表扫描要慢。</p>
+
+<p>在设计索引时，如果一个索引既能够满足排序，又满足查询，是最好的。</p>
+
+<p>只有当索引的列顺序和<code>ORDER BY</code>子句的顺序完全一致，并且所有列的排序方向也一样时，才能够使用索引来对结果做排序。如果查询需要关联多张表，则只有<code>ORDER BY</code>子句引用的字段全部为第一张表时，才能使用索引做排序。<code>ORDER BY</code>子句和查询的限制是一样的，都要满足最左前缀的要求（有一种情况例外，就是最左的列被指定为常数，下面是一个简单的示例），其他情况下都需要执行排序操作，而无法利用索引排序。</p>
+
+<blockquote>
+<pre><code>// 最左列为常数，索引：(date,staff_id,customer_id)
+select  staff_id,customer_id from demo where date = &#39;2015-06-01&#39; order by staff_id,customer_id
+
+</code></pre>
+</blockquote>
+
+<h6 id="toc_19">7、冗余和重复索引</h6>
+
+<p>冗余索引是指在相同的列上按照相同的顺序创建的相同类型的索引，应当尽量避免这种索引，发现后立即删除。比如有一个索引<code>(A,B)</code>，再创建索引<code>(A)</code>就是冗余索引。冗余索引经常发生在为表添加新索引时，比如有人新建了索引<code>(A,B)</code>，但这个索引不是扩展已有的索引<code>(A)</code>。</p>
+
+<p>大多数情况下都应该尽量扩展已有的索引而不是创建新索引。但有极少情况下出现性能方面的考虑需要冗余索引，比如扩展已有索引而导致其变得过大，从而影响到其他使用该索引的查询。</p>
+
+<h6 id="toc_20">8、删除长期未使用的索引</h6>
+
+<p>定期删除一些长时间未使用过的索引是一个非常好的习惯。</p>
+
+<p>关于索引这个话题打算就此打住，最后要说一句，索引并不总是最好的工具，只有当索引帮助提高查询速度带来的好处大于其带来的额外工作时，索引才是有效的。对于非常小的表，简单的全表扫描更高效。对于中到大型的表，索引就非常有效。对于超大型的表，建立和维护索引的代价随之增长，这时候其他技术也许更有效，比如分区表。最后的最后，<strong><code>explain</code>后再提测是一种美德</strong>。</p>
+
+<h4 id="toc_21">特定类型查询优化</h4>
+
+<h5 id="toc_22">优化 COUNT() 查询</h5>
+
+<p><code>COUNT()</code>可能是被大家误解最多的函数了，它有两种不同的作用，其一是统计某个列值的数量，其二是统计行数。统计列值时，要求列值是非空的，它不会统计 NULL。如果确认括号中的表达式不可能为空时，实际上就是在统计行数。最简单的就是当使用<code>COUNT(*)</code>时，并不是我们所想象的那样扩展成所有的列，实际上，它会忽略所有的列而直接统计行数。</p>
+
+<p>我们最常见的误解也就在这儿，在括号内指定了一列却希望统计结果是行数，而且还常常误以为前者的性能会更好。但实际并非这样，如果要统计行数，直接使用<code>COUNT(*)</code>，意义清晰，且性能更好。</p>
+
+<p>有时候某些业务场景并不需要完全精确的<code>COUNT</code>值，可以用近似值来代替，EXPLAIN 出来的行数就是一个不错的近似值，而且执行 EXPLAIN 并不需要真正地去执行查询，所以成本非常低。通常来说，执行<code>COUNT()</code>都需要扫描大量的行才能获取到精确的数据，因此很难优化，MySQL 层面还能做得也就只有覆盖索引了。如果不还能解决问题，只有从架构层面解决了，比如添加汇总表，或者使用 redis 这样的外部缓存系统。</p>
+
+<h5 id="toc_23">优化关联查询</h5>
+
+<p>在大数据场景下，表与表之间通过一个冗余字段来关联，要比直接使用<code>JOIN</code>有更好的性能。如果确实需要使用关联查询的情况下，需要特别注意的是：</p>
+
+<ul>
+<li>  确保<code>ON</code>和<code>USING</code>字句中的列上有索引。在创建索引的时候就要考虑到关联的顺序。当表 A 和表 B 用列 c 关联的时候，如果优化器关联的顺序是 A、B，那么就不需要在 A 表的对应列上创建索引。没有用到的索引会带来额外的负担，一般来说，除非有其他理由，只需要在关联顺序中的第二张表的相应列上创建索引（具体原因下文分析）。</li>
+<li>  确保任何的<code>GROUP BY</code>和<code>ORDER BY</code>中的表达式只涉及到一个表中的列，这样 MySQL 才有可能使用索引来优化。</li>
+</ul>
+
+<p>要理解优化关联查询的第一个技巧，就需要理解 MySQL 是如何执行关联查询的。当前 MySQL 关联执行的策略非常简单，它对任何的关联都执行<strong>嵌套循环关联</strong>操作，即先在一个表中循环取出单条数据，然后在嵌套循环到下一个表中寻找匹配的行，依次下去，直到找到所有表中匹配的行为为止。然后根据各个表匹配的行，返回查询中需要的各个列。</p>
+
+<p>太抽象了？以上面的示例来说明，比如有这样的一个查询：</p>
+
+<pre><code>SELECT A.xx,B.yy 
+FROM A INNER JOIN B USING(c)
+WHERE A.xx IN (5,6)
+
+</code></pre>
+
+<p>假设 MySQL 按照查询中的关联顺序 A、B 来进行关联操作，那么可以用下面的伪代码表示 MySQL 如何完成这个查询：</p>
+
+<pre><code>outer_iterator = SELECT A.xx,A.c FROM A WHERE A.xx IN (5,6);
+outer_row = outer_iterator.next;
+while(outer_row) {
+    inner_iterator = SELECT B.yy FROM B WHERE B.c = outer_row.c;
+    inner_row = inner_iterator.next;
+    while(inner_row) {
+        output[inner_row.yy,outer_row.xx];
+        inner_row = inner_iterator.next;
+    }
+    outer_row = outer_iterator.next;
+}
+
+</code></pre>
+
+<p>可以看到，最外层的查询是根据<code>A.xx</code>列来查询的，<code>A.c</code>上如果有索引的话，整个关联查询也不会使用。再看内层的查询，很明显<code>B.c</code>上如果有索引的话，能够加速查询，因此只需要在关联顺序中的第二张表的相应列上创建索引即可。</p>
+
+<h5 id="toc_24">优化 LIMIT 分页</h5>
+
+<p>当需要分页操作时，通常会使用<code>LIMIT</code>加上偏移量的办法实现，同时加上合适的<code>ORDER BY</code>字句。如果有对应的索引，通常效率会不错，否则，MySQL 需要做大量的文件排序操作。</p>
+
+<p>一个常见的问题是当偏移量非常大的时候，比如：<code>LIMIT 10000 20</code>这样的查询，MySQL 需要查询 10020 条记录然后只返回 20 条记录，前面的 10000 条都将被抛弃，这样的代价非常高。</p>
+
+<p>优化这种查询一个最简单的办法就是尽可能的使用覆盖索引扫描，而不是查询所有的列。然后根据需要做一次关联查询再返回所有的列。对于偏移量很大时，这样做的效率会提升非常大。考虑下面的查询：</p>
+
+<pre><code>SELECT film_id,description FROM film ORDER BY title LIMIT 50,5;
+
+</code></pre>
+
+<p>如果这张表非常大，那么这个查询最好改成下面的样子：</p>
+
+<pre><code>SELECT film.film_id,film.description
+FROM film INNER JOIN (
+    SELECT film_id FROM film ORDER BY title LIMIT 50,5
+) AS tmp USING(film_id);
+
+</code></pre>
+
+<p>这里的延迟关联将大大提升查询效率，让 MySQL 扫描尽可能少的页面，获取需要访问的记录后在根据关联列回原表查询所需要的列。</p>
+
+<p>有时候如果可以使用书签记录上次取数据的位置，那么下次就可以直接从该书签记录的位置开始扫描，这样就可以避免使用<code>OFFSET</code>，比如下面的查询：</p>
+
+<pre><code>SELECT id FROM t LIMIT 10000, 10;
+改为：
+SELECT id FROM t WHERE id &gt; 10000 LIMIT 10;
+
+</code></pre>
+
+<p>其他优化的办法还包括使用预先计算的汇总表，或者关联到一个冗余表，冗余表中只包含主键列和需要做排序的列。</p>
+
+<h5 id="toc_25">优化 UNION</h5>
+
+<p>MySQL 处理<code>UNION</code>的策略是先创建临时表，然后再把各个查询结果插入到临时表中，最后再来做查询。因此很多优化策略在<code>UNION</code>查询中都没有办法很好的时候。经常需要手动将<code>WHERE</code>、<code>LIMIT</code>、<code>ORDER BY</code>等字句 “下推” 到各个子查询中，以便优化器可以充分利用这些条件先优化。</p>
+
+<p>除非确实需要服务器去重，否则就一定要使用<code>UNION ALL</code>，如果没有<code>ALL</code>关键字，MySQL 会给临时表加上<code>DISTINCT</code>选项，这会导致整个临时表的数据做唯一性检查，这样做的代价非常高。当然即使使用 ALL 关键字，MySQL 总是将结果放入临时表，然后再读出，再返回给客户端。虽然很多时候没有这个必要，比如有时候可以直接把每个子查询的结果返回给客户端。</p>
+
+<h4 id="toc_26">结语</h4>
+
+<p>理解查询是如何执行以及时间都消耗在哪些地方，再加上一些优化过程的知识，可以帮助大家更好的理解 MySQL，理解常见优化技巧背后的原理。希望本文中的原理、示例能够帮助大家更好的将理论和实践联系起来，更多的将理论知识运用到实践中。</p>
+
+<p>其他也没啥说的了，给大家留两个思考题吧，可以在脑袋里想想答案，这也是大家经常挂在嘴边的，但很少有人会思考为什么？</p>
+
+<ol>
+<li><p>有非常多的程序员在分享时都会抛出这样一个观点：尽可能不要使用存储过程，存储过程非常不容易维护，也会增加使用成本，应该把业务逻辑放到客户端。既然客户端都能干这些事，那为什么还要存储过程？</p></li>
+<li><p><code>JOIN</code>本身也挺方便的，直接查询就好了，为什么还需要视图呢？</p></li>
+</ol>
+
+<h4 id="toc_27">参考资料</h4>
+
+<p>[1] <a href="https://link.jianshu.com?t=http://union-click.jd.com/jdc?d=6vMwSD">姜承尧 著；MySQL 技术内幕 - InnoDB 存储引擎；机械工业出版社，2013</a><br/>
+[2] <a href="https://link.jianshu.com?t=http://union-click.jd.com/jdc?d=wMESxy">Baron Scbwartz 等著；宁海元 周振兴等译；高性能 MySQL（第三版）; 电子工业出版社， 2013</a><br/>
+[3] <a href="https://link.jianshu.com?t=https://segmentfault.com/a/1190000004690721">由 B-/B + 树看 MySQL 索引结构</a></p>
+
+<blockquote>
+<p>备注：水平有限，难免疏漏，如果问题请留言<br/>
+本文已经同步更新到微信公众号：<strong><a href="https://link.jianshu.com?t=https://mp.weixin.qq.com/misc/getqrcode?fakeid=3267562543&amp;token=1639688523&amp;style=1">轻描淡写 CODE</a> » <a href="https://link.jianshu.com?t=https://mp.weixin.qq.com/s/pCHxwsdMQvAFDdYwGk7ydQ">我必须得告诉大家的 MySQL 优化原理</a></strong></p>
+</blockquote>
+
+]]></content>
+  </entry>
+  
+  <entry>
+    <title type="html"><![CDATA[Leaf——美团点评分布式ID生成系统]]></title>
+    <link href="http://panlw.github.io/15277850962764.html"/>
+    <updated>2018-06-01T00:44:56+08:00</updated>
+    <id>http://panlw.github.io/15277850962764.html</id>
+    <content type="html"><![CDATA[
+<blockquote>
+<p><a href="https://tech.meituan.com/MT_Leaf.html">原文地址</a></p>
+</blockquote>
+
+<h1 id="toc_0">背景</h1>
+
+<p>在复杂分布式系统中，往往需要对大量的数据和消息进行唯一标识。如在美团点评的金融、支付、餐饮、酒店、猫眼电影等产品的系统中，数据日渐增长，对数据分库分表后需要有一个唯一ID来标识一条数据或消息，数据库的自增ID显然不能满足需求；特别一点的如订单、骑手、优惠券也都需要有唯一ID做标识。此时一个能够生成全局唯一ID的系统是非常必要的。概括下来，那业务系统对ID号的要求有哪些呢？</p>
+
+<ol>
+<li> 全局唯一性：不能出现重复的ID号，既然是唯一标识，这是最基本的要求。</li>
+<li> 趋势递增：在MySQL InnoDB引擎中使用的是聚集索引，由于多数RDBMS使用B-tree的数据结构来存储索引数据，在主键的选择上面我们应该尽量使用有序的主键保证写入性能。</li>
+<li> 单调递增：保证下一个ID一定大于上一个ID，例如事务版本号、IM增量消息、排序等特殊需求。</li>
+<li> 信息安全：如果ID是连续的，恶意用户的扒取工作就非常容易做了，直接按照顺序下载指定URL即可；如果是订单号就更危险了，竞对可以直接知道我们一天的单量。所以在一些应用场景下，会需要ID无规则、不规则。</li>
+</ol>
+
+<p>上述123对应三类不同的场景，3和4需求还是互斥的，无法使用同一个方案满足。</p>
+
+<p>同时除了对ID号码自身的要求，业务还对ID号生成系统的可用性要求极高，想象一下，如果ID生成系统瘫痪，整个美团点评支付、优惠券发券、骑手派单等关键动作都无法执行，这就会带来一场灾难。</p>
+
+<p>由此总结下一个ID生成系统应该做到如下几点：</p>
+
+<ol>
+<li> 平均延迟和TP999延迟都要尽可能低；</li>
+<li> 可用性5个9；</li>
+<li> 高QPS。</li>
+</ol>
+
+<h1 id="toc_1">常见方法介绍</h1>
+
+<h3 id="toc_2">UUID</h3>
+
+<p>UUID(Universally Unique Identifier)的标准型式包含32个16进制数字，以连字号分为五段，形式为8-4-4-4-12的36个字符，示例：<code>550e8400-e29b-41d4-a716-446655440000</code>，到目前为止业界一共有5种方式生成UUID，详情见IETF发布的UUID规范 <a href="http://www.ietf.org/rfc/rfc4122.txt">A Universally Unique IDentifier (UUID) URN Namespace</a>。</p>
+
+<p>优点：</p>
+
+<ul>
+<li>  性能非常高：本地生成，没有网络消耗。</li>
+</ul>
+
+<p>缺点：</p>
+
+<ul>
+<li>  不易于存储：UUID太长，16字节128位，通常以36长度的字符串表示，很多场景不适用。</li>
+<li>  信息不安全：基于MAC地址生成UUID的算法可能会造成MAC地址泄露，这个漏洞曾被用于寻找梅丽莎病毒的制作者位置。</li>
+<li><p>ID作为主键时在特定的环境会存在一些问题，比如做DB主键的场景下，UUID就非常不适用：</p>
+
+<p>① MySQL官方有明确的建议主键要尽量越短越好[4]，36个字符长度的UUID不符合要求。</p>
+
+<blockquote>
+<p>All indexes other than the clustered index are known as secondary indexes. In InnoDB, each record in a secondary index contains the primary key columns for the row, as well as the columns specified for the secondary index. InnoDB uses this primary key value to search for the row in the clustered index. <strong>_If the primary key is long, the secondary indexes use more space, so it is advantageous to have a short primary key_</strong>.</p>
+</blockquote>
+
+<p>② 对MySQL索引不利：如果作为数据库主键，在InnoDB引擎下，UUID的无序性可能会引起数据位置频繁变动，严重影响性能。</p></li>
+</ul>
+
+<h3 id="toc_3">类snowflake方案</h3>
+
+<p>这种方案大致来说是一种以划分命名空间（UUID也算，由于比较常见，所以单独分析）来生成ID的一种算法，这种方案把64-bit分别划分成多段，分开来标示机器、时间等，比如在snowflake中的64-bit分别表示如下图（图片来自网络）所示：</p>
+
+<p><img src="media/15277850962764/15277851805055.png" alt=""/></p>
+
+<p>41-bit的时间可以表示（1L&lt;&lt;41）/(1000L<em>3600</em>24*365)=69年的时间，10-bit机器可以分别表示1024台机器。如果我们对IDC划分有需求，还可以将10-bit分5-bit给IDC，分5-bit给工作机器。这样就可以表示32个IDC，每个IDC下可以有32台机器，可以根据自身需求定义。12个自增序列号可以表示2<sup>12个ID，理论上snowflake方案的QPS约为409.6w/s，这种分配方式可以保证在任何一个IDC的任何一台机器在任意毫秒内生成的ID都是不同的。</sup></p>
+
+<p>这种方式的优缺点是：</p>
+
+<p>优点：</p>
+
+<ul>
+<li>  毫秒数在高位，自增序列在低位，整个ID都是趋势递增的。</li>
+<li>  不依赖数据库等第三方系统，以服务的方式部署，稳定性更高，生成ID的性能也是非常高的。</li>
+<li>  可以根据自身业务特性分配bit位，非常灵活。</li>
+</ul>
+
+<p>缺点：</p>
+
+<ul>
+<li>  强依赖机器时钟，如果机器上时钟回拨，会导致发号重复或者服务会处于不可用状态。</li>
+</ul>
+
+<h4 id="toc_4">应用举例Mongdb objectID</h4>
+
+<p><a href="https://docs.mongodb.com/manual/reference/method/ObjectId/#description">MongoDB官方文档 ObjectID</a>可以算作是和snowflake类似方法，通过“时间+机器码+pid+inc”共12个字节，通过4+3+2+3的方式最终标识成一个24长度的十六进制字符。</p>
+
+<h3 id="toc_5">数据库生成</h3>
+
+<p>以MySQL举例，利用给字段设置<code>auto_increment_increment</code>和<code>auto_increment_offset</code>来保证ID自增，每次业务使用下列SQL读写MySQL得到ID号。</p>
+
+<pre><code>begin;
+REPLACE INTO Tickets64 (stub) VALUES (&#39;a&#39;);
+SELECT LAST_INSERT_ID();
+commit;
+
+</code></pre>
+
+<p><img src="media/15277850962764/15277851990427.png" alt=""/></p>
+
+<p>这种方案的优缺点如下：</p>
+
+<p>优点：</p>
+
+<ul>
+<li>  非常简单，利用现有数据库系统的功能实现，成本小，有DBA专业维护。</li>
+<li>  ID号单调自增，可以实现一些对ID有特殊要求的业务。</li>
+</ul>
+
+<p>缺点：</p>
+
+<ul>
+<li>  强依赖DB，当DB异常时整个系统不可用，属于致命问题。配置主从复制可以尽可能的增加可用性，但是数据一致性在特殊情况下难以保证。主从切换时的不一致可能会导致重复发号。</li>
+<li>  ID发号性能瓶颈限制在单台MySQL的读写性能。</li>
+</ul>
+
+<p>对于MySQL性能问题，可用如下方案解决：在分布式系统中我们可以多部署几台机器，每台机器设置不同的初始值，且步长和机器数相等。比如有两台机器。设置步长step为2，TicketServer1的初始值为1（1，3，5，7，9，11...）、TicketServer2的初始值为2（2，4，6，8，10...）。这是Flickr团队在2010年撰文介绍的一种主键生成策略（<a href="http://code.flickr.net/2010/02/08/ticket-servers-distributed-unique-primary-keys-on-the-cheap/">Ticket Servers: Distributed Unique Primary Keys on the Cheap</a> ）。如下所示，为了实现上述方案分别设置两台机器对应的参数，TicketServer1从1开始发号，TicketServer2从2开始发号，两台机器每次发号之后都递增2。</p>
+
+<pre><code>TicketServer1:
+auto-increment-increment = 2
+auto-increment-offset = 1
+
+TicketServer2:
+auto-increment-increment = 2
+auto-increment-offset = 2
+
+</code></pre>
+
+<p>假设我们要部署N台机器，步长需设置为N，每台的初始值依次为0,1,2...N-1那么整个架构就变成了如下图所示：</p>
+
+<p><img src="media/15277850962764/15277852102924.png" alt=""/></p>
+
+<p>这种架构貌似能够满足性能的需求，但有以下几个缺点：</p>
+
+<ul>
+<li>  系统水平扩展比较困难，比如定义好了步长和机器台数之后，如果要添加机器该怎么做？假设现在只有一台机器发号是1,2,3,4,5（步长是1），这个时候需要扩容机器一台。可以这样做：把第二台机器的初始值设置得比第一台超过很多，比如14（假设在扩容时间之内第一台不可能发到14），同时设置步长为2，那么这台机器下发的号码都是14以后的偶数。然后摘掉第一台，把ID值保留为奇数，比如7，然后修改第一台的步长为2。让它符合我们定义的号段标准，对于这个例子来说就是让第一台以后只能产生奇数。扩容方案看起来复杂吗？貌似还好，现在想象一下如果我们线上有100台机器，这个时候要扩容该怎么做？简直是噩梦。所以系统水平扩展方案复杂难以实现。</li>
+<li>  ID没有了单调递增的特性，只能趋势递增，这个缺点对于一般业务需求不是很重要，可以容忍。</li>
+<li>  数据库压力还是很大，每次获取ID都得读写一次数据库，只能靠堆机器来提高性能。</li>
+</ul>
+
+<h1 id="toc_6">Leaf方案实现</h1>
+
+<p>Leaf这个名字是来自德国哲学家、数学家莱布尼茨的一句话：</p>
+
+<blockquote>
+<p>There are no two identical leaves in the world</p>
+
+<p>&quot;世界上没有两片相同的树叶&quot;</p>
+</blockquote>
+
+<p>综合对比上述几种方案，每种方案都不完全符合我们的要求。所以Leaf分别在上述第二种和第三种方案上做了相应的优化，实现了Leaf-segment和Leaf-snowflake方案。</p>
+
+<h3 id="toc_7">Leaf-segment数据库方案</h3>
+
+<p>第一种Leaf-segment方案，在使用数据库的方案上，做了如下改变：</p>
+
+<ul>
+<li>  原方案每次获取ID都得读写一次数据库，造成数据库压力大。改为利用proxy server批量获取，每次获取一个segment(step决定大小)号段的值。用完之后再去数据库获取新的号段，可以大大的减轻数据库的压力。</li>
+<li>  各个业务不同的发号需求用biz_tag字段来区分，每个biz-tag的ID获取相互隔离，互不影响。如果以后有性能需求需要对数据库扩容，不需要上述描述的复杂的扩容操作，只需要对biz_tag分库分表就行。</li>
+</ul>
+
+<p>数据库表设计如下：</p>
+
+<pre><code>+-------------+--------------+------+-----+-------------------+-----------------------------+
+| Field       | Type         | Null | Key | Default           | Extra                       |
++-------------+--------------+------+-----+-------------------+-----------------------------+
+| biz_tag     | varchar(128) | NO   | PRI |                   |                             |
+| max_id      | bigint(20)   | NO   |     | 1                 |                             |
+| step        | int(11)      | NO   |     | NULL              |                             |
+| desc        | varchar(256) | YES  |     | NULL              |                             |
+| update_time | timestamp    | NO   |     | CURRENT_TIMESTAMP | on update CURRENT_TIMESTAMP |
++-------------+--------------+------+-----+-------------------+-----------------------------+
+
+</code></pre>
+
+<p>重要字段说明：biz_tag用来区分业务，max_id表示该biz_tag目前所被分配的ID号段的最大值，step表示每次分配的号段长度。原来获取ID每次都需要写数据库，现在只需要把step设置得足够大，比如1000。那么只有当1000个号被消耗完了之后才会去重新读写一次数据库。读写数据库的频率从1减小到了1/step，大致架构如下图所示：</p>
+
+<p><img src="media/15277850962764/15277852227891.png" alt=""/></p>
+
+<p>test_tag在第一台Leaf机器上是1~1000的号段，当这个号段用完时，会去加载另一个长度为step=1000的号段，假设另外两台号段都没有更新，这个时候第一台机器新加载的号段就应该是3001~4000。同时数据库对应的biz_tag这条数据的max_id会从3000被更新成4000，更新号段的SQL语句如下：</p>
+
+<pre><code class="language-sql">Begin
+UPDATE table SET max_id=max_id+step WHERE biz_tag=xxx
+SELECT tag, max_id, step FROM table WHERE biz_tag=xxx
+COMMIT
+</code></pre>
+
+<p>这种模式有以下优缺点：</p>
+
+<p>优点：</p>
+
+<ul>
+<li>  Leaf服务可以很方便的线性扩展，性能完全能够支撑大多数业务场景。</li>
+<li>  ID号码是趋势递增的8byte的64位数字，满足上述数据库存储的主键要求。</li>
+<li>  容灾性高：Leaf服务内部有号段缓存，即使DB宕机，短时间内Leaf仍能正常对外提供服务。</li>
+<li>  可以自定义max_id的大小，非常方便业务从原有的ID方式上迁移过来。</li>
+</ul>
+
+<p>缺点：</p>
+
+<ul>
+<li>  ID号码不够随机，能够泄露发号数量的信息，不太安全。</li>
+<li>  TP999数据波动大，当号段使用完之后还是会hang在更新数据库的I/O上，tg999数据会出现偶尔的尖刺。</li>
+<li>  DB宕机会造成整个系统不可用。</li>
+</ul>
+
+<h3 id="toc_8">双buffer优化</h3>
+
+<p>对于第二个缺点，Leaf-segment做了一些优化，简单的说就是：</p>
+
+<p>Leaf 取号段的时机是在号段消耗完的时候进行的，也就意味着号段临界点的ID下发时间取决于下一次从DB取回号段的时间，并且在这期间进来的请求也会因为DB号段没有取回来，导致线程阻塞。如果请求DB的网络和DB的性能稳定，这种情况对系统的影响是不大的，但是假如取DB的时候网络发生抖动，或者DB发生慢查询就会导致整个系统的响应时间变慢。</p>
+
+<p>为此，我们希望DB取号段的过程能够做到无阻塞，不需要在DB取号段的时候阻塞请求线程，即当号段消费到某个点时就异步的把下一个号段加载到内存中。而不需要等到号段用尽的时候才去更新号段。这样做就可以很大程度上的降低系统的TP999指标。详细实现如下图所示：</p>
+
+<p><img src="media/15277850962764/15277852373915.png" alt=""/></p>
+
+<p>采用双buffer的方式，Leaf服务内部有两个号段缓存区segment。当前号段已下发10%时，如果下一个号段未更新，则另启一个更新线程去更新下一个号段。当前号段全部下发完后，如果下个号段准备好了则切换到下个号段为当前segment接着下发，循环往复。</p>
+
+<ul>
+<li><p>每个biz-tag都有消费速度监控，通常推荐segment长度设置为服务高峰期发号QPS的600倍（10分钟），这样即使DB宕机，Leaf仍能持续发号10-20分钟不受影响。</p></li>
+<li><p>每次请求来临时都会判断下个号段的状态，从而更新此号段，所以偶尔的网络抖动不会影响下个号段的更新。</p></li>
+</ul>
+
+<h3 id="toc_9">Leaf高可用容灾</h3>
+
+<p>对于第三点“DB可用性”问题，我们目前采用一主两从的方式，同时分机房部署，Master和Slave之间采用<strong>半同步方式[5]</strong>同步数据。同时使用公司Atlas数据库中间件(已开源，改名为<a href="http://tech.meituan.com/dbproxy-introduction.html">DBProxy</a>)做主从切换。当然这种方案在一些情况会退化成异步模式，甚至在<strong>非常极端</strong>情况下仍然会造成数据不一致的情况，但是出现的概率非常小。如果你的系统要保证100%的数据强一致，可以选择使用“类Paxos算法”实现的强一致MySQL方案，如MySQL 5.7前段时间刚刚GA的<a href="https://dev.mysql.com/doc/refman/5.7/en/group-replication.html">MySQL Group Replication</a>。但是运维成本和精力都会相应的增加，根据实际情况选型即可。</p>
+
+<p><img src="media/15277850962764/15277852467563.png" alt=""/></p>
+
+<p>同时Leaf服务分IDC部署，内部的服务化框架是“MTthrift RPC”。服务调用的时候，根据负载均衡算法会优先调用同机房的Leaf服务。在该IDC内Leaf服务不可用的时候才会选择其他机房的Leaf服务。同时服务治理平台OCTO还提供了针对服务的过载保护、一键截流、动态流量分配等对服务的保护措施。</p>
+
+<h1 id="toc_10">Leaf-snowflake方案</h1>
+
+<p>Leaf-segment方案可以生成趋势递增的ID，同时ID号是可计算的，不适用于订单ID生成场景，比如竞对在两天中午12点分别下单，通过订单id号相减就能大致计算出公司一天的订单量，这个是不能忍受的。面对这一问题，我们提供了 Leaf-snowflake方案。</p>
+
+<p><img src="media/15277850962764/15277852551504.png" alt=""/></p>
+
+<p>Leaf-snowflake方案完全沿用snowflake方案的bit位设计，即是“1+41+10+12”的方式组装ID号。对于workerID的分配，当服务集群数量较小的情况下，完全可以手动配置。Leaf服务规模较大，动手配置成本太高。所以使用Zookeeper持久顺序节点的特性自动对snowflake节点配置wokerID。Leaf-snowflake是按照下面几个步骤启动的：</p>
+
+<ol>
+<li> 启动Leaf-snowflake服务，连接Zookeeper，在leaf_forever父节点下检查自己是否已经注册过（是否有该顺序子节点）。</li>
+<li> 如果有注册过直接取回自己的workerID（zk顺序节点生成的int类型ID号），启动服务。</li>
+<li> 如果没有注册过，就在该父节点下面创建一个持久顺序节点，创建成功后取回顺序号当做自己的workerID号，启动服务。</li>
+</ol>
+
+<p><img src="media/15277850962764/15277852658209.png" alt=""/></p>
+
+<h3 id="toc_11">弱依赖ZooKeeper</h3>
+
+<p>除了每次会去ZK拿数据以外，也会在本机文件系统上缓存一个workerID文件。当ZooKeeper出现问题，恰好机器出现问题需要重启时，能保证服务能够正常启动。这样做到了对三方组件的弱依赖。一定程度上提高了SLA</p>
+
+<h3 id="toc_12">解决时钟问题</h3>
+
+<p>因为这种方案依赖时间，如果机器的时钟发生了回拨，那么就会有可能生成重复的ID号，需要解决时钟回退的问题。</p>
+
+<p><img src="media/15277850962764/15277852832400.png" alt=""/></p>
+
+<p>参见上图整个启动流程图，服务启动时首先检查自己是否写过ZooKeeper leaf_forever节点：</p>
+
+<ol>
+<li> 若写过，则用自身系统时间与leaf_forever/\({self}节点记录时间做比较，若小于leaf_forever/\){self}时间则认为机器时间发生了大步长回拨，服务启动失败并报警。</li>
+<li> 若未写过，证明是新服务节点，直接创建持久节点leaf_forever/${self}并写入自身系统时间，接下来综合对比其余Leaf节点的系统时间来判断自身系统时间是否准确，具体做法是取leaf_temporary下的所有临时节点(所有运行中的Leaf-snowflake节点)的服务IP：Port，然后通过RPC请求得到所有节点的系统时间，计算sum(time)/nodeSize。</li>
+<li> 若abs( 系统时间-sum(time)/nodeSize ) &lt; 阈值，认为当前系统时间准确，正常启动服务，同时写临时节点leaf_temporary/${self} 维持租约。</li>
+<li> 否则认为本机系统时间发生大步长偏移，启动失败并报警。</li>
+<li> 每隔一段时间(3s)上报自身系统时间写入leaf_forever/${self}。</li>
+</ol>
+
+<p>由于强依赖时钟，对时间的要求比较敏感，在机器工作时NTP同步也会造成秒级别的回退，建议可以直接关闭NTP同步。要么在时钟回拨的时候直接不提供服务直接返回ERROR_CODE，等时钟追上即可。<strong>或者做一层重试，然后上报报警系统，更或者是发现有时钟回拨之后自动摘除本身节点并报警</strong>，如下：</p>
+
+<pre><code class="language-java"> //发生了回拨，此刻时间小于上次发号时间
+ if (timestamp &lt; lastTimestamp) {
+
+            long offset = lastTimestamp - timestamp;
+            if (offset &lt;= 5) {
+                try {
+                    //时间偏差大小小于5ms，则等待两倍时间
+                    wait(offset &lt;&lt; 1);//wait
+                    timestamp = timeGen();
+                    if (timestamp &lt; lastTimestamp) {
+                       //还是小于，抛异常并上报
+                        throwClockBackwardsEx(timestamp);
+                      }    
+                } catch (InterruptedException e) {  
+                   throw  e;
+                }
+            } else {
+                //throw
+                throwClockBackwardsEx(timestamp);
+            }
+        }
+ //分配ID
+</code></pre>
+
+<p><strong>从上线情况来看，在2017年闰秒出现那一次出现过部分机器回拨，由于Leaf-snowflake的策略保证，成功避免了对业务造成的影响。</strong></p>
+
+<h1 id="toc_13">Leaf现状</h1>
+
+<p>Leaf在美团点评公司内部服务包含金融、支付交易、餐饮、外卖、酒店旅游、猫眼电影等众多业务线。目前Leaf的性能在4C8G的机器上QPS能压测到近5w/s，TP999 1ms，已经能够满足大部分的业务的需求。每天提供亿数量级的调用量，作为公司内部公共的基础技术设施，必须保证高SLA和高性能的服务，我们目前还仅仅达到了及格线，还有很多提高的空间。</p>
+
+<h1 id="toc_14">作者简介</h1>
+
+<p>照东，美团点评基础架构团队成员，主要参与<a href="http://tech.meituan.com/mt-mtrace.html">美团大型分布式链路跟踪系统Mtrace</a>和美团点评分布式ID生成系统Leaf的开发工作。曾就职于阿里巴巴，2016年7月加入美团。</p>
+
+<p>最后做一个招聘广告：如果你对大规模分布式环境下的服务治理、分布式会话链追踪等系统感兴趣，诚挚欢迎投递简历至：zhangjinlu#meituan.com。</p>
+
+<h1 id="toc_15">参考资料</h1>
+
+<ol>
+<li> 施瓦茨. 高性能MySQL[M]. 电子工业出版社, 2010:162-171.</li>
+<li> <a href="https://zh.wikipedia.org/wiki/%E9%80%9A%E7%94%A8%E5%94%AF%E4%B8%80%E8%AF%86%E5%88%AB%E7%A0%81">维基百科：UUID</a>.</li>
+<li> <a href="https://github.com/twitter/snowflake">snowflake</a>.</li>
+<li> <a href="https://dev.mysql.com/doc/refman/5.7/en/innodb-index-types.html">MySQL: Clustered and Secondary Indexes</a>.</li>
+<li> <a href="https://dev.mysql.com/doc/refman/5.5/en/replication-semisync.html">半同步复制 Semisynchronous Replication</a>.</li>
+</ol>
+
+]]></content>
+  </entry>
   
   <entry>
     <title type="html"><![CDATA[蚂蚁通信框架实践]]></title>
@@ -4531,866 +6021,6 @@ Content-Type: text/html; charset=UTF-8
 Connection: keep-alive
 X-Powered-By: PHP/7.0.6
 </code></pre>
-
-]]></content>
-  </entry>
-  
-  <entry>
-    <title type="html"><![CDATA[Alpine Docker Image]]></title>
-    <link href="http://panlw.github.io/15273973619516.html"/>
-    <updated>2018-05-27T13:02:41+08:00</updated>
-    <id>http://panlw.github.io/15273973619516.html</id>
-    <content type="html"><![CDATA[
-<pre><code class="language-Dockerfile">FROM alpine:3.5
-# Install base packages
-RUN apk update &amp;&amp; apk add curl bash tree tzdata \
-    &amp;&amp; cp -r -f /usr/share/zoneinfo/Asia/Shanghai /etc/localtime \
-    &amp;&amp; echo -ne &quot;Alpine Linux 3.4 image. (`uname -rsv`)\n&quot; &gt;&gt; /root/.built
-# Define bash as default command
-RUN apk --no-cache add openjdk8-jre ttf-droid
-</code></pre>
-
-]]></content>
-  </entry>
-  
-  <entry>
-    <title type="html"><![CDATA[分布式之消息队列复习精讲]]></title>
-    <link href="http://panlw.github.io/15273831746106.html"/>
-    <updated>2018-05-27T09:06:14+08:00</updated>
-    <id>http://panlw.github.io/15273831746106.html</id>
-    <content type="html"><![CDATA[
-<blockquote>
-<p>原文地址 <a href="http://www.cnblogs.com/rjzheng/p/8994962.html">http://www.cnblogs.com/rjzheng/p/8994962.html</a></p>
-</blockquote>
-
-<h2 id="toc_0">引言</h2>
-
-<h3 id="toc_1">为什么写这篇文章?</h3>
-
-<p>博主有两位朋友分别是小 A 和小 B:</p>
-
-<ol>
-<li> 小 A，工作于传统软件行业 (某社保局的软件外包公司)，每天工作内容就是和产品聊聊需求，改改业务逻辑。再不然就是和运营聊聊天，写几个 SQL，生成下报表。又或者接到客服的通知，某某功能故障了，改改数据，然后下班部署上线。每天过的都是这种生活，技术零成长。</li>
-<li> 小 B，工作于某国企，虽然能接触到一些中间件技术。然而，他只会订阅 / 发布消息。通俗点说，就是调调 API。对为什么使用这些中间件啊？如何保证高可用啊？没有充分的认识。</li>
-</ol>
-
-<p>庆幸的是两位朋友都很有上进心，于是博主写这篇文章，帮助他们复习一下关于消息队列中间件这块的要点</p>
-
-<h3 id="toc_2">复习要点</h3>
-
-<p>本文大概围绕如下几点进行阐述:</p>
-
-<ol>
-<li> 为什么使用消息队列？</li>
-<li> 使用消息队列有什么缺点?</li>
-<li> 消息队列如何选型?</li>
-<li> 如何保证消息队列是高可用的？</li>
-<li> 如何保证消息不被重复消费?</li>
-<li> 如何保证消费的可靠性传输?</li>
-<li> 如何保证消息的顺序性？</li>
-</ol>
-
-<p>我们围绕以上七点进行阐述。需要说明一下，本文不是《消息队列从入门到精通》这种课程，因此只是提供一个复习思路，而不是去教你们怎么调用消息队列的 API。建议对消息队列不了解的人，去找点消息队列的博客看看，再看本文，收获更大</p>
-
-<h2 id="toc_3">正文</h2>
-
-<h3 id="toc_4">1、为什么要使用消息队列?</h3>
-
-<p><strong>分析</strong>: 一个用消息队列的人，不知道为啥用，这就有点尴尬。没有复习这点，很容易被问蒙，然后就开始胡扯了。<br/>
-<strong>回答</strong>: 这个问题, 咱只答三个最主要的应用场景 (不可否认还有其他的，但是只答三个主要的), 即以下六个字: <strong>解耦、异步、削峰</strong></p>
-
-<h4 id="toc_5">(1) 解耦</h4>
-
-<p><strong>传统模式:</strong><br/>
-<img src="media/15273831746106/15273914396502.png" alt=""/></p>
-
-<p>传统模式的缺点：</p>
-
-<ul>
-<li>  系统间耦合性太强，如上图所示，系统 A 在代码中直接调用系统 B 和系统 C 的代码，如果将来 D 系统接入，系统 A 还需要修改代码，过于麻烦！</li>
-</ul>
-
-<p><strong>中间件模式:</strong><br/>
-<img src="media/15273831746106/15273918339281.png" alt=""/></p>
-
-<p>中间件模式的的优点：</p>
-
-<ul>
-<li>  将消息写入消息队列，需要消息的系统自己从消息队列中订阅，从而系统 A 不需要做任何修改。</li>
-</ul>
-
-<h4 id="toc_6">(2) 异步</h4>
-
-<p><strong>传统模式:</strong></p>
-
-<p><img src="media/15273831746106/15273918558340.png" alt=""/></p>
-
-<p>传统模式的缺点：</p>
-
-<ul>
-<li>  一些非必要的业务逻辑以同步的方式运行，太耗费时间。</li>
-</ul>
-
-<p><strong>中间件模式:</strong><br/>
-<img src="media/15273831746106/15273918690655.png" alt=""/></p>
-
-<p>中间件模式的的优点：</p>
-
-<ul>
-<li>  将消息写入消息队列，非必要的业务逻辑以异步的方式运行，加快响应速度</li>
-</ul>
-
-<h4 id="toc_7">(3) 削峰</h4>
-
-<p><strong>传统模式</strong><br/>
-<img src="media/15273831746106/15273918819389.png" alt=""/></p>
-
-<p>传统模式的缺点：</p>
-
-<ul>
-<li>  并发量大的时候，所有的请求直接怼到数据库，造成数据库连接异常</li>
-</ul>
-
-<p><strong>中间件模式:</strong><br/>
-<img src="media/15273831746106/15273924798559.png" alt=""/></p>
-
-<p>中间件模式的的优点：</p>
-
-<ul>
-<li>  系统 A 慢慢的按照数据库能处理的并发量，从消息队列中慢慢拉取消息。在生产中，这个短暂的高峰期积压是允许的。</li>
-</ul>
-
-<h3 id="toc_8">2、使用了消息队列会有什么缺点?</h3>
-
-<p><strong>分析</strong>: 一个使用了 MQ 的项目，如果连这个问题都没有考虑过，就把 MQ 引进去了，那就给自己的项目带来了风险。我们引入一个技术，要对这个技术的弊端有充分的认识，才能做好预防。<strong>要记住，不要给公司挖坑！</strong><br/>
-<strong>回答</strong>: 回答也很容易，从以下两个个角度来答</p>
-
-<ul>
-<li>  <strong>系统可用性降低</strong>: 你想啊，本来其他系统只要运行好好的，那你的系统就是正常的。现在你非要加个消息队列进去，那消息队列挂了，你的系统不是呵呵了。因此，系统可用性降低</li>
-<li>  <strong>系统复杂性增加</strong>: 要多考虑很多方面的问题，比如一致性问题、如何保证消息不被重复消费，如何保证保证消息可靠传输。因此，需要考虑的东西更多，系统复杂性增大。</li>
-</ul>
-
-<p>但是，我们该用还是要用的。</p>
-
-<h3 id="toc_9">3、消息队列如何选型?</h3>
-
-<p>先说一下，博主只会 ActiveMQ,RabbitMQ,RocketMQ,Kafka，对什么 ZeroMQ 等其他 MQ 没啥理解，因此只能基于这四种 MQ 给出回答。<br/>
-<strong>分析</strong>: 既然在项目中用了 MQ，肯定事先要对业界流行的 MQ 进行调研，如果连每种 MQ 的优缺点都没了解清楚，就拍脑袋依据喜好，用了某种 MQ，还是给项目挖坑。如果面试官问:&quot;你为什么用这种 MQ？。&quot; 你直接回答 &quot;领导决定的。&quot; 这种回答就很 LOW 了。<strong>还是那句话，不要给公司挖坑。</strong><br/>
-<strong>回答</strong>: 首先，咱先上 <a href="http://activemq.apache.org/">ActiveMQ 的社区</a>，看看该 MQ 的更新频率:</p>
-
-<pre><code>Apache ActiveMQ 5.15.3 Release
-Christopher L. Shannon posted on Feb 12, 2018
-Apache ActiveMQ 5.15.2 Released
-Christopher L. Shannon posted on Oct 23, 2017
-Apache ActiveMQ 5.15.0 Released
-Christopher L. Shannon posted on Jul 06, 2017
-省略以下记录
-...
-</code></pre>
-
-<p>我们可以看出，ActiveMq 几个月才发一次版本，据说研究重心在他们的下一代产品 Apollo。<br/>
-接下来，我们再去 <a href="http://www.rabbitmq.com/">RabbitMQ 的社区</a>去看一下, RabbitMQ 的更新频率</p>
-
-<pre><code>RabbitMQ 3.7.3 release  30 January 2018
-RabbitMQ 3.6.15 release  17 January 2018
-RabbitMQ 3.7.2 release23 December 2017
-RabbitMQ 3.7.1 release21 December 2017
-省略以下记录
-...
-</code></pre>
-
-<p>我们可以看出，RabbitMQ 版本发布比 ActiveMq 频繁很多。至于 RocketMQ 和 kafka 就不带大家看了，总之也比 ActiveMQ 活跃的多。详情，可自行查阅。<br/>
-再来一个性能对比表</p>
-
-<table>
-<thead>
-<tr>
-<th>特性</th>
-<th>ActiveMQ</th>
-<th>RabbitMQ</th>
-<th>RocketMQ</th>
-<th>kafka</th>
-</tr>
-</thead>
-
-<tbody>
-<tr>
-<td>开发语言</td>
-<td>java</td>
-<td>erlang</td>
-<td>java</td>
-<td>scala</td>
-</tr>
-<tr>
-<td>单机吞吐量</td>
-<td>万级</td>
-<td>万级</td>
-<td>10 万级</td>
-<td>10 万级</td>
-</tr>
-<tr>
-<td>时效性</td>
-<td>ms 级</td>
-<td>us 级</td>
-<td>ms 级</td>
-<td>ms 级以内</td>
-</tr>
-<tr>
-<td>可用性</td>
-<td>高 (主从架构)</td>
-<td>高 (主从架构)</td>
-<td>非常高 (分布式架构)</td>
-<td>非常高 (分布式架构)</td>
-</tr>
-<tr>
-<td>功能特性</td>
-<td>成熟的产品，在很多公司得到应用；有较多的文档；各种协议支持较好</td>
-<td>基于 erlang 开发，所以并发能力很强，性能极其好，延时很低; 管理界面较丰富</td>
-<td>MQ 功能比较完备，扩展性佳</td>
-<td>只支持主要的 MQ 功能，像一些消息查询，消息回溯等功能没有提供，毕竟是为大数据准备的，在大数据领域应用广。</td>
-</tr>
-</tbody>
-</table>
-
-<p>综合上面的材料得出以下两点:<br/>
-(1) 中小型软件公司，建议选 RabbitMQ. 一方面，erlang 语言天生具备高并发的特性，而且他的管理界面用起来十分方便。正所谓，成也萧何，败也萧何！他的弊端也在这里，虽然 RabbitMQ 是开源的，然而国内有几个能定制化开发 erlang 的程序员呢？所幸，RabbitMQ 的社区十分活跃，可以解决开发过程中遇到的 bug，这点对于中小型公司来说十分重要。不考虑 rocketmq 和 kafka 的原因是，一方面中小型软件公司不如互联网公司，数据量没那么大，选消息中间件，应首选功能比较完备的，所以 kafka 排除。不考虑 rocketmq 的原因是，rocketmq 是阿里出品，如果阿里放弃维护 rocketmq，中小型公司一般抽不出人来进行 rocketmq 的定制化开发，因此不推荐。<br/>
-(2) 大型软件公司，根据具体使用在 rocketMq 和 kafka 之间二选一。一方面，大型软件公司，具备足够的资金搭建分布式环境，也具备足够大的数据量。针对 rocketMQ, 大型软件公司也可以抽出人手对 rocketMQ 进行定制化开发，毕竟国内有能力改 JAVA 源码的人，还是相当多的。至于 kafka，根据业务场景选择，如果有日志采集功能，肯定是首选 kafka 了。具体该选哪个，看使用场景。</p>
-
-<h3 id="toc_10">4、如何保证消息队列是高可用的？</h3>
-
-<p><strong>分析</strong>: 在第二点说过了，引入消息队列后，系统的可用性下降。在生产中，没人使用单机模式的消息队列。因此，作为一个合格的程序员，应该对消息队列的高可用有很深刻的了解。如果面试的时候，面试官问，你们的消息中间件如何保证高可用的？你的回答只是表明自己只会订阅和发布消息，面试官就会怀疑你是不是只是自己搭着玩，压根没在生产用过。<strong>请做一个爱思考，会思考，懂思考的程序员。</strong><br/>
-<strong>回答</strong>: 这问题，其实要对消息队列的集群模式要有深刻了解，才好回答。<br/>
-以 rcoketMQ 为例，他的集群就有多 master 模式、多 master 多 slave 异步复制模式、多 master 多 slave 同步双写模式。多 master 多 slave 模式部署架构图 (网上找的, 偷个懒，懒得画):<br/>
-<img src="https://images.cnblogs.com/cnblogs_com/rjzheng/1202350/o_rocketcluster.png" alt=""/><br/>
-其实博主第一眼看到这个图，就觉得和 kafka 好像，只是 NameServer 集群，在 kafka 中是用 zookeeper 代替，都是用来保存和发现 master 和 slave 用的。通信过程如下:<br/>
-Producer 与 NameServer 集群中的其中一个节点（随机选择）建立长连接，定期从 NameServer 获取 Topic 路由信息，并向提供 Topic 服务的 Broker Master 建立长连接，且定时向 Broker 发送心跳。Producer 只能将消息发送到 Broker master，但是 Consumer 则不一样，它同时和提供 Topic 服务的 Master 和 Slave 建立长连接，既可以从 Broker Master 订阅消息，也可以从 Broker Slave 订阅消息。<br/>
-那么 kafka 呢, 为了对比说明直接上 kafka 的拓补架构图 (也是找的，懒得画)<br/>
-<img src="https://images.cnblogs.com/cnblogs_com/rjzheng/1202350/o_kafka.png" alt=""/><br/>
-如上图所示，一个典型的 Kafka 集群中包含若干 Producer（可以是 web 前端产生的 Page View，或者是服务器日志，系统 CPU、Memory 等），若干 broker（Kafka 支持水平扩展，一般 broker 数量越多，集群吞吐率越高），若干 Consumer Group，以及一个 Zookeeper 集群。Kafka 通过 Zookeeper 管理集群配置，选举 leader，以及在 Consumer Group 发生变化时进行 rebalance。Producer 使用 push 模式将消息发布到 broker，Consumer 使用 pull 模式从 broker 订阅并消费消息。<br/>
-至于 rabbitMQ, 也有普通集群和镜像集群模式，自行去了解，比较简单，两小时即懂。<br/>
-要求，在回答高可用的问题时，应该能逻辑清晰的画出自己的 MQ 集群架构或清晰的叙述出来。</p>
-
-<h3 id="toc_11">5、如何保证消息不被重复消费？</h3>
-
-<p><strong>分析</strong>: 这个问题其实换一种问法就是，如何保证消息队列的幂等性? 这个问题可以认为是消息队列领域的基本问题。换句话来说，是在考察你的设计能力，这个问题的回答可以根据具体的业务场景来答，没有固定的答案。<br/>
-<strong>回答</strong>: 先来说一下为什么会造成重复消费?<br/>
-  其实无论是那种消息队列，造成重复消费原因其实都是类似的。正常情况下，消费者在消费消息时候，消费完毕后，会发送一个确认信息给消息队列，消息队列就知道该消息被消费了，就会将该消息从消息队列中删除。只是不同的消息队列发送的确认信息形式不同, 例如 RabbitMQ 是发送一个 ACK 确认消息，RocketMQ 是返回一个 CONSUME_SUCCESS 成功标志，kafka 实际上有个 offset 的概念，简单说一下 (如果还不懂，出门找一个 kafka 入门到精通教程), 就是每一个消息都有一个 offset，kafka 消费过消息后，需要提交 offset，让消息队列知道自己已经消费过了。那造成重复消费的原因?，就是因为网络传输等等故障，确认信息没有传送到消息队列，导致消息队列不知道自己已经消费过该消息了，再次将该消息分发给其他的消费者。<br/>
-  如何解决? 这个问题针对业务场景来答分以下几点<br/>
-  (1) 比如，你拿到这个消息做数据库的 insert 操作。那就容易了，给这个消息做一个唯一主键，那么就算出现重复消费的情况，就会导致主键冲突，避免数据库出现脏数据。<br/>
-  (2) 再比如，你拿到这个消息做 redis 的 set 的操作，那就容易了，不用解决，因为你无论 set 几次结果都是一样的，set 操作本来就算幂等操作。<br/>
-  (3) 如果上面两种情况还不行，上大招。准备一个第三方介质, 来做消费记录。以 redis 为例，给消息分配一个全局 id，只要消费过该消息，将 &lt; id,message &gt; 以 K-V 形式写入 redis。那消费者开始消费前，先去 redis 中查询有没消费记录即可。</p>
-
-<h3 id="toc_12">6、如何保证消费的可靠性传输?</h3>
-
-<p><strong>分析</strong>: 我们在使用消息队列的过程中，应该做到消息不能多消费，也不能少消费。如果无法做到可靠性传输，可能给公司带来千万级别的财产损失。同样的，如果可靠性传输在使用过程中，没有考虑到，这不是给公司挖坑么，你可以拍拍屁股走了，公司损失的钱，谁承担。还是那句话，<strong>认真对待每一个项目，不要给公司挖坑。</strong><br/>
-<strong>回答</strong>: 其实这个可靠性传输，每种 MQ 都要从三个角度来分析: 生产者弄丢数据、消息队列弄丢数据、消费者弄丢数据</p>
-
-<h4 id="toc_13">RabbitMQ</h4>
-
-<p><strong>(1) 生产者丢数据</strong><br/>
-从生产者弄丢数据这个角度来看，RabbitMQ 提供 transaction 和 confirm 模式来确保生产者不丢消息。<br/>
-transaction 机制就是说，发送消息前，开启事物 (channel.txSelect())，然后发送消息，如果发送过程中出现什么异常，事物就会回滚 (channel.txRollback())，如果发送成功则提交事物 (channel.txCommit())。<br/>
-然而缺点就是吞吐量下降了。因此，按照博主的经验，生产上用 confirm 模式的居多。一旦 channel 进入 confirm 模式，所有在该信道上面发布的消息都将会被指派一个唯一的 ID(从 1 开始)，一旦消息被投递到所有匹配的队列之后，rabbitMQ 就会发送一个 Ack 给生产者 (包含消息的唯一 ID)，这就使得生产者知道消息已经正确到达目的队列了. 如果 rabiitMQ 没能处理该消息，则会发送一个 Nack 消息给你，你可以进行重试操作。处理 Ack 和 Nack 的代码如下所示（说好不上代码的，偷偷上了）:</p>
-
-<pre><code>channel.addConfirmListener(new ConfirmListener() {  
-                @Override  
-                public void handleNack(long deliveryTag, boolean multiple) throws IOException {  
-                    System.out.println(&quot;nack: deliveryTag = &quot;+deliveryTag+&quot; multiple: &quot;+multiple);  
-                }  
-                @Override  
-                public void handleAck(long deliveryTag, boolean multiple) throws IOException {  
-                    System.out.println(&quot;ack: deliveryTag = &quot;+deliveryTag+&quot; multiple: &quot;+multiple);  
-                }  
-            });  
-</code></pre>
-
-<p><strong>(2) 消息队列丢数据</strong><br/>
-处理消息队列丢数据的情况，一般是开启持久化磁盘的配置。这个持久化配置可以和 confirm 机制配合使用，你可以在消息持久化磁盘后，再给生产者发送一个 Ack 信号。这样，如果消息持久化磁盘之前，rabbitMQ 阵亡了，那么生产者收不到 Ack 信号，生产者会自动重发。<br/>
-那么如何持久化呢，这里顺便说一下吧，其实也很容易，就下面两步<br/>
-1、将 queue 的持久化标识 durable 设置为 true, 则代表是一个持久的队列<br/>
-2、发送消息的时候将 deliveryMode=2<br/>
-这样设置以后，rabbitMQ 就算挂了，重启后也能恢复数据<br/>
-<strong>(3) 消费者丢数据</strong><br/>
-消费者丢数据一般是因为采用了自动确认消息模式。这种模式下，消费者会自动确认收到信息。这时 rahbitMQ 会立即将消息删除，这种情况下如果消费者出现异常而没能处理该消息，就会丢失该消息。<br/>
-至于解决方案，采用手动确认消息即可。</p>
-
-<h4 id="toc_14">kafka</h4>
-
-<p>这里先引一张 kafka Replication 的<a href="http://www.infoq.com/cn/articles/kafka-analysis-part-2/">数据流向图</a><br/>
-<img src="https://images.cnblogs.com/cnblogs_com/rjzheng/1202350/o_kafka1png.png" alt=""/><br/>
-Producer 在发布消息到某个 Partition 时，先通过 ZooKeeper 找到该 Partition 的 Leader，然后无论该 Topic 的 Replication Factor 为多少（也即该 Partition 有多少个 Replica），Producer 只将该消息发送到该 Partition 的 Leader。Leader 会将该消息写入其本地 Log。每个 Follower 都从 Leader 中 pull 数据。<br/>
-针对上述情况，得出如下分析<br/>
-<strong>(1) 生产者丢数据</strong><br/>
-在 kafka 生产中，基本都有一个 leader 和多个 follwer。follwer 会去同步 leader 的信息。因此，为了避免生产者丢数据，做如下两点配置</p>
-
-<ol>
-<li> 第一个配置要在 producer 端设置 acks=all。这个配置保证了，follwer 同步完成后，才认为消息发送成功。</li>
-<li> 在 producer 端设置 retries=MAX，一旦写入失败，这无限重试</li>
-</ol>
-
-<p><strong>(2) 消息队列丢数据</strong><br/>
-针对消息队列丢数据的情况，无外乎就是，数据还没同步，leader 就挂了，这时 zookpeer 会将其他的 follwer 切换为 leader, 那数据就丢失了。针对这种情况，应该做两个配置。</p>
-
-<ol>
-<li> replication.factor 参数，这个值必须大于 1，即要求每个 partition 必须有至少 2 个副本</li>
-<li> min.insync.replicas 参数，这个值必须大于 1，这个是要求一个 leader 至少感知到有至少一个 follower 还跟自己保持联系</li>
-</ol>
-
-<p>这两个配置加上上面生产者的配置联合起来用，基本可确保 kafka 不丢数据</p>
-
-<p><strong>(3) 消费者丢数据</strong><br/>
-这种情况一般是自动提交了 offset，然后你处理程序过程中挂了。kafka 以为你处理好了。再强调一次 offset 是干嘛的<br/>
-<strong>offset</strong>：指的是 kafka 的 topic 中的每个消费组消费的下标。简单的来说就是一条消息对应一个 offset 下标，每次消费数据的时候如果提交 offset，那么下次消费就会从提交的 offset 加一那里开始消费。<br/>
-比如一个 topic 中有 100 条数据，我消费了 50 条并且提交了，那么此时的 kafka 服务端记录提交的 offset 就是 49(offset 从 0 开始)，那么下次消费的时候 offset 就从 50 开始消费。<br/>
-解决方案也很简单，改成手动提交即可。</p>
-
-<h4 id="toc_15">ActiveMQ 和 RocketMQ</h4>
-
-<p>大家自行查阅吧</p>
-
-<h3 id="toc_16">7、如何保证消息的顺序性？</h3>
-
-<p><strong>分析</strong>: 其实并非所有的公司都有这种业务需求，但是还是对这个问题要有所复习。<br/>
-<strong>回答</strong>: 针对这个问题，通过某种算法，将需要保持先后顺序的消息放到同一个消息队列中 (kafka 中就是 partition,rabbitMq 中就是 queue)。然后只用一个消费者去消费该队列。<br/>
-有的人会问: 那如果为了吞吐量，有多个消费者去消费怎么办？<br/>
-这个问题，没有固定回答的套路。比如我们有一个微博的操作，发微博、写评论、删除微博，这三个异步操作。如果是这样一个业务场景，那只要重试就行。比如你一个消费者先执行了写评论的操作，但是这时候，微博都还没发，写评论一定是失败的，等一段时间。等另一个消费者，先执行写评论的操作后，再执行，就可以成功。<br/>
-总之，针对这个问题，我的观点是保证入队有序就行，出队以后的顺序交给消费者自己去保证，没有固定套路。</p>
-
-<h2 id="toc_17">总结</h2>
-
-<p>写到这里，希望读者把本文提出的这几个问题，经过深刻的准备后，一般来说，能囊括大部分的消息队列的知识点。如果面试官不问这几个问题怎么办，简单，自己把几个问题讲清楚，突出以下自己考虑的全面性。<br/>
-最后，其实我不太提倡这样突击复习，希望大家打好基本功，<strong>做一个爱思考，懂思考，会思考的程序员</strong>。</p>
-
-]]></content>
-  </entry>
-  
-  <entry>
-    <title type="html"><![CDATA[权限系统设计模型分析（DAC，MAC，RBAC，ABAC）]]></title>
-    <link href="http://panlw.github.io/15264401346282.html"/>
-    <updated>2018-05-16T11:08:54+08:00</updated>
-    <id>http://panlw.github.io/15264401346282.html</id>
-    <content type="html"><![CDATA[
-<pre><code>作者：https://www.jianshu.com/u/11c0ebe856b8
-发表：2017.12.10 23:16
-原文：https://www.jianshu.com/p/ce0944b4a903
-</code></pre>
-
-<blockquote>
-<p>好久没有更新文章了…… 这一年过得太忙。<br/>
-准备一篇个人认为值得拿出来分享的文章真的需要很多时间，如果你喜欢，请评论、点赞让我知道，我会抽更多的时间来更新一些分享给大家，谢谢！</p>
-</blockquote>
-
-<p>此篇文章主要尝试将世面上现有的一些权限系统设计做一下简单的总结分析，个人水平有限，如有错误请不吝指出。</p>
-
-<h2 id="toc_0">术语</h2>
-
-<p>这里对后面会用到的词汇做一个说明，老司机请直接翻到<strong>常见设计模式</strong>。</p>
-
-<h3 id="toc_1">用户</h3>
-
-<p>发起操作的主体。</p>
-
-<h3 id="toc_2">对象（Subject）</h3>
-
-<p>指操作所针对的客体对象，比如订单数据或图片文件。</p>
-
-<h3 id="toc_3">权限控制表 (ACL: Access Control List)</h3>
-
-<p>用来描述权限规则或用户和权限之间关系的数据表。</p>
-
-<h3 id="toc_4">权限 (Permission)</h3>
-
-<p>用来指代对某种对象的某一种操作，例如 “添加文章的操作”。</p>
-
-<h3 id="toc_5">权限标识</h3>
-
-<p>权限的代号，例如用 “ARTICLE_ADD” 来指代 “添加文章的操作” 权限。</p>
-
-<h2 id="toc_6">常见设计模式</h2>
-
-<h3 id="toc_7">自主访问控制（DAC: Discretionary Access Control）</h3>
-
-<p>系统会识别用户，然后根据被操作对象（Subject）的权限控制列表（ACL: Access Control List）或者权限控制矩阵（ACL: Access Control Matrix）的信息来决定用户的是否能对其进行哪些操作，例如读取或修改。</p>
-
-<p>而拥有对象权限的用户，又可以将该对象的权限分配给其他用户，所以称之为 “自主（Discretionary）” 控制。</p>
-
-<p>这种设计最常见的应用就是文件系统的权限设计，如微软的 NTFS。</p>
-
-<p>DAC 最大缺陷就是对权限控制比较分散，不便于管理，比如无法简单地将一组文件设置统一的权限开放给指定的一群用户。</p>
-
-<p><img src="https://upload-images.jianshu.io/upload_images/594774-6d77f13cc568797f.png" alt=""/></p>
-
-<h3 id="toc_8">强制访问控制（MAC: Mandatory Access Control）</h3>
-
-<p>MAC 是为了弥补 DAC 权限控制过于分散的问题而诞生的。在 MAC 的设计中，每一个对象都都有一些权限标识，每个用户同样也会有一些权限标识，而用户能否对该对象进行操作取决于双方的权限标识的关系，这个限制判断通常是由系统硬性限制的。比如在影视作品中我们经常能看到特工在查询机密文件时，屏幕提示需要 “无法访问，需要一级安全许可”，这个例子中，文件上就有“一级安全许可” 的权限标识，而用户并不具有。</p>
-
-<p>MAC 非常适合机密机构或者其他等级观念强烈的行业，但对于类似商业服务系统，则因为不够灵活而不能适用。</p>
-
-<p><img src="https://upload-images.jianshu.io/upload_images/594774-f9ce520635dc31b2.png" alt=""/></p>
-
-<blockquote>
-<p><a href="https://link.jianshu.com?t=https://www.centos.org/docs/5/html/Deployment_Guide-en-US/sec-mls-ov.html">Red Hat: MLS</a></p>
-</blockquote>
-
-<h3 id="toc_9">基于角色的访问控制（RBAC: Role-Based Access Control)</h3>
-
-<p>因为 DAC 和 MAC 的诸多限制，于是诞生了 RBAC，并且成为了迄今为止最为普及的权限设计模型。</p>
-
-<p>RBAC 在用户和权限之间引入了 “角色（Role）” 的概念（暂时忽略 Session 这个概念）：</p>
-
-<p><img src="https://upload-images.jianshu.io/upload_images/594774-b220fc093138a2c7.png" alt=""/></p>
-
-<blockquote>
-<p>图片来自 <a href="https://link.jianshu.com?t=http://directory.apache.org/fortress/user-guide/1.3-what-rbac-is.html">Apache Directory</a></p>
-</blockquote>
-
-<p>如图所示，每个用户关联一个或多个角色，每个角色关联一个或多个权限，从而可以实现了非常灵活的权限管理。角色可以根据实际业务需求灵活创建，这样就省去了每新增一个用户就要关联一遍所有权限的麻烦。简单来说 RBAC 就是：用户关联角色，角色关联权限。另外，RBAC 是可以模拟出 DAC 和 MAC 的效果的。</p>
-
-<p>例如数据库软件 MongoDB 便是采用 RBAC 模型，对数据库的操作都划分成了权限（<a href="https://link.jianshu.com?t=https://docs.mongodb.com/manual/reference/privilege-actions/">MongoDB 权限文档</a>）：</p>
-
-<table>
-<thead>
-<tr>
-<th>权限标识</th>
-<th>说明</th>
-</tr>
-</thead>
-
-<tbody>
-<tr>
-<td>find</td>
-<td>具有此权限的用户可以运行所有和查询有关的命令，如：aggregate、checkShardingIndex、count 等。</td>
-</tr>
-<tr>
-<td>insert</td>
-<td>具有此权限的用户可以运行所有和新建数据有关的命令：insert 和 create 等。</td>
-</tr>
-<tr>
-<td>collStats</td>
-<td>具有此权限的用户可以对指定 database 或 collection 执行 collStats 命令。</td>
-</tr>
-<tr>
-<td>viewRole</td>
-<td>具有此权限的用户可以查看指定 database 的角色信息。</td>
-</tr>
-<tr>
-<td>…</td>
-<td></td>
-</tr>
-</tbody>
-</table>
-
-<p>基于这些权限，MongoDB 提供了一些预定义的角色（<a href="https://link.jianshu.com?t=https://docs.mongodb.com/manual/reference/built-in-roles/">MongoDB 预定义角色文档</a>，用户也可以自己定义角色）：</p>
-
-<table>
-<thead>
-<tr>
-<th>角色</th>
-<th>find</th>
-<th>insert</th>
-<th>collStats</th>
-<th>viewRole</th>
-<th>…</th>
-</tr>
-</thead>
-
-<tbody>
-<tr>
-<td>read</td>
-<td>✔</td>
-<td></td>
-<td>✔</td>
-<td></td>
-<td>…</td>
-</tr>
-<tr>
-<td>readWrite</td>
-<td>✔</td>
-<td>✔</td>
-<td>✔</td>
-<td></td>
-<td>…</td>
-</tr>
-<tr>
-<td>dbAdmin</td>
-<td>✔</td>
-<td></td>
-<td>✔</td>
-<td></td>
-<td>…</td>
-</tr>
-<tr>
-<td>userAdmin</td>
-<td></td>
-<td></td>
-<td></td>
-<td>✔</td>
-<td>…</td>
-</tr>
-</tbody>
-</table>
-
-<p>最后授予用户不同的角色，就可以实现不同粒度的权限分配了。</p>
-
-<p>目前市面上绝大部分系统在设计权限系统时都采用 RBAC 模型。然而也有的系统错误地实现了 RBAC，他们采用的是判断用户是否具有某个角色而不是判断权限，例如以下代码：</p>
-
-<pre><code>&lt;?php
-
-if ($user-&gt;hasRole(&#39;hr&#39;)) {
-    // 执行某种只有“HR”角色才能做的功能，例如给员工涨薪…
-    // ...
-}
-
-</code></pre>
-
-<p>如果后期公司规定部门经理也可以给员工涨薪，这时就不得不修改代码了。</p>
-
-<p>以上基本就是 RBAC 的核心设计（RBAC Core）。而基于核心概念之上，RBAC 规范还提供了扩展模式。</p>
-
-<h4 id="toc_10">角色继承 (Hierarchical Role)</h4>
-
-<p><img src="https://upload-images.jianshu.io/upload_images/594774-386977fee82f6152.png" alt=""/></p>
-
-<blockquote>
-<p>带有角色继承的 RBAC。图片来自 <a href="https://link.jianshu.com?t=http://directory.apache.org/fortress/user-guide/1.3-what-rbac-is.html">Apache Directory</a></p>
-</blockquote>
-
-<p>顾名思义，角色继承就是指角色可以继承于其他角色，在拥有其他角色权限的同时，自己还可以关联额外的权限。这种设计可以给角色分组和分层，一定程度简化了权限管理工作。</p>
-
-<h4 id="toc_11">职责分离 (Separation of Duty)</h4>
-
-<p>为了避免用户拥有过多权限而产生利益冲突，例如一个篮球运动员同时拥有裁判的权限（看一眼就给你判犯规狠不狠？），另一种职责分离扩展版的 RBAC 被提出。</p>
-
-<p>职责分离有两种模式：</p>
-
-<ul>
-<li>  静态职责分离 (Static Separation of Duty)：用户无法同时被赋予有冲突的角色。</li>
-<li>  动态职责分离 (Dynamic Separation of Duty)：用户在一次会话（Session）中不能同时激活自身所拥有的、互相有冲突的角色，只能选择其一。</li>
-</ul>
-
-<p><img src="https://upload-images.jianshu.io/upload_images/594774-feb7c1074d151113.png" alt=""/></p>
-
-<blockquote>
-<p>静态职责分离。图片来自 <a href="https://link.jianshu.com?t=http://directory.apache.org/fortress/user-guide/1.3-what-rbac-is.html">Apache Directory</a></p>
-</blockquote>
-
-<p><img src="https://upload-images.jianshu.io/upload_images/594774-059b93e4209e8fa6.png" alt=""/></p>
-
-<blockquote>
-<p>动态职责分离。图片来自 <a href="https://link.jianshu.com?t=http://directory.apache.org/fortress/user-guide/1.3-what-rbac-is.html">Apache Directory</a></p>
-</blockquote>
-
-<p>讲了这么多 RBAC，都还只是在用户和权限之间进行设计，并没有涉及到用户和对象之间的权限判断，而在实际业务系统中限制用户能够使用的对象是很常见的需求。例如华中区域的销售没有权限查询华南区域的客户数据，虽然他们都具有销售的角色，而销售的角色拥有查询客户信息的权限。</p>
-
-<p>那么我们应该怎么办呢？</p>
-
-<h4 id="toc_12">用户和对象的权限控制</h4>
-
-<p>在 RBAC 标准中并没有涉及到这个内容（RBAC 基本只能做到对一类对象的控制），但是这里讲几种基于 RBAC 的实现方式。</p>
-
-<p>首先我们看看 PHP 框架 <a href="https://link.jianshu.com?t=http://www.yiiframework.com/wiki/136/getting-to-understand-hierarchical-rbac-scheme/">Yii 1.X 的解决方案</a>（2.X 中代码更为优雅，但 1.X 的示例代码更容易看明白）：</p>
-
-<pre><code>&lt;?php
-$auth=Yii::app()-&gt;authManager;
-
-// command-permission
-$auth-&gt;createOperation(&#39;listPosts&#39;,&#39;list posts&#39;);     // define a perm: listPosts
-$auth-&gt;createOperation(&#39;createPost&#39;,&#39;create a post&#39;); // define a perm: createPost
-$auth-&gt;createOperation(&#39;readPost&#39;,&#39;read a post&#39;);     // define a perm: readPost
-$auth-&gt;createOperation(&#39;updatePost&#39;,&#39;update a post&#39;); // define a perm: updatePost
-$auth-&gt;createOperation(&#39;deletePost&#39;,&#39;delete a post&#39;); // define a perm: deletePost
-
-// qualifier-permission
-// define a qualifier on domain(user)
-$bizRule=&#39;return Yii::app()-&gt;user-&gt;id==$params[&quot;post&quot;]-&gt;authID;&#39;;
-
-// define a perm with qualifier: listOwnPosts
-$perm=$auth-&gt;createTask(&#39;listOwnPosts&#39;, &#39;list posts by author himself&#39;, $bizRule);
-$perm-&gt;addChild(&#39;listPosts&#39;); // sub perm
-
-// define a perm with qualifier: updateOwnPost
-$perm=$auth-&gt;createTask(&#39;updateOwnPost&#39;,&#39;update a post by author himself&#39;,$bizRule);
-$perm-&gt;addChild(&#39;updatePost&#39;); // sub perm
-
-// define a role: reader
-$role=$auth-&gt;createRole(&#39;reader&#39;);
-$role-&gt;addChild(&#39;readPost&#39;); // sub perm
-
-// define a role: author
-$role=$auth-&gt;createRole(&#39;author&#39;);
-$role-&gt;addChild(&#39;reader&#39;); // sub role
-$role-&gt;addChild(&#39;createPost&#39;); // sub perm
-$role-&gt;addChild(&#39;updateOwnPost&#39;); // sub perm
-
-// define a role: editor
-$role=$auth-&gt;createRole(&#39;editor&#39;);
-$role-&gt;addChild(&#39;reader&#39;); // sub role
-$role-&gt;addChild(&#39;updatePost&#39;); // sub perm
-
-// define a role: admin
-$role=$auth-&gt;createRole(&#39;admin&#39;);
-$role-&gt;addChild(&#39;editor&#39;); // sub role
-$role-&gt;addChild(&#39;author&#39;); // sub role
-$role-&gt;addChild(&#39;deletePost&#39;); // sub perm
-</code></pre>
-
-<p>实现效果：</p>
-
-<p><img src="https://upload-images.jianshu.io/upload_images/594774-fb67d571497fb0b2.gif" alt=""/></p>
-
-<blockquote>
-<p>图片来自 <a href="https://link.jianshu.com?t=http://www.yiiframework.com/wiki/136/getting-to-understand-hierarchical-rbac-scheme/">Yii 官方 WiKi</a></p>
-</blockquote>
-
-<p>在这个 Yii 的官方例子中，<code>updateOwnPost</code>在判断用户是否具有<code>updatePost</code>权限的基础上更进一步判断了用户是否有权限操作这个特定的对象，并且这个判断逻辑是通过代码设置的，非常灵活。</p>
-
-<p>不过大部分时候我们并不需要这样的灵活程度，会带来额外的开发和维护成本，而另一种基于模式匹配规则的对象权限控制可能更适合。例如判断用户是否对 Id 为 123 的文章具有编辑的权限，代码可能是这样的：</p>
-
-<pre><code>&lt;?php
-
-// 假设articleId是动态获取的
-$articleId = 123;
-
-if ($user-&gt;can(&quot;article:edit:{$articleId}&quot;)) {
-    // ...
-}
-
-</code></pre>
-
-<p>而给用户授权则有多种方式可以选择：</p>
-
-<pre><code>&lt;?php
-
-// 允许用户编辑Id为123的文章
-$user-&gt;grant(&#39;article:edit:123&#39;);
-
-// 使用通配符，允许用户编辑所有文章
-$user-&gt;grant(&#39;article:edit:*&#39;);
-
-</code></pre>
-
-<p>虽然不及 Yii 方案的灵活，但某些场景下这样就够用了。</p>
-
-<p>如果大家还有更好的方案，欢迎在评论中提出。</p>
-
-<h3 id="toc_13">基于属性的权限验证（ABAC: Attribute-Based Access Control）</h3>
-
-<p>ABAC 被一些人称为是权限系统设计的未来。</p>
-
-<p>不同于常见的将用户通过某种方式关联到权限的方式，ABAC 则是通过动态计算一个或一组属性来是否满足某种条件来进行授权判断（可以编写简单的逻辑）。属性通常来说分为四类：用户属性（如用户年龄），环境属性（如当前时间），操作属性（如读取）和对象属性（如一篇文章，又称资源属性），所以理论上能够实现非常灵活的权限控制，几乎能满足所有类型的需求。</p>
-
-<p>例如规则：“允许所有班主任在上课时间自由进出校门”这条规则，其中，“班主任”是用户的角色属性，“上课时间”是环境属性，“进出”是操作属性，而 “校门” 就是对象属性了。为了实现便捷的规则设置和规则判断执行，ABAC 通常有配置文件（XML、YAML 等）或 DSL 配合规则解析引擎使用。XACML（eXtensible Access Control Markup Language）是 ABAC 的一个实现，但是该设计过于复杂，我还没有完全理解，故不做介绍。</p>
-
-<p>总结一下，ABAC 有如下特点：</p>
-
-<ol>
-<li> 集中化管理</li>
-<li> 可以按需实现不同颗粒度的权限控制</li>
-<li> 不需要预定义判断逻辑，减轻了权限系统的维护成本，特别是在需求经常变化的系统中</li>
-<li> 定义权限时，不能直观看出用户和对象间的关系</li>
-<li> 规则如果稍微复杂一点，或者设计混乱，会给管理者维护和追查带来麻烦</li>
-<li> 权限判断需要实时执行，规则过多会导致性能问题</li>
-</ol>
-
-<p>既然 ABAC 这么好，那最流行的为什么还是 RBAC 呢？</p>
-
-<p>我认为主要还是因为大部分系统对权限控制并没有过多的需求，而且 ABAC 的管理相对来说太复杂了。<a href="https://link.jianshu.com?t=http://blog.kubernetes.io/2017/04/rbac-support-in-kubernetes.html">Kubernetes 便因为 ABAC 太难用，在<code>1.8</code>版本里引入了 RBAC 的方案</a>。</p>
-
-<blockquote>
-<p>ABAC 有时也被称为 PBAC（Policy-Based Access Control）或 CBAC（Claims-Based Access Control）。</p>
-</blockquote>
-
-<h2 id="toc_14">结语</h2>
-
-<p>权限系统设计可谓博大精深，这篇文章只是介绍了一点皮毛。</p>
-
-<p>随着人类在信息化道路上越走越远，权限系统的设计也在不断创新，但目前好像处在了平台期。</p>
-
-<p>可能因为在 RBAC 到 ABAC 之间有着巨大的鸿沟，无法轻易跨越，也可能是一些基于 RBAC 的微创新方案还不够规范化从而做到普及。不过在服务化架构的浪潮下，未来这一块必然有极高的需求，也许巨头们已经开始布局了。</p>
-
-<h2 id="toc_15">参考文档</h2>
-
-<p><a href="https://link.jianshu.com?t=https://support.microsoft.com/en-us/help/949608/changes-to-the-default-ntfs-discretionary-access-control-list-dacl-set">NTFS 文件系统权限</a></p>
-
-<p><a href="https://link.jianshu.com?t=https://docs.oracle.com/cd/E56344_01/html/E53956/rbac-28.html#scrolltoc">Solaris 权限模型</a></p>
-
-<p><a href="https://link.jianshu.com?t=https://baike.baidu.com/item/%E8%AE%BF%E9%97%AE%E6%8E%A7%E5%88%B6/8545517">百度百科：访问控制</a></p>
-
-<p><a href="https://link.jianshu.com?t=https://www.centos.org/docs/5/html/Deployment_Guide-en-US/sec-mls-ov.html">Red Hat: Multi-Level Security (MLS)</a></p>
-
-<p><a href="https://link.jianshu.com?t=http://files.cnblogs.com/files/Wenzy/an_introduction_to_rbac.pdf">冰云：An Introduction To Role-Based Access Control</a></p>
-
-<p><a href="https://link.jianshu.com?t=https://csrc.nist.gov/projects/role-based-access-control">NIST: Role-Based Access Control</a></p>
-
-<p><a href="https://link.jianshu.com?t=https://docs.mongodb.com/manual/core/authorization/">MongoDB RBAC</a></p>
-
-<p><a href="https://link.jianshu.com?t=https://stackoverflow.com/questions/7770728/group-vs-role-any-real-difference">Stackoverflow: Group vs role Any real difference?</a></p>
-
-<p><a href="https://link.jianshu.com?t=http://www.yiiframework.com/wiki/136/getting-to-understand-hierarchical-rbac-scheme/">Yii: Getting to Understand Hierarchical RBAC Scheme</a></p>
-
-<p><a href="https://link.jianshu.com?t=http://www.informit.com/articles/article.aspx?p=782116">Role-Based Access Control in Computer Security</a></p>
-
-<p><a href="https://link.jianshu.com?t=http://www.cis.syr.edu/%7Ewedu/Teaching/cis643/LectureNotes_New/RBAC.pdf">(Syracuse University: Role-Based Access Control (RBAC)</a></p>
-
-<p><a href="https://link.jianshu.com?t=http://www.yiiframework.com/doc-2.0/guide-security-authorization.html">Yii 2.0 Guide</a></p>
-
-<p><a href="https://link.jianshu.com?t=https://en.wikipedia.org/wiki/Computer_access_control">WIKIPEDIA: Computer access control</a></p>
-
-]]></content>
-  </entry>
-  
-  <entry>
-    <title type="html"><![CDATA[“Exit Trap” 让你的 Bash 脚本更稳固可靠]]></title>
-    <link href="http://panlw.github.io/15263920307765.html"/>
-    <updated>2018-05-15T21:47:10+08:00</updated>
-    <id>http://panlw.github.io/15263920307765.html</id>
-    <content type="html"><![CDATA[
-<blockquote>
-<p><a href="https://linux.cn/article-9639-1.html">https://linux.cn/article-9639-1.html</a> 2017-02-17<br/>
-作者：<a href="http://redsymbol.net/">aaron maxwell</a> 译者：<a href="https://github.com/Dotcra">Dotcra</a> 校对：<a href="https://github.com/wxy">wxy</a><br/>
-作者简介：美国加利福尼亚旧金山的作家，软件工程师，企业家。<a href="https://www.amazon.com/d/0692878971">Powerful Python</a> 的作者，他的 <a href="https://powerfulpython.com/blog/">blog</a>。</p>
-</blockquote>
-
-<p>有个简单实用的技巧可以让你的 bash 脚本更稳健 -- 确保总是执行必要的收尾工作，哪怕是在发生异常的时候。要做到这一点，秘诀就是 bash 提供的一个叫做 EXIT 的伪信号，你可以 <a href="http://www.gnu.org/software/bash/manual/bashref.html#index-trap">trap</a> 它，当脚本因为任何原因退出时，相应的命令或函数就会执行。我们来看看它是如何工作的。</p>
-
-<p>基本的代码结构看起来像这样：</p>
-
-<pre><code class="language-sh">#!/bin/bash
-function finish {
-  # 你的收尾代码
-}
-trap finish EXIT
-</code></pre>
-
-<p>你可以把任何你觉得务必要运行的代码放在这个 <code>finish</code> 函数里。一个很好的例子是：创建一个临时目录，事后再删除它。</p>
-
-<pre><code class="language-sh">#!/bin/bash
-scratch=$(mktemp -d -t tmp.XXXXXXXXXX)
-function finish {
-  rm -rf &quot;$scratch&quot;
-}
-trap finish EXIT
-</code></pre>
-
-<p>这样，在你的核心代码中，你就可以在这个 <code>$scratch</code> 目录里下载、生成、操作中间或临时数据了。<sup><a href="http://redsymbol.net/articles/bash-exit-traps/#footnote-1">注 1</a></sup></p>
-
-<pre><code class="language-sh"># 下载所有版本的 linux 内核…… 为了科学研究！
-for major in {1..4}; do
-  for minor in {0..99}; do
-    for patchlevel in {0..99}; do
-      tarball=&quot;linux-${major}-${minor}-${patchlevel}.tar.bz2&quot;
-      curl -q &quot;http://kernel.org/path/to/$tarball&quot; -o &quot;$scratch/$tarball&quot; || true
-      if [ -f &quot;$scratch/$tarball&quot; ]; then
-        tar jxf &quot;$scratch/$tarball&quot;
-      fi
-    done
-  done
-done
-# 整合成单个文件
-# 复制到目标位置
-cp &quot;$scratch/frankenstein-linux.tar.bz2&quot; &quot;$1&quot;
-# 脚本结束， scratch 目录自动被删除
-</code></pre>
-
-<p>比较一下如果不用 <code>trap</code> ，你是怎么删除 <code>scratch</code> 目录的：</p>
-
-<pre><code class="language-sh">#!/bin/bash
-# 别这样做！
-
-scratch=$(mktemp -d -t tmp.XXXXXXXXXX)
-
-# 在这里插入你的几十上百行代码
-
-# 都搞定了，退出之前把目录删除
-rm -rf &quot;$scratch&quot;
-</code></pre>
-
-<p>这有什么问题么？很多：</p>
-
-<ul>
-<li>  如果运行出错导致脚本提前退出， <code>scratch</code> 目录及里面的内容不会被删除。这会导致资料泄漏，可能引发安全问题。</li>
-<li><p>如果这个脚本的设计初衷就是在脚本末尾以前退出，那么你必须手动复制粘贴 <code>rm</code> 命令到每一个出口。</p></li>
-<li><p>这也给维护带来了麻烦。如果今后在脚本某处添加了一个 <code>exit</code> ，你很可能就忘了加上删除操作 -- 从而制造潜在的安全漏洞。</p></li>
-</ul>
-
-<h3 id="toc_0">无论如何，服务要在线</h3>
-
-<p>另外一个场景： 想象一下你正在运行一些自动化系统运维任务，要临时关闭一项服务，最后这项服务需要重启，而且要万无一失，即使脚本运行出错。那么你可以这样做：</p>
-
-<pre><code class="language-sh">function finish {
-  # 重启服务
-  sudo /etc/init.d/something start
-}
-trap finish EXIT
-sudo /etc/init.d/something stop
-# 主要任务代码
-
-# 脚本结束，执行 finish 函数重启服务
-</code></pre>
-
-<p>一个具体的实例：比如 Ubuntu 服务器上运行着 MongoDB ，你要为 crond 写一个脚本来临时关闭服务并做一些日常维护工作。你应该这样写：</p>
-
-<pre><code class="language-sh">function finish {
-  # 重启服务
-  sudo service mongdb start
-}
-trap finish EXIT
-# 关闭 mongod 服务
-sudo service mongdb stop
-# （如果 mongod 配置了 fork ，比如 replica set ，你可能需要执行 “sudo killall --wait /usr/bin/mongod”）
-</code></pre>
-
-<h3 id="toc_1">控制开销</h3>
-
-<p>有一种情况特别能体现 EXIT <code>trap</code> 的价值：如果你的脚本运行过程中需要初始化一下成本高昂的资源，结束时要确保把它们释放掉。比如你在 AWS (Amazon Web Services) 上工作，要在脚本中创建一个镜像。</p>
-
-<p>（名词解释: 在亚马逊云上的运行的服务器叫 “<a href="http://aws.amazon.com/ec2/">实例</a>”。实例从<ruby>亚马逊机器镜像 <rt>Amazon Machine Image</rt></ruby> 创建而来，通常被称为 “AMI” 或 “镜像” 。AMI 相当于某个特殊时间点的服务器快照。）</p>
-
-<p>我们可以这样创建一个自定义的 AMI ：</p>
-
-<ol>
-<li>基于一个基准 AMI 运行一个实例（例如，启动一个服务器）。</li>
-<li>在实例中手动或运行脚本来做一些修改。</li>
-<li>用修改后的实例创建一个镜像。</li>
-<li>如果不再需要这个实例，可以将其删除。</li>
-</ol>
-
-<p>最后一步<strong>相当重要</strong>。如果你的脚本没有把实例删除掉，它会一直运行并计费。（到月底你的账单让你大跌眼镜时，恐怕哭都来不及了！）</p>
-
-<p>如果把 AMI 的创建封装在脚本里，我们就可以利用 <code>trap</code> EXIT 来删除实例了。我们还可以用上 EC2 的命令行工具：</p>
-
-<pre><code class="language-sh">#!/bin/bash
-# 定义基准 AMI 的 ID
-ami=$1
-# 保存临时实例的 ID
-instance=&#39;&#39;
-# 作为 IT 人，让我们看看 scratch 目录的另类用法
-scratch=$(mktemp -d -t tmp.XXXXXXXXXX)
-function finish {
-  if [ -n &quot;$instance&quot; ]; then
-    ec2-terminate-instances &quot;$instance&quot;
-  fi
-  rm -rf &quot;$scratch&quot;
-}
-trap finish EXIT
-# 创建实例，将输出(包含实例 ID )保存到 scratch 目录下的文件里
-ec2-run-instances &quot;$ami&quot; &gt; &quot;$scratch/run-instance&quot;
-# 提取实例 ID
-instance=$(grep &#39;^INSTANCE&#39; &quot;$scratch/run-instance&quot; | cut -f 2)
-</code></pre>
-
-<p>脚本执行到这里，实例（EC2 服务器）已经开始运行 <sup><a href="http://redsymbol.net/articles/bash-exit-traps/#footnote-2">注 2</a>。接下来你可以做任何事情：在实例中安装软件，修改配置文件等，然后为最终版本创建一个镜像。实例会在脚本结束时被删除</sup> -- 即使脚本因错误而提前退出。（请确保实例创建成功后再运行业务代码。）</p>
-
-<h3 id="toc_2">更多应用</h3>
-
-<p>这篇文章只讲了些皮毛。我已经使用这个 bash 技巧很多年了，现在还能不时发现一些有趣的用法。你也可以把这个方法应用到你自己的场景中，从而提升你的 bash 脚本的可靠性。</p>
-
-<h3 id="toc_3">尾注</h3>
-
-<ul>
-<li>  注 1. <code>mktemp</code> 的选项 <code>-t</code> 在 Linux 上是可选的，在 OS X 上是必需的。带上此选项可以让你的脚本有更好的可移植性。</li>
-<li>  注 2. 如果只是为了获取实例 ID ，我们不用创建文件，直接写成 <code>instance=$(ec2-run-instances &quot;$ami&quot; | grep &#39;^INSTANCE&#39; | cut -f 2)</code> 就可以。但把输出写入文件可以记录更多有用信息，便于调试 ，代码可读性也更强。</li>
-</ul>
 
 ]]></content>
   </entry>

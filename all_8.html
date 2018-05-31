@@ -105,264 +105,169 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15274396845490.html">
+                <a class="clearlink" href="15277821532847.html">
                 
-                  <h1>面试-线程池的成长之路</h1>
+                  <h1>Aspect-Oriented Programming in Spring Boot Part 2: Spring JDK Proxies vs CGLIB vs AspectJ</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
-                        	<p>尹吉欢 投稿 纯洁的微笑  3天前</p>
-
-<blockquote>
-<p><a href="https://mp.weixin.qq.com/s/5dexEENTqJWXN_17c6Lz6A">原文地址</a></p>
+                        	<blockquote>
+<p>Justin Wilson May 9, 2016<br/>
+<a href="https://www.credera.com/blog/technology-insights/open-source-technology-insights/aspect-oriented-programming-in-spring-boot-part-2-spring-jdk-proxies-vs-cglib-vs-aspectj/">https://www.credera.com/blog/technology-insights/open-source-technology-insights/aspect-oriented-programming-in-spring-boot-part-2-spring-jdk-proxies-vs-cglib-vs-aspectj/</a></p>
 </blockquote>
 
-<h1 id="toc_0"><strong>背景</strong></h1>
+<p>This is the second entry in a three-part series on aspect-oriented programming (AOP) with Spring Boot. This entry covers the differences between using AOP with Spring JDK proxies, CGLIB proxes, and AspectJ load-time weaving (LTW). The <a href="https://www.credera.com/blog/technology-insights/open-source-technology-insights/aspect-oriented-programming-in-spring-boot-part-1-making-your-own-hystrix-aspect/">first entry</a> covered how to write your own aspect, and the <a href="https://www.credera.com/blog/technology-insights/open-source-technology-insights/aspect-oriented-programming-in-spring-boot-part-3-setting-up-aspectj-load-time-weaving/">last entry</a> will contain detailed AspectJ LTW setup information.</p>
 
-<p>相信大家在面试过程中遇到面试官问线程的很多，线程过后就是线程池了。从易到难，都是这么个过程，还有就是确实很多人在工作中接触线程池比较少，最多的也就是创建一个然后往里面提交线程，对于一些经验很丰富的面试官来说，一下就可以问出很多线程池相关的问题，与其被问的晕头转向，还不如好好学习。此时不努力更待何时。</p>
+<p><strong>How Can You Call Code Without Writing Its Invocation?</strong></p>
 
-<h1 id="toc_1">什么是线程池？</h1>
+<p>The Spring framework supports two main methods of AOP—Spring proxies and AspectJ. Both methods allow code snippets called aspects to be injected or “woven” around existing code by targeting specific join points. However, even though both AOP styles can use the same code for their aspects, the way in which they weave those aspects into existing code is completely different.</p>
 
-<p>线程池是一种多线程处理形式，处理过程中将任务提交到线程池，任务的执行交由线程池来管理。</p>
+<p><strong>Spring Proxies: JDK and CGLIB Styles</strong></p>
 
-<p>如果每个请求都创建一个线程去处理，那么服务器的资源很快就会被耗尽，使用线程池可以减少创建和销毁线程的次数，每个工作线程都可以被重复利用，可执行多个任务。</p>
+<p>Every Spring bean (heretofore referred to as just a “bean”) can be considered a managed component. Whenever you declare a bean in XML or use @Component, @Service, or @Repository on a class targeted by Spring’s annotation component scanning (which is enabled by default for Spring Boot), that class is instantiated and managed as a singleton bean by the Spring framework. (It’s technically possible to use different scoping mechanisms to avoid singletons, but those won’t be covered here; see <a href="https://www.credera.com/blog/technology-insights/java/dependency-injection-part-3-spring/">my blog series on dependency injection</a> for more information.) Spring can inject references to that bean into other beans that request it using the @Autowired annotation (or @Resource or @Inject annotations) or beans that use “ref” in their XML definition. However, Spring doesn’t actually provide a literal reference to the original bean when it’s injected—it wraps the bean in a proxy class to give Spring a chance to weave in AOP code if needed.</p>
 
-<p>如果用生活中的列子来说明，我们可以把线程池当做一个客服团队，如果同时有 1000 个人打电话进行咨询，按照正常的逻辑那就是需要 1000 个客服接听电话，服务客户。现实往往需要考虑到很多层面的东西，比如：资源够不够，招这么多人需要费用比较多。正常的做法就是招 100 个人成立一个客服中心，当有电话进来后分配没有接听的客服进行服务，如果超出了 100 个人同时咨询的话，提示客户等待，稍后处理，等有客服空出来就可以继续服务下一个客户，这样才能达到一个资源的合理利用，实现效益的最大化。</p>
+<p>There are two ways Spring can make proxies:</p>
 
-<h1 id="toc_2">Java 中的线程池种类</h1>
+<p>1. By default, Spring will try to use <a href="http://www.ibm.com/developerworks/java/library/j-jtp08305/index.html">JDK dynamic proxy libraries</a> to create a new instance of the injected bean’s interface which will act as a delegate to that bean. This behavior is demonstrated by the <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-proxy/src/test/java/org/jdw/blog/ProxyHystrixAspectTest.java#L36">unit tests</a> that use injected beans with interfaces in the <a href="https://github.com/jwilsoncredera/spring-aop-blog/tree/master/spring-aop-proxy">spring-aop-proxy sample project</a>.</p>
 
-<p><strong>1. newSingleThreadExecutor</strong></p>
+<p><a href="https://www.credera.com/wp-content/uploads/2016/04/Picture2-4.png"><img src="https://www.credera.com/wp-content/uploads/2016/04/xPicture2-4.png.pagespeed.ic.dhHNYptsoi.webp" alt="Picture2"/></a></p>
 
-<p>创建方式：</p>
+<p>2. If CGLIB is available on the classpath (which comes by default with Spring Boot) and there is no interface to implement a proxy with, CGLIB will be used to make a new object that extends the target bean’s class and acts as a delegate to that original bean. This behavior is also demonstrated by a <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-proxy/src/test/java/org/jdw/blog/ProxyHystrixAspectTest.java#L65">unit test</a> that uses an injected bean without an interface in the <a href="https://github.com/jwilsoncredera/spring-aop-blog/tree/master/spring-aop-proxy">spring-aop-proxy sample project</a>.</p>
 
-<pre><code>ExecutorService pool = Executors.newSingleThreadExecutor();
+<p><a href="https://www.credera.com/wp-content/uploads/2016/04/Picture3-3.png"><img src="https://www.credera.com/wp-content/uploads/2016/04/xPicture3-3.png.pagespeed.ic.W2zdwkeosT.webp" alt="Picture3"/></a></p>
+
+<p>By default, Spring Boot will use JDK proxies if the bean has an interface and CGLIB proxies if the bean does not. If you try to inject a bean using its concrete class and that bean has an interface, Spring will fail to find the bean with a NoSuchBeanDefinitionException because it will fail to create a JDK proxy using the concrete class. In the first example above, that would be using this:</p>
+
+<p>| </p>
+
+<pre><code class="language-java">@Autowired
+private ImplForInterface bean;
 </code></pre>
 
-<p>一个单线程的线程池。这个线程池只有一个线程在工作，也就是相当于单线程串行执行所有任务。如果这个唯一的线程因为异常结束，那么会有一个新的线程来替代它。此线程池保证所有任务的执行顺序按照任务的提交顺序执行。</p>
+<p>Instead of this:</p>
 
-<p>使用方式：</p>
-
-<pre><code>import java.util.concurrent.ExecutorService;import java.util.concurrent.Executors;public class ThreadPool {    public static void main(String[] args) {        ExecutorService pool = Executors.newSingleThreadExecutor();        for (int i = 0; i &lt; 10; i++) {            pool.execute(() -&gt; {                System.out.println(Thread.currentThread().getName() + &quot;\t开始发车啦....&quot;);            });        }    }}
+<pre><code class="language-java">@Autowired
+private Interface bean;
 </code></pre>
 
-<p>输出结果如下：</p>
+<p>To get around this limitation and be able to inject concrete classes that have interfaces, you have to tell Spring to always use CGLIB for all beans. This will disable Spring’s use of JDK proxies entirely, making Spring always extend concrete classes even if an interface is injected. To enable this in Spring Boot, just add the following Java property, as seen in the <a href="https://github.com/jwilsoncredera/spring-aop-blog/tree/master/spring-aop-proxy-cglib">spring-aop-proxy-cglib</a> sample project’s <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-proxy-cglib/src/main/resources/application.properties">application.properties</a> file:</p>
 
-<pre><code>pool-1-thread-1    开始发车啦....pool-1-thread-1    开始发车啦....pool-1-thread-1    开始发车啦....pool-1-thread-1    开始发车啦....pool-1-thread-1    开始发车啦....pool-1-thread-1    开始发车啦....pool-1-thread-1    开始发车啦....pool-1-thread-1    开始发车啦....pool-1-thread-1    开始发车啦....pool-1-thread-1    开始发车啦....
-</code></pre>
+<p>spring.aop.proxy-target-class=true</p>
 
-<p>从输出的结果我们可以看出，一直只有一个线程在运行。</p>
+<p><strong>Spring Proxies: Annotations on Interfaces</strong></p>
 
-<p>2.<strong>newFixedThreadPool</strong></p>
-
-<p>创建方式：</p>
-
-<pre><code>ExecutorService pool = Executors.newFixedThreadPool(10);
-</code></pre>
-
-<p>创建固定大小的线程池。每次提交一个任务就创建一个线程，直到线程达到线程池的最大大小。线程池的大小一旦达到最大值就会保持不变，如果某个线程因为执行异常而结束，那么线程池会补充一个新线程。</p>
-
-<p>使用方式：</p>
-
-<pre><code>import java.util.concurrent.ExecutorService;import java.util.concurrent.Executors;public class ThreadPool {    public static void main(String[] args) {        ExecutorService pool = Executors.newFixedThreadPool(10);        for (int i = 0; i &lt; 10; i++) {            pool.execute(() -&gt; {                System.out.println(Thread.currentThread().getName() + &quot;\t开始发车啦....&quot;);            });        }    }}
-</code></pre>
-
-<p>输出结果如下：</p>
-
-<pre><code>pool-1-thread-1    开始发车啦....pool-1-thread-4    开始发车啦....pool-1-thread-3    开始发车啦....pool-1-thread-2    开始发车啦....pool-1-thread-6    开始发车啦....pool-1-thread-7    开始发车啦....pool-1-thread-5    开始发车啦....pool-1-thread-8    开始发车啦....pool-1-thread-9    开始发车啦....pool-1-thread-10 开始发车啦....
-</code></pre>
-
-<p><strong>3. newCachedThreadPool</strong></p>
-
-<p>创建方式：</p>
-
-<pre><code>ExecutorService pool = Executors.newCachedThreadPool();
-</code></pre>
-
-<p>创建一个可缓存的线程池。如果线程池的大小超过了处理任务所需要的线程，那么就会回收部分空闲的线程，当任务数增加时，此线程池又添加新线程来处理任务。</p>
-
-<p>使用方式如上 2 所示。</p>
-
-<p>4.<strong>newScheduledThreadPool</strong></p>
-
-<p>创建方式：</p>
-
-<pre><code>ScheduledExecutorService pool = Executors.newScheduledThreadPool(10);
-</code></pre>
-
-<p>此线程池支持定时以及周期性执行任务的需求。</p>
-
-<p>使用方式：</p>
-
-<pre><code>import java.util.concurrent.Executors;import java.util.concurrent.ScheduledExecutorService;import java.util.concurrent.TimeUnit;public class ThreadPool {    public static void main(String[] args) {        ScheduledExecutorService pool = Executors.newScheduledThreadPool(10);        for (int i = 0; i &lt; 10; i++) {            pool.schedule(() -&gt; {                System.out.println(Thread.currentThread().getName() + &quot;\t开始发车啦....&quot;);            }, 10, TimeUnit.SECONDS);        }    }}
-</code></pre>
-
-<p>上面演示的是延迟 10 秒执行任务, 如果想要执行周期性的任务可以用下面的方式，每秒执行一次</p>
-
-<pre><code>//pool.scheduleWithFixedDelay也可以pool.scheduleAtFixedRate(() -&gt; {                System.out.println(Thread.currentThread().getName() + &quot;\t开始发车啦....&quot;);}, 1, 1, TimeUnit.SECONDS);
-</code></pre>
-
-<p>5.<strong>newWorkStealingPool</strong></p>
-
-<p>newWorkStealingPool 是 jdk1.8 才有的，会根据所需的并行层次来动态创建和关闭线程，通过使用多个队列减少竞争，底层用的 ForkJoinPool 来实现的。ForkJoinPool 的优势在于，可以充分利用多 cpu，多核 cpu 的优势，把一个任务拆分成多个 “小任务”，把多个“小任务” 放到多个处理器核心上并行执行；当多个 “小任务” 执行完成之后，再将这些执行结果合并起来即可。</p>
-
-<h1 id="toc_3">说说线程池的拒绝策略</h1>
-
-<p>当请求任务不断的过来，而系统此时又处理不过来的时候，我们需要采取的策略是拒绝服务。RejectedExecutionHandler 接口提供了拒绝任务处理的自定义方法的机会。在 ThreadPoolExecutor 中已经包含四种处理策略。</p>
+<p>Consider an aspect that’s used to weave code around annotated methods (such as the <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-common/src/main/java/org/jdw/blog/common/aspect/HystrixAspect.java">HystrixAspect</a> that targets <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-common/src/main/java/org/jdw/blog/common/annotation/HystrixWrapper.java">@HystrixWrapper</a> annotated methods from part one in this series).</p>
 
 <ul>
-<li>  AbortPolicy 策略：该策略会直接抛出异常，阻止系统正常工作。</li>
-</ul>
-
-<pre><code>public static class AbortPolicy implements RejectedExecutionHandler {    public AbortPolicy() { }    public void rejectedExecution(Runnable r, ThreadPoolExecutor e) {        throw new RejectedExecutionException(&quot;Task &quot; + r.toString() +                                                 &quot; rejected from &quot; +                                                 e.toString());    }}
-</code></pre>
+<li>  When a Spring JDK proxy is used, the join point annotation should be present on both the interface’s method and the concrete class’s method for the aspect to trigger correctly.
 
 <ul>
-<li>  CallerRunsPolicy 策略：只要线程池未关闭，该策略直接在调用者线程中，运行当前的被丢弃的任务。</li>
-</ul>
-
-<pre><code>public static class CallerRunsPolicy implements RejectedExecutionHandler {    public CallerRunsPolicy() { }    public void rejectedExecution(Runnable r, ThreadPoolExecutor e) {        if (!e.isShutdown()) {                r.run();        }    }}
-</code></pre>
+<li>  The <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-proxy/src/test/java/org/jdw/blog/ProxyHystrixAspectTest.java#L72">second to last test in the spring-aop-proxy test class</a> proves that both the interface and the concrete class require the join point annotation when a JDK proxy is used.</li>
+</ul></li>
+<li>  When a CGLIB proxy is used, the concrete implementation must have the annotation on its method for the aspect to trigger.
 
 <ul>
-<li>  DiscardOleddestPolicy 策略： 该策略将丢弃最老的一个请求，也就是即将被执行的任务，并尝试再次提交当前任务。</li>
+<li>  The <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-proxy-cglib/src/test/java/org/jdw/blog/ProxyCglibHystrixAspectTest.java#L96">second to last test in the spring-aop-proxy-cglib test class</a> proves that the interface’s join point annotations are ignored when CGLIB is used.</li>
+</ul></li>
 </ul>
 
-<pre><code>public static class DiscardOldestPolicy implements RejectedExecutionHandler {    public DiscardOldestPolicy() { }    public void rejectedExecution(Runnable r, ThreadPoolExecutor e) {        if (!e.isShutdown()) {            e.getQueue().poll();            e.execute(r);        }    }}
+<p>The <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-proxy/src/test/java/org/jdw/blog/ProxyHystrixAspectTest.java#L48">JDK proxy unit test that expects an <strong>InaccessablePointcutAnnotationException</strong></a> is of particular interest. It demonstrates that if you’re using a JDK proxy and the join point annotation is present on the concrete implementation of a bean and not on its interface, the aspect will still trigger but it won’t be able to find the annotation that was used to trigger it. This prevents us from finding the Hystrix command group key that should come from the wrapped method’s annotation, as shown in the bold parts of the example below. (<a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-common/src/main/java/org/jdw/blog/common/annotation/HystrixWrapper.java">This</a> is the GitHub link for the @HystrixWrapper annotation, and <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-common/src/main/java/org/jdw/blog/common/aspect/HystrixAspect.java">this</a> is the link for the HystrixAspect.)</p>
+
+<pre><code class="language-java">@Retention(RetentionPolicy.RUNTIME)
+@Target(ElementType.METHOD)
+public @interface HystrixWrapper {
+  public String commandGroupKey();
+}
+@Aspect
+@Component
+public class HystrixAspect {
+
+  @Around(&quot;within(org.jdw.blog..*) &amp;amp;&amp;amp; &quot;  &quot;@annotation(org.jdw.blog.common.annotation.HystrixWrapper)&quot;)
+  public Object around(final ProceedingJoinPoint joinPoint) {
+
+    Method method = ((MethodSignature) joinPoint.getSignature()).getMethod();
+    HystrixWrapper annotation = method.getAnnotation(HystrixWrapper.class);
+    if (annotation == null) {      // Can occur when not using CCGLIB-style &#39;subclass&#39; proxies,
+      // when using an interface that has a concrete class
+      // that has the annotation.
+      throw new InaccessablePointcutAnnotationException();    }
+
+    // Hystrix invocation code goes here, see GitHub for details. 
+    // [https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-common/src/main/java/org/jdw/blog/common/aspect/HystrixAdvice.java](https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-common/src/main/java/org/jdw/blog/common/aspect/HystrixAdvice.java)
+  }
+}
 </code></pre>
 
-<ul>
-<li>  DiscardPolicy 策略：该策略默默的丢弃无法处理的任务，不予任何处理。</li>
-</ul>
+<p><strong>I recommend always using CGLIB to avoid this edge case.</strong> Doing so makes all Spring proxy behavior consistent since JDK proxies will never be used, it allows the injection of concrete implementations of beans which can be useful for unit tests, and it negates the need to duplicate join point annotations on interfaces and concrete classes (which could easily get out of sync). As a reminder, to always use CGLIB, just set the “spring.aop.proxy-target-class” property to true.</p>
 
-<pre><code>public static class DiscardPolicy implements RejectedExecutionHandler {    public DiscardPolicy() { }    public void rejectedExecution(Runnable r, ThreadPoolExecutor e) {    }}
+<p>Before using CGLIB, ensure your codebase always uses pre-existing AOP annotations (such as @Transactional) on concrete classes instead of only on interfaces. Interface-only AOP annotations will be ignored when CGLIB is enabled. Changing when @Transactional aspects are triggered could lead to items not being saved to the database, or poor performance due to transactional boundary shifting.</p>
+
+<p><strong>Spring Proxies: Annotations in Concrete Classes</strong></p>
+
+<p>Both JDK- and CGLIB-style Spring proxies have one glaring weakness—AOP can only be invoked by calling a method on an injected bean. Consider a bean with these two methods (all of the classes in <a href="https://github.com/jwilsoncredera/spring-aop-blog/tree/master/spring-aop-common/src/main/java/org/jdw/blog/common/executable">this package</a> qualify):</p>
+
+<pre><code class="language-java">@HystrixWrapper(commandGroupKey = &quot;blog&quot;)
+public long hystrixWrappedGetCurrentThreadId() {
+  return getCurrentThreadId();
+}
+
+public long nestedHystrixWrappedGetCurrentThreadId() {
+  return hystrixWrappedGetCurrentThreadId();
+}
 </code></pre>
 
-<p>除了 JDK 默认为什么提供的四种拒绝策略，我们可以根据自己的业务需求去自定义拒绝策略，自定义的方式很简单，直接实现 RejectedExecutionHandler 接口即可</p>
+<p>The second method cannot trigger the HystrixAspect when calling the first method because it invokes the first method directly without going through a Spring proxy—the bean is just calling one of its own methods. Spring doesn’t have any opportunities to inject the aspect code. This is demonstrated by every other test in both the <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-proxy/src/test/java/org/jdw/blog/ProxyHystrixAspectTest.java#L42">spring-aop-proxy test class</a> and <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-proxy-cglib/src/test/java/org/jdw/blog/ProxyCglibHystrixAspectTest.java#L41">spring-aop-proxy-cglib test class</a> (all the tests that start with “testNestedHystrixWrappedMethod”).</p>
 
-<p>比如 Spring integration 中就有一个自定义的拒绝策略 CallerBlocksPolicy，将任务插入到队列中，直到队列中有空闲并插入成功的时候，否则将根据最大等待时间一直阻塞，直到超时。</p>
+<p>However, when AspectJ is used instead of Spring proxies, the HystrixAspect <u>does</u> trigger when a bean calls its own join point annotated method. This is shown by every other test in the <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-aspectj-ltw/src/test/java/org/jdw/blog/AspectJHystrixAspectTest.java#L41">spring-aop-aspectj-ltw test class</a> (which also begin with “testNestedHystrixWrappedMethod”)—every scenario that fails to invoke the Hystrix aspect for Spring proxies succeeds for AspectJ (except for <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-aspectj-ltw/src/test/java/org/jdw/blog/AspectJHystrixAspectTest.java#L101">one specific scenario</a> which will be covered later). How can this be?</p>
 
-<pre><code>package org.springframework.integration.util;import java.util.concurrent.BlockingQueue;import java.util.concurrent.RejectedExecutionException;import java.util.concurrent.RejectedExecutionHandler;import java.util.concurrent.ThreadPoolExecutor;import java.util.concurrent.TimeUnit;import org.apache.commons.logging.Log;import org.apache.commons.logging.LogFactory;public class CallerBlocksPolicy implements RejectedExecutionHandler {    private static final Log logger = LogFactory.getLog(CallerBlocksPolicy.class);    private final long maxWait;    /**     * @param maxWait The maximum time to wait for a queue slot to be     * available, in milliseconds.     */    public CallerBlocksPolicy(long maxWait) {        this.maxWait = maxWait;    }    @Override    public void rejectedExecution(Runnable r, ThreadPoolExecutor executor) {        if (!executor.isShutdown()) {            try {                BlockingQueue&lt;Runnable&gt; queue = executor.getQueue();                if (logger.isDebugEnabled()) {                    logger.debug(&quot;Attempting to queue task execution for &quot; + this.maxWait + &quot; milliseconds&quot;);                }                if (!queue.offer(r, this.maxWait, TimeUnit.MILLISECONDS)) {                    throw new RejectedExecutionException(&quot;Max wait time expired to queue task&quot;);                }                if (logger.isDebugEnabled()) {                    logger.debug(&quot;Task execution queued&quot;);                }            }            catch (InterruptedException e) {                Thread.currentThread().interrupt();                throw new RejectedExecutionException(&quot;Interrupted&quot;, e);            }        }        else {            throw new RejectedExecutionException(&quot;Executor has been shut down&quot;);        }    }}
+<p><strong>AspectJ</strong></p>
+
+<p>AspectJ extends the Java compiler to weave aspect code directly into join points. It doesn’t require Spring to run. Instead, you need to use <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-aspectj-ltw/README.md">JVM arguments</a> to enable a compiler extension along with an <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-aspectj-ltw/src/main/resources/META-INF/aop.xml">aop.xml file</a> and <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-aspectj-ltw/src/main/java/org/jdw/blog/config/AspectJConfig.java">another configuration file</a> which will be covered in part three of this series.</p>
+
+<p>This has two important ramifications. First, if you’re using AspectJ, you don’t need to inject Spring beans to invoke AOP functionality. Technically you don’t even need Spring beans for AOP at all when AspectJ is enabled—you could manually create a new object and invoke AOP code on it right away if it had join points your aspects could target.</p>
+
+<p>Second, if an object calls its own methods it can trigger AOP code, unlike AOP using Spring proxies. Here’s a visual example of how this AspectJ behavior would look if the @HystrixAspect used @Before instead of @Around to inject code in front of its join point targets instead of completely wrapping them (because it’s easier to depict):</p>
+
+<p><a href="https://www.credera.com/wp-content/uploads/2016/04/Picture5-2.png"><img src="https://www.credera.com/wp-content/uploads/2016/04/xPicture5-2.png.pagespeed.ic.PXtdJ6_MY_.webp" alt="Picture5"/></a></p>
+
+<p>The fact that beans can trigger their own AOP code means you need to be very careful when enabling AspectJ on existing Spring projects, because this can change when database transactions are started by @Transactional annotations. For example, if you had a bean with two methods and one didn’t have an @Transactional annotation and it called another one that did, then that invocation would start a database transaction with AspectJ enabled but not with default Spring proxy-based AOP.</p>
+
+<pre><code class="language-java">public void notAnnotated() {
+  annotated();
+}
+
+@Transactional
+public void annotated() {
+  // With AspectJ, a direct call from notAnnotated will enable the transaction.
+  // Without it, this method will only get a transaction if it was called from a Spring proxy.
+}
 </code></pre>
 
-<p>定义好之后如何使用呢？光定义没用的呀，一定要用到线程池中呀，可以通过下面的方式自定义线程池，指定拒绝策略。</p>
+<p>Luckily, there is a way around this issue—AspectJ and Spring proxies can co-exist. The <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-aspectj-ltw/src/main/resources/META-INF/aop.xml">aop.xml file</a> lets you decide which aspects will be managed by AspectJ and which packages are included or excluded from AspectJ code weaving. If you exclude classes that use @Transactional from AspectJ weaving, their behavior will default to the same Spring proxy behavior they were using before. Stay tuned for part three of this series, which covers how to configure an aop.xml file.</p>
 
-<pre><code>BlockingQueue&lt;Runnable&gt; workQueue = new ArrayBlockingQueue&lt;&gt;(100);ThreadPoolExecutor executor = new ThreadPoolExecutor(    10, 100, 10, TimeUnit.SECONDS, workQueue, new CallerBlocksPolicy());
+<p><strong>What About That Unit Test Where AspectJ Didn’t Work?</strong></p>
+
+<p>As noted earlier, every other test in the <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-aspectj-ltw/src/test/java/org/jdw/blog/AspectJHystrixAspectTest.java#L41">spring-aop-aspectj unit test</a> (which each begin with “testNestedHystrixWrappedMethod”) demonstrates how beans can trigger the HystrixAspect when calling their own @HystrixWrapper join point annotated methods without going through Spring beans… except for the <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-aspectj-ltw/src/test/java/org/jdw/blog/AspectJHystrixAspectTest.java#L102">last test</a>.</p>
+
+<p>That last test invokes the “nestedGetCurrentThreadId” method on a Spring CGLIB proxy of a class similar to the example below (<a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-common/src/main/java/org/jdw/blog/common/executable/NonAnnotatedImplForInterfaceWithAnnotation.java#L22">GitHub link for the original class</a>). The class’s interface annotates “getCurrentThreadId” with @HystrixWrapper, but the concrete class itself does not. Thus, when “getCurrentThreadId” is invoked by “nestedGetCurrentThreadId” within the CGLIB proxy, AspectJ looks at the concrete class instead of the interface and can’t find the @HystrixWrapper join point. Therefore, the HystrixAspect is not woven.</p>
+
+<pre><code class="language-java">@Override
+public long getCurrentThreadId () {
+  return Thread.currentThread().getId();
+}
+
+@Override
+public long nestedGetCurrentThreadId () {
+  return getCurrentThreadId();
+}
 </code></pre>
 
-<h1 id="toc_4">execute 和 submit 的区别？</h1>
+<p>The takeaway from this scenario is that you should always put join point annotations on concrete classes when using AspectJ, just like you should when using Spring CGLIB proxies for AOP.</p>
 
-<p>在前面的讲解中，我们执行任务是用的 execute 方法，除了 execute 方法，还有一个 submit 方法也可以执行我们提交的任务。</p>
+<p><strong>Next Steps</strong></p>
 
-<p>这两个方法有什么区别呢？分别适用于在什么场景下呢？我们来做一个简单的分析。</p>
-
-<p>execute 适用于不需要关注返回值的场景，只需要将线程丢到线程池中去执行就可以了</p>
-
-<pre><code>public class ThreadPool {    public static void main(String[] args) {        ExecutorService pool = Executors.newFixedThreadPool(10);        pool.execute(() -&gt; {            System.out.println(Thread.currentThread().getName() + &quot;\t开始发车啦....&quot;);        });    }}
-</code></pre>
-
-<p>submit 方法适用于需要关注返回值的场景，submit 方法的定义如下：</p>
-
-<pre><code>public interface ExecutorService extends Executor {　　...　　&lt;T&gt; Future&lt;T&gt; submit(Callable&lt;T&gt; task);　　&lt;T&gt; Future&lt;T&gt; submit(Runnable task, T result);　　Future&lt;?&gt; submit(Runnable task);　　...}
-</code></pre>
-
-<p>其子类 AbstractExecutorService 实现了 submit 方法, 可以看到无论参数是 Callable 还是 Runnable，最终都会被封装成 RunnableFuture，然后再调用 execute 执行。</p>
-
-<pre><code>    /**     * @throws RejectedExecutionException {@inheritDoc}     * @throws NullPointerException       {@inheritDoc}     */    public Future&lt;?&gt; submit(Runnable task) {        if (task == null) throw new NullPointerException();        RunnableFuture&lt;Void&gt; ftask = newTaskFor(task, null);        execute(ftask);        return ftask;    }    /**     * @throws RejectedExecutionException {@inheritDoc}     * @throws NullPointerException       {@inheritDoc}     */    public &lt;T&gt; Future&lt;T&gt; submit(Runnable task, T result) {        if (task == null) throw new NullPointerException();        RunnableFuture&lt;T&gt; ftask = newTaskFor(task, result);        execute(ftask);        return ftask;    }    /**     * @throws RejectedExecutionException {@inheritDoc}     * @throws NullPointerException       {@inheritDoc}     */    public &lt;T&gt; Future&lt;T&gt; submit(Callable&lt;T&gt; task) {        if (task == null) throw new NullPointerException();        RunnableFuture&lt;T&gt; ftask = newTaskFor(task);        execute(ftask);        return ftask;    }
-</code></pre>
-
-<p>下面我们来看看这三个方法分别如何去使用：</p>
-
-<p><strong>submit(Callable<t style="max-width: 100%;box-sizing: border-box;font-size: inherit;color: inherit;line-height: inherit;word-wrap: break-word !important;"> task);</t></strong></p>
-
-<pre><code>public class ThreadPool {    public static void main(String[] args) throws Exception {        ExecutorService pool = Executors.newFixedThreadPool(10);        Future&lt;String&gt; future = pool.submit(new Callable&lt;String&gt;() {            @Override            public String call() throws Exception {                return &quot;Hello&quot;;            }        });        String result = future.get();        System.out.println(result);    }}
-</code></pre>
-
-<p><strong>submit(Runnable task, T result);</strong></p>
-
-<pre><code>public class ThreadPool {    public static void main(String[] args) throws Exception {        ExecutorService pool = Executors.newFixedThreadPool(10);        Data data = new Data();        Future&lt;Data&gt; future = pool.submit(new MyRunnable(data), data);        String result = future.get().getName();        System.out.println(result);    }}class Data {    String name;    public String getName() {        return name;    }    public void setName(String name) {        this.name = name;    }}class MyRunnable implements Runnable {    private Data data;    public MyRunnable(Data data) {        this.data = data;    }    @Override    public void run() {        data.setName(&quot;yinjihuan&quot;);    }}
-</code></pre>
-
-<p><strong>Future submit(Runnable task);</strong><br/>
-直接 submit 一个 Runnable 是拿不到返回值的，返回值就是 null.</p>
-
-<h1 id="toc_5">五种线程池的使用场景</h1>
-
-<ul>
-<li><p>newSingleThreadExecutor：一个单线程的线程池，可以用于需要保证顺序执行的场景，并且只有一个线程在执行。</p></li>
-<li><p>newFixedThreadPool：一个固定大小的线程池，可以用于已知并发压力的情况下，对线程数做限制。</p></li>
-<li><p>newCachedThreadPool：一个可以无限扩大的线程池，比较适合处理执行时间比较小的任务。</p></li>
-<li><p>newScheduledThreadPool：可以延时启动，定时启动的线程池，适用于需要多个后台线程执行周期任务的场景。</p></li>
-<li><p>newWorkStealingPool：一个拥有多个任务队列的线程池，可以减少连接数，创建当前可用 cpu 数量的线程来并行执行。</p></li>
-</ul>
-
-<h1 id="toc_6">线程池的关闭</h1>
-
-<p>关闭线程池可以调用 shutdownNow 和 shutdown 两个方法来实现</p>
-
-<p><strong>shutdownNow：对正在执行的任务全部发出 interrupt()，停止执行，对还未开始执行的任务全部取消，并且返回还没开始的任务列表</strong></p>
-
-<pre><code>public class ThreadPool {    public static void main(String[] args) throws Exception {        ExecutorService pool = Executors.newFixedThreadPool(1);        for (int i = 0; i &lt; 5; i++) {            System.err.println(i);            pool.execute(() -&gt; {                try {                    Thread.sleep(30000);                    System.out.println(&quot;--&quot;);                } catch (Exception e) {                    e.printStackTrace();                }            });        }        Thread.sleep(1000);        List&lt;Runnable&gt; runs = pool.shutdownNow();    }}
-</code></pre>
-
-<p>上面的代码模拟了立即取消的场景，往线程池里添加 5 个线程任务，然后 sleep 一段时间，线程池只有一个线程，如果此时调用 shutdownNow 后应该需要中断一个正在执行的任务和返回 4 个还未执行的任务，控制台输出下面的内容：</p>
-
-<pre><code>01234[fs.ThreadPool$$Lambda$1/990368553@682a0b20, fs.ThreadPool$$Lambda$1/990368553@682a0b20, fs.ThreadPool$$Lambda$1/990368553@682a0b20, fs.ThreadPool$$Lambda$1/990368553@682a0b20]java.lang.InterruptedException: sleep interrupted    at java.lang.Thread.sleep(Native Method)    at fs.ThreadPool.lambda$0(ThreadPool.java:15)    at fs.ThreadPool$$Lambda$1/990368553.run(Unknown Source)    at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1142)    at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:617)    at java.lang.Thread.run(Thread.java:745)
-</code></pre>
-
-<p><strong>shutdown：当我们调用 shutdown 后，线程池将不再接受新的任务，但也不会去强制终止已经提交或者正在执行中的任务</strong></p>
-
-<pre><code>public class ThreadPool {    public static void main(String[] args) throws Exception {        ExecutorService pool = Executors.newFixedThreadPool(1);        for (int i = 0; i &lt; 5; i++) {            System.err.println(i);            pool.execute(() -&gt; {                try {                    Thread.sleep(30000);                    System.out.println(&quot;--&quot;);                } catch (Exception e) {                    e.printStackTrace();                }            });        }        Thread.sleep(1000);        pool.shutdown();        pool.execute(() -&gt; {            try {                Thread.sleep(30000);                System.out.println(&quot;--&quot;);            } catch (Exception e) {                e.printStackTrace();            }        });    }}
-</code></pre>
-
-<p>上面的代码模拟了正在运行的状态，然后调用 shutdown，接着再往里面添加任务，肯定是拒绝添加的，请看输出结果：</p>
-
-<pre><code>01234Exception in thread &quot;main&quot; java.util.concurrent.RejectedExecutionException: Task fs.ThreadPool$$Lambda$2/1747585824@3d075dc0 rejected from java.util.concurrent.ThreadPoolExecutor@214c265e[Shutting down, pool size = 1, active threads = 1, queued tasks = 4, completed tasks = 0]    at java.util.concurrent.ThreadPoolExecutor$AbortPolicy.rejectedExecution(ThreadPoolExecutor.java:2047)    at java.util.concurrent.ThreadPoolExecutor.reject(ThreadPoolExecutor.java:823)    at java.util.concurrent.ThreadPoolExecutor.execute(ThreadPoolExecutor.java:1369)    at fs.ThreadPool.main(ThreadPool.java:24)
-</code></pre>
-
-<p>还有一些业务场景下需要知道线程池中的任务是否全部执行完成，当我们关闭线程池之后，可以用 isTerminated 来判断所有的线程是否执行完成，千万不要用 isShutdown，isShutdown 只是返回你是否调用过 shutdown 的结果。</p>
-
-<pre><code>public class ThreadPool {    public static void main(String[] args) throws Exception {        ExecutorService pool = Executors.newFixedThreadPool(1);        for (int i = 0; i &lt; 5; i++) {            System.err.println(i);            pool.execute(() -&gt; {                try {                    Thread.sleep(3000);                    System.out.println(&quot;--&quot;);                } catch (Exception e) {                    e.printStackTrace();                }            });        }        Thread.sleep(1000);        pool.shutdown();        while(true){              if(pool.isTerminated()){                  System.out.println(&quot;所有的子线程都结束了！&quot;);                  break;              }              Thread.sleep(1000);            }      }}
-</code></pre>
-
-<h1 id="toc_7">自定义线程池</h1>
-
-<p>在实际的使用过程中，大部分我们都是用 Executors 去创建线程池直接使用，如果有一些其他的需求，比如指定线程池的拒绝策略，阻塞队列的类型，线程名称的前缀等等，我们可以采用自定义线程池的方式来解决。</p>
-
-<p>如果只是简单的想要改变线程名称的前缀的话可以自定义 ThreadFactory 来实现，在 Executors.new… 中有一个 ThreadFactory 的参数，如果没有指定则用的是 DefaultThreadFactory。</p>
-
-<p>自定义线程池核心在于创建一个 ThreadPoolExecutor 对象，指定参数</p>
-
-<p>下面我们看下 ThreadPoolExecutor 构造函数的定义：</p>
-
-<pre><code>public ThreadPoolExecutor(int corePoolSize,                              int maximumPoolSize,                              long keepAliveTime,                              TimeUnit unit,                              BlockingQueue&lt;Runnable&gt; workQueue,                              ThreadFactory threadFactory,                              RejectedExecutionHandler handler) ;
-</code></pre>
-
-<ul>
-<li><p>corePoolSize<br/>
-线程池大小，决定着新提交的任务是新开线程去执行还是放到任务队列中，也是线程池的最最核心的参数。一般线程池开始时是没有线程的，只有当任务来了并且线程数量小于 corePoolSize 才会创建线程。</p></li>
-<li><p>maximumPoolSize<br/>
-最大线程数，线程池能创建的最大线程数量。</p></li>
-<li><p>keepAliveTime<br/>
-在线程数量超过 corePoolSize 后，多余空闲线程的最大存活时间。</p></li>
-<li><p>unit<br/>
-时间单位</p></li>
-<li><p>workQueue<br/>
-存放来不及处理的任务的队列，是一个 BlockingQueue。</p></li>
-<li><p>threadFactory<br/>
-生产线程的工厂类，可以定义线程名，优先级等。</p></li>
-<li><p>handler<br/>
-拒绝策略，当任务来不及处理的时候，如何处理, 前面有讲解。</p></li>
-</ul>
-
-<p>了解上面的参数信息后我们就可以定义自己的线程池了，我这边用 ArrayBlockingQueue 替换了 LinkedBlockingQueue，指定了队列的大小，当任务超出队列大小之后使用 CallerRunsPolicy 拒绝策略处理。</p>
-
-<p>这样做的好处是严格控制了队列的大小，不会出现一直往里面添加任务的情况，有的时候任务处理的比较慢，任务数量过多会占用大量内存，导致内存溢出。</p>
-
-<p>当然你也可以在提交到线程池的入口进行控制，比如用 CountDownLatch, Semaphore 等。</p>
-
-<pre><code>/** * 自定义线程池&lt;br&gt; * 默认的newFixedThreadPool里的LinkedBlockingQueue是一个无边界队列，如果不断的往里加任务，最终会导致内存的不可控&lt;br&gt; * 增加了有边界的队列，使用了CallerRunsPolicy拒绝策略 * @author yinjihuan * */public class FangjiaThreadPoolExecutor {    private static ExecutorService executorService = newFixedThreadPool(50);    private static ExecutorService newFixedThreadPool(int nThreads) {        return new ThreadPoolExecutor(nThreads, nThreads, 0L, TimeUnit.MILLISECONDS,                new ArrayBlockingQueue&lt;Runnable&gt;(10000), new DefaultThreadFactory(), new CallerRunsPolicy());    }    public static void execute(Runnable command) {        executorService.execute(command);    }    public static void shutdown() {        executorService.shutdown();    }    static class DefaultThreadFactory implements ThreadFactory {        private static final AtomicInteger poolNumber = new AtomicInteger(1);        private final ThreadGroup group;        private final AtomicInteger threadNumber = new AtomicInteger(1);        private final String namePrefix;        DefaultThreadFactory() {            SecurityManager s = System.getSecurityManager();            group = (s != null) ? s.getThreadGroup() :                                  Thread.currentThread().getThreadGroup();            namePrefix = &quot;FSH-pool-&quot; +                          poolNumber.getAndIncrement() +                         &quot;-thread-&quot;;        }        public Thread newThread(Runnable r) {            Thread t = new Thread(group, r,                                  namePrefix + threadNumber.getAndIncrement(),                                  0);            if (t.isDaemon())                t.setDaemon(false);            if (t.getPriority() != Thread.NORM_PRIORITY)                t.setPriority(Thread.NORM_PRIORITY);            return t;        }    }}
-</code></pre>
+<p>Stay tuned for the third and final entry in this blog series, which will cover how to configure AspectJ for Spring Boot. It contains a critical piece of JVM configuration information that isn’t widely found in other tutorials (including Spring’s own documentation), so be sure to catch the next entry by following @CrederaOpen on Twitter or connecting with us on LinkedIn.</p>
 
                         
                       </div>
@@ -371,10 +276,10 @@
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/5/28</span>
+                    <span class="date">2018/5/31</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Microservice.html'>Microservice</a></span>
+          					    <span class="posted-in"><a href='Java.html'>Java</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -464,31 +369,31 @@
 	      
 		      
 			      <li class="post">
+			        <a href="15277861393795.html">深入浅出Netty - EventLoop, EventLoopGroup</a>
+			      </li>
+		     
+		  
+		      
+			      <li class="post">
+			        <a href="15277856731195.html">Functor and monad examples in plain Java</a>
+			      </li>
+		     
+		  
+		      
+			      <li class="post">
+			        <a href="15277854106004.html">我必须得告诉大家的 MySQL 优化原理</a>
+			      </li>
+		     
+		  
+		      
+			      <li class="post">
+			        <a href="15277850962764.html">Leaf——美团点评分布式ID生成系统</a>
+			      </li>
+		     
+		  
+		      
+			      <li class="post">
 			        <a href="15277835170976.html">蚂蚁通信框架实践</a>
-			      </li>
-		     
-		  
-		      
-			      <li class="post">
-			        <a href="15277833297034.html">揭秘JDBC超时机制</a>
-			      </li>
-		     
-		  
-		      
-			      <li class="post">
-			        <a href="15277832551515.html">【原创】分布式之redis复习精讲</a>
-			      </li>
-		     
-		  
-		      
-			      <li class="post">
-			        <a href="15277824520436.html">【RPC 专栏】深入理解 RPC 之动态代理篇</a>
-			      </li>
-		     
-		  
-		      
-			      <li class="post">
-			        <a href="15277821532847.html">Aspect-Oriented Programming in Spring Boot Part 2: Spring JDK Proxies vs CGLIB vs AspectJ</a>
 			      </li>
 		     
 		  
