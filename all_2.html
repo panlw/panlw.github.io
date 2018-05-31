@@ -105,244 +105,200 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15274395979385.html">
+                <a class="clearlink" href="15277832551515.html">
                 
-                  <h1>不理解Zookeeper一致性原理，谈何异地多活改造</h1>
+                  <h1>【原创】分布式之redis复习精讲</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
-                        	<p>原创： 陈东明 DBAplus社群 <em>1周前</em></p>
+                        	<blockquote>
+<p>原文地址 <a href="http://www.cnblogs.com/rjzheng/p/9096228.html">http://www.cnblogs.com/rjzheng/p/9096228.html</a></p>
+</blockquote>
 
-<p><strong>作者介绍</strong><br/>
-*<strong><em>陈东明</em></strong>*，饿了么北京技术中心架构组负责人，负责饿了么的产品线架构设计及基础架构研发工作。曾任百度架构师，负责百度即时通讯产品的架构设计。具有丰富的大规模系统构建和基础架构的研发经验，善于复杂业务需求下的大并发、分布式系统设计和持续优化。<br/>
-在2017年饿了么做异地多活建设之时，我的团队承担了Zookeeper的异地多活改造。在此期间，我听到了关于Zookeeper一致性的两种不同说法：</p>
+<h2 id="toc_0">引言</h2>
+
+<h3 id="toc_1">为什么写这篇文章?</h3>
+
+<p>博主的<a href="http://www.cnblogs.com/rjzheng/p/8994962.html">《分布式之消息队列复习精讲》</a>得到了大家的好评，内心诚惶诚恐，想着再出一篇关于复习精讲的文章。但是还是要说明一下，复习精讲的文章偏面试准备，真正在开发过程中，还是脚踏实地，一步一个脚印，不要投机取巧。<br/>
+考虑到绝大部分写业务的程序员，在实际开发中使用 redis 的时候，只会 setvalue 和 getvalue 两个操作，对 redis 整体缺乏一个认知。又恰逢博主某个同事下周要去培训 redis，所以博主斗胆以 redis 为题材，对 redis 常见问题做一个总结，希望能够弥补大家的知识盲点。</p>
+
+<h3 id="toc_2">复习要点?</h3>
+
+<p>本文围绕以下几点进行阐述<br/>
+1、为什么使用 redis<br/>
+2、使用 redis 有什么缺点<br/>
+3、单线程的 redis 为什么这么快<br/>
+4、redis 的数据类型，以及每种数据类型的使用场景<br/>
+5、redis 的过期策略以及内存淘汰机制<br/>
+6、redis 和数据库双写一致性问题<br/>
+7、如何应对缓存穿透和缓存雪崩问题<br/>
+8、如何解决 redis 的并发竞争问题</p>
+
+<h2 id="toc_3">正文</h2>
+
+<h3 id="toc_4">1、为什么使用 redis</h3>
+
+<p><strong>分析</strong>: 博主觉得在项目中使用 redis，主要是从两个角度去考虑: <strong>性能</strong>和<strong>并发</strong>。当然，redis 还具备可以做分布式锁等其他功能，但是如果只是为了分布式锁这些其他功能，完全还有其他中间件 (如 zookpeer 等) 代替，并不是非要使用 redis。因此，这个问题主要从性能和并发两个角度去答。<br/>
+<strong>回答</strong>: 如下所示，分为两点<br/>
+<strong>（一）性能</strong><br/>
+如下图所示，我们在碰到需要执行耗时特别久，且结果不频繁变动的 SQL，就特别适合将运行结果放入缓存。这样，后面的请求就去缓存中读取，使得请求能够<strong>迅速响应</strong>。<br/>
+<img src="https://images.cnblogs.com/cnblogs_com/rjzheng/1202350/o_redis1.png" alt=""/><br/>
+<strong>题外话：</strong>忽然想聊一下这个<strong>迅速响应</strong>的标准。其实根据交互效果的不同，这个响应时间没有固定标准。不过曾经有人这么告诉我:&quot; 在理想状态下，我们的页面跳转需要在<strong>瞬间</strong>解决，对于页内操作则需要在<strong>刹那</strong>间解决。另外，超过<strong>一弹指</strong>的耗时操作要有进度提示，并且可以随时中止或取消，这样才能给用户最好的体验。&quot;<br/>
+那么<strong>瞬间、刹那、一弹指</strong>具体是多少时间呢？<br/>
+根据《摩诃僧祗律》记载</p>
+
+<pre><code>一刹那者为一念，二十念为一瞬，二十瞬为一弹指，二十弹指为一罗预，二十罗预为一须臾，一日一夜有三十须臾。
+</code></pre>
+
+<p>那么，经过周密的计算，一<strong>瞬间</strong>为 0.36 秒, 一<strong>刹那</strong>有 0.018 秒. 一<strong>弹指</strong>长达 7.2 秒。<br/>
+<strong>（二）并发</strong><br/>
+如下图所示，在大并发的情况下，所有的请求直接访问数据库，数据库会出现连接异常。这个时候，就需要使用 redis 做一个缓冲操作，让请求先访问到 redis，而不是直接访问数据库。<br/>
+<img src="https://images.cnblogs.com/cnblogs_com/rjzheng/1202350/o_redis2.png" alt=""/></p>
+
+<h3 id="toc_5">2、使用 redis 有什么缺点</h3>
+
+<p><strong>分析</strong>: 大家用 redis 这么久，这个问题是必须要了解的，基本上使用 redis 都会碰到一些问题，常见的也就几个。<br/>
+<strong>回答</strong>: 主要是四个问题<br/>
+(一) 缓存和数据库双写一致性问题<br/>
+(二) 缓存雪崩问题<br/>
+(三) 缓存击穿问题<br/>
+(四) 缓存的并发竞争问题<br/>
+这四个问题，我个人是觉得在项目中，比较常遇见的，具体解决方案，后文给出。</p>
+
+<h3 id="toc_6">3、单线程的 redis 为什么这么快</h3>
+
+<p><strong>分析</strong>: 这个问题其实是对 redis 内部机制的一个考察。其实根据博主的面试经验，很多人其实都不知道 redis 是单线程工作模型。所以，这个问题还是应该要复习一下的。<br/>
+<strong>回答</strong>: 主要是以下三点<br/>
+(一) 纯内存操作<br/>
+(二) 单线程操作，避免了频繁的上下文切换<br/>
+(三) 采用了非阻塞 <strong>I/O 多路复用机制</strong></p>
+
+<p><strong>题外话：</strong>我们现在要仔细的说一说 I/O 多路复用机制，因为这个说法实在是太通俗了，通俗到一般人都不懂是什么意思。博主打一个比方：小曲在 S 城开了一家快递店，负责同城快送服务。小曲因为资金限制，雇佣了<strong>一批</strong>快递员，然后小曲发现资金不够了，只够买<strong>一辆</strong>车送快递。<br/>
+<strong>经营方式一</strong><br/>
+客户每送来一份快递，小曲就让一个快递员盯着，然后快递员开车去送快递。慢慢的小曲就发现了这种经营方式存在下述问题</p>
 
 <ul>
-<li>一种说法是Zookeeper是最终一致性，由于多副本，以及保证大多数成功的Zab协议，当一个客户端进程写入一个新值，另一个客户端进程不能保证马上就会读到，但能保证最终会读到这个值；</li>
-<li>另一种说法是Zookeeper的Zab协议类似于Paxos协议，并且提供了强一致性。</li>
+<li>  几十个快递员基本上时间都花在了抢车上了，大部分快递员都处在闲置状态，谁抢到了车，谁就能去送快递</li>
+<li>  随着快递的增多，快递员也越来越多，小曲发现快递店里越来越挤，没办法雇佣新的快递员了</li>
+<li>  快递员之间的协调很花时间</li>
 </ul>
 
-<p>每当听到这两种说法，我都想纠正一下——不对，Zookeeper是顺序一致性（sequential consistency）。但解释起来比较复杂，需要一篇长文来说明，于是就有了本文，下面就和大家一起讨论下我的看法。</p>
+<p>综合上述缺点，小曲痛定思痛，提出了下面的经营方式<br/>
+<strong>经营方式二</strong><br/>
+小曲只雇佣一个快递员。然后呢，客户送来的快递，小曲按<strong>送达地点</strong>标注好，然后<strong>依次</strong>放在一个地方。最后，那个快递员<strong>依次</strong>的去取快递，一次拿一个，然后开着车去送快递，送好了就回来拿下一个快递。</p>
+
+<p><strong>对比</strong><br/>
+上述两种经营方式对比，是不是明显觉得第二种，效率更高，更好呢。在上述比喻中:</p>
+
+<ul>
+<li>  每个快递员 ------------------&gt; 每个线程</li>
+<li>  每个快递 --------------------&gt; 每个 socket(I/O 流)</li>
+<li>  快递的送达地点 --------------&gt;socket 的不同状态</li>
+<li>  客户送快递请求 --------------&gt; 来自客户端的请求</li>
+<li>  小曲的经营方式 --------------&gt; 服务端运行的代码</li>
+<li>  一辆车 ----------------------&gt;CPU 的核数</li>
+</ul>
+
+<p>于是我们有如下结论<br/>
+1、经营方式一就是传统的并发模型，每个 I/O 流 (快递) 都有一个新的线程 (快递员) 管理。<br/>
+2、经营方式二就是 I/O 多路复用。只有单个线程 (一个快递员)，通过跟踪每个 I/O 流的状态 (每个快递的送达地点)，来管理多个 I/O 流。</p>
+
+<p>下面类比到真实的 redis 线程模型，如图所示<br/>
+<img src="https://images.cnblogs.com/cnblogs_com/rjzheng/1202350/o_redis3.png" alt=""/><br/>
+参照上图，简单来说，就是。我们的 redis-client 在操作的时候，会产生具有不同事件类型的 socket。在服务端，有一段 I/0 多路复用程序，将其置入队列之中。然后，文件事件分派器，依次去队列中取，转发到不同的事件处理器中。<br/>
+需要说明的是，这个 I/O 多路复用机制，redis 还提供了 select、epoll、evport、kqueue 等多路复用函数库，大家可以自行去了解。</p>
+
+<h3 id="toc_7">4、redis 的数据类型，以及每种数据类型的使用场景</h3>
+
+<p><strong>分析</strong>：是不是觉得这个问题很基础，其实我也这么觉得。然而根据面试经验发现，至少百分八十的人答不上这个问题。建议，在项目中用到后，再类比记忆，体会更深，不要硬记。基本上，一个合格的程序员，五种类型都会用到。<br/>
+<strong>回答</strong>：一共五种<br/>
+(一)String<br/>
+这个其实没啥好说的，最常规的 set/get 操作，value 可以是 String 也可以是数字。一般做<strong>一些复杂的计数功能的缓存。</strong><br/>
+(二)hash<br/>
+这里 value 存放的是结构化的对象，比较方便的就是操作其中的某个字段。博主在做<strong>单点登录</strong>的时候，就是用这种数据结构存储用户信息，以 cookieId 作为 key，设置 30 分钟为缓存过期时间，能很好的模拟出类似 session 的效果。<br/>
+(三)list<br/>
+使用 List 的数据结构，可以<strong>做简单的消息队列的功能</strong>。另外还有一个就是，可以利用 lrange 命令，<strong>做基于 redis 的分页功能</strong>，性能极佳，用户体验好。<br/>
+(四)set<br/>
+因为 set 堆放的是一堆不重复值的集合。所以可以做<strong>全局去重的功能</strong>。为什么不用 JVM 自带的 Set 进行去重？因为我们的系统一般都是集群部署，使用 JVM 自带的 Set，比较麻烦，难道为了一个做一个全局去重，再起一个公共服务，太麻烦了。<br/>
+另外，就是利用交集、并集、差集等操作，可以<strong>计算共同喜好，全部的喜好，自己独有的喜好等功能</strong>。<br/>
+(五)sorted set<br/>
+sorted set 多了一个权重参数 score, 集合中的元素能够按 score 进行排列。可以做<strong>排行榜应用，取 TOP N 操作</strong>。另外，参照另一篇<a href="https://www.cnblogs.com/rjzheng/p/8972725.html">《分布式之延时任务方案解析》</a>，该文指出了 sorted set 可以用来做<strong>延时任务</strong>。最后一个应用就是可以做<strong>范围查找</strong>。</p>
+
+<h3 id="toc_8">5、redis 的过期策略以及内存淘汰机制</h3>
+
+<p><strong>分析</strong>: 这个问题其实相当重要，到底 redis 有没用到家，这个问题就可以看出来。比如你 redis 只能存 5G 数据，可是你写了 10G，那会删 5G 的数据。怎么删的，这个问题思考过么？还有，你的数据已经设置了过期时间，但是时间到了，内存占用率还是比较高，有思考过原因么?<br/>
+<strong>回答</strong>:<br/>
+redis 采用的是定期删除 + 惰性删除策略。<br/>
+<strong>为什么不用定时删除策略?</strong><br/>
+定时删除, 用一个定时器来负责监视 key, 过期则自动删除。虽然内存及时释放，但是十分消耗 CPU 资源。在大并发请求下，CPU 要将时间应用在处理请求，而不是删除 key, 因此没有采用这一策略.<br/>
+<strong>定期删除 + 惰性删除是如何工作的呢?</strong><br/>
+定期删除，redis 默认每个 100ms 检查，是否有过期的 key, 有过期 key 则删除。需要说明的是，redis 不是每个 100ms 将所有的 key 检查一次，而是随机抽取进行检查 (如果每隔 100ms, 全部 key 进行检查，redis 岂不是卡死)。因此，如果只采用定期删除策略，会导致很多 key 到时间没有删除。<br/>
+于是，惰性删除派上用场。也就是说在你获取某个 key 的时候，redis 会检查一下，这个 key 如果设置了过期时间那么是否过期了？如果过期了此时就会删除。<br/>
+<strong>采用定期删除 + 惰性删除就没其他问题了么?</strong><br/>
+不是的，如果定期删除没删除 key。然后你也没即时去请求 key，也就是说惰性删除也没生效。这样，redis 的内存会越来越高。那么就应该采用<strong>内存淘汰机制</strong>。<br/>
+在 redis.conf 中有一行配置</p>
+
+<pre><code># maxmemory-policy volatile-lru
+</code></pre>
+
+<p>该配置就是配内存淘汰策略的 (什么，你没配过？好好反省一下自己)<br/>
+1）noeviction：当内存不足以容纳新写入数据时，新写入操作会报错。<strong>应该没人用吧。</strong><br/>
+2）allkeys-lru：当内存不足以容纳新写入数据时，在键空间中，移除最近最少使用的 key。<strong>推荐使用，目前项目在用这种。</strong><br/>
+3）allkeys-random：当内存不足以容纳新写入数据时，在键空间中，随机移除某个 key。<strong>应该也没人用吧，你不删最少使用 Key, 去随机删。</strong><br/>
+4）volatile-lru：当内存不足以容纳新写入数据时，在设置了过期时间的键空间中，移除最近最少使用的 key。<strong>这种情况一般是把 redis 既当缓存，又做持久化存储的时候才用。不推荐</strong><br/>
+5）volatile-random：当内存不足以容纳新写入数据时，在设置了过期时间的键空间中，随机移除某个 key。<strong>依然不推荐</strong><br/>
+6）volatile-ttl：当内存不足以容纳新写入数据时，在设置了过期时间的键空间中，有更早过期时间的 key 优先移除。<strong>不推荐</strong><br/>
+ps：如果没有设置 expire 的 key, 不满足先决条件 (prerequisites); 那么 volatile-lru, volatile-random 和 volatile-ttl 策略的行为, 和 noeviction(不删除) 基本上一致。</p>
+
+<h3 id="toc_9">6、redis 和数据库双写一致性问题</h3>
+
+<p><strong>分析</strong>: 一致性问题是分布式常见问题，还可以再分为最终一致性和强一致性。数据库和缓存双写，就必然会存在不一致的问题。答这个问题，先明白一个前提。就是<strong>如果对数据有强一致性要求，不能放缓存。</strong>我们所做的一切，只能保证最终一致性。另外，我们所做的方案其实从根本上来说，只能说<strong>降低不一致发生的概率</strong>，无法完全避免。因此，有强一致性要求的数据，不能放缓存。<br/>
+<strong>回答</strong>:<a href="https://www.cnblogs.com/rjzheng/p/9041659.html">《分布式之数据库和缓存双写一致性方案解析》</a>给出了详细的分析，在这里简单的说一说。首先，采取正确更新策略，先更新数据库，再删缓存。其次，因为可能存在删除缓存失败的问题，提供一个补偿措施即可，例如利用消息队列。</p>
+
+<h3 id="toc_10">7、如何应对缓存穿透和缓存雪崩问题</h3>
+
+<p><strong>分析</strong>: 这两个问题，说句实在话，一般中小型传统软件企业，很难碰到这个问题。如果有大并发的项目，流量有几百万左右。这两个问题一定要深刻考虑。<br/>
+<strong>回答</strong>: 如下所示<br/>
+<strong>缓存穿透</strong>，即黑客故意去请求缓存中不存在的数据，导致所有的请求都怼到数据库上，从而数据库连接异常。<br/>
+<strong>解决方案</strong>:<br/>
+(一) 利用互斥锁，缓存失效的时候，先去获得锁，得到锁了，再去请求数据库。没得到锁，则休眠一段时间重试<br/>
+(二) 采用异步更新策略，无论 key 是否取到值，都直接返回。value 值中维护一个缓存失效时间，缓存如果过期，异步起一个线程去读数据库，更新缓存。需要做<strong>缓存预热</strong> (项目启动前，先加载缓存) 操作。<br/>
+(三) 提供一个能迅速判断请求是否有效的拦截机制，比如，利用布隆过滤器，内部维护一系列合法有效的 key。迅速判断出，请求所携带的 Key 是否合法有效。如果不合法，则直接返回。<br/>
+<strong>缓存雪崩</strong>，即缓存同一时间大面积的失效，这个时候又来了一波请求，结果请求都怼到数据库上，从而导致数据库连接异常。<br/>
+<strong>解决方案</strong>:<br/>
+(一) 给缓存的失效时间，加上一个随机值，避免集体失效。<br/>
+(二) 使用互斥锁，但是该方案吞吐量明显下降了。<br/>
+(三) 双缓存。我们有两个缓存，缓存 A 和缓存 B。缓存 A 的失效时间为 20 分钟，缓存 B 不设失效时间。自己做缓存预热操作。然后细分以下几个小点</p>
+
+<ul>
+<li>  I 从缓存 A 读数据库，有则直接返回</li>
+<li>  II A 没有数据，直接从 B 读数据，直接返回，并且异步启动一个更新线程。</li>
+<li>  III 更新线程同时更新缓存 A 和缓存 B。</li>
+</ul>
+
+<h3 id="toc_11">8、如何解决 redis 的并发竞争 key 问题</h3>
+
+<p><strong>分析</strong>: 这个问题大致就是，同时有多个子系统去 set 一个 key。这个时候要注意什么呢？大家思考过么。需要说明一下，博主提前百度了一下，发现答案基本都是推荐用 redis 事务机制。博主<strong>不推荐使用 redis 的事务机制。</strong>因为我们的生产环境，基本都是 redis 集群环境，做了数据分片操作。你一个事务中有涉及到多个 key 操作的时候，这多个 key 不一定都存储在同一个 redis-server 上。因此，<strong>redis 的事务机制，十分鸡肋。</strong><br/>
+<strong>回答:</strong> 如下所示<br/>
+(1) 如果对这个 key 操作，<strong>不要求顺序</strong><br/>
+这种情况下，准备一个分布式锁，大家去抢锁，抢到锁就做 set 操作即可，比较简单。<br/>
+(2) 如果对这个 key 操作，<strong>要求顺序</strong><br/>
+假设有一个 key1, 系统 A 需要将 key1 设置为 valueA, 系统 B 需要将 key1 设置为 valueB, 系统 C 需要将 key1 设置为 valueC.<br/>
+期望按照 key1 的 value 值按照 valueA--&gt;valueB--&gt;valueC 的顺序变化。这种时候我们在数据写入数据库的时候，需要保存一个时间戳。假设时间戳如下</p>
 
-<p>*<strong><em>什么是sequetial consistency</em></strong>*</p>
+<pre><code>系统A key 1 {valueA  3:00}
+系统B key 1 {valueB  3:05}
+系统C key 1 {valueC  3:10}
+</code></pre>
 
-<p>*<strong><em>从Zookeeper的文档中我们可以看到，里面明确写出它的一致性是sequential consistency。</em></strong>*（详细参见Zookeeper官方文档[1]）</p>
+<p>那么，假设这会系统 B 先抢到锁，将 key1 设置为 {valueB 3:05}。接下来系统 A 抢到锁，发现自己的 valueA 的时间戳早于缓存中的时间戳，那就不做 set 操作了。以此类推。</p>
 
-<p>那么，什么是sequential consistency呢？</p>
+<p>其他方法，比如利用队列，将 set 方法变成串行访问也可以。总之，灵活变通。</p>
 
-<p>sequential consistency是Lamport在1979年首次提出的。（详细参见他的这篇论文：<em>How to make a multiprocessor computer that correctly executes multiprocess programs</em>）</p>
+<h2 id="toc_12">总结</h2>
 
-<p>论文中定义，当满足下面这个条件时就是sequential consistency：</p>
-
-<p>“<br/>
-<em>the result of any execution is the same as if the operations of all the processors were executed in some sequential order, and the operations of each individual processor appear in this sequence in the order specified by its program.</em></p>
-
-<p>这段英文定义很晦涩（这是Lamport大神的一贯风格，严谨但晦涩，Paxos协议也是如此），我第一次看到时的感觉是：“这是什么鬼？”为啥每个英文单词我都认识，但就是不知道他在说什么？第一次看到这句话和我有同感的小伙伴留个言吧~</p>
-
-<p>后文我再把这段英文定义翻译成中文，现在我们先看看这篇论文的标题和定义中出现的一个关键词，来说明一下sequential consistency的应用范围。</p>
-
-<p>论文的标题和定义中包含<strong>“multiprocessor</strong>”****这个词，multiprocessor是多核处理器的意思。从这个关键字来看，sequential consistency是用来定义多核处理器和跑在多核处理器上的程序的一个特性。Lamport这篇论文的标题可以翻译成：“如何让具有多核处理器的计算机正确执行多进程程序”，也就是说如果一个多核处理器具有sequential consistency的特性，这个多核处理器就可以正确运行，后面我会解释这个正确运行是什么意思（也就是本文后面讲到的sequential consistency的作用）。</p>
-
-<p>从这个标题我们还可以看出，sequential consistency<strong>应该是个并发编程（concurrent programming）领域的概念</strong>。但我们现在常常在分布式系统领域讨论sequential consistency，比如本文主要讨论的Zookeeper（Zookeeper很明显是一个分布式系统）的一致性。实际上，多核处理器上运行的多个程序，其实也是一种分布式系统（Lamport在他的这篇 <em>Time, Clocks, and the Ordering of Events in a Distributed System</em> 分布式系统的开山之作中也阐述了这个观点）。所以虽然sequential consistency最早在并发编程中提出，但是它可以<strong>应用在分布式系统中</strong>，比如本文讨论的Zookeeper这种分布式存储系统。另外一个比较重要的Linearizability（线性一致性），也是在并发编程中最早提出的，目前也被广泛应用在分布式系统领域中。</p>
-
-<p>接下来我们尝试翻译一下上文那段晦涩的定义。做这段翻译让我找到了上学时做阅读理解的感觉，我先不直接翻译，因为就算我把它翻译成中文，估计很多人还是会有“为啥每个中文字我都懂，还是不知道在说什么”的感觉。</p>
-
-<p>首先，我来解释一下个别的词。首先，<strong>“any execution”</strong>是什么意思？你有多个程序（program）在多核处理器上运行，例如你有两个程序，第一个程序叫P1，它的代码如下： <br/>
-P1_write(x);<br/>
-P1_read(y);</p>
-
-<p>第二个程序叫P2，代码如下：<br/>
-P2_write(u);<br/>
-P2_read(v);</p>
-
-<p>从理论上来讲，两个程序运行在两个独立处理器的核上，有多少种执行的可能？我列举其中几种来举例说明。</p>
-
-<p>第一种：<br/>
-P1---write(x)--------read(y)--------<br/>
-P2-----------write(u)-------read(v)-</p>
-
-<p>第二种：</p>
-
-<p>P1----------write(x)-read(y)--------<br/>
-P2--write(u)----------------read(v)-</p>
-
-<p>第三种：<br/>
-P1---read(y)----------write(x)------<br/>
-P2-----------write(u)---------read(v)-</p>
-
-<p>我们有24种可能的执行顺序，也就是这四个操作任意的排列组合，也就是4!=24。类似第一种和第二种这样的可能性很好理解。为什么会出现像第三种这样的可能的执行呢？那是因为就算在同一个程序中，由于处理会有多级的缓存，以及处理器中coherence的存在，虽然你的程序中是先write后read，在内存中真正生效的顺序，也有可能是先read后write。</p>
-
-<p>其实还会出现类似下面这样的执行，两个操作在两个处理器上同时执行。<br/>
-P1--write(x)-read(y)--------<br/>
-P2--write(u)--------read(v)-</p>
-
-<p>如果加上同时运行的这种情况，那就有更多种可能性。我的算数不太好，这里就不继续算下去了，因为到底有多少个不重要，重要的是要知道有很多种可能性。那么定义中的“any execution”，就是指任意一种可能的执行，在定义中也可以理解为所有的这些可能的执行。</p>
-
-<p>接着我们再来解释一个词——<strong>“sequential order”</strong>。什么叫sequential order？我们来翻一下英语词典（感觉更像在做阅读理解了）。<br/>
-“<br/>
-<em>sequential：连续的；相继的；有顺序的</em><br/>
-<em>order：命令；顺序；规则；[贸易] 定单</em></p>
-
-<p>sequential order——有顺序的顺序，这又是什么鬼？</p>
-
-<p>其实sequential是有一个接一个的意思，在处理器的这种上下文中，sequential就是指操作（operartion）一个接一个地执行，也就是顺序执行，并且没有重叠。order是指经过一定的调整，让某样东西按照一定的规则变得有序。比如，在算法中的排序算法就是ordering，就是让数组这个东西按照从大到小或从小到大的规则变得有序。<strong>那么sequential order就是指让操作（operation）按照一个接一个这样的规则排列，并且没有重叠。</strong></p>
-
-<p>再说回上文的例子，如果把四个操作，按一个接一个的规则排列，这时就可以得到4！的排列组合个可能的排列（order），同样的，有多少个不重要。</p>
-
-<p>比如：<br/>
-P1_write(x);P1_read(y);P2_write(u);P2_read(v);<br/>
-P1_read(y);P1_write(x);P2_write(u);P2:read(v);<br/>
-P2_write(u);P2_read(v);P1_read(y);P1:write(x);</p>
-
-<p>我这里只列举其中三个，其他的大家可以自己排一下。</p>
-
-<p>重点来了，其实sequential order就是让这四个操作按照一个接一个的顺序执行，并且没有重叠。注意这个排列不是真实的执行，真实的执行是any execution，这里说的是逻辑上的假设，也就是为什么定义有一个as if。</p>
-
-<p>做了这么多的铺垫，下面我们开始翻译定义中的第一句话：</p>
-
-<p>“<br/>
-*任意一种可能的执行效果，与所有的处理器上的某一种操作按照顺序排列执行的效果是一样的。 *</p>
-
-<p>注意，some在这里是指“某一种”的意思，不是一些，因为order是单数（真的是在做阅读理解）。</p>
-
-<p>*<strong><em>这句话的意思就是说，一个处理器要满足这个条件，就只能允许满足这个条件的那些可能的执行存在，其他不满足的可能的执行都不会出现。</em></strong>*</p>
-
-<p>从第一句话中我们可以看出，一种多核处理器要想满足sequential consistency，那么多个程序在多个核运行效果“等同”于在一个核上顺序执行所有操作的效果是差不多的。如果这样的话，其实多核的威力基本就消失了。所以无论是从Lamport写这篇论文的1979年，还是现在，没有任何一个现实的多核处理器实现了sequential consistency。</p>
-
-<p>那么，为什么Lamport大神提出这样一个不现实的概念呢？（要注意Lamport写这篇论文时，并没有把它引申到分布式系统领域，就是针对多核处理器、并发编程领域提出的）我们稍后再论述。</p>
-
-<p>这里还要注意的一点是，在我的翻译里用了“效果”一词，但实际上英文原文中用的是“result（结果）”一词。那效果和结果有什么区别吗？我们解释一下什么叫执行结果。</p>
-
-<p>不管是任何真实的执行，还是某种经过顺序排序后的假设执行，程序会产生一定的结果，比如print出来的结果（result）。实际上定义中说的是结果一样。如果定义中用“效果”的话，那这个定义就只是一个定性的定义，如果用“结果”的话，那这个定义就是一个定量的定义。定量的，也就是说可以通过数学证明的。从这点我们可以看出，大神就是不一样，任何理论都是可以通过数学证明为正确的。本文后面还会提到证明的事情，我们这里再卖个关子。</p>
-
-<p>到这里，关于定义的第一句，更准确的翻译就是： </p>
-
-<p>“<br/>
-*任意一种可能的执行的结果，与某一种所有的处理器上的操作按照顺序排列执行的结果是一样的。 *</p>
-
-<p>这里我们还要注意一点，结果一样就意味着，如果有人真的要实现一种sequential consistency的多核处理器的话，因为要保证结果一样，所以他是有一定的空间来优化，而不会完全是一个核顺序执行的效果。但是估计这种优化也是非常有限的。</p>
-
-<p>好了，终于把最难的第一句话解释完了，大家可以松口气，第二句就非常简单了。我们还是先解释第二句种出现的一个词——<strong>“sequence”</strong>。刚刚解释过的sequential order是顺序排序（就是按一个接一个排序），其实这是一个动作，动作会产生结果，它的结果产生了一个操作（operation）的队列。第二句中出现的sequence就是指这个操作（operation）的队列。</p>
-
-<p>好，那第二句的翻译就是：</p>
-
-<p>“<br/>
-*并且每个独立的处理器的操作，都会按照程序指定的顺序出现在操作队列中。 *</p>
-
-<p>也就是说如果程序里是先write(x);后read(y);，那么只有满足这个顺序的操作队列是符合条件的。这样，我们刚刚说的很多可能的执行就少了很多，这里我也就不计算少了多少，还是那句话，数量不重要，反正是有，而且变少了。</p>
-
-<p>那么第二句话意味着什么？意味着如果一个多核处理器实现了sequential consistency，那这种多核处理器基本上就告别自（缓）行（存）车了。这里我还要继续卖关子，连缓存这种最有效提高处理器性能的优化都没了，大神为什么要提出这个概念？</p>
-
-<p>好了，到这里我们可以把两句翻译合起来，完整看一下：</p>
-
-<p>“<br/>
-*任意一种可能的执行的结果，与某一种所有的处理器上的操作按照顺序排列执行的结果是一样的，并且每个独立的处理器的操作，都会按照程序指定的顺序出现在操作队列中。 *</p>
-
-<p>从这个定义中，我们可以看出，此概念的核心就是sequential order，这也就是为什么Lamport老爷子把这种一致性模型称之为sequential consistency。可以说这个命名是非常贴切的，不知道这种贴切对于以英语为母语的人来说是不是更好理解一些，应该不会出现“顺序的顺序是什么鬼”这种情况。如果你看完本文，也觉得sequential很贴切的话，那就说明我讲清楚了。</p>
-
-<p>接下来我们举个具体的例子，再来说明一下： <br/>
-execution A<br/>
-P0 writex=1-------------------------------<br/>
-P1 -------write x=2----------------------<br/>
-P2 -----------------read x<mark>1--read x</mark>2<br/>
-P3 -----------------read x<mark>1--read x</mark>2</p>
-
-<p>sequetial order: P0_write x=1,P3_read x<mark>1,P4_read x</mark>1,P1_write x=2,P3_read x<mark>2,P4_read x</mark>2</p>
-
-<p>execution B<br/>
-P0 write=1-------------------------------<br/>
-P1 -------write x=2----------------------<br/>
-P2 -----------------read x<mark>2--read x</mark>1<br/>
-P3 -----------------read x<mark>2--read x</mark>1</p>
-
-<p>sequetial order: P1_write x=2,P3_read x<mark>2,P4_read x</mark>2,P0_write x=1,P3_read x<mark>1,P4_read x</mark>1</p>
-
-<p>execution C<br/>
-P0 write=1-------------------------------<br/>
-P1 -------write x=2----------------------<br/>
-P2 -----------------read x<mark>1--read x</mark>2<br/>
-P3 -----------------read x<mark>2--read x</mark>1</p>
-
-<p>sequetial order: 你找不出一个符合定义中2个条件的一种order。</p>
-
-<p>所以说如果一个多核处理器只允许execution A和B出现，不允许C出现，那么这个多核处理器就是sequetial consistency的。如果它允许C出现，那它就不是sequetial consistency。</p>
-
-<p>到这里，我们已经完整地解释完什么是sequetial consistency。但是，细心的朋友可能会问，如果你的program是多线程的程序怎么办？那我们再把定义中最后的一个细节解释一下：program这个词。</p>
-
-<p>*<strong><em>program</em></strong>*是指可以直接运行在处理器上的指令序列。这个并不是program的严格定义，但是我要指出的是这个program是在操作系统都没有的远古时代就存在的概念，在上文的定义中prgram就是指那个时代的program。</p>
-
-<p>这个program里没有进程、线程的概念，这些概念都是在有了操作系统之后才出现的。因为没有操作系统，也没有内存空间的概念。不像我们现在所说的程序（program），不同的程序有自己独立的内存地址空间。我们这里，内存（memory）对于不同的program来说是shared。另外，需要注意的是program可以用来说明各种程序，不管你是操作系统内核，还是应用程序，都适用。</p>
-
-<p>*<strong><em>sequential consistency</em></strong>*<br/>
-*<strong><em>是分布式领域的概念</em></strong>*</p>
-
-<p>刚刚我们说了，sequential consistency虽然是针对并发编程领域提出的，但实际上它是分布式领域的概念，特别是分布式存储系统。在 <em>Distributed system: Principles and Paradigms</em> （作者Andrew S.Tanenbaum, Maarten Van Steen），作者稍微修改了一下Lamport的定义，让这个定义更贴近分布式领域中的概念，我们来看一下作者是怎么改的： </p>
-
-<p>“<br/>
-*The result of any execution is the same as if the (read and write) operations by all processes on the data store were executed in some sequential order and the operations of-each individual process appear in this sequence in the order specified by its program. *</p>
-
-<p>作者把processor换成了process，并且加了on the data store这个限定，在Lamport的定义里没有这个限定，其实默认指的是memory（内存）。process就是指进程，以Zookeeper为例，就是指访问Zookeeper的应用进程。program也不是那么底层概念，也是基于操作系统的应用程序了。</p>
-
-<p>*<strong><em>sequential consistency的作用</em></strong>*</p>
-
-<p>好了，下面该揭晓我上面卖的两个关子了。在Lamport的论文中，给出了一个小例子，如下： <br/>
-process 1<br/>
- a := 1;<br/>
- if b = 0 then critical section:<br/>
- a := 0<br/>
- else ... fi</p>
-
-<p>process 2<br/>
- b := 1;<br/>
- if a = 0 then critical section:<br/>
- b := 0<br/>
- else ... fi</p>
-
-<p>Lamport在论文中说，如果一种多核处理满足sequential consistency的条件，<strong>那么最多只有一个程序能够进入critical section</strong>。在论文中，Lamport老爷子并没有解释为什么最多只有一个程序能够进入critical section。而是把这个证明留给了论文的读者，就像我们常见的教科书中的课后习题一样。</p>
-
-<p>Lamport老爷子应该是认为这个证明太简单了，不需要花费笔墨来证明它。sequential consistency这篇论文只有不到两页A4纸，是我见过的最短的论文。这是Lamport一贯的做事风格，他的Paxos论文中，有很多细节都是一笔带过的，给读者留下无尽的遐想（瞎想）。</p>
-
-<p>假设现在我们已经证明这个是正确的（虽然我也没去证明，论文给出了两个参考文献用于证明），那这个例子说明了什么呢？</p>
-
-<p>大家也许注意到了，这个例子没有用到任何锁，但它实现了critical section，critical section是一种多线程synchronization 机制。如果多核处理器是sequential consistency的，那么你写的并发程序“天然就是正确的”。</p>
-
-<p>但是处理器的设计者为了追求性能，将保证程序正确的任务丢给程序开发者。只在硬件级别提供了一些fence、cas等指令，基于这些指令操作内核和语言基础库实现了各种synchronization机制，用来保证操作系统的正确性和应用程序的正确性。程序员必须小心谨慎地使用线程和这些synchronization机制，否则就会出各种意想不到的问题。如果你没有debug一个多线程bug连续加班两天，那说明你是大神。</p>
-
-<p>这些指令都是具有更高一致性级别，也就是linearizability，（关于linearizability可以参见我的另外一篇文章《线性一致性（Linearizability）是并发控制的基础》[2]），虽然一致性级别高，但只是个别指令的，处理器整体只是实现了比sequential consistency低很多的一致性级别。所以实现难度大大降低了。</p>
-
-<p>虽然Lamport老爷子的sequential consistency概念在concurrent programming领域中还没有实际意义，但却给我们指出了程序员的天堂在哪里。在程序员的天堂里，没有多（车）线（来）程（车）编（往）程，只要写程序就行。你面试的时候不会再有人问你多线程编程，不会再问你各种锁。</p>
-
-<p>在分布式领域中，sequential consistency更实际一些。Zookeeper就实现了sequential consistency。同理，这应该也是可以证明的，但目前还没发现有Zookeeper社区有任何论文来证明这个。如果你已经明白上面解释的定义，就可以想清楚Zookeeper是sequential consistency。欢迎大家一起来探讨。</p>
-
-<p>*<strong><em>为何Zookeeper要实现</em></strong>*<br/>
-*<strong><em>sequential consistency</em></strong>*</p>
-
-<p>实际上，Zookeeper的一致性更复杂一些，Zookeeper的读操作是sequential consistency的，Zookeeper的写操作是linearizability的。关于这个说法，Zookeeper的官方文档中没有写出来，但在社区的邮件组有详细的讨论（邮件组的讨论参见[3]）。</p>
-
-<p>另外，在 <em>Modular Composition of Coordination Services</em> 这篇关于Zookeeper的论文中也有提到这个观点（这篇论文不是Zookeeper的主流论文，但全面分析了Zookeeper的特性，以及Zookeeper跨机房方案，饿了么的Zookeeper异地多活改造也参考了这篇论文中的一些观点），我们可以这么理解Zookeeper，从整体（read操作+write操作）上来说是sequential consistency，写操作实现了linearizability。</p>
-
-<p>通过简单的推理，我们可以得出Lamport论文中的小例子，在Zookeeper中也是成立的。我们可以这样实现分布式锁。但Zookeeper官方推荐的分布式实现方法并没有采用这个方式，而是利用了Zookeeper的linearizability特性实现了分布式锁（关于Zookeeper官方是如何实现分布式锁的，请参见我这篇文章《Zookeeper实现分布式锁和选主》[4]）。</p>
-
-<p>为什么Zookeeper要实现sequential consistency？Zookeeper最核心的功能是用来做coordination service，也就是用来做分布式锁服务，在分布式的环境下，Zookeeper本身怎么做到“天然正确”？没有其他的synchronization机制保证Zookeeper是正确的，所以只要Zookeeper实现了sequential consistency，那它自身就可以保证正确性，从而对外提供锁服务。 </p>
-
-<p>*<strong><em>参考文章：</em></strong>*<br/>
-[1]<a href="http://zookeeper.apache.org/doc/r3.4.9/zookeeperProgrammers.html#ch_zkGuarantees">http://zookeeper.apache.org/doc/r3.4.9/zookeeperProgrammers.html#ch_zkGuarantees</a><br/>
-[2]<a href="https://blog.csdn.net/cadem/article/details/79932574">https://blog.csdn.net/cadem/article/details/79932574</a><br/>
-[3]<a href="http://comments.gmane.org/gmane.comp.java.hadoop.zookeeper.user/5221">http://comments.gmane.org/gmane.comp.java.hadoop.zookeeper.user/5221</a><br/>
-[4]<a href="https://blog.csdn.net/cadem/article/details/56289825">https://blog.csdn.net/cadem/article/details/56289825</a></p>
-
-<p><strong>近期热文</strong><br/>
-<a href="http://mp.weixin.qq.com/s?__biz=MzI4NTA1MDEwNg==&amp;mid=2650767616&amp;idx=1&amp;sn=5ef24be557292923c5ce8c0daa24f2cf&amp;chksm=f3f93495c48ebd83f9a0a70c67abcb5785362606ccdde8751fccd2ba1cf62b43913f2d5026df&amp;scene=21#wechat_redirect">_深入浅出分布式缓存的通用方法_</a><br/>
-<a href="http://mp.weixin.qq.com/s?__biz=MzI4NTA1MDEwNg==&amp;mid=2650767604&amp;idx=1&amp;sn=c3e41c1f9f645b1db91e90d87cbd6953&amp;chksm=f3f93561c48ebc77bf04cf44c22710d487f16a3e43bb75e4c2d0fe380a80606a3e97f5948b79&amp;scene=21#wechat_redirect">_一文详解消息队列的常见功能场景与使用精髓_</a><br/>
-<a href="http://mp.weixin.qq.com/s?__biz=MzI4NTA1MDEwNg==&amp;mid=2650767596&amp;idx=1&amp;sn=4c438f4bd2e65d0b9cd92150380d8b18&amp;chksm=f3f93579c48ebc6f7a306c84bdaa9e2b038ed82ccb37440eafb2f5ff99aa1db06bf97f4e71a5&amp;scene=21#wechat_redirect">_MySQL上云后引发的雪崩_</a><br/>
-<a href="http://mp.weixin.qq.com/s?__biz=MzI4NTA1MDEwNg==&amp;mid=2650767592&amp;idx=1&amp;sn=d2c79676981c63d70d7275486c88abdf&amp;chksm=f3f9357dc48ebc6b50f01ee6c4329df0ea1c4b0d416969911f52805dc3b44ec408f75d250b37&amp;scene=21#wechat_redirect">_方法论与技术栈双管齐下的运维可用性能力建设_</a><br/>
-<a href="http://mp.weixin.qq.com/s?__biz=MzI4NTA1MDEwNg==&amp;mid=2650767557&amp;idx=1&amp;sn=9a1935096cbe2fbd658dc28c8f52a402&amp;chksm=f3f93550c48ebc462c16e23d3e6941b28fd71ce50c790d8e39188e20f57f4a34b3e01ef22409&amp;scene=21#wechat_redirect">_中小型企业大数据体系建设的核心技术选型_</a></p>
-
-<p><strong>近期活动</strong><br/>
-<a href="http://mp.weixin.qq.com/s?__biz=MzI4NTA1MDEwNg==&amp;mid=2650767615&amp;idx=1&amp;sn=243dd45953cad2716f389bf25f99a01d&amp;chksm=f3f9356ac48ebc7c4ed927bfa23def9a14f927d08e4e255c026c9587de83a69062cfc4b057ad&amp;scene=21#wechat_redirect">_2018 DAMS中国数据资产管理峰会_</a><br/>
-微信扫一扫<br/>
-关注该公众号</p>
+<p>本文对 redis 的常见问题做了一个总结。大部分是博主自己在工作中遇到，以及以前面试别人的时候，爱问的一些问题。另外，<strong>不推荐大家临时抱佛脚</strong>，真正碰到一些有经验的工程师，其实几下就能把你问懵。最后，希望大家有所收获吧。</p>
 
                         
                       </div>
@@ -351,10 +307,10 @@ process 1<br/>
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/5/28</span>
+                    <span class="date">2018/6/1</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Microservice.html'>Microservice</a></span>
+          					    <span class="posted-in"><a href='Cache.html'>Cache</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -444,31 +400,31 @@ process 1<br/>
 	      
 		      
 			      <li class="post">
-			        <a href="15274398936380.html">电商平台备战促销季的运维秘诀——高可用服务层</a>
+			        <a href="15277835170976.html">蚂蚁通信框架实践</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15274396845490.html">面试-线程池的成长之路</a>
+			        <a href="15277833297034.html">揭秘JDBC超时机制</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15274395979385.html">不理解Zookeeper一致性原理，谈何异地多活改造</a>
+			        <a href="15277832551515.html">【原创】分布式之redis复习精讲</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15274392082175.html">消息队列之 RabbitMQ</a>
+			        <a href="15277824520436.html">【RPC 专栏】深入理解 RPC 之动态代理篇</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15274391142573.html">RPC 原理及 RPC 实例分析 - God is a Coder..</a>
+			        <a href="15277821532847.html">Aspect-Oriented Programming in Spring Boot Part 2: Spring JDK Proxies vs CGLIB vs AspectJ</a>
 			      </li>
 		     
 		  

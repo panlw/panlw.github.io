@@ -105,21 +105,284 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15273973619516.html">
+                <a class="clearlink" href="15274384746652.html">
                 
-                  <h1>Alpine Docker Image</h1>
+                  <h1>基于 Docker 搭建 MySQL 主从复制 - 秋田君</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
-                        	<pre><code class="language-Dockerfile">FROM alpine:3.5
-# Install base packages
-RUN apk update &amp;&amp; apk add curl bash tree tzdata \
-    &amp;&amp; cp -r -f /usr/share/zoneinfo/Asia/Shanghai /etc/localtime \
-    &amp;&amp; echo -ne &quot;Alpine Linux 3.4 image. (`uname -rsv`)\n&quot; &gt;&gt; /root/.built
-# Define bash as default command
-RUN apk --no-cache add openjdk8-jre ttf-droid
+                        	<blockquote>
+<p><a href="https://my.oschina.net/u/3773384/blog/1810111">原文地址</a></p>
+</blockquote>
+
+<pre><code>本篇博文相对简单，因为是初次使用 Docker，MySQL 的主从复制之前也在 Centos 环境下搭建过，但是也忘的也差不多了，因此本次尝试在 Docker 中搭建。根据网上教程走还是踩了一些坑，不过所幸最终搭建成功，因此记录下来，避免以后踩了重复的坑。
 </code></pre>
+
+<h2 id="toc_0">搭建环境</h2>
+
+<p>Centos 7.2 64 位</p>
+
+<p>MySQL 5.7.13</p>
+
+<p>Docker 1.13.1</p>
+
+<p>接下来，我们将会在一台服务器上安装 docker，并使用 docker 运行三个 MySQL 容器，分别为一主两从。</p>
+
+<h2 id="toc_1">安装 docker</h2>
+
+<p>执行命令</p>
+
+<pre><code>[root@VM_0_17_centos ~]# yum install docker
+</code></pre>
+
+<p>如果有提示，一路 y 下去</p>
+
+<p>安装成功启动 Docker 后，查看版本</p>
+
+<pre><code>[root@VM_0_17_centos ~]# docker version
+Client:
+ Version:         1.13.1
+ API version:     1.26
+ Package version: &lt;unknown&gt;
+ Go version:      go1.8.3
+ Git commit:      774336d/1.13.1
+ Built:           Wed Mar  7 17:06:16 2018
+ OS/Arch:         linux/amd64
+
+Server:
+ Version:         1.13.1
+ API version:     1.26 (minimum version 1.12)
+ Package version: &lt;unknown&gt;
+ Go version:      go1.8.3
+ Git commit:      774336d/1.13.1
+ Built:           Wed Mar  7 17:06:16 2018
+ OS/Arch:         linux/amd64
+ Experimental:    false
+</code></pre>
+
+<p>出现版本信息，则安装成功</p>
+
+<h2 id="toc_2">启动 Docker</h2>
+
+<p>启动 Docker 并设置为开机自启动</p>
+
+<pre><code>[root@VM_0_17_centos ~]# systemctl  start docker.service
+[root@VM_0_17_centos ~]# systemctl  enable docker.service
+</code></pre>
+
+<h2 id="toc_3">安装 MySQL</h2>
+
+<p>使用 Docker 拉取 MySQL 镜像</p>
+
+<pre><code>[root@VM_0_17_centos ~]# docker pull mysql:5.7.13
+</code></pre>
+
+<h2 id="toc_4">运行主容器</h2>
+
+<pre><code>[root@VM_0_17_centos ~]# docker run --name master -p 3306:3306 -e MYSQL_ROOT_PASSWORD=root -d mysql:5.7.13
+
+</code></pre>
+
+<p>--name 为容器指定名称，这里是 master</p>
+
+<p>-p 将容器的指定端口映射到主机的指定端口，这里是将容器的 3306 端口映射到主机的 3306 端口</p>
+
+<p>-e 设置环境变量，这里是指定 root 账号的密码为 root</p>
+
+<p>-d 后台运行容器，并返回容器 ID</p>
+
+<p>mysql:5.7.13 指定运行的 mysql 版本</p>
+
+<h2 id="toc_5">检验是否启动成功</h2>
+
+<p>docker ps -a 显示所有的容器，包括未运行的</p>
+
+<pre><code>[root@VM_0_17_centos ~]# docker ps -a
+ee86c19336f8        mysql:5.7.13        &quot;docker-entrypoint...&quot;   About an hour ago   Up About an hour    0.0.0.0:3306-&gt;3306/tcp   master
+
+</code></pre>
+
+<p>注意，是 UP 状态，表示正在运行中</p>
+
+<p>开放 3306 端口</p>
+
+<pre><code>[root@VM_0_17_centos ~]# firewall-cmd --zone=public --add-port=3306/tcp --permanent
+[root@VM_0_17_centos ~]# firewall-cmd --reload
+
+</code></pre>
+
+<p>--permanent 永久开启，避免下次开机需要再次手动开启端口</p>
+
+<p>使用 Navicat 连接测试</p>
+
+<p><img src="https://static.oschina.net/uploads/space/2018/0510/114916_0h3I_3773384.png" alt=""/></p>
+
+<p>MySQL 主容器已经启动成功</p>
+
+<h2 id="toc_6">创建主容器的复制账号</h2>
+
+<p><img src="https://static.oschina.net/uploads/space/2018/0510/120249_0ZQx_3773384.png" alt=""/></p>
+
+<p>使用 Navicat 友好的图像化界面执行 SQL</p>
+
+<pre><code>GRANT REPLICATION SLAVE ON *.* to &#39;backup&#39;@&#39;%&#39; identified by &#39;backup&#39;;
+show grants for &#39;backup&#39;@&#39;%&#39;;
+</code></pre>
+
+<p>出现如下信息表示授权成功</p>
+
+<p><img src="https://static.oschina.net/uploads/space/2018/0510/121018_Vtxn_3773384.png" alt=""/></p>
+
+<h2 id="toc_7">修改 MySQL 配置环境</h2>
+
+<p>创建配置文件目录</p>
+
+<p>目录结构如下</p>
+
+<p>/usr/local/mysql/master</p>
+
+<p>/usr/local/mysql/slave1</p>
+
+<p>/usr/local/mysql/slave2</p>
+
+<p>拷贝一份 MySQL 配置文件</p>
+
+<pre><code>[root@VM_0_17_centos local]# docker cp master:/etc/mysql/my.cnf /usr/local/mysql/master/my.cnf
+
+</code></pre>
+
+<p>进到 master 目录下，已存在拷贝的 my.cnf</p>
+
+<pre><code>[root@VM_0_17_centos master]# ll
+total 4
+-rw-r--r-- 1 root root 1801 May 10 10:27 my.cnf
+
+</code></pre>
+
+<p>修改 my.cnf，在 [mysqld] 节点最后加上后保存</p>
+
+<pre><code>log-bin=mysql-bin
+server-id=1
+</code></pre>
+
+<p>log-bin=mysql-bin 使用 binary logging，mysql-bin 是 log 文件名的前缀</p>
+
+<p>server-id=1 唯一服务器 ID，非 0 整数，不能和其他服务器的 server-id 重复</p>
+
+<p>将修改后的文件覆盖 Docker 中 MySQL 中的配置文件</p>
+
+<pre><code>[root@VM_0_17_centos master]# docker cp /usr/local/mysql/master/my.cnf master:/etc/mysql/my.cnf
+
+</code></pre>
+
+<p>重启 mysql 的 docker , 让配置生效</p>
+
+<pre><code>[root@VM_0_17_centos master]# docker restart master
+</code></pre>
+
+<p>启动后，重新测试连接，连接成功表示主容器配置成功</p>
+
+<h2 id="toc_8">运行 MySQL 从容器</h2>
+
+<p>首先运行从容器</p>
+
+<pre><code>[root@VM_0_17_centos ~]# docker run --name slave1 -p 3307:3306 -e MYSQL_ROOT_PASSWORD=root -d mysql:5.7.13
+
+</code></pre>
+
+<p>与主容器相似，拷贝配置文件至 slave1 目录修改后覆盖回 Docker 中</p>
+
+<pre><code>log-bin=mysql-bin
+server-id=2
+</code></pre>
+
+<p>别忘记，重启 slave1 容器，使配置生效</p>
+
+<h2 id="toc_9">配置主从复制</h2>
+
+<p>使用 Navicat 连接 slave1 后新建查询，执行以下 SQL</p>
+
+<pre><code>CHANGE MASTER TO 
+MASTER_HOST=&#39;ip&#39;,
+MASTER_PORT=3306,
+MASTER_USER=&#39;backup&#39;,
+MASTER_PASSWORD=&#39;backup&#39;;
+
+START SLAVE;
+</code></pre>
+
+<p>MASTER_HOST 填 Navicat 连接配置中的 ip 应该就可以</p>
+
+<p>MASTER_PORT 主容器的端口</p>
+
+<p>MASTER_USER 同步账号的用户名</p>
+
+<p>MASTER_PASSWORD 同步账号的密码</p>
+
+<h2 id="toc_10">检查是否配置成功</h2>
+
+<pre><code>show slave status;
+</code></pre>
+
+<p><img src="https://static.oschina.net/uploads/space/2018/0510/123902_gnvI_3773384.png" alt=""/></p>
+
+<p>Slave_IO_State 如果是 Waiting for master to send event，那么就成功一半了，如果是 Connecting to master，基本就是配置失败了，建议重新检查下配置，具体失败的原因可以查看日志追踪</p>
+
+<pre><code>[root@VM_0_17_centos master]# docker logs slave -f
+</code></pre>
+
+<p>我遇到的是 MASTER_USER 和 MASTER_PASSWORD 是否手打输错了，贴出错误日志</p>
+
+<pre><code>2018-05-10T02:57:00.688887Z 11 [ERROR] Slave I/O for channel &#39;&#39;: error connecting to master &#39;bakcup@ip:3306&#39; - retry-time: 60  retries: 2, Error_code: 1045
+2018-05-10T02:58:00.690476Z 11 [ERROR] Slave I/O for channel &#39;&#39;: error connecting to master &#39;bakcup@ip:3306&#39; - retry-time: 60  retries: 3, Error_code: 1045
+</code></pre>
+
+<p>注意看日志中的 bakcup，解决方法如下</p>
+
+<pre><code>STOP SLAVE;
+
+CHANGE MASTER TO 
+MASTER_HOST=&#39;连接Navicat的ip&#39;,
+MASTER_PORT=正确的端口,
+MASTER_USER=&#39;正确的用户名&#39;,
+MASTER_PASSWORD=&#39;正确的密码&#39;;
+
+START SLAVE;
+</code></pre>
+
+<p>接着上文，我们说成功一半，并没有说成功了，那么另一半在于 Slave_IO_Running 与 Slave_SQL_Running</p>
+
+<p>如果都是 Yes，那么恭喜你，可以测试主从复制的效果了，如果有一个不是 Yes，一半是重启从容器后，事务回滚引起的，那么给出解决方法如下</p>
+
+<pre><code>stop slave ;
+set GLOBAL SQL_SLAVE_SKIP_COUNTER=1;
+start slave ;
+</code></pre>
+
+<p>执行后，再次观察三个关键字段应该就都没问题了</p>
+
+<p>至此，一主一从已经搭建完成，再添加从实例的方式与上文一致，这里就不在赘述了。</p>
+
+<h2 id="toc_11">测试主从复制</h2>
+
+<p>首先，在主实例中创建一个测试数据库</p>
+
+<p><img src="https://static.oschina.net/uploads/space/2018/0510/130207_7Ty1_3773384.png" alt=""/></p>
+
+<p>打开（刷新）从实例，可见 test 库已存在</p>
+
+<p><img src="https://static.oschina.net/uploads/space/2018/0510/130133_ITNO_3773384.png" alt=""/></p>
+
+<p>在 test 库中创建一个表 t_test，添加一个 id 测试字段</p>
+
+<p>向表中添加几个数据</p>
+
+<p><img src="https://static.oschina.net/uploads/space/2018/0510/130357_IEZg_3773384.png" alt=""/></p>
+
+<p>刷新从库，可见 t_test 表及其中 1、2、3、4 数据已存在</p>
+
+<p>至此，一个具备主从复制的一主两从的 MySQL 就已搭建完成。</p>
 
                         
                       </div>
@@ -128,7 +391,7 @@ RUN apk --no-cache add openjdk8-jre ttf-droid
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/5/27</span>
+                    <span class="date">2018/5/28</span>
                     <span>posted in&nbsp;</span> 
           				  
           					    <span class="posted-in"><a href='Container.html'>Container</a></span>
@@ -221,31 +484,31 @@ RUN apk --no-cache add openjdk8-jre ttf-droid
 	      
 		      
 			      <li class="post">
-			        <a href="15274398936380.html">电商平台备战促销季的运维秘诀——高可用服务层</a>
+			        <a href="15277835170976.html">蚂蚁通信框架实践</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15274396845490.html">面试-线程池的成长之路</a>
+			        <a href="15277833297034.html">揭秘JDBC超时机制</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15274395979385.html">不理解Zookeeper一致性原理，谈何异地多活改造</a>
+			        <a href="15277832551515.html">【原创】分布式之redis复习精讲</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15274392082175.html">消息队列之 RabbitMQ</a>
+			        <a href="15277824520436.html">【RPC 专栏】深入理解 RPC 之动态代理篇</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15274391142573.html">RPC 原理及 RPC 实例分析 - God is a Coder..</a>
+			        <a href="15277821532847.html">Aspect-Oriented Programming in Spring Boot Part 2: Spring JDK Proxies vs CGLIB vs AspectJ</a>
 			      </li>
 		     
 		  

@@ -105,284 +105,200 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15274384746652.html">
+                <a class="clearlink" href="15277832551515.html">
                 
-                  <h1>基于 Docker 搭建 MySQL 主从复制 - 秋田君</h1>
+                  <h1>【原创】分布式之redis复习精讲</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://my.oschina.net/u/3773384/blog/1810111">原文地址</a></p>
+<p>原文地址 <a href="http://www.cnblogs.com/rjzheng/p/9096228.html">http://www.cnblogs.com/rjzheng/p/9096228.html</a></p>
 </blockquote>
 
-<pre><code>本篇博文相对简单，因为是初次使用 Docker，MySQL 的主从复制之前也在 Centos 环境下搭建过，但是也忘的也差不多了，因此本次尝试在 Docker 中搭建。根据网上教程走还是踩了一些坑，不过所幸最终搭建成功，因此记录下来，避免以后踩了重复的坑。
+<h2 id="toc_0">引言</h2>
+
+<h3 id="toc_1">为什么写这篇文章?</h3>
+
+<p>博主的<a href="http://www.cnblogs.com/rjzheng/p/8994962.html">《分布式之消息队列复习精讲》</a>得到了大家的好评，内心诚惶诚恐，想着再出一篇关于复习精讲的文章。但是还是要说明一下，复习精讲的文章偏面试准备，真正在开发过程中，还是脚踏实地，一步一个脚印，不要投机取巧。<br/>
+考虑到绝大部分写业务的程序员，在实际开发中使用 redis 的时候，只会 setvalue 和 getvalue 两个操作，对 redis 整体缺乏一个认知。又恰逢博主某个同事下周要去培训 redis，所以博主斗胆以 redis 为题材，对 redis 常见问题做一个总结，希望能够弥补大家的知识盲点。</p>
+
+<h3 id="toc_2">复习要点?</h3>
+
+<p>本文围绕以下几点进行阐述<br/>
+1、为什么使用 redis<br/>
+2、使用 redis 有什么缺点<br/>
+3、单线程的 redis 为什么这么快<br/>
+4、redis 的数据类型，以及每种数据类型的使用场景<br/>
+5、redis 的过期策略以及内存淘汰机制<br/>
+6、redis 和数据库双写一致性问题<br/>
+7、如何应对缓存穿透和缓存雪崩问题<br/>
+8、如何解决 redis 的并发竞争问题</p>
+
+<h2 id="toc_3">正文</h2>
+
+<h3 id="toc_4">1、为什么使用 redis</h3>
+
+<p><strong>分析</strong>: 博主觉得在项目中使用 redis，主要是从两个角度去考虑: <strong>性能</strong>和<strong>并发</strong>。当然，redis 还具备可以做分布式锁等其他功能，但是如果只是为了分布式锁这些其他功能，完全还有其他中间件 (如 zookpeer 等) 代替，并不是非要使用 redis。因此，这个问题主要从性能和并发两个角度去答。<br/>
+<strong>回答</strong>: 如下所示，分为两点<br/>
+<strong>（一）性能</strong><br/>
+如下图所示，我们在碰到需要执行耗时特别久，且结果不频繁变动的 SQL，就特别适合将运行结果放入缓存。这样，后面的请求就去缓存中读取，使得请求能够<strong>迅速响应</strong>。<br/>
+<img src="https://images.cnblogs.com/cnblogs_com/rjzheng/1202350/o_redis1.png" alt=""/><br/>
+<strong>题外话：</strong>忽然想聊一下这个<strong>迅速响应</strong>的标准。其实根据交互效果的不同，这个响应时间没有固定标准。不过曾经有人这么告诉我:&quot; 在理想状态下，我们的页面跳转需要在<strong>瞬间</strong>解决，对于页内操作则需要在<strong>刹那</strong>间解决。另外，超过<strong>一弹指</strong>的耗时操作要有进度提示，并且可以随时中止或取消，这样才能给用户最好的体验。&quot;<br/>
+那么<strong>瞬间、刹那、一弹指</strong>具体是多少时间呢？<br/>
+根据《摩诃僧祗律》记载</p>
+
+<pre><code>一刹那者为一念，二十念为一瞬，二十瞬为一弹指，二十弹指为一罗预，二十罗预为一须臾，一日一夜有三十须臾。
 </code></pre>
 
-<h2 id="toc_0">搭建环境</h2>
+<p>那么，经过周密的计算，一<strong>瞬间</strong>为 0.36 秒, 一<strong>刹那</strong>有 0.018 秒. 一<strong>弹指</strong>长达 7.2 秒。<br/>
+<strong>（二）并发</strong><br/>
+如下图所示，在大并发的情况下，所有的请求直接访问数据库，数据库会出现连接异常。这个时候，就需要使用 redis 做一个缓冲操作，让请求先访问到 redis，而不是直接访问数据库。<br/>
+<img src="https://images.cnblogs.com/cnblogs_com/rjzheng/1202350/o_redis2.png" alt=""/></p>
 
-<p>Centos 7.2 64 位</p>
+<h3 id="toc_5">2、使用 redis 有什么缺点</h3>
 
-<p>MySQL 5.7.13</p>
+<p><strong>分析</strong>: 大家用 redis 这么久，这个问题是必须要了解的，基本上使用 redis 都会碰到一些问题，常见的也就几个。<br/>
+<strong>回答</strong>: 主要是四个问题<br/>
+(一) 缓存和数据库双写一致性问题<br/>
+(二) 缓存雪崩问题<br/>
+(三) 缓存击穿问题<br/>
+(四) 缓存的并发竞争问题<br/>
+这四个问题，我个人是觉得在项目中，比较常遇见的，具体解决方案，后文给出。</p>
 
-<p>Docker 1.13.1</p>
+<h3 id="toc_6">3、单线程的 redis 为什么这么快</h3>
 
-<p>接下来，我们将会在一台服务器上安装 docker，并使用 docker 运行三个 MySQL 容器，分别为一主两从。</p>
+<p><strong>分析</strong>: 这个问题其实是对 redis 内部机制的一个考察。其实根据博主的面试经验，很多人其实都不知道 redis 是单线程工作模型。所以，这个问题还是应该要复习一下的。<br/>
+<strong>回答</strong>: 主要是以下三点<br/>
+(一) 纯内存操作<br/>
+(二) 单线程操作，避免了频繁的上下文切换<br/>
+(三) 采用了非阻塞 <strong>I/O 多路复用机制</strong></p>
 
-<h2 id="toc_1">安装 docker</h2>
+<p><strong>题外话：</strong>我们现在要仔细的说一说 I/O 多路复用机制，因为这个说法实在是太通俗了，通俗到一般人都不懂是什么意思。博主打一个比方：小曲在 S 城开了一家快递店，负责同城快送服务。小曲因为资金限制，雇佣了<strong>一批</strong>快递员，然后小曲发现资金不够了，只够买<strong>一辆</strong>车送快递。<br/>
+<strong>经营方式一</strong><br/>
+客户每送来一份快递，小曲就让一个快递员盯着，然后快递员开车去送快递。慢慢的小曲就发现了这种经营方式存在下述问题</p>
 
-<p>执行命令</p>
+<ul>
+<li>  几十个快递员基本上时间都花在了抢车上了，大部分快递员都处在闲置状态，谁抢到了车，谁就能去送快递</li>
+<li>  随着快递的增多，快递员也越来越多，小曲发现快递店里越来越挤，没办法雇佣新的快递员了</li>
+<li>  快递员之间的协调很花时间</li>
+</ul>
 
-<pre><code>[root@VM_0_17_centos ~]# yum install docker
+<p>综合上述缺点，小曲痛定思痛，提出了下面的经营方式<br/>
+<strong>经营方式二</strong><br/>
+小曲只雇佣一个快递员。然后呢，客户送来的快递，小曲按<strong>送达地点</strong>标注好，然后<strong>依次</strong>放在一个地方。最后，那个快递员<strong>依次</strong>的去取快递，一次拿一个，然后开着车去送快递，送好了就回来拿下一个快递。</p>
+
+<p><strong>对比</strong><br/>
+上述两种经营方式对比，是不是明显觉得第二种，效率更高，更好呢。在上述比喻中:</p>
+
+<ul>
+<li>  每个快递员 ------------------&gt; 每个线程</li>
+<li>  每个快递 --------------------&gt; 每个 socket(I/O 流)</li>
+<li>  快递的送达地点 --------------&gt;socket 的不同状态</li>
+<li>  客户送快递请求 --------------&gt; 来自客户端的请求</li>
+<li>  小曲的经营方式 --------------&gt; 服务端运行的代码</li>
+<li>  一辆车 ----------------------&gt;CPU 的核数</li>
+</ul>
+
+<p>于是我们有如下结论<br/>
+1、经营方式一就是传统的并发模型，每个 I/O 流 (快递) 都有一个新的线程 (快递员) 管理。<br/>
+2、经营方式二就是 I/O 多路复用。只有单个线程 (一个快递员)，通过跟踪每个 I/O 流的状态 (每个快递的送达地点)，来管理多个 I/O 流。</p>
+
+<p>下面类比到真实的 redis 线程模型，如图所示<br/>
+<img src="https://images.cnblogs.com/cnblogs_com/rjzheng/1202350/o_redis3.png" alt=""/><br/>
+参照上图，简单来说，就是。我们的 redis-client 在操作的时候，会产生具有不同事件类型的 socket。在服务端，有一段 I/0 多路复用程序，将其置入队列之中。然后，文件事件分派器，依次去队列中取，转发到不同的事件处理器中。<br/>
+需要说明的是，这个 I/O 多路复用机制，redis 还提供了 select、epoll、evport、kqueue 等多路复用函数库，大家可以自行去了解。</p>
+
+<h3 id="toc_7">4、redis 的数据类型，以及每种数据类型的使用场景</h3>
+
+<p><strong>分析</strong>：是不是觉得这个问题很基础，其实我也这么觉得。然而根据面试经验发现，至少百分八十的人答不上这个问题。建议，在项目中用到后，再类比记忆，体会更深，不要硬记。基本上，一个合格的程序员，五种类型都会用到。<br/>
+<strong>回答</strong>：一共五种<br/>
+(一)String<br/>
+这个其实没啥好说的，最常规的 set/get 操作，value 可以是 String 也可以是数字。一般做<strong>一些复杂的计数功能的缓存。</strong><br/>
+(二)hash<br/>
+这里 value 存放的是结构化的对象，比较方便的就是操作其中的某个字段。博主在做<strong>单点登录</strong>的时候，就是用这种数据结构存储用户信息，以 cookieId 作为 key，设置 30 分钟为缓存过期时间，能很好的模拟出类似 session 的效果。<br/>
+(三)list<br/>
+使用 List 的数据结构，可以<strong>做简单的消息队列的功能</strong>。另外还有一个就是，可以利用 lrange 命令，<strong>做基于 redis 的分页功能</strong>，性能极佳，用户体验好。<br/>
+(四)set<br/>
+因为 set 堆放的是一堆不重复值的集合。所以可以做<strong>全局去重的功能</strong>。为什么不用 JVM 自带的 Set 进行去重？因为我们的系统一般都是集群部署，使用 JVM 自带的 Set，比较麻烦，难道为了一个做一个全局去重，再起一个公共服务，太麻烦了。<br/>
+另外，就是利用交集、并集、差集等操作，可以<strong>计算共同喜好，全部的喜好，自己独有的喜好等功能</strong>。<br/>
+(五)sorted set<br/>
+sorted set 多了一个权重参数 score, 集合中的元素能够按 score 进行排列。可以做<strong>排行榜应用，取 TOP N 操作</strong>。另外，参照另一篇<a href="https://www.cnblogs.com/rjzheng/p/8972725.html">《分布式之延时任务方案解析》</a>，该文指出了 sorted set 可以用来做<strong>延时任务</strong>。最后一个应用就是可以做<strong>范围查找</strong>。</p>
+
+<h3 id="toc_8">5、redis 的过期策略以及内存淘汰机制</h3>
+
+<p><strong>分析</strong>: 这个问题其实相当重要，到底 redis 有没用到家，这个问题就可以看出来。比如你 redis 只能存 5G 数据，可是你写了 10G，那会删 5G 的数据。怎么删的，这个问题思考过么？还有，你的数据已经设置了过期时间，但是时间到了，内存占用率还是比较高，有思考过原因么?<br/>
+<strong>回答</strong>:<br/>
+redis 采用的是定期删除 + 惰性删除策略。<br/>
+<strong>为什么不用定时删除策略?</strong><br/>
+定时删除, 用一个定时器来负责监视 key, 过期则自动删除。虽然内存及时释放，但是十分消耗 CPU 资源。在大并发请求下，CPU 要将时间应用在处理请求，而不是删除 key, 因此没有采用这一策略.<br/>
+<strong>定期删除 + 惰性删除是如何工作的呢?</strong><br/>
+定期删除，redis 默认每个 100ms 检查，是否有过期的 key, 有过期 key 则删除。需要说明的是，redis 不是每个 100ms 将所有的 key 检查一次，而是随机抽取进行检查 (如果每隔 100ms, 全部 key 进行检查，redis 岂不是卡死)。因此，如果只采用定期删除策略，会导致很多 key 到时间没有删除。<br/>
+于是，惰性删除派上用场。也就是说在你获取某个 key 的时候，redis 会检查一下，这个 key 如果设置了过期时间那么是否过期了？如果过期了此时就会删除。<br/>
+<strong>采用定期删除 + 惰性删除就没其他问题了么?</strong><br/>
+不是的，如果定期删除没删除 key。然后你也没即时去请求 key，也就是说惰性删除也没生效。这样，redis 的内存会越来越高。那么就应该采用<strong>内存淘汰机制</strong>。<br/>
+在 redis.conf 中有一行配置</p>
+
+<pre><code># maxmemory-policy volatile-lru
 </code></pre>
 
-<p>如果有提示，一路 y 下去</p>
+<p>该配置就是配内存淘汰策略的 (什么，你没配过？好好反省一下自己)<br/>
+1）noeviction：当内存不足以容纳新写入数据时，新写入操作会报错。<strong>应该没人用吧。</strong><br/>
+2）allkeys-lru：当内存不足以容纳新写入数据时，在键空间中，移除最近最少使用的 key。<strong>推荐使用，目前项目在用这种。</strong><br/>
+3）allkeys-random：当内存不足以容纳新写入数据时，在键空间中，随机移除某个 key。<strong>应该也没人用吧，你不删最少使用 Key, 去随机删。</strong><br/>
+4）volatile-lru：当内存不足以容纳新写入数据时，在设置了过期时间的键空间中，移除最近最少使用的 key。<strong>这种情况一般是把 redis 既当缓存，又做持久化存储的时候才用。不推荐</strong><br/>
+5）volatile-random：当内存不足以容纳新写入数据时，在设置了过期时间的键空间中，随机移除某个 key。<strong>依然不推荐</strong><br/>
+6）volatile-ttl：当内存不足以容纳新写入数据时，在设置了过期时间的键空间中，有更早过期时间的 key 优先移除。<strong>不推荐</strong><br/>
+ps：如果没有设置 expire 的 key, 不满足先决条件 (prerequisites); 那么 volatile-lru, volatile-random 和 volatile-ttl 策略的行为, 和 noeviction(不删除) 基本上一致。</p>
 
-<p>安装成功启动 Docker 后，查看版本</p>
+<h3 id="toc_9">6、redis 和数据库双写一致性问题</h3>
 
-<pre><code>[root@VM_0_17_centos ~]# docker version
-Client:
- Version:         1.13.1
- API version:     1.26
- Package version: &lt;unknown&gt;
- Go version:      go1.8.3
- Git commit:      774336d/1.13.1
- Built:           Wed Mar  7 17:06:16 2018
- OS/Arch:         linux/amd64
+<p><strong>分析</strong>: 一致性问题是分布式常见问题，还可以再分为最终一致性和强一致性。数据库和缓存双写，就必然会存在不一致的问题。答这个问题，先明白一个前提。就是<strong>如果对数据有强一致性要求，不能放缓存。</strong>我们所做的一切，只能保证最终一致性。另外，我们所做的方案其实从根本上来说，只能说<strong>降低不一致发生的概率</strong>，无法完全避免。因此，有强一致性要求的数据，不能放缓存。<br/>
+<strong>回答</strong>:<a href="https://www.cnblogs.com/rjzheng/p/9041659.html">《分布式之数据库和缓存双写一致性方案解析》</a>给出了详细的分析，在这里简单的说一说。首先，采取正确更新策略，先更新数据库，再删缓存。其次，因为可能存在删除缓存失败的问题，提供一个补偿措施即可，例如利用消息队列。</p>
 
-Server:
- Version:         1.13.1
- API version:     1.26 (minimum version 1.12)
- Package version: &lt;unknown&gt;
- Go version:      go1.8.3
- Git commit:      774336d/1.13.1
- Built:           Wed Mar  7 17:06:16 2018
- OS/Arch:         linux/amd64
- Experimental:    false
+<h3 id="toc_10">7、如何应对缓存穿透和缓存雪崩问题</h3>
+
+<p><strong>分析</strong>: 这两个问题，说句实在话，一般中小型传统软件企业，很难碰到这个问题。如果有大并发的项目，流量有几百万左右。这两个问题一定要深刻考虑。<br/>
+<strong>回答</strong>: 如下所示<br/>
+<strong>缓存穿透</strong>，即黑客故意去请求缓存中不存在的数据，导致所有的请求都怼到数据库上，从而数据库连接异常。<br/>
+<strong>解决方案</strong>:<br/>
+(一) 利用互斥锁，缓存失效的时候，先去获得锁，得到锁了，再去请求数据库。没得到锁，则休眠一段时间重试<br/>
+(二) 采用异步更新策略，无论 key 是否取到值，都直接返回。value 值中维护一个缓存失效时间，缓存如果过期，异步起一个线程去读数据库，更新缓存。需要做<strong>缓存预热</strong> (项目启动前，先加载缓存) 操作。<br/>
+(三) 提供一个能迅速判断请求是否有效的拦截机制，比如，利用布隆过滤器，内部维护一系列合法有效的 key。迅速判断出，请求所携带的 Key 是否合法有效。如果不合法，则直接返回。<br/>
+<strong>缓存雪崩</strong>，即缓存同一时间大面积的失效，这个时候又来了一波请求，结果请求都怼到数据库上，从而导致数据库连接异常。<br/>
+<strong>解决方案</strong>:<br/>
+(一) 给缓存的失效时间，加上一个随机值，避免集体失效。<br/>
+(二) 使用互斥锁，但是该方案吞吐量明显下降了。<br/>
+(三) 双缓存。我们有两个缓存，缓存 A 和缓存 B。缓存 A 的失效时间为 20 分钟，缓存 B 不设失效时间。自己做缓存预热操作。然后细分以下几个小点</p>
+
+<ul>
+<li>  I 从缓存 A 读数据库，有则直接返回</li>
+<li>  II A 没有数据，直接从 B 读数据，直接返回，并且异步启动一个更新线程。</li>
+<li>  III 更新线程同时更新缓存 A 和缓存 B。</li>
+</ul>
+
+<h3 id="toc_11">8、如何解决 redis 的并发竞争 key 问题</h3>
+
+<p><strong>分析</strong>: 这个问题大致就是，同时有多个子系统去 set 一个 key。这个时候要注意什么呢？大家思考过么。需要说明一下，博主提前百度了一下，发现答案基本都是推荐用 redis 事务机制。博主<strong>不推荐使用 redis 的事务机制。</strong>因为我们的生产环境，基本都是 redis 集群环境，做了数据分片操作。你一个事务中有涉及到多个 key 操作的时候，这多个 key 不一定都存储在同一个 redis-server 上。因此，<strong>redis 的事务机制，十分鸡肋。</strong><br/>
+<strong>回答:</strong> 如下所示<br/>
+(1) 如果对这个 key 操作，<strong>不要求顺序</strong><br/>
+这种情况下，准备一个分布式锁，大家去抢锁，抢到锁就做 set 操作即可，比较简单。<br/>
+(2) 如果对这个 key 操作，<strong>要求顺序</strong><br/>
+假设有一个 key1, 系统 A 需要将 key1 设置为 valueA, 系统 B 需要将 key1 设置为 valueB, 系统 C 需要将 key1 设置为 valueC.<br/>
+期望按照 key1 的 value 值按照 valueA--&gt;valueB--&gt;valueC 的顺序变化。这种时候我们在数据写入数据库的时候，需要保存一个时间戳。假设时间戳如下</p>
+
+<pre><code>系统A key 1 {valueA  3:00}
+系统B key 1 {valueB  3:05}
+系统C key 1 {valueC  3:10}
 </code></pre>
 
-<p>出现版本信息，则安装成功</p>
+<p>那么，假设这会系统 B 先抢到锁，将 key1 设置为 {valueB 3:05}。接下来系统 A 抢到锁，发现自己的 valueA 的时间戳早于缓存中的时间戳，那就不做 set 操作了。以此类推。</p>
 
-<h2 id="toc_2">启动 Docker</h2>
+<p>其他方法，比如利用队列，将 set 方法变成串行访问也可以。总之，灵活变通。</p>
 
-<p>启动 Docker 并设置为开机自启动</p>
+<h2 id="toc_12">总结</h2>
 
-<pre><code>[root@VM_0_17_centos ~]# systemctl  start docker.service
-[root@VM_0_17_centos ~]# systemctl  enable docker.service
-</code></pre>
-
-<h2 id="toc_3">安装 MySQL</h2>
-
-<p>使用 Docker 拉取 MySQL 镜像</p>
-
-<pre><code>[root@VM_0_17_centos ~]# docker pull mysql:5.7.13
-</code></pre>
-
-<h2 id="toc_4">运行主容器</h2>
-
-<pre><code>[root@VM_0_17_centos ~]# docker run --name master -p 3306:3306 -e MYSQL_ROOT_PASSWORD=root -d mysql:5.7.13
-
-</code></pre>
-
-<p>--name 为容器指定名称，这里是 master</p>
-
-<p>-p 将容器的指定端口映射到主机的指定端口，这里是将容器的 3306 端口映射到主机的 3306 端口</p>
-
-<p>-e 设置环境变量，这里是指定 root 账号的密码为 root</p>
-
-<p>-d 后台运行容器，并返回容器 ID</p>
-
-<p>mysql:5.7.13 指定运行的 mysql 版本</p>
-
-<h2 id="toc_5">检验是否启动成功</h2>
-
-<p>docker ps -a 显示所有的容器，包括未运行的</p>
-
-<pre><code>[root@VM_0_17_centos ~]# docker ps -a
-ee86c19336f8        mysql:5.7.13        &quot;docker-entrypoint...&quot;   About an hour ago   Up About an hour    0.0.0.0:3306-&gt;3306/tcp   master
-
-</code></pre>
-
-<p>注意，是 UP 状态，表示正在运行中</p>
-
-<p>开放 3306 端口</p>
-
-<pre><code>[root@VM_0_17_centos ~]# firewall-cmd --zone=public --add-port=3306/tcp --permanent
-[root@VM_0_17_centos ~]# firewall-cmd --reload
-
-</code></pre>
-
-<p>--permanent 永久开启，避免下次开机需要再次手动开启端口</p>
-
-<p>使用 Navicat 连接测试</p>
-
-<p><img src="https://static.oschina.net/uploads/space/2018/0510/114916_0h3I_3773384.png" alt=""/></p>
-
-<p>MySQL 主容器已经启动成功</p>
-
-<h2 id="toc_6">创建主容器的复制账号</h2>
-
-<p><img src="https://static.oschina.net/uploads/space/2018/0510/120249_0ZQx_3773384.png" alt=""/></p>
-
-<p>使用 Navicat 友好的图像化界面执行 SQL</p>
-
-<pre><code>GRANT REPLICATION SLAVE ON *.* to &#39;backup&#39;@&#39;%&#39; identified by &#39;backup&#39;;
-show grants for &#39;backup&#39;@&#39;%&#39;;
-</code></pre>
-
-<p>出现如下信息表示授权成功</p>
-
-<p><img src="https://static.oschina.net/uploads/space/2018/0510/121018_Vtxn_3773384.png" alt=""/></p>
-
-<h2 id="toc_7">修改 MySQL 配置环境</h2>
-
-<p>创建配置文件目录</p>
-
-<p>目录结构如下</p>
-
-<p>/usr/local/mysql/master</p>
-
-<p>/usr/local/mysql/slave1</p>
-
-<p>/usr/local/mysql/slave2</p>
-
-<p>拷贝一份 MySQL 配置文件</p>
-
-<pre><code>[root@VM_0_17_centos local]# docker cp master:/etc/mysql/my.cnf /usr/local/mysql/master/my.cnf
-
-</code></pre>
-
-<p>进到 master 目录下，已存在拷贝的 my.cnf</p>
-
-<pre><code>[root@VM_0_17_centos master]# ll
-total 4
--rw-r--r-- 1 root root 1801 May 10 10:27 my.cnf
-
-</code></pre>
-
-<p>修改 my.cnf，在 [mysqld] 节点最后加上后保存</p>
-
-<pre><code>log-bin=mysql-bin
-server-id=1
-</code></pre>
-
-<p>log-bin=mysql-bin 使用 binary logging，mysql-bin 是 log 文件名的前缀</p>
-
-<p>server-id=1 唯一服务器 ID，非 0 整数，不能和其他服务器的 server-id 重复</p>
-
-<p>将修改后的文件覆盖 Docker 中 MySQL 中的配置文件</p>
-
-<pre><code>[root@VM_0_17_centos master]# docker cp /usr/local/mysql/master/my.cnf master:/etc/mysql/my.cnf
-
-</code></pre>
-
-<p>重启 mysql 的 docker , 让配置生效</p>
-
-<pre><code>[root@VM_0_17_centos master]# docker restart master
-</code></pre>
-
-<p>启动后，重新测试连接，连接成功表示主容器配置成功</p>
-
-<h2 id="toc_8">运行 MySQL 从容器</h2>
-
-<p>首先运行从容器</p>
-
-<pre><code>[root@VM_0_17_centos ~]# docker run --name slave1 -p 3307:3306 -e MYSQL_ROOT_PASSWORD=root -d mysql:5.7.13
-
-</code></pre>
-
-<p>与主容器相似，拷贝配置文件至 slave1 目录修改后覆盖回 Docker 中</p>
-
-<pre><code>log-bin=mysql-bin
-server-id=2
-</code></pre>
-
-<p>别忘记，重启 slave1 容器，使配置生效</p>
-
-<h2 id="toc_9">配置主从复制</h2>
-
-<p>使用 Navicat 连接 slave1 后新建查询，执行以下 SQL</p>
-
-<pre><code>CHANGE MASTER TO 
-MASTER_HOST=&#39;ip&#39;,
-MASTER_PORT=3306,
-MASTER_USER=&#39;backup&#39;,
-MASTER_PASSWORD=&#39;backup&#39;;
-
-START SLAVE;
-</code></pre>
-
-<p>MASTER_HOST 填 Navicat 连接配置中的 ip 应该就可以</p>
-
-<p>MASTER_PORT 主容器的端口</p>
-
-<p>MASTER_USER 同步账号的用户名</p>
-
-<p>MASTER_PASSWORD 同步账号的密码</p>
-
-<h2 id="toc_10">检查是否配置成功</h2>
-
-<pre><code>show slave status;
-</code></pre>
-
-<p><img src="https://static.oschina.net/uploads/space/2018/0510/123902_gnvI_3773384.png" alt=""/></p>
-
-<p>Slave_IO_State 如果是 Waiting for master to send event，那么就成功一半了，如果是 Connecting to master，基本就是配置失败了，建议重新检查下配置，具体失败的原因可以查看日志追踪</p>
-
-<pre><code>[root@VM_0_17_centos master]# docker logs slave -f
-</code></pre>
-
-<p>我遇到的是 MASTER_USER 和 MASTER_PASSWORD 是否手打输错了，贴出错误日志</p>
-
-<pre><code>2018-05-10T02:57:00.688887Z 11 [ERROR] Slave I/O for channel &#39;&#39;: error connecting to master &#39;bakcup@ip:3306&#39; - retry-time: 60  retries: 2, Error_code: 1045
-2018-05-10T02:58:00.690476Z 11 [ERROR] Slave I/O for channel &#39;&#39;: error connecting to master &#39;bakcup@ip:3306&#39; - retry-time: 60  retries: 3, Error_code: 1045
-</code></pre>
-
-<p>注意看日志中的 bakcup，解决方法如下</p>
-
-<pre><code>STOP SLAVE;
-
-CHANGE MASTER TO 
-MASTER_HOST=&#39;连接Navicat的ip&#39;,
-MASTER_PORT=正确的端口,
-MASTER_USER=&#39;正确的用户名&#39;,
-MASTER_PASSWORD=&#39;正确的密码&#39;;
-
-START SLAVE;
-</code></pre>
-
-<p>接着上文，我们说成功一半，并没有说成功了，那么另一半在于 Slave_IO_Running 与 Slave_SQL_Running</p>
-
-<p>如果都是 Yes，那么恭喜你，可以测试主从复制的效果了，如果有一个不是 Yes，一半是重启从容器后，事务回滚引起的，那么给出解决方法如下</p>
-
-<pre><code>stop slave ;
-set GLOBAL SQL_SLAVE_SKIP_COUNTER=1;
-start slave ;
-</code></pre>
-
-<p>执行后，再次观察三个关键字段应该就都没问题了</p>
-
-<p>至此，一主一从已经搭建完成，再添加从实例的方式与上文一致，这里就不在赘述了。</p>
-
-<h2 id="toc_11">测试主从复制</h2>
-
-<p>首先，在主实例中创建一个测试数据库</p>
-
-<p><img src="https://static.oschina.net/uploads/space/2018/0510/130207_7Ty1_3773384.png" alt=""/></p>
-
-<p>打开（刷新）从实例，可见 test 库已存在</p>
-
-<p><img src="https://static.oschina.net/uploads/space/2018/0510/130133_ITNO_3773384.png" alt=""/></p>
-
-<p>在 test 库中创建一个表 t_test，添加一个 id 测试字段</p>
-
-<p>向表中添加几个数据</p>
-
-<p><img src="https://static.oschina.net/uploads/space/2018/0510/130357_IEZg_3773384.png" alt=""/></p>
-
-<p>刷新从库，可见 t_test 表及其中 1、2、3、4 数据已存在</p>
-
-<p>至此，一个具备主从复制的一主两从的 MySQL 就已搭建完成。</p>
+<p>本文对 redis 的常见问题做了一个总结。大部分是博主自己在工作中遇到，以及以前面试别人的时候，爱问的一些问题。另外，<strong>不推荐大家临时抱佛脚</strong>，真正碰到一些有经验的工程师，其实几下就能把你问懵。最后，希望大家有所收获吧。</p>
 
                         
                       </div>
@@ -391,10 +307,10 @@ start slave ;
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/5/28</span>
+                    <span class="date">2018/6/1</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Container.html'>Container</a></span>
+          					    <span class="posted-in"><a href='Cache.html'>Cache</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -484,31 +400,31 @@ start slave ;
 	      
 		      
 			      <li class="post">
-			        <a href="15274398936380.html">电商平台备战促销季的运维秘诀——高可用服务层</a>
+			        <a href="15277835170976.html">蚂蚁通信框架实践</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15274396845490.html">面试-线程池的成长之路</a>
+			        <a href="15277833297034.html">揭秘JDBC超时机制</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15274395979385.html">不理解Zookeeper一致性原理，谈何异地多活改造</a>
+			        <a href="15277832551515.html">【原创】分布式之redis复习精讲</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15274392082175.html">消息队列之 RabbitMQ</a>
+			        <a href="15277824520436.html">【RPC 专栏】深入理解 RPC 之动态代理篇</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15274391142573.html">RPC 原理及 RPC 实例分析 - God is a Coder..</a>
+			        <a href="15277821532847.html">Aspect-Oriented Programming in Spring Boot Part 2: Spring JDK Proxies vs CGLIB vs AspectJ</a>
 			      </li>
 		     
 		  
