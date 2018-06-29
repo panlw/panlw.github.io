@@ -76,6 +76,8 @@
     <li><label>Categories</label></li>
 
         
+            <li><a href="Team.html">Team</a></li>
+        
             <li><a href="Infra.html">Infra</a></li>
         
             <li><a href="Coding.html">Coding</a></li>
@@ -105,213 +107,139 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15262240665064.html">
+                <a class="clearlink" href="15290740608340.html">
                 
-                  <h1>Spring Boot で WebSocket (STOMPではなく、TextWebSocketHandler)を試してみる</h1>
+                  <h1>RPC 代理（Proxy）配置</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p>2017-05-10<br/>
-<a href="http://blog.enjoyxstudy.com/entry/2017/05/10/000000">http://blog.enjoyxstudy.com/entry/2017/05/10/000000</a></p>
+<p><a href="https://github.com/eggjs/egg-sofa-rpc/wiki/RPC-%E4%BB%A3%E7%90%86%EF%BC%88Proxy%EF%BC%89%E9%85%8D%E7%BD%AE">https://github.com/eggjs/egg-sofa-rpc/wiki/RPC-%E4%BB%A3%E7%90%86%EF%BC%88Proxy%EF%BC%89%E9%85%8D%E7%BD%AE</a></p>
 </blockquote>
 
-<p>こないだSTOMP over WebSocketを試してみましたが、今度はSTOMPを使わずに、<code>TextWebSocketHandler</code>を使ったWebSocketを試してみます。題材も同じくチャットです。</p>
+<h2 id="toc_0">简介</h2>
+
+<p>在作为 RPC 的调用方时，我们需要对我们调用的服务做一些预先申明，然后生成一些本地代理代码，然后你就可以像调用一个本地方法一样调用一个远程接口了。</p>
+
+<p>在 eggjs 里面，我们约定这个客户端接口声明文件位于 <code>${app_root}/config/proxy.js</code>。</p>
+
+<h2 id="toc_1">一个简单的配置</h2>
+
+<p>我们先看一个简单的配置（如下），它的基本含义是：我需要调用 <code>sofarpc</code> 应用暴露的 <code>com.alipay.sofa.rpc.test.ProtoService</code> 这个服务。</p>
+
+<pre><code class="language-js">&#39;use strict&#39;;
+
+module.exports = {
+  services: [{
+    appName: &#39;sofarpc&#39;,
+    api: {
+      ProtoService: &#39;com.alipay.sofa.rpc.test.ProtoService&#39;,
+    },
+  }],
+};
+</code></pre>
+
+<p>配置好以后（确保已经将接口定义文件 *.proto 放置到了 <code>proto</code> 目录下），我们运行 <a href="https://github.com/eggjs/egg-rpc-generator">egg-rpc-generator</a> 工具就可以生成服务的调用代理文件：<code>${app_root}/app/proxy/ProxyService.js</code></p>
+
+<pre><code class="language-bash">$ egg-rpc-generator
+
+[EggRpcGenerator] framework: /egg-rpc-demo/node_modules/egg, baseDir: /egg-rpc-demo
+[ProtoRPCPlugin] found &quot;com.alipay.sofa.rpc.test.ProtoService&quot; in proto file
+[ProtoRPCPlugin] save all proto info into &quot;/egg-rpc-demo/run/proto.json&quot;
+</code></pre>
+
+<h2 id="toc_2">完整的配置示例和详解</h2>
+
+<pre><code class="language-js">&#39;use strict&#39;;
+
+module.exports = {
+  errorAsNull: false,
+  responseTimeout: 3000,              
+  services: [{
+    appName: &#39;sofarpc&#39;,
+    api: {
+      ProtoService: {
+        interfaceName: &#39;com.alipay.sofa.rpc.test.ProtoService&#39;,
+        version: &#39;1.0&#39;,
+        group: &#39;SOFA&#39;,
+        errorAsNull: true,
+        responseTimeout: 5000,
+        method: {
+          echoObj: {
+            responseTimeout: 10000,
+          },
+        },
+      },
+    },
+  }],
+};
+</code></pre>
 
 <ul>
-<li>  <a href="https://github.com/onozaty/sandbox-spring-boot/tree/master/spring-boot-websocket">sandbox-spring-boot/spring-boot-websocket at master · onozaty/sandbox-spring-boot · GitHub</a></li>
+<li><code>errorAsNull</code> (可选)：是否将后台服务错误以 <code>null</code> 返回, 默认为 <code>false</code>，不处理，直接抛异常。该配置有两个层级，在根节点的是全局的，针对所有服务，下面的服务配置中可以覆盖全局配置</li>
+<li><code>responseTimeout</code> (可选)：服务的超时间隔，如果超过则会抛 <code>RpcSocketConnectTimeoutError</code> 异常。该配置也有三个层级，在根节点的是全局的，针对所有服务，下面的服务和方法配置中可以覆盖全局配置</li>
+<li><code>services</code>（必选）：RPC 依赖的服务列表，它是一个 Object 数组，每一个 item 代表一个服务提供者（应用）
+
+<ul>
+<li><code>appName</code>（必选）：RPC 服务提供者的应用名。这个为什么是必选参数，是为了方便我们在 <code>egg</code> 的配置文件 <code>${app_root}/config/config.{env}.js</code> 中，按照应用维度进行配置</li>
+<li>app.config[&#39;${appName}.rpc.service.enable&#39;]：为 true 时开启此服务，默认为 true</li>
+<li>app.config[&#39;${appName}.rpc.service.url&#39;]：直接配置 rpc 服务的地址（硬负载）。</li>
+<li>app.config[&#39;${appName}.rpc.service.timeout&#39;]：服务请求的超时时间（服务级别的），单位为 ms，默认为 3000
+它的默认 responseTimeout 是 antx[&#39;${appname}.tr.service.timeout&#39;]：服务请求的超时时间，单位为 ms，默认为 5000 </li>
+<li><code>api</code>（必选）：服务列表（key-value），其中 key 为生成 proxy 文件的名字，value 是服务接口名（interfaceName）。如果需要进行更加细粒度的配置，value 也支持以下对象格式：</li>
+<li><code>interfaceName</code>(必选)： 服务接口名</li>
+<li><code>version</code> (可选)：服务的默认版本号，如：1.0.0、1.0.0.daily。如果不填，默认值是 1.0</li>
+<li><code>group</code> (可选)：服务组别，默认是 SOFA</li>
+<li><code>responseTimeout</code>(可选)：覆盖上面的全局配置</li>
+<li><code>errorAsNull</code> (可选：覆盖上面的全局配置</li>
+<li><code>method</code>(可选)：方法级别配置（key-value 键值对），key 为方法名，value 是一个对象，结构如下：
+
+<ul>
+<li><code>responseTimeout</code>(可选)：覆盖上面的全局和服务配置 </li>
+</ul></li>
+</ul></li>
 </ul>
 
-<p>ルームの情報をどのように渡そうか悩みました。コードを書き始めるまでは、WebSocketで接続する先にヘッダとかで渡せばいいかなと思っていましたが、調べてみたら渡せなかったので、やもえずURLのクエリパラメータとして渡すようにしました。</p>
+<h2 id="toc_3">几个配置之间的优先级</h2>
 
-<h2 id="toc_0">コード</h2>
+<p>上面配置中，我们看到好几次 <code>responseTimeout</code> 这个配置，如果都配了，它们的优先级是怎么样的呢？</p>
 
-<p>テキストでのやり取りを行うので、<code>TextWebSocketHandler</code> を利用します。<code>TextWebSocketHandler</code>の各メソッドをoverrideして必要な処理を実装するだけです。</p>
+<ul>
+<li>方法级别的优先级最高。下面 echoObj 方法超时时长为 10s</li>
+</ul>
 
-<p>ルームの情報は、URLのクエリとしてクライアントから送っているので、接続が確立したタイミング(<code>afterConnectionEstablished</code>)にて、ルーム毎に<code>WebSocketSession</code>を保持するようにします。 メッセージを受け取ったら、自分のルームと同じ<code>WebSocketSession</code>に対して、メッセージを送るだけです。</p>
-
-<pre><code class="language-java">package com.example;
-
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.CopyOnWriteArraySet;
-
-import org.springframework.stereotype.Component;
-import org.springframework.web.socket.CloseStatus;
-import org.springframework.web.socket.TextMessage;
-import org.springframework.web.socket.WebSocketSession;
-import org.springframework.web.socket.handler.TextWebSocketHandler;
-
-@Component
-public class ChatHandler extends TextWebSocketHandler {
-
-    private ConcurrentHashMap&lt;String, Set&lt;WebSocketSession&gt;&gt; roomSessionPool = new ConcurrentHashMap&lt;&gt;();
-
-    @Override
-    public void afterConnectionEstablished(WebSocketSession session) throws Exception {
-
-        String roomName = session.getUri().getQuery();
-
-        roomSessionPool.compute(roomName, (key, sessions) -&gt; {
-
-            if (sessions == null) {
-                sessions = new CopyOnWriteArraySet&lt;&gt;();
-            }
-            sessions.add(session);
-
-            return sessions;
-        });
-    }
-
-    @Override
-    protected void handleTextMessage(WebSocketSession session, TextMessage message) throws Exception {
-
-        String roomName = session.getUri().getQuery();
-
-        for (WebSocketSession roomSession : roomSessionPool.get(roomName)) {
-            roomSession.sendMessage(message);
-        }
-    }
-
-    @Override
-    public void afterConnectionClosed(WebSocketSession session, CloseStatus status) throws Exception {
-
-        String roomName = session.getUri().getQuery();
-
-        roomSessionPool.compute(roomName, (key, sessions) -&gt; {
-
-            sessions.remove(session);
-            if (sessions.isEmpty()) {
-                // 1件もない場合はMapからクリア
-                sessions = null;
-            }
-
-            return sessions;
-        });
-    }
-}
+<pre><code class="language-js">module.exports = {
+  responseTimeout: 3000,              
+  services: [{
+    appName: &#39;sofarpc&#39;,
+    api: {
+      ProtoService: {
+        interfaceName: &#39;com.alipay.sofa.rpc.test.ProtoService&#39;,
+        responseTimeout: 5000,
+        method: {
+          echoObj: {
+            responseTimeout: 10000,
+          },
+        },
+      },
+    },
+  }],
+};
 </code></pre>
 
-<p>WebSocketの設定として、URLとHandlerを紐付けます。</p>
+<ul>
+<li><code>egg</code> 的配置文件 <code>config/config.{env}.js</code> 里 <code>app.config[&#39;${appName}.rpc.service.timeout&#39;]</code> 优先级次之</li>
+</ul>
 
-<pre><code class="language-java">package com.example;
-
-import org.springframework.context.annotation.Configuration;
-import org.springframework.web.socket.config.annotation.EnableWebSocket;
-import org.springframework.web.socket.config.annotation.WebSocketConfigurer;
-import org.springframework.web.socket.config.annotation.WebSocketHandlerRegistry;
-
-import lombok.AllArgsConstructor;
-
-@Configuration
-@EnableWebSocket
-@AllArgsConstructor
-public class WebSocketConfig implements WebSocketConfigurer {
-
-    private final ChatHandler chatHandler;
-
-    @Override
-    public void registerWebSocketHandlers(WebSocketHandlerRegistry registry) {
-        registry.addHandler(chatHandler, &quot;/endpoint&quot;);
-    }
-
-}
+<pre><code class="language-js">// ${app_root}/config/config.{env}.js
+exports[&#39;sofarpc.rpc.service.timeout&#39;] = 6000; // sofarpc 这个应用的rpc超时时长为 6s，覆盖上面的配置 5s
 </code></pre>
 
-<p>クライアント側では、下記のようなコードになりました。</p>
-
-<pre><code class="language-html">&lt;!DOCTYPE html&gt;
-&lt;html lang=&quot;ja&quot;&gt;
-&lt;head&gt;
-&lt;meta charset=&quot;UTF-8&quot; /&gt;
-&lt;title&gt;チャット&lt;/title&gt;
-&lt;link rel=&quot;stylesheet&quot; href=&quot;/webjars/bootstrap/3.3.7/css/bootstrap.min.css&quot; /&gt;
-&lt;link rel=&quot;stylesheet&quot; href=&quot;/webjars/bootstrap/3.3.7/css/bootstrap-theme.min.css&quot; /&gt;
-&lt;/head&gt;
-&lt;body&gt;
-  &lt;div class=&quot;container&quot;&gt;
-    &lt;h2&gt;チャット&lt;/h2&gt;
-    &lt;div class=&quot;form-horizontal&quot;&gt;
-      &lt;div class=&quot;form-group&quot;&gt;
-        &lt;label for=&quot;roomName&quot; class=&quot;col-sm-2 control-label&quot;&gt;ルーム&lt;/label&gt;
-        &lt;div class=&quot;col-sm-2&quot;&gt;
-          &lt;input id=&quot;roomName&quot; type=&quot;text&quot; class=&quot;form-control&quot; value=&quot;example&quot; /&gt;
-        &lt;/div&gt;
-        &lt;div class=&quot;col-sm-3&quot;&gt;
-          &lt;button id=&quot;connectButton&quot; type=&quot;button&quot; class=&quot;btn btn-default&quot;&gt;接続&lt;/button&gt;
-          &lt;button id=&quot;disconnectButton&quot; class=&quot;btn btn-default&quot;&gt;切断&lt;/button&gt;
-        &lt;/div&gt;
-      &lt;/div&gt;
-      &lt;div class=&quot;form-group&quot;&gt;
-        &lt;label for=&quot;message&quot; class=&quot;col-sm-2 control-label&quot;&gt;メッセージ&lt;/label&gt;
-        &lt;div class=&quot;col-sm-4&quot;&gt;
-          &lt;input id=&quot;message&quot; type=&quot;text&quot; class=&quot;form-control&quot; /&gt;
-        &lt;/div&gt;
-        &lt;div class=&quot;col-sm-2&quot;&gt;
-          &lt;button id=&quot;sendButton&quot; type=&quot;button&quot; class=&quot;btn btn-default&quot;&gt;送信&lt;/button&gt;
-        &lt;/div&gt;
-      &lt;/div&gt;
-      &lt;div class=&quot;row&quot;&gt;
-        &lt;div class=&quot;col-sm-4 col-sm-offset-2&quot;&gt;
-          &lt;ul id=&quot;messageList&quot; class=&quot;list-unstyled&quot;&gt;
-          &lt;/ul&gt;
-        &lt;/div&gt;
-      &lt;/div&gt;
-    &lt;/div&gt;
-  &lt;/div&gt;
-  &lt;script src=&quot;/webjars/jquery/1.12.4/jquery.min.js&quot;&gt;&lt;/script&gt;
-  &lt;script src=&quot;/webjars/bootstrap/3.3.7/js/bootstrap.min.js&quot;&gt;&lt;/script&gt;
-  &lt;script&gt;
-    $(function() {
-      var endpoint = &#39;ws://&#39; + location.host + &#39;/endpoint&#39;;
-      var webSocket = null;
-
-      $(&#39;#connectButton&#39;).click(function() {
-
-        $(&quot;#messageList&quot;).empty();
-
-        webSocket = new WebSocket(endpoint + &#39;?&#39; + encodeURIComponent($(&#39;#roomName&#39;).val()));
-        webSocket.onopen = function() {
-          $(&#39;#roomName&#39;).prop(&#39;disabled&#39;, true);
-          $(&#39;#connectButton&#39;).prop(&#39;disabled&#39;, true);
-          $(&#39;#disconnectButton&#39;).prop(&#39;disabled&#39;, false);
-        };
-        webSocket.onclose = function() {
-        };
-        webSocket.onmessage = function(message) {
-          $(&#39;#messageList&#39;).prepend($(&#39;&lt;li&gt;&#39;).text(message.data));
-        };
-        webSocket.onerror = function() {
-          alert(&#39;エラーが発生しました。&#39;);
-        };
-      });
-
-      $(&#39;#disconnectButton&#39;).click(function() {
-
-        webSocket.close();
-        webSocket = null;
-
-        $(&#39;#roomName&#39;).prop(&#39;disabled&#39;, false);
-        $(&#39;#connectButton&#39;).prop(&#39;disabled&#39;, false);
-        $(&#39;#disconnectButton&#39;).prop(&#39;disabled&#39;, true);
-      });
-
-      $(&#39;#sendButton&#39;).click(function() {
-        if (!webSocket) {
-          alert(&#39;未接続です。&#39;);
-          return;
-        }
-
-        webSocket.send($(&#39;#message&#39;).val());
-      });
-    });
-  &lt;/script&gt;
-&lt;/body&gt;
-&lt;/html&gt;
-</code></pre>
-
-<p>STOMPの時のほうが、いろいろシンプルに書けるので、ブラウザがクライアントならば、STOMPを使わない理由はないかなと思っています。</p>
+<ul>
+<li>服务级别的再次之（上面示例中的 5s）</li>
+<li>全局配置最低（上面示例中的 3s）</li>
+</ul>
 
                         
                       </div>
@@ -320,10 +248,10 @@ public class WebSocketConfig implements WebSocketConfigurer {
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/5/13</span>
+                    <span class="date">2018/6/15</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Java.html'>Java</a></span>
+          					    <span class="posted-in"><a href='Microservice.html'>Microservice</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -390,6 +318,8 @@ public class WebSocketConfig implements WebSocketConfigurer {
 
       	<p class="cat-list">
         
+            <a href="Team.html"><strong>Team</strong></a>
+        
             <a href="Infra.html"><strong>Infra</strong></a>
         
             <a href="Coding.html"><strong>Coding</strong></a>
@@ -413,31 +343,31 @@ public class WebSocketConfig implements WebSocketConfigurer {
 	      
 		      
 			      <li class="post">
-			        <a href="15277861393795.html">深入浅出Netty - EventLoop, EventLoopGroup</a>
+			        <a href="15301813999205.html">架构设计：负载均衡层设计方案（9）——负载均衡层总结下篇</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15277856731195.html">Functor and monad examples in plain Java</a>
+			        <a href="15301813109409.html">架构设计：负载均衡层设计方案（8）——负载均衡层总结上篇</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15277854106004.html">我必须得告诉大家的 MySQL 优化原理</a>
+			        <a href="15301812452579.html">架构设计：负载均衡层设计方案（7）——LVS + Keepalived + Nginx安装及配置</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15277850962764.html">Leaf——美团点评分布式ID生成系统</a>
+			        <a href="15301811967181.html">架构设计：负载均衡层设计方案（6）——Nginx + Keepalived构建高可用的负载层</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15277835170976.html">蚂蚁通信框架实践</a>
+			        <a href="15301811361753.html">架构设计：负载均衡层设计方案（5）——LVS单节点安装</a>
 			      </li>
 		     
 		  

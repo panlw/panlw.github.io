@@ -76,6 +76,8 @@
     <li><label>Categories</label></li>
 
         
+            <li><a href="Team.html">Team</a></li>
+        
             <li><a href="Infra.html">Infra</a></li>
         
             <li><a href="Coding.html">Coding</a></li>
@@ -105,378 +107,156 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15264401346282.html">
+                <a class="clearlink" href="15293215099975.html">
                 
-                  <h1>权限系统设计模型分析（DAC，MAC，RBAC，ABAC）</h1>
+                  <h1>从节省Redis内存空间说开去</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
-                        	<pre><code>作者：https://www.jianshu.com/u/11c0ebe856b8
-发表：2017.12.10 23:16
-原文：https://www.jianshu.com/p/ce0944b4a903
-</code></pre>
-
-<blockquote>
-<p>好久没有更新文章了…… 这一年过得太忙。<br/>
-准备一篇个人认为值得拿出来分享的文章真的需要很多时间，如果你喜欢，请评论、点赞让我知道，我会抽更多的时间来更新一些分享给大家，谢谢！</p>
+                        	<blockquote>
+<p><a href="https://mp.weixin.qq.com/s/tsZxYwoFtWwzOH1E28y6zg">https://mp.weixin.qq.com/s/tsZxYwoFtWwzOH1E28y6zg</a><br/>
+<a href="https://blog.csdn.net/clevercode/article/details/46691645">https://blog.csdn.net/clevercode/article/details/46691645</a></p>
 </blockquote>
 
-<p>此篇文章主要尝试将世面上现有的一些权限系统设计做一下简单的总结分析，个人水平有限，如有错误请不吝指出。</p>
+<p><strong>前言</strong></p>
 
-<h2 id="toc_0">术语</h2>
+<p>上周部门会议上讨论的一个议题是如何节省 Redis 内存空间，其中有个小伙伴提到可以从压缩字符串入手，我觉得这是一个可以尝试的思路。因为有时候我们存在 Redis 中的值比较大，如果能对这些大字符串进行压缩，那么节省的内存空间还是很可观的。接下来将介绍几种常见的数据压缩算法，供大家参考。</p>
 
-<p>这里对后面会用到的词汇做一个说明，老司机请直接翻到<strong>常见设计模式</strong>。</p>
+<h1 id="toc_0">1 RLE</h1>
 
-<h3 id="toc_1">用户</h3>
+<p>RLE 又叫 Run Length Encoding ，是一个针对无损压缩的非常简单的算法。它用重复字节和重复的次数来简单描述来代替重复的字节。尽管简单并且对于通常的压缩非常低效，但它有的时候却非常有用（例如， JPEG 就使用它）。</p>
 
-<p>发起操作的主体。</p>
+<h2 id="toc_1">1.1 原理</h2>
 
-<h3 id="toc_2">对象（Subject）</h3>
+<p>图 2.1 显示了一个如何使用 RLE 算法来对一个数据流编码的例子，其中出现六次的符号‘ 93 ’已经用 3 个字节来代替：一个标记字节（‘ 0 ’在本例中）重复的次数（‘ 6 ’）和符号本身（‘ 93 ’）。</p>
 
-<p>指操作所针对的客体对象，比如订单数据或图片文件。</p>
+<p>RLE 解码器遇到符号‘ 0 ’ 的时候，它表明后面的两个字节决定了需要输出哪个符号以及输出多少次。</p>
 
-<h3 id="toc_3">权限控制表 (ACL: Access Control List)</h3>
+<p><img src="https://mmbiz.qpic.cn/mmbiz_jpg/XA3sPCPib1l6jia5WKgazEEVDPjibKHOz8rslINaKDFMvfr4bOibjNz1LLxJSDU1oI34BCTibPjokcy8BgFbKjwXHNg/640?wx_fmt=jpeg" alt=""/></p>
 
-<p>用来描述权限规则或用户和权限之间关系的数据表。</p>
+<p>1.2 实现</p>
 
-<h3 id="toc_4">权限 (Permission)</h3>
+<p>RLE 可以使用很多不同的方法。基本压缩库中详细实现的方式是非常有效的一个。一个特殊的标记字节用来指示重复节的开始，而不是对于重复非重复节都 coding run 。</p>
 
-<p>用来指代对某种对象的某一种操作，例如 “添加文章的操作”。</p>
+<p>因此非重复节可以有任意长度而不被控制字节打断，除非指定的标记字节出现在非重复节（顶多以两个字节来编码）的稀有情况下。为了最优化效率，标记字节应该是输入流中最少出现的符号（或许就不存在）。</p>
 
-<h3 id="toc_5">权限标识</h3>
+<p>重复 runs 能够在 32768 字节的时候运转。少于 129 字节的要求 3 个字节编码（标记 + 次数 + 符号），而大雨 128 字节要求四个字节（标记 + 次数的高 4 位 |0x80+ 次数的低 4 位）。这是通常所有采用的压缩的做法，并且也是相比较三个字节固定编码（允许使用 3 个字节来编码 256 个字节）而言非常少见的有损压缩率的方法。</p>
 
-<p>权限的代号，例如用 “ARTICLE_ADD” 来指代 “添加文章的操作” 权限。</p>
+<p>在这种模式下，最坏的压缩结果是：</p>
 
-<h2 id="toc_6">常见设计模式</h2>
+<p>输出大小 =257/256* 输入大小 +1</p>
 
-<h3 id="toc_7">自主访问控制（DAC: Discretionary Access Control）</h3>
+<h1 id="toc_2">2 哈夫曼</h1>
 
-<p>系统会识别用户，然后根据被操作对象（Subject）的权限控制列表（ACL: Access Control List）或者权限控制矩阵（ACL: Access Control Matrix）的信息来决定用户的是否能对其进行哪些操作，例如读取或修改。</p>
+<p>哈夫曼编码是无损压缩当中最好的方法。它使用预先二进制描述来替换每个符号，长度由特殊符号出现的频率决定。常见的符号需要很少的位来表示，而不常见的符号需要很多位来表示。</p>
 
-<p>而拥有对象权限的用户，又可以将该对象的权限分配给其他用户，所以称之为 “自主（Discretionary）” 控制。</p>
+<p>哈夫曼算法在改变任何符号二进制编码引起少量密集表现方面是最佳的。然而，它并不处理符号的顺序和重复或序号的序列。</p>
 
-<p>这种设计最常见的应用就是文件系统的权限设计，如微软的 NTFS。</p>
+<h2 id="toc_3">2.1 原理</h2>
 
-<p>DAC 最大缺陷就是对权限控制比较分散，不便于管理，比如无法简单地将一组文件设置统一的权限开放给指定的一群用户。</p>
+<p>我不打算探究哈夫曼编码的所有实际的细节，但基本的原理是为每个符号找到新的二进制表示，从而通常符号使用很少的位，不常见的符号使用较多的位。</p>
 
-<p><img src="https://upload-images.jianshu.io/upload_images/594774-6d77f13cc568797f.png" alt=""/></p>
+<p>简短的说，这个问题的解决方案是为了查找每个符号的通用程度，我们建立一个未压缩数据的柱状图；通过递归拆分这个柱状图为两部分来创建一个二叉树，每个递归的一半应该和另一半具有同样的权（权是 ∑ <sup style="box-sizing: border-box;outline: 0px;word-break: break-all;">N </sup><sub style="box-sizing: border-box;outline: 0px;word-break: break-all;">K </sub>=<sub style="box-sizing: border-box;outline: 0px;word-break: break-all;">1</sub> 符号数 <sub style="box-sizing: border-box;outline: 0px;word-break: break-all;">k </sub>, N 是分之中符号的数量，符号数 <sub style="box-sizing: border-box;outline: 0px;word-break: break-all;">k </sub>是符号 k 出现的次数 ）</p>
 
-<h3 id="toc_8">强制访问控制（MAC: Mandatory Access Control）</h3>
+<p>这棵树有两个目的：</p>
 
-<p>MAC 是为了弥补 DAC 权限控制过于分散的问题而诞生的。在 MAC 的设计中，每一个对象都都有一些权限标识，每个用户同样也会有一些权限标识，而用户能否对该对象进行操作取决于双方的权限标识的关系，这个限制判断通常是由系统硬性限制的。比如在影视作品中我们经常能看到特工在查询机密文件时，屏幕提示需要 “无法访问，需要一级安全许可”，这个例子中，文件上就有“一级安全许可” 的权限标识，而用户并不具有。</p>
+<p>1．   编码器使用这棵树来找到每个符号最优的表示方法<br/>
+2．   解码器使用这棵树唯一的标识在压缩流中每个编码的开始和结束，其通过在读压缩数据位的时候自顶向底的遍历树，选择基于数据流中的每个独立位的分支，一旦一个到达叶子节点，解码器知道一个完整的编码已经读出来了。</p>
 
-<p>MAC 非常适合机密机构或者其他等级观念强烈的行业，但对于类似商业服务系统，则因为不够灵活而不能适用。</p>
-
-<p><img src="https://upload-images.jianshu.io/upload_images/594774-f9ce520635dc31b2.png" alt=""/></p>
-
-<blockquote>
-<p><a href="https://link.jianshu.com?t=https://www.centos.org/docs/5/html/Deployment_Guide-en-US/sec-mls-ov.html">Red Hat: MLS</a></p>
-</blockquote>
-
-<h3 id="toc_9">基于角色的访问控制（RBAC: Role-Based Access Control)</h3>
-
-<p>因为 DAC 和 MAC 的诸多限制，于是诞生了 RBAC，并且成为了迄今为止最为普及的权限设计模型。</p>
+<p>我们来看一个例子会让我们更清楚。图 2.2 显示了一个 10 个字节的未压缩的数据。</p>
 
-<p>RBAC 在用户和权限之间引入了 “角色（Role）” 的概念（暂时忽略 Session 这个概念）：</p>
+<p>根据符号频率，哈夫曼编码器生成哈夫曼树（图 2.4 ）和相应的编码表示（图 2.3 ）。</p>
 
-<p><img src="https://upload-images.jianshu.io/upload_images/594774-b220fc093138a2c7.png" alt=""/></p>
+<p><img src="https://mmbiz.qpic.cn/mmbiz_jpg/XA3sPCPib1l6jia5WKgazEEVDPjibKHOz8rN4YBTn5M9deDfQ84oS1YicO18tc4XJVmgZcpCSGQP0nEnn1FDgf6O4w/640?wx_fmt=jpeg" alt=""/></p>
 
-<blockquote>
-<p>图片来自 <a href="https://link.jianshu.com?t=http://directory.apache.org/fortress/user-guide/1.3-what-rbac-is.html">Apache Directory</a></p>
-</blockquote>
+<p>你可以看到，常见的符号接近根，因此只要少数位来表示。于是最终的压缩数据流如图 2.5 所示。</p>
 
-<p>如图所示，每个用户关联一个或多个角色，每个角色关联一个或多个权限，从而可以实现了非常灵活的权限管理。角色可以根据实际业务需求灵活创建，这样就省去了每新增一个用户就要关联一遍所有权限的麻烦。简单来说 RBAC 就是：用户关联角色，角色关联权限。另外，RBAC 是可以模拟出 DAC 和 MAC 的效果的。</p>
+<p><img src="https://mmbiz.qpic.cn/mmbiz_jpg/XA3sPCPib1l6jia5WKgazEEVDPjibKHOz8rN5XbjThAK0X8TjTjvx1sATgTetFwyn6jL9sA8HFBX35RVOTHooYt1A/640?wx_fmt=jpeg" alt=""/></p>
 
-<p>例如数据库软件 MongoDB 便是采用 RBAC 模型，对数据库的操作都划分成了权限（<a href="https://link.jianshu.com?t=https://docs.mongodb.com/manual/reference/privilege-actions/">MongoDB 权限文档</a>）：</p>
+<p><img src="https://mmbiz.qpic.cn/mmbiz_jpg/XA3sPCPib1l6jia5WKgazEEVDPjibKHOz8rpfNt5vdooNB0tu2XO2wrByeZzTdHxlxeJWKsjyAB0EFUv0ibvC7W9Hg/640?wx_fmt=jpeg" alt=""/></p>
 
-<table>
-<thead>
-<tr>
-<th>权限标识</th>
-<th>说明</th>
-</tr>
-</thead>
+<p>压缩后的数据流是 24 位（三个字节），原来是 80 位（ 10 个字节）。当然，我应该存储哈夫曼树，这样解码器就能够解码出对应的压缩流了，这就使得该例子中的真正数据流比输入的流数据量大。这是相对较短的数据上的副作用。对于大数据量来说，上面的哈夫曼树就不占太多比例了。</p>
 
-<tbody>
-<tr>
-<td>find</td>
-<td>具有此权限的用户可以运行所有和查询有关的命令，如：aggregate、checkShardingIndex、count 等。</td>
-</tr>
-<tr>
-<td>insert</td>
-<td>具有此权限的用户可以运行所有和新建数据有关的命令：insert 和 create 等。</td>
-</tr>
-<tr>
-<td>collStats</td>
-<td>具有此权限的用户可以对指定 database 或 collection 执行 collStats 命令。</td>
-</tr>
-<tr>
-<td>viewRole</td>
-<td>具有此权限的用户可以查看指定 database 的角色信息。</td>
-</tr>
-<tr>
-<td>…</td>
-<td></td>
-</tr>
-</tbody>
-</table>
+<p><img src="https://mmbiz.qpic.cn/mmbiz_jpg/XA3sPCPib1l6jia5WKgazEEVDPjibKHOz8rwpdS3euibfb2eNiaAWD0PpCeF3qppC2KQbaZz2Zv7fVdts3becE6LYJw/640?wx_fmt=jpeg" alt=""/></p>
 
-<p>基于这些权限，MongoDB 提供了一些预定义的角色（<a href="https://link.jianshu.com?t=https://docs.mongodb.com/manual/reference/built-in-roles/">MongoDB 预定义角色文档</a>，用户也可以自己定义角色）：</p>
-
-<table>
-<thead>
-<tr>
-<th>角色</th>
-<th>find</th>
-<th>insert</th>
-<th>collStats</th>
-<th>viewRole</th>
-<th>…</th>
-</tr>
-</thead>
-
-<tbody>
-<tr>
-<td>read</td>
-<td>✔</td>
-<td></td>
-<td>✔</td>
-<td></td>
-<td>…</td>
-</tr>
-<tr>
-<td>readWrite</td>
-<td>✔</td>
-<td>✔</td>
-<td>✔</td>
-<td></td>
-<td>…</td>
-</tr>
-<tr>
-<td>dbAdmin</td>
-<td>✔</td>
-<td></td>
-<td>✔</td>
-<td></td>
-<td>…</td>
-</tr>
-<tr>
-<td>userAdmin</td>
-<td></td>
-<td></td>
-<td></td>
-<td>✔</td>
-<td>…</td>
-</tr>
-</tbody>
-</table>
-
-<p>最后授予用户不同的角色，就可以实现不同粒度的权限分配了。</p>
-
-<p>目前市面上绝大部分系统在设计权限系统时都采用 RBAC 模型。然而也有的系统错误地实现了 RBAC，他们采用的是判断用户是否具有某个角色而不是判断权限，例如以下代码：</p>
-
-<pre><code>&lt;?php
-
-if ($user-&gt;hasRole(&#39;hr&#39;)) {
-    // 执行某种只有“HR”角色才能做的功能，例如给员工涨薪…
-    // ...
-}
-
-</code></pre>
-
-<p>如果后期公司规定部门经理也可以给员工涨薪，这时就不得不修改代码了。</p>
-
-<p>以上基本就是 RBAC 的核心设计（RBAC Core）。而基于核心概念之上，RBAC 规范还提供了扩展模式。</p>
-
-<h4 id="toc_10">角色继承 (Hierarchical Role)</h4>
+<p>解码的时候，从上到下遍历树，为压缩的流选择从左 / 右分支，每次碰到一个叶子节点的时候，就可以将对应的字节写到解压输出流中，然后再从根开始遍历。</p>
 
-<p><img src="https://upload-images.jianshu.io/upload_images/594774-386977fee82f6152.png" alt=""/></p>
-
-<blockquote>
-<p>带有角色继承的 RBAC。图片来自 <a href="https://link.jianshu.com?t=http://directory.apache.org/fortress/user-guide/1.3-what-rbac-is.html">Apache Directory</a></p>
-</blockquote>
-
-<p>顾名思义，角色继承就是指角色可以继承于其他角色，在拥有其他角色权限的同时，自己还可以关联额外的权限。这种设计可以给角色分组和分层，一定程度简化了权限管理工作。</p>
+<h2 id="toc_4">2.2 实现</h2>
 
-<h4 id="toc_11">职责分离 (Separation of Duty)</h4>
+<p>哈夫曼编码器可以在基本压缩库中找到，其是非常直接的实现。</p>
 
-<p>为了避免用户拥有过多权限而产生利益冲突，例如一个篮球运动员同时拥有裁判的权限（看一眼就给你判犯规狠不狠？），另一种职责分离扩展版的 RBAC 被提出。</p>
+<p>这个实现的基本缺陷是：</p>
 
-<p>职责分离有两种模式：</p>
+<p>1．   慢位流实现<br/>
+2．   相当慢的解码（比编码慢）<br/>
+3．   最大的树深度是 32 （编码器在任何超过 32 位大小的时候退出）。如果我不是搞错的话，这是不可能的，除非输出的数据大于 2 <sup style="box-sizing: border-box;outline: 0px;word-break: break-all;">32</sup> 字节。</p>
 
-<ul>
-<li>  静态职责分离 (Static Separation of Duty)：用户无法同时被赋予有冲突的角色。</li>
-<li>  动态职责分离 (Dynamic Separation of Duty)：用户在一次会话（Session）中不能同时激活自身所拥有的、互相有冲突的角色，只能选择其一。</li>
-</ul>
+<p>另一方面，这个实现有几个优点：</p>
 
-<p><img src="https://upload-images.jianshu.io/upload_images/594774-feb7c1074d151113.png" alt=""/></p>
+<p>1．   哈夫曼树以一个紧密的形式每个符号要求 12 位（对于 8 位的符号）的方式存储，这意味着最大的头为 384 。<br/>
+2．   编码相当容易理解</p>
 
-<blockquote>
-<p>静态职责分离。图片来自 <a href="https://link.jianshu.com?t=http://directory.apache.org/fortress/user-guide/1.3-what-rbac-is.html">Apache Directory</a></p>
-</blockquote>
+<p>哈夫曼编码在数据有噪音的情况（不是有规律的，例如 RLE ）下非常好，这中情况下大多数基于字典方式的编码器都有问题。</p>
 
-<p><img src="https://upload-images.jianshu.io/upload_images/594774-059b93e4209e8fa6.png" alt=""/></p>
+<h1 id="toc_5">3 Rice</h1>
 
-<blockquote>
-<p>动态职责分离。图片来自 <a href="https://link.jianshu.com?t=http://directory.apache.org/fortress/user-guide/1.3-what-rbac-is.html">Apache Directory</a></p>
-</blockquote>
+<p>对于由大 word （例如： 16 或 32 位）组成的数据和较低的数据值， Rice 编码能够获得较好的压缩比。音频和高动态变化的图像都是这种类型的数据，它们被预处理过（例如 delta 相邻的采样）。</p>
 
-<p>讲了这么多 RBAC，都还只是在用户和权限之间进行设计，并没有涉及到用户和对象之间的权限判断，而在实际业务系统中限制用户能够使用的对象是很常见的需求。例如华中区域的销售没有权限查询华南区域的客户数据，虽然他们都具有销售的角色，而销售的角色拥有查询客户信息的权限。</p>
+<p>尽管哈夫曼编码处理这种数据是最优的，却由于几个原因而不适合处理这种数据（例如： 32 位大小要求 16GB 的柱状图缓冲区来进行哈夫曼树编码）。因此一个比较动态的方式更适合由大 word 组成的数据。</p>
 
-<p>那么我们应该怎么办呢？</p>
+<h2 id="toc_6">3.1 原理</h2>
 
-<h4 id="toc_12">用户和对象的权限控制</h4>
+<p>Rice 编码背后的基本思想是尽可能的用较少的位来存储多个字（正像使用哈夫曼编码一样）。实际上，有人可能想到 Rice 是静态的哈夫曼编码（例如，编码不是由实际数据内容的统计信息决定，而是由小的值比高的值常见的假定决定）。</p>
 
-<p>在 RBAC 标准中并没有涉及到这个内容（RBAC 基本只能做到对一类对象的控制），但是这里讲几种基于 RBAC 的实现方式。</p>
+<p>编码非常简单：将值 X 用 X 个‘ 1 ’位之后跟一个 0 位来表示。</p>
 
-<p>首先我们看看 PHP 框架 <a href="https://link.jianshu.com?t=http://www.yiiframework.com/wiki/136/getting-to-understand-hierarchical-rbac-scheme/">Yii 1.X 的解决方案</a>（2.X 中代码更为优雅，但 1.X 的示例代码更容易看明白）：</p>
+<h2 id="toc_7">3.2 实现</h2>
 
-<pre><code>&lt;?php
-$auth=Yii::app()-&gt;authManager;
+<p>在基本压缩库针对 Rice 做了许多优化：</p>
 
-// command-permission
-$auth-&gt;createOperation(&#39;listPosts&#39;,&#39;list posts&#39;);     // define a perm: listPosts
-$auth-&gt;createOperation(&#39;createPost&#39;,&#39;create a post&#39;); // define a perm: createPost
-$auth-&gt;createOperation(&#39;readPost&#39;,&#39;read a post&#39;);     // define a perm: readPost
-$auth-&gt;createOperation(&#39;updatePost&#39;,&#39;update a post&#39;); // define a perm: updatePost
-$auth-&gt;createOperation(&#39;deletePost&#39;,&#39;delete a post&#39;); // define a perm: deletePost
+<p>1．   每个字最没有意义的位被存储为 k 和最有意义的 N-k 位用 Rice 编码。 K 作为先前流中少许采样的位平均数。这是通常最好使用 Rice 编码的方法，隐藏噪音且对于动态变化的范围并不导致非常长的 Rice 编码。<br/>
+2．   如果 rice 编码比固定的开端长， T ，一个可选的编码：输出 T 个‘ 1 ’位，紧跟（ log2(X-T) ）个‘ 1 ’和一个‘ 0 ’位，接着是 X-T （最没有意义的 (log2(X-T))-1 位）。这对于大值来说都是比较高效的代码并且阻止可笑的长 Rice 编码（最坏的情况，对于一个 32 位 word 单个 Rice 编码可能变成 2 <sup style="box-sizing: border-box;outline: 0px;word-break: break-all;">32 </sup>位或 512MB ）。</p>
 
-// qualifier-permission
-// define a qualifier on domain(user)
-$bizRule=&#39;return Yii::app()-&gt;user-&gt;id==$params[&quot;post&quot;]-&gt;authID;&#39;;
+<p>如果开端是 4 ，下面是结果编码表：</p>
 
-// define a perm with qualifier: listOwnPosts
-$perm=$auth-&gt;createTask(&#39;listOwnPosts&#39;, &#39;list posts by author himself&#39;, $bizRule);
-$perm-&gt;addChild(&#39;listPosts&#39;); // sub perm
+<p><img src="https://mmbiz.qpic.cn/mmbiz_png/XA3sPCPib1l6jia5WKgazEEVDPjibKHOz8rOOibqB37z6QKMg3grXJh2GSTCkVFrLo5oIy3J9oxc8OORZ3nib9yCd9w/640?wx_fmt=png" alt=""/></p>
 
-// define a perm with qualifier: updateOwnPost
-$perm=$auth-&gt;createTask(&#39;updateOwnPost&#39;,&#39;update a post by author himself&#39;,$bizRule);
-$perm-&gt;addChild(&#39;updatePost&#39;); // sub perm
+<p>就像你看到的一样，在这个实现中使用 threshold 方法仅仅两个编码导致一个最坏的情况；剩下的编码产生比标准 Rice 编码还要短的编码。</p>
 
-// define a role: reader
-$role=$auth-&gt;createRole(&#39;reader&#39;);
-$role-&gt;addChild(&#39;readPost&#39;); // sub perm
+<h1 id="toc_8">4 Lempel-Ziv (LZ77)</h1>
 
-// define a role: author
-$role=$auth-&gt;createRole(&#39;author&#39;);
-$role-&gt;addChild(&#39;reader&#39;); // sub role
-$role-&gt;addChild(&#39;createPost&#39;); // sub perm
-$role-&gt;addChild(&#39;updateOwnPost&#39;); // sub perm
+<p>Lempel-Ziv 压缩模式有许多不同的变量。基本压缩库有清晰的 LZ77 算法的实现（ Lempel-Ziv ， 1977 ），执行的很好，源代码也非常容易理解。</p>
 
-// define a role: editor
-$role=$auth-&gt;createRole(&#39;editor&#39;);
-$role-&gt;addChild(&#39;reader&#39;); // sub role
-$role-&gt;addChild(&#39;updatePost&#39;); // sub perm
+<p>LZ 编码器能用来通用目标的压缩，特别对于文本执行的很好。它也在 RLE 和哈夫曼编码器（ RLE ， LZ ，哈夫曼）中使用来大多数情况下获得更多的压缩。</p>
 
-// define a role: admin
-$role=$auth-&gt;createRole(&#39;admin&#39;);
-$role-&gt;addChild(&#39;editor&#39;); // sub role
-$role-&gt;addChild(&#39;author&#39;); // sub role
-$role-&gt;addChild(&#39;deletePost&#39;); // sub perm
-</code></pre>
+<h2 id="toc_9">4.1 原理</h2>
 
-<p>实现效果：</p>
+<p>在 LZ 压缩算法的背后是使用 RLE 算法用先前出现的相同字节序列的引用来替代。</p>
 
-<p><img src="https://upload-images.jianshu.io/upload_images/594774-fb67d571497fb0b2.gif" alt=""/></p>
+<p>简单的讲， LZ 算法被认为是字符串匹配的算法。例如：在一段文本中某字符串经常出现，并且可以通过前面文本中出现的字符串指针来表示。当然这个想法的前提是指针应该比字符串本身要短。</p>
 
-<blockquote>
-<p>图片来自 <a href="https://link.jianshu.com?t=http://www.yiiframework.com/wiki/136/getting-to-understand-hierarchical-rbac-scheme/">Yii 官方 WiKi</a></p>
-</blockquote>
+<p>例如，在上一段短语 “字符串” 经常出现，可以将除第一个字符串之外的所有用第一个字符串引用来表示从而节省一些空间。</p>
 
-<p>在这个 Yii 的官方例子中，<code>updateOwnPost</code>在判断用户是否具有<code>updatePost</code>权限的基础上更进一步判断了用户是否有权限操作这个特定的对象，并且这个判断逻辑是通过代码设置的，非常灵活。</p>
+<p>一个字符串引用通过下面的方式来表示：</p>
 
-<p>不过大部分时候我们并不需要这样的灵活程度，会带来额外的开发和维护成本，而另一种基于模式匹配规则的对象权限控制可能更适合。例如判断用户是否对 Id 为 123 的文章具有编辑的权限，代码可能是这样的：</p>
+<p>1．   唯一的标记<br/>
+2．   偏移数量<br/>
+3．   字符串长度</p>
 
-<pre><code>&lt;?php
+<p>由编码的模式决定引用是一个固定的或变动的长度。后面的情况经常是首选，因为它允许编码器用引用的大小来交换字符串的大小（例如，如果字符串相当长，增加引用的长度可能是值得的）。</p>
 
-// 假设articleId是动态获取的
-$articleId = 123;
+<h2 id="toc_10">4.2 实现</h2>
 
-if ($user-&gt;can(&quot;article:edit:{$articleId}&quot;)) {
-    // ...
-}
+<p>使用 LZ77 的一个问题是由于算法需要字符串匹配，对于每个输入流的单个字节，每个流中此字节前面的哪个字节都必须被作为字符串的开始从而尽可能的进行字符串匹配，这意味着算法非常慢。</p>
 
-</code></pre>
+<p>另一个问题是为了最优化压缩而调整字符串引用的表示形式并不容易。例如，必须决定是否所有的引用和非压缩字节应该在压缩流中的字节边界发生。</p>
 
-<p>而给用户授权则有多种方式可以选择：</p>
+<p>基本压缩库使用一个清晰的实现来保证所有的符号和引用是字节对齐的，因此牺牲了压缩比率，并且字符串匹配程序并不是最优化的（没有缓存、历史缓冲区或提高速度的小技巧），这意味着程序非常慢。</p>
 
-<pre><code>&lt;?php
+<p>另一方面，解压缩程序非常简单。</p>
 
-// 允许用户编辑Id为123的文章
-$user-&gt;grant(&#39;article:edit:123&#39;);
-
-// 使用通配符，允许用户编辑所有文章
-$user-&gt;grant(&#39;article:edit:*&#39;);
-
-</code></pre>
-
-<p>虽然不及 Yii 方案的灵活，但某些场景下这样就够用了。</p>
-
-<p>如果大家还有更好的方案，欢迎在评论中提出。</p>
-
-<h3 id="toc_13">基于属性的权限验证（ABAC: Attribute-Based Access Control）</h3>
-
-<p>ABAC 被一些人称为是权限系统设计的未来。</p>
-
-<p>不同于常见的将用户通过某种方式关联到权限的方式，ABAC 则是通过动态计算一个或一组属性来是否满足某种条件来进行授权判断（可以编写简单的逻辑）。属性通常来说分为四类：用户属性（如用户年龄），环境属性（如当前时间），操作属性（如读取）和对象属性（如一篇文章，又称资源属性），所以理论上能够实现非常灵活的权限控制，几乎能满足所有类型的需求。</p>
-
-<p>例如规则：“允许所有班主任在上课时间自由进出校门”这条规则，其中，“班主任”是用户的角色属性，“上课时间”是环境属性，“进出”是操作属性，而 “校门” 就是对象属性了。为了实现便捷的规则设置和规则判断执行，ABAC 通常有配置文件（XML、YAML 等）或 DSL 配合规则解析引擎使用。XACML（eXtensible Access Control Markup Language）是 ABAC 的一个实现，但是该设计过于复杂，我还没有完全理解，故不做介绍。</p>
-
-<p>总结一下，ABAC 有如下特点：</p>
-
-<ol>
-<li> 集中化管理</li>
-<li> 可以按需实现不同颗粒度的权限控制</li>
-<li> 不需要预定义判断逻辑，减轻了权限系统的维护成本，特别是在需求经常变化的系统中</li>
-<li> 定义权限时，不能直观看出用户和对象间的关系</li>
-<li> 规则如果稍微复杂一点，或者设计混乱，会给管理者维护和追查带来麻烦</li>
-<li> 权限判断需要实时执行，规则过多会导致性能问题</li>
-</ol>
-
-<p>既然 ABAC 这么好，那最流行的为什么还是 RBAC 呢？</p>
-
-<p>我认为主要还是因为大部分系统对权限控制并没有过多的需求，而且 ABAC 的管理相对来说太复杂了。<a href="https://link.jianshu.com?t=http://blog.kubernetes.io/2017/04/rbac-support-in-kubernetes.html">Kubernetes 便因为 ABAC 太难用，在<code>1.8</code>版本里引入了 RBAC 的方案</a>。</p>
-
-<blockquote>
-<p>ABAC 有时也被称为 PBAC（Policy-Based Access Control）或 CBAC（Claims-Based Access Control）。</p>
-</blockquote>
-
-<h2 id="toc_14">结语</h2>
-
-<p>权限系统设计可谓博大精深，这篇文章只是介绍了一点皮毛。</p>
-
-<p>随着人类在信息化道路上越走越远，权限系统的设计也在不断创新，但目前好像处在了平台期。</p>
-
-<p>可能因为在 RBAC 到 ABAC 之间有着巨大的鸿沟，无法轻易跨越，也可能是一些基于 RBAC 的微创新方案还不够规范化从而做到普及。不过在服务化架构的浪潮下，未来这一块必然有极高的需求，也许巨头们已经开始布局了。</p>
-
-<h2 id="toc_15">参考文档</h2>
-
-<p><a href="https://link.jianshu.com?t=https://support.microsoft.com/en-us/help/949608/changes-to-the-default-ntfs-discretionary-access-control-list-dacl-set">NTFS 文件系统权限</a></p>
-
-<p><a href="https://link.jianshu.com?t=https://docs.oracle.com/cd/E56344_01/html/E53956/rbac-28.html#scrolltoc">Solaris 权限模型</a></p>
-
-<p><a href="https://link.jianshu.com?t=https://baike.baidu.com/item/%E8%AE%BF%E9%97%AE%E6%8E%A7%E5%88%B6/8545517">百度百科：访问控制</a></p>
-
-<p><a href="https://link.jianshu.com?t=https://www.centos.org/docs/5/html/Deployment_Guide-en-US/sec-mls-ov.html">Red Hat: Multi-Level Security (MLS)</a></p>
-
-<p><a href="https://link.jianshu.com?t=http://files.cnblogs.com/files/Wenzy/an_introduction_to_rbac.pdf">冰云：An Introduction To Role-Based Access Control</a></p>
-
-<p><a href="https://link.jianshu.com?t=https://csrc.nist.gov/projects/role-based-access-control">NIST: Role-Based Access Control</a></p>
-
-<p><a href="https://link.jianshu.com?t=https://docs.mongodb.com/manual/core/authorization/">MongoDB RBAC</a></p>
-
-<p><a href="https://link.jianshu.com?t=https://stackoverflow.com/questions/7770728/group-vs-role-any-real-difference">Stackoverflow: Group vs role Any real difference?</a></p>
-
-<p><a href="https://link.jianshu.com?t=http://www.yiiframework.com/wiki/136/getting-to-understand-hierarchical-rbac-scheme/">Yii: Getting to Understand Hierarchical RBAC Scheme</a></p>
-
-<p><a href="https://link.jianshu.com?t=http://www.informit.com/articles/article.aspx?p=782116">Role-Based Access Control in Computer Security</a></p>
-
-<p><a href="https://link.jianshu.com?t=http://www.cis.syr.edu/%7Ewedu/Teaching/cis643/LectureNotes_New/RBAC.pdf">(Syracuse University: Role-Based Access Control (RBAC)</a></p>
-
-<p><a href="https://link.jianshu.com?t=http://www.yiiframework.com/doc-2.0/guide-security-authorization.html">Yii 2.0 Guide</a></p>
-
-<p><a href="https://link.jianshu.com?t=https://en.wikipedia.org/wiki/Computer_access_control">WIKIPEDIA: Computer access control</a></p>
+<p>一个提高 LZ77 速度的试验已经进行了，这个试验中使用数组索引来加速字符串匹配的过程。然而，它还是比通常的压缩程序慢。</p>
 
                         
                       </div>
@@ -485,10 +265,10 @@ $user-&gt;grant(&#39;article:edit:*&#39;);
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/5/16</span>
+                    <span class="date">2018/6/18</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Archtect.html'>Archtect</a></span>
+          					    <span class="posted-in"><a href='Middleware.html'>Middleware</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -555,6 +335,8 @@ $user-&gt;grant(&#39;article:edit:*&#39;);
 
       	<p class="cat-list">
         
+            <a href="Team.html"><strong>Team</strong></a>
+        
             <a href="Infra.html"><strong>Infra</strong></a>
         
             <a href="Coding.html"><strong>Coding</strong></a>
@@ -578,31 +360,31 @@ $user-&gt;grant(&#39;article:edit:*&#39;);
 	      
 		      
 			      <li class="post">
-			        <a href="15277861393795.html">深入浅出Netty - EventLoop, EventLoopGroup</a>
+			        <a href="15301813999205.html">架构设计：负载均衡层设计方案（9）——负载均衡层总结下篇</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15277856731195.html">Functor and monad examples in plain Java</a>
+			        <a href="15301813109409.html">架构设计：负载均衡层设计方案（8）——负载均衡层总结上篇</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15277854106004.html">我必须得告诉大家的 MySQL 优化原理</a>
+			        <a href="15301812452579.html">架构设计：负载均衡层设计方案（7）——LVS + Keepalived + Nginx安装及配置</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15277850962764.html">Leaf——美团点评分布式ID生成系统</a>
+			        <a href="15301811967181.html">架构设计：负载均衡层设计方案（6）——Nginx + Keepalived构建高可用的负载层</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15277835170976.html">蚂蚁通信框架实践</a>
+			        <a href="15301811361753.html">架构设计：负载均衡层设计方案（5）——LVS单节点安装</a>
 			      </li>
 		     
 		  

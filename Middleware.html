@@ -76,6 +76,8 @@
     <li><label>Categories</label></li>
 
         
+            <li><a href="Team.html">Team</a></li>
+        
             <li><a href="Infra.html">Infra</a></li>
         
             <li><a href="Coding.html">Coding</a></li>
@@ -105,314 +107,603 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15273831746106.html">
+                <a class="clearlink" href="15293283879436.html">
                 
-                  <h1>分布式之消息队列复习精讲</h1>
+                  <h1>精讲 Redis 内存模型</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p>原文地址 <a href="http://www.cnblogs.com/rjzheng/p/8994962.html">http://www.cnblogs.com/rjzheng/p/8994962.html</a></p>
+<p><a href="https://my.oschina.net/u/3779583/blog/1829617?origin=wechat">https://my.oschina.net/u/3779583/blog/1829617?origin=wechat</a></p>
 </blockquote>
 
-<h2 id="toc_0">引言</h2>
+<h2 id="toc_0">前言</h2>
 
-<h3 id="toc_1">为什么写这篇文章?</h3>
+<p>Redis 是目前最火爆的内存数据库之一，通过在内存中读写数据，大大提高了读写速度，可以说 Redis 是实现网站高并发不可或缺的一部分。</p>
 
-<p>博主有两位朋友分别是小 A 和小 B:</p>
+<p>我们使用 Redis 时，会接触 Redis 的 5 种对象类型（字符串、哈希、列表、集合、有序集合），丰富的类型是 Redis 相对于 Memcached 等的一大优势。在了解 Redis 的 5 种对象类型的用法和特点的基础上，进一步了解 Redis 的内存模型，对 Redis 的使用有很大帮助，例如：</p>
 
-<ol>
-<li> 小 A，工作于传统软件行业 (某社保局的软件外包公司)，每天工作内容就是和产品聊聊需求，改改业务逻辑。再不然就是和运营聊聊天，写几个 SQL，生成下报表。又或者接到客服的通知，某某功能故障了，改改数据，然后下班部署上线。每天过的都是这种生活，技术零成长。</li>
-<li> 小 B，工作于某国企，虽然能接触到一些中间件技术。然而，他只会订阅 / 发布消息。通俗点说，就是调调 API。对为什么使用这些中间件啊？如何保证高可用啊？没有充分的认识。</li>
-</ol>
+<p>1、估算 Redis 内存使用量。目前为止，内存的使用成本仍然相对较高，使用内存不能无所顾忌；根据需求合理的评估 Redis 的内存使用量，选择合适的机器配置，可以在满足需求的情况下节约成本。</p>
 
-<p>庆幸的是两位朋友都很有上进心，于是博主写这篇文章，帮助他们复习一下关于消息队列中间件这块的要点</p>
+<p>2、优化内存占用。了解 Redis 内存模型可以选择更合适的数据类型和编码，更好的利用 Redis 内存。</p>
 
-<h3 id="toc_2">复习要点</h3>
+<p>3、分析解决问题。当 Redis 出现阻塞、内存占用等问题时，尽快发现导致问题的原因，便于分析解决问题。</p>
 
-<p>本文大概围绕如下几点进行阐述:</p>
+<p>这篇文章主要介绍 Redis 的内存模型（以 3.0 为例），包括 Redis 占用内存的情况及如何查询、不同的对象类型在内存中的编码方式、内存分配器 (jemalloc)、简单动态字符串 (SDS)、RedisObject 等；然后在此基础上介绍几个 Redis 内存模型的应用。</p>
 
-<ol>
-<li> 为什么使用消息队列？</li>
-<li> 使用消息队列有什么缺点?</li>
-<li> 消息队列如何选型?</li>
-<li> 如何保证消息队列是高可用的？</li>
-<li> 如何保证消息不被重复消费?</li>
-<li> 如何保证消费的可靠性传输?</li>
-<li> 如何保证消息的顺序性？</li>
-</ol>
+<p>在后面的文章中，会陆续介绍关于 Redis 高可用的内容，包括主从复制、哨兵、集群等等，欢迎关注。</p>
 
-<p>我们围绕以上七点进行阐述。需要说明一下，本文不是《消息队列从入门到精通》这种课程，因此只是提供一个复习思路，而不是去教你们怎么调用消息队列的 API。建议对消息队列不了解的人，去找点消息队列的博客看看，再看本文，收获更大</p>
+<h2 id="toc_1">一、Redis 内存统计</h2>
 
-<h2 id="toc_3">正文</h2>
+<p>工欲善其事必先利其器，在说明 Redis 内存之前首先说明如何统计 Redis 使用内存的情况。</p>
 
-<h3 id="toc_4">1、为什么要使用消息队列?</h3>
+<p>在客户端通过 redis-cli 连接服务器后（后面如无特殊说明，客户端一律使用 redis-cli），通过 info 命令可以查看内存使用情况：</p>
 
-<p><strong>分析</strong>: 一个用消息队列的人，不知道为啥用，这就有点尴尬。没有复习这点，很容易被问蒙，然后就开始胡扯了。<br/>
-<strong>回答</strong>: 这个问题, 咱只答三个最主要的应用场景 (不可否认还有其他的，但是只答三个主要的), 即以下六个字: <strong>解耦、异步、削峰</strong></p>
-
-<h4 id="toc_5">(1) 解耦</h4>
-
-<p><strong>传统模式:</strong><br/>
-<img src="media/15273831746106/15273914396502.png" alt=""/></p>
-
-<p>传统模式的缺点：</p>
-
-<ul>
-<li>  系统间耦合性太强，如上图所示，系统 A 在代码中直接调用系统 B 和系统 C 的代码，如果将来 D 系统接入，系统 A 还需要修改代码，过于麻烦！</li>
-</ul>
-
-<p><strong>中间件模式:</strong><br/>
-<img src="media/15273831746106/15273918339281.png" alt=""/></p>
-
-<p>中间件模式的的优点：</p>
-
-<ul>
-<li>  将消息写入消息队列，需要消息的系统自己从消息队列中订阅，从而系统 A 不需要做任何修改。</li>
-</ul>
-
-<h4 id="toc_6">(2) 异步</h4>
-
-<p><strong>传统模式:</strong></p>
-
-<p><img src="media/15273831746106/15273918558340.png" alt=""/></p>
-
-<p>传统模式的缺点：</p>
-
-<ul>
-<li>  一些非必要的业务逻辑以同步的方式运行，太耗费时间。</li>
-</ul>
-
-<p><strong>中间件模式:</strong><br/>
-<img src="media/15273831746106/15273918690655.png" alt=""/></p>
-
-<p>中间件模式的的优点：</p>
-
-<ul>
-<li>  将消息写入消息队列，非必要的业务逻辑以异步的方式运行，加快响应速度</li>
-</ul>
-
-<h4 id="toc_7">(3) 削峰</h4>
-
-<p><strong>传统模式</strong><br/>
-<img src="media/15273831746106/15273918819389.png" alt=""/></p>
-
-<p>传统模式的缺点：</p>
-
-<ul>
-<li>  并发量大的时候，所有的请求直接怼到数据库，造成数据库连接异常</li>
-</ul>
-
-<p><strong>中间件模式:</strong><br/>
-<img src="media/15273831746106/15273924798559.png" alt=""/></p>
-
-<p>中间件模式的的优点：</p>
-
-<ul>
-<li>  系统 A 慢慢的按照数据库能处理的并发量，从消息队列中慢慢拉取消息。在生产中，这个短暂的高峰期积压是允许的。</li>
-</ul>
-
-<h3 id="toc_8">2、使用了消息队列会有什么缺点?</h3>
-
-<p><strong>分析</strong>: 一个使用了 MQ 的项目，如果连这个问题都没有考虑过，就把 MQ 引进去了，那就给自己的项目带来了风险。我们引入一个技术，要对这个技术的弊端有充分的认识，才能做好预防。<strong>要记住，不要给公司挖坑！</strong><br/>
-<strong>回答</strong>: 回答也很容易，从以下两个个角度来答</p>
-
-<ul>
-<li>  <strong>系统可用性降低</strong>: 你想啊，本来其他系统只要运行好好的，那你的系统就是正常的。现在你非要加个消息队列进去，那消息队列挂了，你的系统不是呵呵了。因此，系统可用性降低</li>
-<li>  <strong>系统复杂性增加</strong>: 要多考虑很多方面的问题，比如一致性问题、如何保证消息不被重复消费，如何保证保证消息可靠传输。因此，需要考虑的东西更多，系统复杂性增大。</li>
-</ul>
-
-<p>但是，我们该用还是要用的。</p>
-
-<h3 id="toc_9">3、消息队列如何选型?</h3>
-
-<p>先说一下，博主只会 ActiveMQ,RabbitMQ,RocketMQ,Kafka，对什么 ZeroMQ 等其他 MQ 没啥理解，因此只能基于这四种 MQ 给出回答。<br/>
-<strong>分析</strong>: 既然在项目中用了 MQ，肯定事先要对业界流行的 MQ 进行调研，如果连每种 MQ 的优缺点都没了解清楚，就拍脑袋依据喜好，用了某种 MQ，还是给项目挖坑。如果面试官问:&quot;你为什么用这种 MQ？。&quot; 你直接回答 &quot;领导决定的。&quot; 这种回答就很 LOW 了。<strong>还是那句话，不要给公司挖坑。</strong><br/>
-<strong>回答</strong>: 首先，咱先上 <a href="http://activemq.apache.org/">ActiveMQ 的社区</a>，看看该 MQ 的更新频率:</p>
-
-<pre><code>Apache ActiveMQ 5.15.3 Release
-Christopher L. Shannon posted on Feb 12, 2018
-Apache ActiveMQ 5.15.2 Released
-Christopher L. Shannon posted on Oct 23, 2017
-Apache ActiveMQ 5.15.0 Released
-Christopher L. Shannon posted on Jul 06, 2017
-省略以下记录
-...
+<pre><code>info memory
 </code></pre>
 
-<p>我们可以看出，ActiveMq 几个月才发一次版本，据说研究重心在他们的下一代产品 Apollo。<br/>
-接下来，我们再去 <a href="http://www.rabbitmq.com/">RabbitMQ 的社区</a>去看一下, RabbitMQ 的更新频率</p>
+<p><img src="https://images2018.cnblogs.com/blog/1174710/201803/1174710-20180327000947752-2103814952.png" alt=""/></p>
 
-<pre><code>RabbitMQ 3.7.3 release  30 January 2018
-RabbitMQ 3.6.15 release  17 January 2018
-RabbitMQ 3.7.2 release23 December 2017
-RabbitMQ 3.7.1 release21 December 2017
-省略以下记录
-...
+<p>其中，info 命令可以显示 redis 服务器的许多信息，包括服务器基本信息、CPU、内存、持久化、客户端连接信息等等；memory 是参数，表示只显示内存相关的信息。</p>
+
+<p>返回结果中比较重要的几个说明如下：</p>
+
+<p>（1）<strong>used_memory</strong><strong>：</strong>Redis 分配器分配的内存总量（单位是字节），包括使用的虚拟内存（即 swap）；Redis 分配器后面会介绍。used_memory_human 只是显示更友好。</p>
+
+<p>（2）<strong>used_memory_rss</strong><strong>：</strong>Redis 进程占据操作系统的内存（单位是字节），与 top 及 ps 命令看到的值是一致的；除了分配器分配的内存之外，used_memory_rss 还包括进程运行本身需要的内存、内存碎片等，但是不包括虚拟内存。</p>
+
+<p>因此，used_memory 和 used_memory_rss，前者是从 Redis 角度得到的量，后者是从操作系统角度得到的量。二者之所以有所不同，一方面是因为内存碎片和 Redis 进程运行需要占用内存，使得前者可能比后者小，另一方面虚拟内存的存在，使得前者可能比后者大。</p>
+
+<p>由于在实际应用中，Redis 的数据量会比较大，此时进程运行占用的内存与 Redis 数据量和内存碎片相比，都会小得多；因此 used_memory_rss 和 used_memory 的比例，便成了衡量 Redis 内存碎片率的参数；这个参数就是 mem_fragmentation_ratio。</p>
+
+<p>（3）<strong>mem_fragmentation_ratio</strong><strong>：</strong>内存碎片比率，该值是 used_memory_rss / used_memory 的比值。</p>
+
+<p>mem_fragmentation_ratio 一般大于 1，且该值越大，内存碎片比例越大。mem_fragmentation_ratio&lt;1，说明 Redis 使用了虚拟内存，由于虚拟内存的媒介是磁盘，比内存速度要慢很多，当这种情况出现时，应该及时排查，如果内存不足应该及时处理，如增加 Redis 节点、增加 Redis 服务器的内存、优化应用等。</p>
+
+<p>一般来说，mem_fragmentation_ratio 在 1.03 左右是比较健康的状态（对于 jemalloc 来说）；上面截图中的 mem_fragmentation_ratio 值很大，是因为还没有向 Redis 中存入数据，Redis 进程本身运行的内存使得 used_memory_rss 比 used_memory 大得多。</p>
+
+<p>（4）<strong>mem_allocator</strong><strong>：</strong>Redis 使用的内存分配器，在编译时指定；可以是 libc 、jemalloc 或者 tcmalloc，默认是 jemalloc；截图中使用的便是默认的 jemalloc。</p>
+
+<h1 id="toc_2">二、Redis 内存划分</h1>
+
+<p>Redis 作为内存数据库，在内存中存储的内容主要是数据（键值对）；通过前面的叙述可以知道，除了数据以外，Redis 的其他部分也会占用内存。</p>
+
+<p>Redis 的内存占用主要可以划分为以下几个部分：</p>
+
+<h2 id="toc_3">1、数据</h2>
+
+<p>作为数据库，数据是最主要的部分；这部分占用的内存会统计在 used_memory 中。</p>
+
+<p>Redis 使用键值对存储数据，其中的值（对象）包括 5 种类型，即字符串、哈希、列表、集合、有序集合。这 5 种类型是 Redis 对外提供的，实际上，在 Redis 内部，每种类型可能有 2 种或更多的内部编码实现；此外，Redis 在存储对象时，并不是直接将数据扔进内存，而是会对对象进行各种包装：如 redisObject、SDS 等；这篇文章后面将重点介绍 Redis 中数据存储的细节。</p>
+
+<h2 id="toc_4">2、进程本身运行需要的内存</h2>
+
+<p>Redis 主进程本身运行肯定需要占用内存，如代码、常量池等等；这部分内存大约几兆，在大多数生产环境中与 Redis 数据占用的内存相比可以忽略。这部分内存不是由 jemalloc 分配，因此不会统计在 used_memory 中。</p>
+
+<p>补充说明：除了主进程外，Redis 创建的子进程运行也会占用内存，如 Redis 执行 AOF、RDB 重写时创建的子进程。当然，这部分内存不属于 Redis 进程，也不会统计在 used_memory 和 used_memory_rss 中。</p>
+
+<h2 id="toc_5">3、缓冲内存</h2>
+
+<p>缓冲内存包括客户端缓冲区、复制积压缓冲区、AOF 缓冲区等；其中，客户端缓冲存储客户端连接的输入输出缓冲；复制积压缓冲用于部分复制功能；AOF 缓冲区用于在进行 AOF 重写时，保存最近的写入命令。在了解相应功能之前，不需要知道这些缓冲的细节；这部分内存由 jemalloc 分配，因此会统计在 used_memory 中。</p>
+
+<h2 id="toc_6">4、内存碎片</h2>
+
+<p>内存碎片是 Redis 在分配、回收物理内存过程中产生的。例如，如果对数据的更改频繁，而且数据之间的大小相差很大，可能导致 redis 释放的空间在物理内存中并没有释放，但 redis 又无法有效利用，这就形成了内存碎片。内存碎片不会统计在 used_memory 中。</p>
+
+<p>内存碎片的产生与对数据进行的操作、数据的特点等都有关；此外，与使用的内存分配器也有关系：如果内存分配器设计合理，可以尽可能的减少内存碎片的产生。后面将要说到的 jemalloc 便在控制内存碎片方面做的很好。</p>
+
+<p>如果 Redis 服务器中的内存碎片已经很大，可以通过安全重启的方式减小内存碎片：因为重启之后，Redis 重新从备份文件中读取数据，在内存中进行重排，为每个数据重新选择合适的内存单元，减小内存碎片。</p>
+
+<h1 id="toc_7">三、Redis 数据存储的细节</h1>
+
+<h2 id="toc_8">1、概述</h2>
+
+<p>关于 Redis 数据存储的细节，涉及到内存分配器（如 jemalloc）、简单动态字符串（SDS）、5 种对象类型及内部编码、redisObject。在讲述具体内容之前，先说明一下这几个概念之间的关系。</p>
+
+<p>下图是执行 set hello world 时，所涉及到的数据模型。</p>
+
+<p> <img src="https://images2018.cnblogs.com/blog/1174710/201803/1174710-20180327001055927-1896197804.png" alt=""/></p>
+
+<p>图片来源：<a href="https://searchdatabase.techtarget.com.cn/7-20218/">https://searchdatabase.techtarget.com.cn/7-20218/</a></p>
+
+<p>（1）dictEntry：Redis 是 Key-Value 数据库，因此对每个键值对都会有一个 dictEntry，里面存储了指向 Key 和 Value 的指针；next 指向下一个 dictEntry，与本 Key-Value 无关。</p>
+
+<p>（2）Key：图中右上角可见，Key（”hello”）并不是直接以字符串存储，而是存储在 SDS 结构中。</p>
+
+<p>（3）redisObject：Value(“world”) 既不是直接以字符串存储，也不是像 Key 一样直接存储在 SDS 中，而是存储在 redisObject 中。实际上，不论 Value 是 5 种类型的哪一种，都是通过 redisObject 来存储的；而 redisObject 中的 type 字段指明了 Value 对象的类型，ptr 字段则指向对象所在的地址。不过可以看出，字符串对象虽然经过了 redisObject 的包装，但仍然需要通过 SDS 存储。</p>
+
+<p>实际上，redisObject 除了 type 和 ptr 字段以外，还有其他字段图中没有给出，如用于指定对象内部编码的字段；后面会详细介绍。</p>
+
+<p>（4）jemalloc：无论是 DictEntry 对象，还是 redisObject、SDS 对象，都需要内存分配器（如 jemalloc）分配内存进行存储。以 DictEntry 对象为例，有 3 个指针组成，在 64 位机器下占 24 个字节，jemalloc 会为它分配 32 字节大小的内存单元。</p>
+
+<p>下面来分别介绍 jemalloc、redisObject、SDS、对象类型及内部编码。</p>
+
+<h2 id="toc_9">2、jemalloc</h2>
+
+<p>Redis 在编译时便会指定内存分配器；内存分配器可以是 libc 、jemalloc 或者 tcmalloc，默认是 jemalloc。</p>
+
+<p>jemalloc 作为 Redis 的默认内存分配器，在减小内存碎片方面做的相对比较好。jemalloc 在 64 位系统中，将内存空间划分为小、大、巨大三个范围；每个范围内又划分了许多小的内存块单位；当 Redis 存储数据时，会选择大小最合适的内存块进行存储。</p>
+
+<p>jemalloc 划分的内存单元如下图所示：</p>
+
+<p> <img src="https://images2018.cnblogs.com/blog/1174710/201803/1174710-20180327001126509-2023165562.png" alt=""/></p>
+
+<p>图片来源：<a href="http://blog.csdn.net/zhengpeitao/article/details/76573053">http://blog.csdn.net/zhengpeitao/article/details/76573053</a></p>
+
+<p>例如，如果需要存储大小为 130 字节的对象，jemalloc 会将其放入 160 字节的内存单元中。</p>
+
+<h2 id="toc_10">3、redisObject</h2>
+
+<p>前面说到，Redis 对象有 5 种类型；无论是哪种类型，Redis 都不会直接存储，而是通过 redisObject 对象进行存储。</p>
+
+<p>redisObject 对象非常重要，Redis 对象的类型、内部编码、内存回收、共享对象等功能，都需要 redisObject 支持，下面将通过 redisObject 的结构来说明它是如何起作用的。</p>
+
+<p>redisObject 的定义如下（不同版本的 Redis 可能稍稍有所不同）：</p>
+
+<pre><code class="language-c">typedef struct redisObject {
+　　unsigned type:4;
+　　unsigned encoding:4;
+　　unsigned lru:REDIS_LRU_BITS; /* lru time (relative to server.lruclock) */
+　　int refcount;
+　　void *ptr;
+} robj;
 </code></pre>
 
-<p>我们可以看出，RabbitMQ 版本发布比 ActiveMq 频繁很多。至于 RocketMQ 和 kafka 就不带大家看了，总之也比 ActiveMQ 活跃的多。详情，可自行查阅。<br/>
-再来一个性能对比表</p>
+<p>redisObject 的每个字段的含义和作用如下：</p>
 
-<table>
-<thead>
-<tr>
-<th>特性</th>
-<th>ActiveMQ</th>
-<th>RabbitMQ</th>
-<th>RocketMQ</th>
-<th>kafka</th>
-</tr>
-</thead>
+<h3 id="toc_11">（1）type</h3>
 
-<tbody>
-<tr>
-<td>开发语言</td>
-<td>java</td>
-<td>erlang</td>
-<td>java</td>
-<td>scala</td>
-</tr>
-<tr>
-<td>单机吞吐量</td>
-<td>万级</td>
-<td>万级</td>
-<td>10 万级</td>
-<td>10 万级</td>
-</tr>
-<tr>
-<td>时效性</td>
-<td>ms 级</td>
-<td>us 级</td>
-<td>ms 级</td>
-<td>ms 级以内</td>
-</tr>
-<tr>
-<td>可用性</td>
-<td>高 (主从架构)</td>
-<td>高 (主从架构)</td>
-<td>非常高 (分布式架构)</td>
-<td>非常高 (分布式架构)</td>
-</tr>
-<tr>
-<td>功能特性</td>
-<td>成熟的产品，在很多公司得到应用；有较多的文档；各种协议支持较好</td>
-<td>基于 erlang 开发，所以并发能力很强，性能极其好，延时很低; 管理界面较丰富</td>
-<td>MQ 功能比较完备，扩展性佳</td>
-<td>只支持主要的 MQ 功能，像一些消息查询，消息回溯等功能没有提供，毕竟是为大数据准备的，在大数据领域应用广。</td>
-</tr>
-</tbody>
-</table>
+<p>type 字段表示对象的类型，占 4 个比特；目前包括 REDIS_STRING(字符串)、REDIS_LIST (列表)、REDIS_HASH(哈希)、REDIS_SET(集合)、REDIS_ZSET(有序集合)。</p>
 
-<p>综合上面的材料得出以下两点:<br/>
-(1) 中小型软件公司，建议选 RabbitMQ. 一方面，erlang 语言天生具备高并发的特性，而且他的管理界面用起来十分方便。正所谓，成也萧何，败也萧何！他的弊端也在这里，虽然 RabbitMQ 是开源的，然而国内有几个能定制化开发 erlang 的程序员呢？所幸，RabbitMQ 的社区十分活跃，可以解决开发过程中遇到的 bug，这点对于中小型公司来说十分重要。不考虑 rocketmq 和 kafka 的原因是，一方面中小型软件公司不如互联网公司，数据量没那么大，选消息中间件，应首选功能比较完备的，所以 kafka 排除。不考虑 rocketmq 的原因是，rocketmq 是阿里出品，如果阿里放弃维护 rocketmq，中小型公司一般抽不出人来进行 rocketmq 的定制化开发，因此不推荐。<br/>
-(2) 大型软件公司，根据具体使用在 rocketMq 和 kafka 之间二选一。一方面，大型软件公司，具备足够的资金搭建分布式环境，也具备足够大的数据量。针对 rocketMQ, 大型软件公司也可以抽出人手对 rocketMQ 进行定制化开发，毕竟国内有能力改 JAVA 源码的人，还是相当多的。至于 kafka，根据业务场景选择，如果有日志采集功能，肯定是首选 kafka 了。具体该选哪个，看使用场景。</p>
+<p>当我们执行 type 命令时，便是通过读取 RedisObject 的 type 字段获得对象的类型；如下图所示：</p>
 
-<h3 id="toc_10">4、如何保证消息队列是高可用的？</h3>
+<p><img src="https://images2018.cnblogs.com/blog/1174710/201803/1174710-20180327001214189-1733420705.png" alt=""/></p>
 
-<p><strong>分析</strong>: 在第二点说过了，引入消息队列后，系统的可用性下降。在生产中，没人使用单机模式的消息队列。因此，作为一个合格的程序员，应该对消息队列的高可用有很深刻的了解。如果面试的时候，面试官问，你们的消息中间件如何保证高可用的？你的回答只是表明自己只会订阅和发布消息，面试官就会怀疑你是不是只是自己搭着玩，压根没在生产用过。<strong>请做一个爱思考，会思考，懂思考的程序员。</strong><br/>
-<strong>回答</strong>: 这问题，其实要对消息队列的集群模式要有深刻了解，才好回答。<br/>
-以 rcoketMQ 为例，他的集群就有多 master 模式、多 master 多 slave 异步复制模式、多 master 多 slave 同步双写模式。多 master 多 slave 模式部署架构图 (网上找的, 偷个懒，懒得画):<br/>
-<img src="https://images.cnblogs.com/cnblogs_com/rjzheng/1202350/o_rocketcluster.png" alt=""/><br/>
-其实博主第一眼看到这个图，就觉得和 kafka 好像，只是 NameServer 集群，在 kafka 中是用 zookeeper 代替，都是用来保存和发现 master 和 slave 用的。通信过程如下:<br/>
-Producer 与 NameServer 集群中的其中一个节点（随机选择）建立长连接，定期从 NameServer 获取 Topic 路由信息，并向提供 Topic 服务的 Broker Master 建立长连接，且定时向 Broker 发送心跳。Producer 只能将消息发送到 Broker master，但是 Consumer 则不一样，它同时和提供 Topic 服务的 Master 和 Slave 建立长连接，既可以从 Broker Master 订阅消息，也可以从 Broker Slave 订阅消息。<br/>
-那么 kafka 呢, 为了对比说明直接上 kafka 的拓补架构图 (也是找的，懒得画)<br/>
-<img src="https://images.cnblogs.com/cnblogs_com/rjzheng/1202350/o_kafka.png" alt=""/><br/>
-如上图所示，一个典型的 Kafka 集群中包含若干 Producer（可以是 web 前端产生的 Page View，或者是服务器日志，系统 CPU、Memory 等），若干 broker（Kafka 支持水平扩展，一般 broker 数量越多，集群吞吐率越高），若干 Consumer Group，以及一个 Zookeeper 集群。Kafka 通过 Zookeeper 管理集群配置，选举 leader，以及在 Consumer Group 发生变化时进行 rebalance。Producer 使用 push 模式将消息发布到 broker，Consumer 使用 pull 模式从 broker 订阅并消费消息。<br/>
-至于 rabbitMQ, 也有普通集群和镜像集群模式，自行去了解，比较简单，两小时即懂。<br/>
-要求，在回答高可用的问题时，应该能逻辑清晰的画出自己的 MQ 集群架构或清晰的叙述出来。</p>
+<h3 id="toc_12">（2）encoding</h3>
 
-<h3 id="toc_11">5、如何保证消息不被重复消费？</h3>
+<p>encoding 表示对象的内部编码，占 4 个比特。</p>
 
-<p><strong>分析</strong>: 这个问题其实换一种问法就是，如何保证消息队列的幂等性? 这个问题可以认为是消息队列领域的基本问题。换句话来说，是在考察你的设计能力，这个问题的回答可以根据具体的业务场景来答，没有固定的答案。<br/>
-<strong>回答</strong>: 先来说一下为什么会造成重复消费?<br/>
-  其实无论是那种消息队列，造成重复消费原因其实都是类似的。正常情况下，消费者在消费消息时候，消费完毕后，会发送一个确认信息给消息队列，消息队列就知道该消息被消费了，就会将该消息从消息队列中删除。只是不同的消息队列发送的确认信息形式不同, 例如 RabbitMQ 是发送一个 ACK 确认消息，RocketMQ 是返回一个 CONSUME_SUCCESS 成功标志，kafka 实际上有个 offset 的概念，简单说一下 (如果还不懂，出门找一个 kafka 入门到精通教程), 就是每一个消息都有一个 offset，kafka 消费过消息后，需要提交 offset，让消息队列知道自己已经消费过了。那造成重复消费的原因?，就是因为网络传输等等故障，确认信息没有传送到消息队列，导致消息队列不知道自己已经消费过该消息了，再次将该消息分发给其他的消费者。<br/>
-  如何解决? 这个问题针对业务场景来答分以下几点<br/>
-  (1) 比如，你拿到这个消息做数据库的 insert 操作。那就容易了，给这个消息做一个唯一主键，那么就算出现重复消费的情况，就会导致主键冲突，避免数据库出现脏数据。<br/>
-  (2) 再比如，你拿到这个消息做 redis 的 set 的操作，那就容易了，不用解决，因为你无论 set 几次结果都是一样的，set 操作本来就算幂等操作。<br/>
-  (3) 如果上面两种情况还不行，上大招。准备一个第三方介质, 来做消费记录。以 redis 为例，给消息分配一个全局 id，只要消费过该消息，将 &lt; id,message &gt; 以 K-V 形式写入 redis。那消费者开始消费前，先去 redis 中查询有没消费记录即可。</p>
+<p>对于 Redis 支持的每种类型，都有至少两种内部编码，例如对于字符串，有 int、embstr、raw 三种编码。通过 encoding 属性，Redis 可以根据不同的使用场景来为对象设置不同的编码，大大提高了 Redis 的灵活性和效率。以列表对象为例，有压缩列表和双端链表两种编码方式；如果列表中的元素较少，Redis 倾向于使用压缩列表进行存储，因为压缩列表占用内存更少，而且比双端链表可以更快载入；当列表对象元素较多时，压缩列表就会转化为更适合存储大量元素的双端链表。</p>
 
-<h3 id="toc_12">6、如何保证消费的可靠性传输?</h3>
+<p>通过 object encoding 命令，可以查看对象采用的编码方式，如下图所示：</p>
 
-<p><strong>分析</strong>: 我们在使用消息队列的过程中，应该做到消息不能多消费，也不能少消费。如果无法做到可靠性传输，可能给公司带来千万级别的财产损失。同样的，如果可靠性传输在使用过程中，没有考虑到，这不是给公司挖坑么，你可以拍拍屁股走了，公司损失的钱，谁承担。还是那句话，<strong>认真对待每一个项目，不要给公司挖坑。</strong><br/>
-<strong>回答</strong>: 其实这个可靠性传输，每种 MQ 都要从三个角度来分析: 生产者弄丢数据、消息队列弄丢数据、消费者弄丢数据</p>
+<p><img src="https://images2018.cnblogs.com/blog/1174710/201803/1174710-20180327001228807-998910409.png" alt=""/></p>
 
-<h4 id="toc_13">RabbitMQ</h4>
+<p>5 种对象类型对应的编码方式以及使用条件，将在后面介绍。</p>
 
-<p><strong>(1) 生产者丢数据</strong><br/>
-从生产者弄丢数据这个角度来看，RabbitMQ 提供 transaction 和 confirm 模式来确保生产者不丢消息。<br/>
-transaction 机制就是说，发送消息前，开启事物 (channel.txSelect())，然后发送消息，如果发送过程中出现什么异常，事物就会回滚 (channel.txRollback())，如果发送成功则提交事物 (channel.txCommit())。<br/>
-然而缺点就是吞吐量下降了。因此，按照博主的经验，生产上用 confirm 模式的居多。一旦 channel 进入 confirm 模式，所有在该信道上面发布的消息都将会被指派一个唯一的 ID(从 1 开始)，一旦消息被投递到所有匹配的队列之后，rabbitMQ 就会发送一个 Ack 给生产者 (包含消息的唯一 ID)，这就使得生产者知道消息已经正确到达目的队列了. 如果 rabiitMQ 没能处理该消息，则会发送一个 Nack 消息给你，你可以进行重试操作。处理 Ack 和 Nack 的代码如下所示（说好不上代码的，偷偷上了）:</p>
+<h3 id="toc_13">（3）lru</h3>
 
-<pre><code>channel.addConfirmListener(new ConfirmListener() {  
-                @Override  
-                public void handleNack(long deliveryTag, boolean multiple) throws IOException {  
-                    System.out.println(&quot;nack: deliveryTag = &quot;+deliveryTag+&quot; multiple: &quot;+multiple);  
-                }  
-                @Override  
-                public void handleAck(long deliveryTag, boolean multiple) throws IOException {  
-                    System.out.println(&quot;ack: deliveryTag = &quot;+deliveryTag+&quot; multiple: &quot;+multiple);  
-                }  
-            });  
+<p>lru 记录的是对象最后一次被命令程序访问的时间，占据的比特数不同的版本有所不同（如 4.0 版本占 24 比特，2.6 版本占 22 比特）。</p>
+
+<p>通过对比 lru 时间与当前时间，可以计算某个对象的空转时间；object idletime 命令可以显示该空转时间（单位是秒）。object idletime 命令的一个特殊之处在于它不改变对象的 lru 值。</p>
+
+<p><img src="https://images2018.cnblogs.com/blog/1174710/201803/1174710-20180327001239788-1325383307.png" alt=""/></p>
+
+<p>lru 值除了通过 object idletime 命令打印之外，还与 Redis 的内存回收有关系：如果 Redis 打开了 maxmemory 选项，且内存回收算法选择的是 volatile-lru 或 allkeys—lru，那么当 Redis 内存占用超过 maxmemory 指定的值时，Redis 会优先选择空转时间最长的对象进行释放。</p>
+
+<h3 id="toc_14">（4）refcount</h3>
+
+<p><strong>refcount</strong> <strong>与共享对象</strong></p>
+
+<p>refcount 记录的是该对象被引用的次数，类型为整型。refcount 的作用，主要在于对象的引用计数和内存回收。当创建新对象时，refcount 初始化为 1；当有新程序使用该对象时，refcount 加 1；当对象不再被一个新程序使用时，refcount 减 1；当 refcount 变为 0 时，对象占用的内存会被释放。</p>
+
+<p>Redis 中被多次使用的对象 (refcount&gt;1)，称为共享对象。Redis 为了节省内存，当有一些对象重复出现时，新的程序不会创建新的对象，而是仍然使用原来的对象。这个被重复使用的对象，就是共享对象。目前共享对象仅支持整数值的字符串对象。</p>
+
+<p><strong>共享对象的具体实现</strong></p>
+
+<p>Redis 的共享对象目前只支持整数值的字符串对象。之所以如此，实际上是对内存和 CPU（时间）的平衡：共享对象虽然会降低内存消耗，但是判断两个对象是否相等却需要消耗额外的时间。对于整数值，判断操作复杂度为 O(1)；对于普通字符串，判断复杂度为 O(n)；而对于哈希、列表、集合和有序集合，判断的复杂度为 O(n<sup>2)。进群</sup> 619881427 可以免费获取文中知识点的视频资料。</p>
+
+<p>虽然共享对象只能是整数值的字符串对象，但是 5 种类型都可能使用共享对象（如哈希、列表等的元素可以使用）。</p>
+
+<p>就目前的实现来说，Redis 服务器在初始化时，会创建 10000 个字符串对象，值分别是 0~9999 的整数值；当 Redis 需要使用值为 0~9999 的字符串对象时，可以直接使用这些共享对象。10000 这个数字可以通过调整参数 REDIS_SHARED_INTEGERS（4.0 中是 OBJ_SHARED_INTEGERS）的值进行改变。</p>
+
+<p>共享对象的引用次数可以通过 object refcount 命令查看，如下图所示。命令执行的结果页佐证了只有 0~9999 之间的整数会作为共享对象。</p>
+
+<p><img src="https://images2018.cnblogs.com/blog/1174710/201803/1174710-20180327001256958-1309209644.png" alt=""/></p>
+
+<h3 id="toc_15">（5）ptr</h3>
+
+<p>ptr 指针指向具体的数据，如前面的例子中，set hello world，ptr 指向包含字符串 world 的 SDS。</p>
+
+<h3 id="toc_16">（6）总结</h3>
+
+<p>综上所述，redisObject 的结构与对象类型、编码、内存回收、共享对象都有关系；一个 redisObject 对象的大小为 16 字节：</p>
+
+<p>4bit+4bit+24bit+4Byte+8Byte=16Byte。</p>
+
+<h2 id="toc_17">4、SDS</h2>
+
+<p>Redis 没有直接使用 C 字符串 (即以空字符’\0’结尾的字符数组) 作为默认的字符串表示，而是使用了 SDS。SDS 是简单动态字符串 (Simple Dynamic String) 的缩写。</p>
+
+<h3 id="toc_18">（1）SDS 结构</h3>
+
+<p>sds 的结构如下：</p>
+
+<pre><code class="language-c">struct sdshdr {
+    int len;
+    int free;
+    char buf[];
+};
 </code></pre>
 
-<p><strong>(2) 消息队列丢数据</strong><br/>
-处理消息队列丢数据的情况，一般是开启持久化磁盘的配置。这个持久化配置可以和 confirm 机制配合使用，你可以在消息持久化磁盘后，再给生产者发送一个 Ack 信号。这样，如果消息持久化磁盘之前，rabbitMQ 阵亡了，那么生产者收不到 Ack 信号，生产者会自动重发。<br/>
-那么如何持久化呢，这里顺便说一下吧，其实也很容易，就下面两步<br/>
-1、将 queue 的持久化标识 durable 设置为 true, 则代表是一个持久的队列<br/>
-2、发送消息的时候将 deliveryMode=2<br/>
-这样设置以后，rabbitMQ 就算挂了，重启后也能恢复数据<br/>
-<strong>(3) 消费者丢数据</strong><br/>
-消费者丢数据一般是因为采用了自动确认消息模式。这种模式下，消费者会自动确认收到信息。这时 rahbitMQ 会立即将消息删除，这种情况下如果消费者出现异常而没能处理该消息，就会丢失该消息。<br/>
-至于解决方案，采用手动确认消息即可。</p>
+<p>其中，buf 表示字节数组，用来存储字符串；len 表示 buf 已使用的长度，free 表示 buf 未使用的长度。下面是两个例子。</p>
 
-<h4 id="toc_14">kafka</h4>
+<p><img src="https://images2018.cnblogs.com/blog/1174710/201803/1174710-20180327001321434-1043595793.png" alt=""/></p>
 
-<p>这里先引一张 kafka Replication 的<a href="http://www.infoq.com/cn/articles/kafka-analysis-part-2/">数据流向图</a><br/>
-<img src="https://images.cnblogs.com/cnblogs_com/rjzheng/1202350/o_kafka1png.png" alt=""/><br/>
-Producer 在发布消息到某个 Partition 时，先通过 ZooKeeper 找到该 Partition 的 Leader，然后无论该 Topic 的 Replication Factor 为多少（也即该 Partition 有多少个 Replica），Producer 只将该消息发送到该 Partition 的 Leader。Leader 会将该消息写入其本地 Log。每个 Follower 都从 Leader 中 pull 数据。<br/>
-针对上述情况，得出如下分析<br/>
-<strong>(1) 生产者丢数据</strong><br/>
-在 kafka 生产中，基本都有一个 leader 和多个 follwer。follwer 会去同步 leader 的信息。因此，为了避免生产者丢数据，做如下两点配置</p>
+<p><img src="https://images2018.cnblogs.com/blog/1174710/201803/1174710-20180327001325561-890602831.png" alt=""/></p>
 
-<ol>
-<li> 第一个配置要在 producer 端设置 acks=all。这个配置保证了，follwer 同步完成后，才认为消息发送成功。</li>
-<li> 在 producer 端设置 retries=MAX，一旦写入失败，这无限重试</li>
-</ol>
+<p>图片来源：《Redis 设计与实现》</p>
 
-<p><strong>(2) 消息队列丢数据</strong><br/>
-针对消息队列丢数据的情况，无外乎就是，数据还没同步，leader 就挂了，这时 zookpeer 会将其他的 follwer 切换为 leader, 那数据就丢失了。针对这种情况，应该做两个配置。</p>
+<p>通过 SDS 的结构可以看出，buf 数组的长度 = free+len+1（其中 1 表示字符串结尾的空字符）；所以，一个 SDS 结构占据的空间为：free 所占长度 + len 所占长度 + buf 数组的长度 = 4+4+free+len+1=free+len+9。</p>
 
-<ol>
-<li> replication.factor 参数，这个值必须大于 1，即要求每个 partition 必须有至少 2 个副本</li>
-<li> min.insync.replicas 参数，这个值必须大于 1，这个是要求一个 leader 至少感知到有至少一个 follower 还跟自己保持联系</li>
-</ol>
+<h3 id="toc_19">（2）SDS 与 C 字符串的比较</h3>
 
-<p>这两个配置加上上面生产者的配置联合起来用，基本可确保 kafka 不丢数据</p>
+<p>SDS 在 C 字符串的基础上加入了 free 和 len 字段，带来了很多好处：</p>
 
-<p><strong>(3) 消费者丢数据</strong><br/>
-这种情况一般是自动提交了 offset，然后你处理程序过程中挂了。kafka 以为你处理好了。再强调一次 offset 是干嘛的<br/>
-<strong>offset</strong>：指的是 kafka 的 topic 中的每个消费组消费的下标。简单的来说就是一条消息对应一个 offset 下标，每次消费数据的时候如果提交 offset，那么下次消费就会从提交的 offset 加一那里开始消费。<br/>
-比如一个 topic 中有 100 条数据，我消费了 50 条并且提交了，那么此时的 kafka 服务端记录提交的 offset 就是 49(offset 从 0 开始)，那么下次消费的时候 offset 就从 50 开始消费。<br/>
-解决方案也很简单，改成手动提交即可。</p>
+<ul>
+<li>  获取字符串长度：SDS 是 O(1)，C 字符串是 O(n)</li>
+<li>  缓冲区溢出：使用 C 字符串的 API 时，如果字符串长度增加（如 strcat 操作）而忘记重新分配内存，很容易造成缓冲区的溢出；而 SDS 由于记录了长度，相应的 API 在可能造成缓冲区溢出时会自动重新分配内存，杜绝了缓冲区溢出。</li>
+<li>  修改字符串时内存的重分配：对于 C 字符串，如果要修改字符串，必须要重新分配内存（先释放再申请），因为如果没有重新分配，字符串长度增大时会造成内存缓冲区溢出，字符串长度减小时会造成内存泄露。而对于 SDS，由于可以记录 len 和 free，因此解除了字符串长度和空间数组长度之间的关联，可以在此基础上进行优化：空间预分配策略（即分配内存时比实际需要的多）使得字符串长度增大时重新分配内存的概率大大减小；惰性空间释放策略使得字符串长度减小时重新分配内存的概率大大减小。</li>
+<li>  存取二进制数据：SDS 可以，C 字符串不可以。因为 C 字符串以空字符作为字符串结束的标识，而对于一些二进制文件（如图片等），内容可能包括空字符串，因此 C 字符串无法正确存取；而 SDS 以字符串长度 len 来作为字符串结束标识，因此没有这个问题。</li>
+</ul>
 
-<h4 id="toc_15">ActiveMQ 和 RocketMQ</h4>
+<p>此外，由于 SDS 中的 buf 仍然使用了 C 字符串（即以’\0’结尾），因此 SDS 可以使用 C 字符串库中的部分函数；但是需要注意的是，只有当 SDS 用来存储文本数据时才可以这样使用，在存储二进制数据时则不行（’\0’不一定是结尾）。</p>
 
-<p>大家自行查阅吧</p>
+<h3 id="toc_20">（3）SDS 与 C 字符串的应用</h3>
 
-<h3 id="toc_16">7、如何保证消息的顺序性？</h3>
+<p>Redis 在存储对象时，一律使用 SDS 代替 C 字符串。例如 set hello world 命令，hello 和 world 都是以 SDS 的形式存储的。而 sadd myset member1 member2 member3 命令，不论是键（”myset”），还是集合中的元素（”member1”、 ”member2” 和”member3”），都是以 SDS 的形式存储。除了存储对象，SDS 还用于存储各种缓冲区。</p>
 
-<p><strong>分析</strong>: 其实并非所有的公司都有这种业务需求，但是还是对这个问题要有所复习。<br/>
-<strong>回答</strong>: 针对这个问题，通过某种算法，将需要保持先后顺序的消息放到同一个消息队列中 (kafka 中就是 partition,rabbitMq 中就是 queue)。然后只用一个消费者去消费该队列。<br/>
-有的人会问: 那如果为了吞吐量，有多个消费者去消费怎么办？<br/>
-这个问题，没有固定回答的套路。比如我们有一个微博的操作，发微博、写评论、删除微博，这三个异步操作。如果是这样一个业务场景，那只要重试就行。比如你一个消费者先执行了写评论的操作，但是这时候，微博都还没发，写评论一定是失败的，等一段时间。等另一个消费者，先执行写评论的操作后，再执行，就可以成功。<br/>
-总之，针对这个问题，我的观点是保证入队有序就行，出队以后的顺序交给消费者自己去保证，没有固定套路。</p>
+<p>只有在字符串不会改变的情况下，如打印日志时，才会使用 C 字符串。</p>
 
-<h2 id="toc_17">总结</h2>
+<h1 id="toc_21">四、Redis 的对象类型与内部编码</h1>
 
-<p>写到这里，希望读者把本文提出的这几个问题，经过深刻的准备后，一般来说，能囊括大部分的消息队列的知识点。如果面试官不问这几个问题怎么办，简单，自己把几个问题讲清楚，突出以下自己考虑的全面性。<br/>
-最后，其实我不太提倡这样突击复习，希望大家打好基本功，<strong>做一个爱思考，懂思考，会思考的程序员</strong>。</p>
+<p>前面已经说过，Redis 支持 5 种对象类型，而每种结构都有至少两种编码；这样做的好处在于：一方面接口与实现分离，当需要增加或改变内部编码时，用户使用不受影响，另一方面可以根据不同的应用场景切换内部编码，提高效率。</p>
+
+<p>Redis 各种对象类型支持的内部编码如下图所示 (图中版本是 Redis3.0，Redis 后面版本中又增加了内部编码，略过不提；本章所介绍的内部编码都是基于 3.0 的)：</p>
+
+<p><img src="https://images2018.cnblogs.com/blog/1174710/201803/1174710-20180327001358239-1304238510.png" alt=""/></p>
+
+<p>图片来源：《Redis 设计与实现》</p>
+
+<p>关于 Redis 内部编码的转换，都符合以下规律：<strong>编码转换在</strong> <strong>Redis</strong> <strong>写入数据时完成，且转换过程不可逆，只能从小内存编码向大内存编码转换。</strong></p>
+
+<h2 id="toc_22">1、字符串</h2>
+
+<h3 id="toc_23">（1）概况</h3>
+
+<p>字符串是最基础的类型，因为所有的键都是字符串类型，且字符串之外的其他几种复杂类型的元素也是字符串。</p>
+
+<p>字符串长度不能超过 512MB。</p>
+
+<h3 id="toc_24">（2）内部编码</h3>
+
+<p>字符串类型的内部编码有 3 种，它们的应用场景如下：</p>
+
+<ul>
+<li>  int：8 个字节的长整型。字符串值是整型时，这个值使用 long 整型表示。</li>
+<li>  embstr：&lt;=39 字节的字符串。embstr 与 raw 都使用 redisObject 和 sds 保存数据，区别在于，embstr 的使用只分配一次内存空间（因此 redisObject 和 sds 是连续的），而 raw 需要分配两次内存空间（分别为 redisObject 和 sds 分配空间）。因此与 raw 相比，embstr 的好处在于创建时少分配一次空间，删除时少释放一次空间，以及对象的所有数据连在一起，寻找方便。而 embstr 的坏处也很明显，如果字符串的长度增加需要重新分配内存时，整个 redisObject 和 sds 都需要重新分配空间，因此 redis 中的 embstr 实现为只读。</li>
+<li>  raw：大于 39 个字节的字符串</li>
+</ul>
+
+<p>示例如下图所示：</p>
+
+<p><img src="https://images2018.cnblogs.com/blog/1174710/201803/1174710-20180327001417703-15851809.png" alt=""/></p>
+
+<p>embstr 和 raw 进行区分的长度，是 39；是因为 redisObject 的长度是 16 字节，sds 的长度是 9 + 字符串长度；因此当字符串长度是 39 时，embstr 的长度正好是 16+9+39=64，jemalloc 正好可以分配 64 字节的内存单元。</p>
+
+<h3 id="toc_25">（3）编码转换</h3>
+
+<p>当 int 数据不再是整数，或大小超过了 long 的范围时，自动转化为 raw。</p>
+
+<p>而对于 embstr，由于其实现是只读的，因此在对 embstr 对象进行修改时，都会先转化为 raw 再进行修改，因此，只要是修改 embstr 对象，修改后的对象一定是 raw 的，无论是否达到了 39 个字节。示例如下图所示：</p>
+
+<p><img src="https://images2018.cnblogs.com/blog/1174710/201803/1174710-20180327001426651-1225081171.png" alt=""/></p>
+
+<h2 id="toc_26">2、列表</h2>
+
+<h3 id="toc_27">（1）概况</h3>
+
+<p>列表（list）用来存储多个有序的字符串，每个字符串称为元素；一个列表可以存储 2<sup>32-1</sup> 个元素。Redis 中的列表支持两端插入和弹出，并可以获得指定位置（或范围）的元素，可以充当数组、队列、栈等。</p>
+
+<h3 id="toc_28">（2）内部编码</h3>
+
+<p>列表的内部编码可以是压缩列表（ziplist）或双端链表（linkedlist）。</p>
+
+<p>双端链表：由一个 list 结构和多个 listNode 结构组成；典型结构如下图所示：</p>
+
+<p><img src="https://images2018.cnblogs.com/blog/1174710/201803/1174710-20180327001435577-242733744.png" alt=""/></p>
+
+<p>图片来源：《Redis 设计与实现》</p>
+
+<p>通过图中可以看出，双端链表同时保存了表头指针和表尾指针，并且每个节点都有指向前和指向后的指针；链表中保存了列表的长度；dup、free 和 match 为节点值设置类型特定函数，所以链表可以用于保存各种不同类型的值。而链表中每个节点指向的是 type 为字符串的 redisObject。</p>
+
+<p>压缩列表：压缩列表是 Redis 为了节约内存而开发的，是由一系列特殊编码的<strong>连续内存块</strong> (而不是像双端链表一样每个节点是指针) 组成的顺序型数据结构；具体结构相对比较复杂，略。与双端链表相比，压缩列表可以节省内存空间，但是进行修改或增删操作时，复杂度较高；因此当节点数量较少时，可以使用压缩列表；但是节点数量多时，还是使用双端链表划算。</p>
+
+<p>压缩列表不仅用于实现列表，也用于实现哈希、有序列表；使用非常广泛。</p>
+
+<h3 id="toc_29">（3）编码转换</h3>
+
+<p>只有同时满足下面两个条件时，才会使用压缩列表：列表中元素数量小于 512 个；列表中所有字符串对象都不足 64 字节。如果有一个条件不满足，则使用双端列表；且编码只可能由压缩列表转化为双端链表，反方向则不可能。</p>
+
+<p>下图展示了列表编码转换的特点：</p>
+
+<p><img src="https://images2018.cnblogs.com/blog/1174710/201803/1174710-20180327001457636-673470263.png" alt=""/></p>
+
+<p>其中，单个字符串不能超过 64 字节，是为了便于统一分配每个节点的长度；这里的 64 字节是指字符串的长度，不包括 SDS 结构，因为压缩列表使用连续、定长内存块存储字符串，不需要 SDS 结构指明长度。后面提到压缩列表，也会强调长度不超过 64 字节，原理与这里类似。</p>
+
+<h2 id="toc_30">3、哈希</h2>
+
+<h3 id="toc_31">（1）概况</h3>
+
+<p>哈希（作为一种数据结构），不仅是 redis 对外提供的 5 种对象类型的一种（与字符串、列表、集合、有序结合并列），也是 Redis 作为 Key-Value 数据库所使用的数据结构。为了说明的方便，在本文后面当使用 “内层的哈希” 时，代表的是 redis 对外提供的 5 种对象类型的一种；使用 “外层的哈希” 代指 Redis 作为 Key-Value 数据库所使用的数据结构。</p>
+
+<h3 id="toc_32">（2）内部编码</h3>
+
+<p>内层的哈希使用的内部编码可以是压缩列表（ziplist）和哈希表（hashtable）两种；Redis 的外层的哈希则只使用了 hashtable。</p>
+
+<p>压缩列表前面已介绍。与哈希表相比，压缩列表用于元素个数少、元素长度小的场景；其优势在于集中存储，节省空间；同时，虽然对于元素的操作复杂度也由 O(n) 变为了 O(1)，但由于哈希中元素数量较少，因此操作的时间并没有明显劣势。进群 619881427 可以免费获取文中知识点的视频资料。</p>
+
+<p>hashtable：一个 hashtable 由 1 个 dict 结构、2 个 dictht 结构、1 个 dictEntry 指针数组（称为 bucket）和多个 dictEntry 结构组成。</p>
+
+<p>正常情况下（即 hashtable 没有进行 rehash 时）各部分关系如下图所示：</p>
+
+<p><img src="https://images2018.cnblogs.com/blog/1174710/201803/1174710-20180327001627028-325473621.png" alt=""/> </p>
+
+<p>图片改编自：《Redis 设计与实现》</p>
+
+<p>下面从底层向上依次介绍各个部分：</p>
+
+<p><strong>dictEntry</strong></p>
+
+<p>dictEntry 结构用于保存键值对，结构定义如下：</p>
+
+<pre><code class="language-c">typedef struct dictEntry{
+    void *key;
+    union{
+        void *val;
+        uint64_tu64;
+        int64_ts64;
+    }v;
+    struct dictEntry *next;
+}dictEntry;
+</code></pre>
+
+<p>其中，各个属性的功能如下：</p>
+
+<ul>
+<li>  key：键值对中的键；</li>
+<li>  val：键值对中的值，使用 union(即共用体) 实现，存储的内容既可能是一个指向值的指针，也可能是 64 位整型，或无符号 64 位整型；</li>
+<li>  next：指向下一个 dictEntry，用于解决哈希冲突问题</li>
+</ul>
+
+<p>在 64 位系统中，一个 dictEntry 对象占 24 字节（key/val/next 各占 8 字节）。</p>
+
+<p><strong>bucket</strong></p>
+
+<p>bucket 是一个数组，数组的每个元素都是指向 dictEntry 结构的指针。redis 中 bucket 数组的大小计算规则如下：大于 dictEntry 的、最小的 2<sup>n；例如，如果有</sup> 1000 个 dictEntry，那么 bucket 大小为 1024；如果有 1500 个 dictEntry，则 bucket 大小为 2048。</p>
+
+<p><strong>dictht</strong></p>
+
+<p>dictht 结构如下：</p>
+
+<pre><code class="language-c">typedef struct dictht{
+    dictEntry **table;
+    unsigned long size;
+    unsigned long sizemask;
+    unsigned long used;
+}dictht;
+</code></pre>
+
+<p>其中，各个属性的功能说明如下：</p>
+
+<ul>
+<li>  table 属性是一个指针，指向 bucket；</li>
+<li>  size 属性记录了哈希表的大小，即 bucket 的大小；</li>
+<li>  used 记录了已使用的 dictEntry 的数量；</li>
+<li>  sizemask 属性的值总是为 size-1，这个属性和哈希值一起决定一个键在 table 中存储的位置。</li>
+</ul>
+
+<p><strong>dict</strong></p>
+
+<p>一般来说，通过使用 dictht 和 dictEntry 结构，便可以实现普通哈希表的功能；但是 Redis 的实现中，在 dictht 结构的上层，还有一个 dict 结构。下面说明 dict 结构的定义及作用。</p>
+
+<p>dict 结构如下：</p>
+
+<pre><code class="language-c">typedef struct dict{
+    dictType *type;
+    void *privdata;
+    dictht ht[2];
+    int trehashidx;
+} dict;
+</code></pre>
+
+<p>其中，type 属性和 privdata 属性是为了适应不同类型的键值对，用于创建多态字典。</p>
+
+<p>ht 属性和 trehashidx 属性则用于 rehash，即当哈希表需要扩展或收缩时使用。ht 是一个包含两个项的数组，每项都指向一个 dictht 结构，这也是 Redis 的哈希会有 1 个 dict、2 个 dictht 结构的原因。通常情况下，所有的数据都是存在放 dict 的 ht[0] 中，ht[1] 只在 rehash 的时候使用。dict 进行 rehash 操作的时候，将 ht[0] 中的所有数据 rehash 到 ht[1] 中。然后将 ht[1] 赋值给 ht[0]，并清空 ht[1]。</p>
+
+<p>因此，Redis 中的哈希之所以在 dictht 和 dictEntry 结构之外还有一个 dict 结构，一方面是为了适应不同类型的键值对，另一方面是为了 rehash。</p>
+
+<h3 id="toc_33">（3）编码转换</h3>
+
+<p>如前所述，Redis 中内层的哈希既可能使用哈希表，也可能使用压缩列表。</p>
+
+<p>只有同时满足下面两个条件时，才会使用压缩列表：哈希中元素数量小于 512 个；哈希中所有键值对的键和值字符串长度都小于 64 字节。如果有一个条件不满足，则使用哈希表；且编码只可能由压缩列表转化为哈希表，反方向则不可能。</p>
+
+<p>下图展示了 Redis 内层的哈希编码转换的特点：</p>
+
+<p><img src="https://images2018.cnblogs.com/blog/1174710/201803/1174710-20180327001855681-1566128865.png" alt=""/></p>
+
+<h2 id="toc_34">4、集合</h2>
+
+<h3 id="toc_35">（1）概况</h3>
+
+<p>集合（set）与列表类似，都是用来保存多个字符串，但集合与列表有两点不同：集合中的元素是无序的，因此不能通过索引来操作元素；集合中的元素不能有重复。</p>
+
+<p>一个集合中最多可以存储 2<sup>32-1</sup> 个元素；除了支持常规的增删改查，Redis 还支持多个集合取交集、并集、差集。</p>
+
+<h3 id="toc_36">（2）内部编码</h3>
+
+<p>集合的内部编码可以是整数集合（intset）或哈希表（hashtable）。</p>
+
+<p>哈希表前面已经讲过，这里略过不提；需要注意的是，集合在使用哈希表时，值全部被置为 null。</p>
+
+<p>整数集合的结构定义如下：</p>
+
+<pre><code class="language-c">typedef struct intset{
+    uint32_t encoding;
+    uint32_t length;
+    int8_t contents[];
+} intset;
+</code></pre>
+
+<p>其中，encoding 代表 contents 中存储内容的类型，虽然 contents（存储集合中的元素）是 int8_t 类型，但实际上其存储的值是 int16_t、int32_t 或 int64_t，具体的类型便是由 encoding 决定的；length 表示元素个数。</p>
+
+<p>整数集合适用于集合所有元素都是整数且集合元素数量较小的时候，与哈希表相比，整数集合的优势在于集中存储，节省空间；同时，虽然对于元素的操作复杂度也由 O(n) 变为了 O(1)，但由于集合数量较少，因此操作的时间并没有明显劣势。</p>
+
+<h3 id="toc_37">（3）编码转换</h3>
+
+<p>只有同时满足下面两个条件时，集合才会使用整数集合：集合中元素数量小于 512 个；集合中所有元素都是整数值。如果有一个条件不满足，则使用哈希表；且编码只可能由整数集合转化为哈希表，反方向则不可能。</p>
+
+<p>下图展示了集合编码转换的特点：</p>
+
+<p><img src="https://images2018.cnblogs.com/blog/1174710/201803/1174710-20180327001926146-2105183556.png" alt=""/></p>
+
+<h2 id="toc_38">5、有序集合</h2>
+
+<h3 id="toc_39">（1）概况</h3>
+
+<p>有序集合与集合一样，元素都不能重复；但与集合不同的是，有序集合中的元素是有顺序的。与列表使用索引下标作为排序依据不同，有序集合为每个元素设置一个分数（score）作为排序依据。</p>
+
+<h3 id="toc_40">（2）内部编码</h3>
+
+<p>有序集合的内部编码可以是压缩列表（ziplist）或跳跃表（skiplist）。ziplist 在列表和哈希中都有使用，前面已经讲过，这里略过不提。</p>
+
+<p>跳跃表是一种有序数据结构，通过在每个节点中维持多个指向其他节点的指针，从而达到快速访问节点的目的。除了跳跃表，实现有序数据结构的另一种典型实现是平衡树；大多数情况下，跳跃表的效率可以和平衡树媲美，且跳跃表实现比平衡树简单很多，因此 redis 中选用跳跃表代替平衡树。跳跃表支持平均 O(logN)、最坏 O(N) 的复杂点进行节点查找，并支持顺序操作。Redis 的跳跃表实现由 zskiplist 和 zskiplistNode 两个结构组成：前者用于保存跳跃表信息（如头结点、尾节点、长度等），后者用于表示跳跃表节点。具体结构相对比较复杂，略。</p>
+
+<h3 id="toc_41">（3）编码转换</h3>
+
+<p>只有同时满足下面两个条件时，才会使用压缩列表：有序集合中元素数量小于 128 个；有序集合中所有成员长度都不足 64 字节。如果有一个条件不满足，则使用跳跃表；且编码只可能由压缩列表转化为跳跃表，反方向则不可能。</p>
+
+<p>下图展示了有序集合编码转换的特点：</p>
+
+<p><img src="https://images2018.cnblogs.com/blog/1174710/201803/1174710-20180327001936290-955216194.png" alt=""/></p>
+
+<h1 id="toc_42">五、应用举例</h1>
+
+<p>了解 Redis 的内存模型之后，下面通过几个例子说明其应用。</p>
+
+<h2 id="toc_43">1、估算 Redis 内存使用量</h2>
+
+<p>要估算 redis 中的数据占据的内存大小，需要对 redis 的内存模型有比较全面的了解，包括前面介绍的 hashtable、sds、redisobject、各种对象类型的编码方式等。</p>
+
+<p>下面以最简单的字符串类型来进行说明。</p>
+
+<p>假设有 90000 个键值对，每个 key 的长度是 7 个字节，每个 value 的长度也是 7 个字节（且 key 和 value 都不是整数）；下面来估算这 90000 个键值对所占用的空间。在估算占据空间之前，首先可以判定字符串类型使用的编码方式：embstr。</p>
+
+<p>90000 个键值对占据的内存空间主要可以分为两部分：一部分是 90000 个 dictEntry 占据的空间；一部分是键值对所需要的 bucket 空间。</p>
+
+<p>每个 dictEntry 占据的空间包括：</p>
+
+<p>1)       一个 dictEntry，24 字节，jemalloc 会分配 32 字节的内存块</p>
+
+<p>2)       一个 key，7 字节，所以 SDS(key) 需要 7+9=16 个字节，jemalloc 会分配 16 字节的内存块</p>
+
+<p>3)       一个 redisObject，16 字节，jemalloc 会分配 16 字节的内存块</p>
+
+<p>4)       一个 value，7 字节，所以 SDS(value) 需要 7+9=16 个字节，jemalloc 会分配 16 字节的内存块</p>
+
+<p>5)       综上，一个 dictEntry 需要 32+16+16+16=80 个字节。</p>
+
+<p>bucket 空间：bucket 数组的大小为大于 90000 的最小的 2<sup>n，是</sup> 131072；每个 bucket 元素为 8 字节（因为 64 位系统中指针大小为 8 字节）。</p>
+
+<p>因此，可以估算出这 90000 个键值对占据的内存大小为：90000<em>80 + 131072</em>8 = 8248576。</p>
+
+<p>进群 619881427 可以免费获取文中知识点的视频资料。</p>
+
+<p>下面写个程序在 redis 中验证一下：</p>
+
+<pre><code class="language-java">public class RedisTest {
+
+　　public static Jedis jedis = new Jedis(&quot;localhost&quot;, 6379);
+　　
+　　public static void main(String[] args) throws Exception{
+　　　　Long m1 = Long.valueOf(getMemory());
+　　　　insertData();
+　　　　Long m2 = Long.valueOf(getMemory());
+　　　　System.out.println(m2 - m1);
+　　}
+
+　　public static void insertData(){
+　　　　for(int i = 10000; i &lt; 100000; i++){
+　　　　　　jedis.set(&quot;aa&quot; + i, &quot;aa&quot; + i); //key和value长度都是7字节，且不是整数
+　　　　}
+　　}
+　　
+　　public static String getMemory(){
+　　　　String memoryAllLine = jedis.info(&quot;memory&quot;);
+　　　　String usedMemoryLine = memoryAllLine.split(&quot;\r\n&quot;)[1];
+　　　　String memory = usedMemoryLine.substring(usedMemoryLine.indexOf(&#39;:&#39;) + 1);
+　　　　return memory;
+　　}
+
+}
+</code></pre>
+
+<p>运行结果：8247552</p>
+
+<p>理论值与结果值误差在万分之 1.2，对于计算需要多少内存来说，这个精度已经足够了。之所以会存在误差，是因为在我们插入 90000 条数据之前 redis 已分配了一定的 bucket 空间，而这些 bucket 空间尚未使用。</p>
+
+<p>作为对比将 key 和 value 的长度由 7 字节增加到 8 字节，则对应的 SDS 变为 17 个字节，jemalloc 会分配 32 个字节，因此每个 dictEntry 占用的字节数也由 80 字节变为 112 字节。此时估算这 90000 个键值对占据内存大小为：90000<em>112 + 131072</em>8 = 11128576。</p>
+
+<p>在 redis 中验证代码如下（只修改插入数据的代码）：</p>
+
+<pre><code class="language-java">public static void insertData(){
+　　for(int i = 10000; i &lt; 100000; i++){
+　　　　jedis.set(&quot;aaa&quot; + i, &quot;aaa&quot; + i); //key和value长度都是8字节，且不是整数
+　　}
+}
+</code></pre>
+
+<p>运行结果：11128576；估算准确。</p>
+
+<p>对于字符串类型之外的其他类型，对内存占用的估算方法是类似的，需要结合具体类型的编码方式来确定。</p>
+
+<h2 id="toc_44">2、优化内存占用</h2>
+
+<p>了解 redis 的内存模型，对优化 redis 内存占用有很大帮助。下面介绍几种优化场景。</p>
+
+<p>（1）利用 jemalloc 特性进行优化</p>
+
+<p>上一小节所讲述的 90000 个键值便是一个例子。由于 jemalloc 分配内存时数值是不连续的，因此 key/value 字符串变化一个字节，可能会引起占用内存很大的变动；在设计时可以利用这一点。</p>
+
+<p>例如，如果 key 的长度如果是 8 个字节，则 SDS 为 17 字节，jemalloc 分配 32 字节；此时将 key 长度缩减为 7 个字节，则 SDS 为 16 字节，jemalloc 分配 16 字节；则每个 key 所占用的空间都可以缩小一半。</p>
+
+<p>（2）使用整型 / 长整型</p>
+
+<p>如果是整型 / 长整型，Redis 会使用 int 类型（8 字节）存储来代替字符串，可以节省更多空间。因此在可以使用长整型 / 整型代替字符串的场景下，尽量使用长整型 / 整型。</p>
+
+<p>（3）共享对象</p>
+
+<p>利用共享对象，可以减少对象的创建（同时减少了 redisObject 的创建），节省内存空间。目前 redis 中的共享对象只包括 10000 个整数（0-9999）；可以通过调整 REDIS_SHARED_INTEGERS 参数提高共享对象的个数；例如将 REDIS_SHARED_INTEGERS 调整到 20000，则 0-19999 之间的对象都可以共享。</p>
+
+<p>考虑这样一种场景：论坛网站在 redis 中存储了每个帖子的浏览数，而这些浏览数绝大多数分布在 0-20000 之间，这时候通过适当增大 REDIS_SHARED_INTEGERS 参数，便可以利用共享对象节省内存空间。</p>
+
+<p>（4）避免过度设计</p>
+
+<p>然而需要注意的是，不论是哪种优化场景，都要考虑内存空间与设计复杂度的权衡；而设计复杂度会影响到代码的复杂度、可维护性。</p>
+
+<p>如果数据量较小，那么为了节省内存而使得代码的开发、维护变得更加困难并不划算；还是以前面讲到的 90000 个键值对为例，实际上节省的内存空间只有几 MB。但是如果数据量有几千万甚至上亿，考虑内存的优化就比较必要了。</p>
+
+<h2 id="toc_45">3、关注内存碎片率</h2>
+
+<p>内存碎片率是一个重要的参数，对 redis 内存的优化有重要意义。</p>
+
+<p>如果内存碎片率过高（jemalloc 在 1.03 左右比较正常），说明内存碎片多，内存浪费严重；这时便可以考虑重启 redis 服务，在内存中对数据进行重排，减少内存碎片。</p>
+
+<p>如果内存碎片率小于 1，说明 redis 内存不足，部分数据使用了虚拟内存（即 swap）；由于虚拟内存的存取速度比物理内存差很多（2-3 个数量级），此时 redis 的访问速度可能会变得很慢。因此必须设法增大物理内存（可以增加服务器节点数量，或提高单机内存），或减少 redis 中的数据。</p>
+
+<p>要减少 redis 中的数据，除了选用合适的数据类型、利用共享对象等，还有一点是要设置合理的数据回收策略（maxmemory-policy），当内存达到一定量后，根据不同的优先级对内存进行回收。</p>
 
                         
                       </div>
@@ -421,7 +712,7 @@ Producer 在发布消息到某个 Partition 时，先通过 ZooKeeper 找到该 
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/5/27</span>
+                    <span class="date">2018/6/18</span>
                     <span>posted in&nbsp;</span> 
           				  
           					    <span class="posted-in"><a href='Middleware.html'>Middleware</a></span>
@@ -491,6 +782,8 @@ Producer 在发布消息到某个 Partition 时，先通过 ZooKeeper 找到该 
 
       	<p class="cat-list">
         
+            <a href="Team.html"><strong>Team</strong></a>
+        
             <a href="Infra.html"><strong>Infra</strong></a>
         
             <a href="Coding.html"><strong>Coding</strong></a>
@@ -514,31 +807,31 @@ Producer 在发布消息到某个 Partition 时，先通过 ZooKeeper 找到该 
 	      
 		      
 			      <li class="post">
-			        <a href="15277861393795.html">深入浅出Netty - EventLoop, EventLoopGroup</a>
+			        <a href="15301813999205.html">架构设计：负载均衡层设计方案（9）——负载均衡层总结下篇</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15277856731195.html">Functor and monad examples in plain Java</a>
+			        <a href="15301813109409.html">架构设计：负载均衡层设计方案（8）——负载均衡层总结上篇</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15277854106004.html">我必须得告诉大家的 MySQL 优化原理</a>
+			        <a href="15301812452579.html">架构设计：负载均衡层设计方案（7）——LVS + Keepalived + Nginx安装及配置</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15277850962764.html">Leaf——美团点评分布式ID生成系统</a>
+			        <a href="15301811967181.html">架构设计：负载均衡层设计方案（6）——Nginx + Keepalived构建高可用的负载层</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15277835170976.html">蚂蚁通信框架实践</a>
+			        <a href="15301811361753.html">架构设计：负载均衡层设计方案（5）——LVS单节点安装</a>
 			      </li>
 		     
 		  

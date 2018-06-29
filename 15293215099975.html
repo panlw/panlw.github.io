@@ -1,0 +1,477 @@
+<!doctype html>
+<html class="no-js" lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>
+    
+  从节省Redis内存空间说开去 - Junkman
+  
+  </title>
+  
+  
+  <link href="atom.xml" rel="alternate" title="Junkman" type="application/atom+xml">
+    <link rel="stylesheet" href="asset/css/foundation.min.css" />
+    <link rel="stylesheet" href="asset/css/docs.css" />
+    <script src="asset/js/vendor/modernizr.js"></script>
+    <script src="asset/js/vendor/jquery.js"></script>
+  <script src="asset/highlightjs/highlight.pack.js"></script>
+  <link href="asset/highlightjs/styles/github.css" media="screen, projection" rel="stylesheet" type="text/css">
+  <script>hljs.initHighlightingOnLoad();</script>
+<script type="text/javascript">
+  function before_search(){
+    var searchVal = 'site:panlw.github.io ' + document.getElementById('search_input').value;
+    document.getElementById('search_q').value = searchVal;
+    return true;
+  }
+</script>
+  </head>
+  <body class="antialiased hide-extras">
+    
+    <div class="marketing off-canvas-wrap" data-offcanvas>
+      <div class="inner-wrap">
+
+
+<nav class="top-bar docs-bar hide-for-small" data-topbar>
+
+
+  <section class="top-bar-section">
+  <div class="row">
+      <div style="position: relative;width:100%;"><div style="position: absolute; width:100%;">
+        <ul id="main-menu" class="left">
+        
+        <li id=""><a target="self" href="index.html">Home</a></li>
+        
+        <li id=""><a target="_self" href="archives.html">Archives</a></li>
+        
+        </ul>
+
+        <ul class="right" id="search-wrap">
+          <li>
+<form target="_blank" onsubmit="return before_search();" action="http://google.com/search" method="get">
+    <input type="hidden" id="search_q" name="q" value="" />
+    <input tabindex="1" type="search" id="search_input"  placeholder="Search"/>
+</form>
+</li>
+          </ul>
+      </div></div>
+  </div>
+  </section>
+
+</nav>
+
+        <nav class="tab-bar show-for-small">
+  <a href="javascript:void(0)" class="left-off-canvas-toggle menu-icon">
+    <span> &nbsp; Junkman</span>
+  </a>
+</nav>
+
+<aside class="left-off-canvas-menu">
+      <ul class="off-canvas-list">
+       
+       <li><a href="index.html">HOME</a></li>
+    <li><a href="archives.html">Archives</a></li>
+    <li><a href="about.html">ABOUT</a></li>
+
+    <li><label>Categories</label></li>
+
+        
+            <li><a href="Team.html">Team</a></li>
+        
+            <li><a href="Infra.html">Infra</a></li>
+        
+            <li><a href="Coding.html">Coding</a></li>
+        
+            <li><a href="Solution.html">Solution</a></li>
+        
+            <li><a href="Archtect.html">Archtect</a></li>
+         
+
+      </ul>
+    </aside>
+
+<a class="exit-off-canvas" href="#"></a>
+
+
+        <section id="main-content" role="main" class="scroll-container">
+        
+       
+
+ <script type="text/javascript">
+  $(function(){
+    $('#menu_item_index').addClass('is_active');
+  });
+</script>
+<div class="row">
+  <div class="large-8 medium-8 columns">
+      <div class="markdown-body article-wrap">
+       <div class="article">
+          
+          <h1>从节省Redis内存空间说开去</h1>
+     
+        <div class="read-more clearfix">
+          <span class="date">2018/6/18</span>
+
+          <span>posted in&nbsp;</span> 
+          
+              <span class="posted-in"><a href='Middleware.html'>Middleware</a></span>
+           
+         
+          <span class="comments">
+            
+
+            
+          </span>
+
+        </div>
+      </div><!-- article -->
+
+      <div class="article-content">
+      <blockquote>
+<p><a href="https://mp.weixin.qq.com/s/tsZxYwoFtWwzOH1E28y6zg">https://mp.weixin.qq.com/s/tsZxYwoFtWwzOH1E28y6zg</a><br/>
+<a href="https://blog.csdn.net/clevercode/article/details/46691645">https://blog.csdn.net/clevercode/article/details/46691645</a></p>
+</blockquote>
+
+<p><strong>前言</strong></p>
+
+<p>上周部门会议上讨论的一个议题是如何节省 Redis 内存空间，其中有个小伙伴提到可以从压缩字符串入手，我觉得这是一个可以尝试的思路。因为有时候我们存在 Redis 中的值比较大，如果能对这些大字符串进行压缩，那么节省的内存空间还是很可观的。接下来将介绍几种常见的数据压缩算法，供大家参考。</p>
+
+<h1 id="toc_0">1 RLE</h1>
+
+<p>RLE 又叫 Run Length Encoding ，是一个针对无损压缩的非常简单的算法。它用重复字节和重复的次数来简单描述来代替重复的字节。尽管简单并且对于通常的压缩非常低效，但它有的时候却非常有用（例如， JPEG 就使用它）。</p>
+
+<h2 id="toc_1">1.1 原理</h2>
+
+<p>图 2.1 显示了一个如何使用 RLE 算法来对一个数据流编码的例子，其中出现六次的符号‘ 93 ’已经用 3 个字节来代替：一个标记字节（‘ 0 ’在本例中）重复的次数（‘ 6 ’）和符号本身（‘ 93 ’）。</p>
+
+<p>RLE 解码器遇到符号‘ 0 ’ 的时候，它表明后面的两个字节决定了需要输出哪个符号以及输出多少次。</p>
+
+<p><img src="https://mmbiz.qpic.cn/mmbiz_jpg/XA3sPCPib1l6jia5WKgazEEVDPjibKHOz8rslINaKDFMvfr4bOibjNz1LLxJSDU1oI34BCTibPjokcy8BgFbKjwXHNg/640?wx_fmt=jpeg" alt=""/></p>
+
+<p>1.2 实现</p>
+
+<p>RLE 可以使用很多不同的方法。基本压缩库中详细实现的方式是非常有效的一个。一个特殊的标记字节用来指示重复节的开始，而不是对于重复非重复节都 coding run 。</p>
+
+<p>因此非重复节可以有任意长度而不被控制字节打断，除非指定的标记字节出现在非重复节（顶多以两个字节来编码）的稀有情况下。为了最优化效率，标记字节应该是输入流中最少出现的符号（或许就不存在）。</p>
+
+<p>重复 runs 能够在 32768 字节的时候运转。少于 129 字节的要求 3 个字节编码（标记 + 次数 + 符号），而大雨 128 字节要求四个字节（标记 + 次数的高 4 位 |0x80+ 次数的低 4 位）。这是通常所有采用的压缩的做法，并且也是相比较三个字节固定编码（允许使用 3 个字节来编码 256 个字节）而言非常少见的有损压缩率的方法。</p>
+
+<p>在这种模式下，最坏的压缩结果是：</p>
+
+<p>输出大小 =257/256* 输入大小 +1</p>
+
+<h1 id="toc_2">2 哈夫曼</h1>
+
+<p>哈夫曼编码是无损压缩当中最好的方法。它使用预先二进制描述来替换每个符号，长度由特殊符号出现的频率决定。常见的符号需要很少的位来表示，而不常见的符号需要很多位来表示。</p>
+
+<p>哈夫曼算法在改变任何符号二进制编码引起少量密集表现方面是最佳的。然而，它并不处理符号的顺序和重复或序号的序列。</p>
+
+<h2 id="toc_3">2.1 原理</h2>
+
+<p>我不打算探究哈夫曼编码的所有实际的细节，但基本的原理是为每个符号找到新的二进制表示，从而通常符号使用很少的位，不常见的符号使用较多的位。</p>
+
+<p>简短的说，这个问题的解决方案是为了查找每个符号的通用程度，我们建立一个未压缩数据的柱状图；通过递归拆分这个柱状图为两部分来创建一个二叉树，每个递归的一半应该和另一半具有同样的权（权是 ∑ <sup style="box-sizing: border-box;outline: 0px;word-break: break-all;">N </sup><sub style="box-sizing: border-box;outline: 0px;word-break: break-all;">K </sub>=<sub style="box-sizing: border-box;outline: 0px;word-break: break-all;">1</sub> 符号数 <sub style="box-sizing: border-box;outline: 0px;word-break: break-all;">k </sub>, N 是分之中符号的数量，符号数 <sub style="box-sizing: border-box;outline: 0px;word-break: break-all;">k </sub>是符号 k 出现的次数 ）</p>
+
+<p>这棵树有两个目的：</p>
+
+<p>1．   编码器使用这棵树来找到每个符号最优的表示方法<br/>
+2．   解码器使用这棵树唯一的标识在压缩流中每个编码的开始和结束，其通过在读压缩数据位的时候自顶向底的遍历树，选择基于数据流中的每个独立位的分支，一旦一个到达叶子节点，解码器知道一个完整的编码已经读出来了。</p>
+
+<p>我们来看一个例子会让我们更清楚。图 2.2 显示了一个 10 个字节的未压缩的数据。</p>
+
+<p>根据符号频率，哈夫曼编码器生成哈夫曼树（图 2.4 ）和相应的编码表示（图 2.3 ）。</p>
+
+<p><img src="https://mmbiz.qpic.cn/mmbiz_jpg/XA3sPCPib1l6jia5WKgazEEVDPjibKHOz8rN4YBTn5M9deDfQ84oS1YicO18tc4XJVmgZcpCSGQP0nEnn1FDgf6O4w/640?wx_fmt=jpeg" alt=""/></p>
+
+<p>你可以看到，常见的符号接近根，因此只要少数位来表示。于是最终的压缩数据流如图 2.5 所示。</p>
+
+<p><img src="https://mmbiz.qpic.cn/mmbiz_jpg/XA3sPCPib1l6jia5WKgazEEVDPjibKHOz8rN5XbjThAK0X8TjTjvx1sATgTetFwyn6jL9sA8HFBX35RVOTHooYt1A/640?wx_fmt=jpeg" alt=""/></p>
+
+<p><img src="https://mmbiz.qpic.cn/mmbiz_jpg/XA3sPCPib1l6jia5WKgazEEVDPjibKHOz8rpfNt5vdooNB0tu2XO2wrByeZzTdHxlxeJWKsjyAB0EFUv0ibvC7W9Hg/640?wx_fmt=jpeg" alt=""/></p>
+
+<p>压缩后的数据流是 24 位（三个字节），原来是 80 位（ 10 个字节）。当然，我应该存储哈夫曼树，这样解码器就能够解码出对应的压缩流了，这就使得该例子中的真正数据流比输入的流数据量大。这是相对较短的数据上的副作用。对于大数据量来说，上面的哈夫曼树就不占太多比例了。</p>
+
+<p><img src="https://mmbiz.qpic.cn/mmbiz_jpg/XA3sPCPib1l6jia5WKgazEEVDPjibKHOz8rwpdS3euibfb2eNiaAWD0PpCeF3qppC2KQbaZz2Zv7fVdts3becE6LYJw/640?wx_fmt=jpeg" alt=""/></p>
+
+<p>解码的时候，从上到下遍历树，为压缩的流选择从左 / 右分支，每次碰到一个叶子节点的时候，就可以将对应的字节写到解压输出流中，然后再从根开始遍历。</p>
+
+<h2 id="toc_4">2.2 实现</h2>
+
+<p>哈夫曼编码器可以在基本压缩库中找到，其是非常直接的实现。</p>
+
+<p>这个实现的基本缺陷是：</p>
+
+<p>1．   慢位流实现<br/>
+2．   相当慢的解码（比编码慢）<br/>
+3．   最大的树深度是 32 （编码器在任何超过 32 位大小的时候退出）。如果我不是搞错的话，这是不可能的，除非输出的数据大于 2 <sup style="box-sizing: border-box;outline: 0px;word-break: break-all;">32</sup> 字节。</p>
+
+<p>另一方面，这个实现有几个优点：</p>
+
+<p>1．   哈夫曼树以一个紧密的形式每个符号要求 12 位（对于 8 位的符号）的方式存储，这意味着最大的头为 384 。<br/>
+2．   编码相当容易理解</p>
+
+<p>哈夫曼编码在数据有噪音的情况（不是有规律的，例如 RLE ）下非常好，这中情况下大多数基于字典方式的编码器都有问题。</p>
+
+<h1 id="toc_5">3 Rice</h1>
+
+<p>对于由大 word （例如： 16 或 32 位）组成的数据和较低的数据值， Rice 编码能够获得较好的压缩比。音频和高动态变化的图像都是这种类型的数据，它们被预处理过（例如 delta 相邻的采样）。</p>
+
+<p>尽管哈夫曼编码处理这种数据是最优的，却由于几个原因而不适合处理这种数据（例如： 32 位大小要求 16GB 的柱状图缓冲区来进行哈夫曼树编码）。因此一个比较动态的方式更适合由大 word 组成的数据。</p>
+
+<h2 id="toc_6">3.1 原理</h2>
+
+<p>Rice 编码背后的基本思想是尽可能的用较少的位来存储多个字（正像使用哈夫曼编码一样）。实际上，有人可能想到 Rice 是静态的哈夫曼编码（例如，编码不是由实际数据内容的统计信息决定，而是由小的值比高的值常见的假定决定）。</p>
+
+<p>编码非常简单：将值 X 用 X 个‘ 1 ’位之后跟一个 0 位来表示。</p>
+
+<h2 id="toc_7">3.2 实现</h2>
+
+<p>在基本压缩库针对 Rice 做了许多优化：</p>
+
+<p>1．   每个字最没有意义的位被存储为 k 和最有意义的 N-k 位用 Rice 编码。 K 作为先前流中少许采样的位平均数。这是通常最好使用 Rice 编码的方法，隐藏噪音且对于动态变化的范围并不导致非常长的 Rice 编码。<br/>
+2．   如果 rice 编码比固定的开端长， T ，一个可选的编码：输出 T 个‘ 1 ’位，紧跟（ log2(X-T) ）个‘ 1 ’和一个‘ 0 ’位，接着是 X-T （最没有意义的 (log2(X-T))-1 位）。这对于大值来说都是比较高效的代码并且阻止可笑的长 Rice 编码（最坏的情况，对于一个 32 位 word 单个 Rice 编码可能变成 2 <sup style="box-sizing: border-box;outline: 0px;word-break: break-all;">32 </sup>位或 512MB ）。</p>
+
+<p>如果开端是 4 ，下面是结果编码表：</p>
+
+<p><img src="https://mmbiz.qpic.cn/mmbiz_png/XA3sPCPib1l6jia5WKgazEEVDPjibKHOz8rOOibqB37z6QKMg3grXJh2GSTCkVFrLo5oIy3J9oxc8OORZ3nib9yCd9w/640?wx_fmt=png" alt=""/></p>
+
+<p>就像你看到的一样，在这个实现中使用 threshold 方法仅仅两个编码导致一个最坏的情况；剩下的编码产生比标准 Rice 编码还要短的编码。</p>
+
+<h1 id="toc_8">4 Lempel-Ziv (LZ77)</h1>
+
+<p>Lempel-Ziv 压缩模式有许多不同的变量。基本压缩库有清晰的 LZ77 算法的实现（ Lempel-Ziv ， 1977 ），执行的很好，源代码也非常容易理解。</p>
+
+<p>LZ 编码器能用来通用目标的压缩，特别对于文本执行的很好。它也在 RLE 和哈夫曼编码器（ RLE ， LZ ，哈夫曼）中使用来大多数情况下获得更多的压缩。</p>
+
+<h2 id="toc_9">4.1 原理</h2>
+
+<p>在 LZ 压缩算法的背后是使用 RLE 算法用先前出现的相同字节序列的引用来替代。</p>
+
+<p>简单的讲， LZ 算法被认为是字符串匹配的算法。例如：在一段文本中某字符串经常出现，并且可以通过前面文本中出现的字符串指针来表示。当然这个想法的前提是指针应该比字符串本身要短。</p>
+
+<p>例如，在上一段短语 “字符串” 经常出现，可以将除第一个字符串之外的所有用第一个字符串引用来表示从而节省一些空间。</p>
+
+<p>一个字符串引用通过下面的方式来表示：</p>
+
+<p>1．   唯一的标记<br/>
+2．   偏移数量<br/>
+3．   字符串长度</p>
+
+<p>由编码的模式决定引用是一个固定的或变动的长度。后面的情况经常是首选，因为它允许编码器用引用的大小来交换字符串的大小（例如，如果字符串相当长，增加引用的长度可能是值得的）。</p>
+
+<h2 id="toc_10">4.2 实现</h2>
+
+<p>使用 LZ77 的一个问题是由于算法需要字符串匹配，对于每个输入流的单个字节，每个流中此字节前面的哪个字节都必须被作为字符串的开始从而尽可能的进行字符串匹配，这意味着算法非常慢。</p>
+
+<p>另一个问题是为了最优化压缩而调整字符串引用的表示形式并不容易。例如，必须决定是否所有的引用和非压缩字节应该在压缩流中的字节边界发生。</p>
+
+<p>基本压缩库使用一个清晰的实现来保证所有的符号和引用是字节对齐的，因此牺牲了压缩比率，并且字符串匹配程序并不是最优化的（没有缓存、历史缓冲区或提高速度的小技巧），这意味着程序非常慢。</p>
+
+<p>另一方面，解压缩程序非常简单。</p>
+
+<p>一个提高 LZ77 速度的试验已经进行了，这个试验中使用数组索引来加速字符串匹配的过程。然而，它还是比通常的压缩程序慢。</p>
+
+
+    
+
+      </div>
+
+      <div class="row">
+        <div class="large-6 columns">
+        <p class="text-left" style="padding:15px 0px;">
+      
+          <a href="15293273764686.html" 
+          title="Previous Post: 对高并发流量控制的一点思考">&laquo; 对高并发流量控制的一点思考</a>
+      
+        </p>
+        </div>
+        <div class="large-6 columns">
+      <p class="text-right" style="padding:15px 0px;">
+      
+          <a  href="15293209479597.html" 
+          title="Next Post: 一个支付服务的最终一致性实践案例（含伪代码）">一个支付服务的最终一致性实践案例（含伪代码） &raquo;</a>
+      
+      </p>
+        </div>
+      </div>
+      <div class="comments-wrap">
+        <div class="share-comments">
+          <script type="text/javascript" src="//s7.addthis.com/js/300/addthis_widget.js#pubid=ra-5ae58078c0d7b2ab"></script>
+
+          
+
+          
+        </div>
+      </div>
+    </div><!-- article-wrap -->
+  </div><!-- large 8 -->
+
+
+
+
+ <div class="large-4 medium-4 columns">
+  <div class="hide-for-small">
+    <div id="sidebar" class="sidebar">
+          <div id="site-info" class="site-info">
+            
+                <div class="site-a-logo"><img src="./asset/img/logo.jpg" /></div>
+            
+                <h1>Junkman</h1>
+                <div class="site-des">“拾荒者”一词来自凯文・凯利的《失控》中关于机器学习的故事（“收集癖好机”如何完成他的收集工作）。</div>
+                <div class="social">
+
+
+
+
+
+
+
+
+
+<a target="_blank" class="github" target="_blank" href="https://github.com/panlw/" title="GitHub">GitHub</a>
+
+  <a target="_blank" class="rss" href="atom.xml" title="RSS">RSS</a>
+                
+              	 </div>
+          	</div>
+
+             
+
+              <div id="site-categories" class="side-item ">
+                <div class="side-header">
+                  <h2>Categories</h2>
+                </div>
+                <div class="side-content">
+
+      	<p class="cat-list">
+        
+            <a href="Team.html"><strong>Team</strong></a>
+        
+            <a href="Infra.html"><strong>Infra</strong></a>
+        
+            <a href="Coding.html"><strong>Coding</strong></a>
+        
+            <a href="Solution.html"><strong>Solution</strong></a>
+        
+            <a href="Archtect.html"><strong>Archtect</strong></a>
+         
+        </p>
+
+
+                </div>
+              </div>
+
+              <div id="site-categories" class="side-item">
+                <div class="side-header">
+                  <h2>Recent Posts</h2>
+                </div>
+                <div class="side-content">
+                <ul class="posts-list">
+	      
+		      
+			      <li class="post">
+			        <a href="15301813999205.html">架构设计：负载均衡层设计方案（9）——负载均衡层总结下篇</a>
+			      </li>
+		     
+		  
+		      
+			      <li class="post">
+			        <a href="15301813109409.html">架构设计：负载均衡层设计方案（8）——负载均衡层总结上篇</a>
+			      </li>
+		     
+		  
+		      
+			      <li class="post">
+			        <a href="15301812452579.html">架构设计：负载均衡层设计方案（7）——LVS + Keepalived + Nginx安装及配置</a>
+			      </li>
+		     
+		  
+		      
+			      <li class="post">
+			        <a href="15301811967181.html">架构设计：负载均衡层设计方案（6）——Nginx + Keepalived构建高可用的负载层</a>
+			      </li>
+		     
+		  
+		      
+			      <li class="post">
+			        <a href="15301811361753.html">架构设计：负载均衡层设计方案（5）——LVS单节点安装</a>
+			      </li>
+		     
+		  
+		      
+		  
+		      
+		  
+		      
+		  
+		      
+		  
+		      
+		  
+		      
+		  
+		      
+		  
+		      
+		  
+		      
+		  
+		      
+		  
+		      
+		  
+		      
+		  
+		      
+		  
+		      
+		  
+		      
+		   
+		  		</ul>
+                </div>
+              </div>
+        </div><!-- sidebar -->
+      </div><!-- hide for small -->
+</div><!-- large 4 -->
+
+</div><!-- row -->
+
+ <div class="page-bottom clearfix">
+  <div class="row">
+   <p class="copyright">Copyright &copy; 2015
+Powered by <a target="_blank" href="http://www.mweb.im">MWeb</a>,&nbsp; 
+Theme used <a target="_blank" href="http://github.com">GitHub CSS</a>.</p>
+  </div>
+</div>
+
+        </section>
+      </div>
+    </div>
+
+  
+    
+
+    <script src="asset/js/foundation.min.js"></script>
+    <script>
+      $(document).foundation();
+      function fixSidebarHeight(){
+        var w1 = $('.markdown-body').height();
+          var w2 = $('#sidebar').height();
+          if (w1 > w2) { $('#sidebar').height(w1); };
+      }
+      $(function(){
+        fixSidebarHeight();
+      })
+      $(window).load(function(){
+          fixSidebarHeight();
+      });
+     
+    </script>
+
+    <script src="asset/chart/all-min.js"></script><script type="text/javascript">$(function(){    var mwebii=0;    var mwebChartEleId = 'mweb-chart-ele-';    $('pre>code').each(function(){        mwebii++;        var eleiid = mwebChartEleId+mwebii;        if($(this).hasClass('language-sequence')){            var ele = $(this).addClass('nohighlight').parent();            $('<div id="'+eleiid+'"></div>').insertAfter(ele);            ele.hide();            var diagram = Diagram.parse($(this).text());            diagram.drawSVG(eleiid,{theme: 'simple'});        }else if($(this).hasClass('language-flow')){            var ele = $(this).addClass('nohighlight').parent();            $('<div id="'+eleiid+'"></div>').insertAfter(ele);            ele.hide();            var diagram = flowchart.parse($(this).text());            diagram.drawSVG(eleiid);        }    });});</script>
+<script type="text/javascript" src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML"></script><script type="text/x-mathjax-config">MathJax.Hub.Config({TeX: { equationNumbers: { autoNumber: "AMS" } }});</script>
+
+
+  </body>
+</html>

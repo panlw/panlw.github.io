@@ -76,6 +76,8 @@
     <li><label>Categories</label></li>
 
         
+            <li><a href="Team.html">Team</a></li>
+        
             <li><a href="Infra.html">Infra</a></li>
         
             <li><a href="Coding.html">Coding</a></li>
@@ -105,296 +107,112 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15274389377310.html">
+                <a class="clearlink" href="15293273764686.html">
                 
-                  <h1>Kubernetes API 使用文档</h1>
+                  <h1>对高并发流量控制的一点思考</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.10/">原文地址</a></p>
+<p><a href="http://blog.51cto.com/zhangfengzhe">zfz_linux_boy</a> 2018-01-30<br/>
+<a href="http://blog.51cto.com/zhangfengzhe/2066683">http://blog.51cto.com/zhangfengzhe/2066683</a></p>
 </blockquote>
 
-<h2 id="toc_0">API 概述</h2>
+<h2 id="toc_0">前言</h2>
 
-<h4 id="toc_1">※ 资源分类</h4>
+<p>在实际项目中，曾经遭遇过线上 5W+QPS 的峰值，也在压测状态下经历过 10W+QPS 的大流量请求，本篇博客的话题主要就是自己对高并发流量控制的一点思考。</p>
 
-<p>这是对 Kubernetes API 及其主要功能提供的基本资源类型的高级概述。</p>
+<h2 id="toc_1">应对大流量的一些思路</h2>
 
-<ul>
-<li>  <strong>Workloads</strong>： 用于在集群中管理和运行容器；</li>
-<li>  <strong>Discovery &amp; LB</strong>：用于将 Workloads “缝合” 到一个可从外部访问的负载均衡的服务中；</li>
-<li>  <strong>Config &amp; Storage</strong>：用于将初始化数据注入到应用程序中，并保留容器外部的数据；</li>
-<li>  <strong>Cluster</strong>：用于定义如何配置集群，这些通常仅由集群运营商使用；</li>
-<li>  <strong>Metadata</strong>：用于配置群集内其他资源的行为，例如用于扩展 Workloads 的 HorizontalPodAutoscaler</li>
-</ul>
+<blockquote>
+<p>首先，我们来说一下什么是大流量？</p>
 
-<h4 id="toc_2">※ 资源对象</h4>
+<p>大流量，我们很可能会冒出：TPS（每秒事务量），QPS（每秒请求量），1W+，5W+，10W+，100W+...。其实并没有一个绝对的数字，如果这个量造成了系统的压力，影响了系统的性能，那么这个量就可以称之为大流量了。</p>
 
-<p>资源对象通常包含 3 个组件：</p>
+<p>其次，应对大流量的一些常见手段是什么？</p>
 
-<ul>
-<li>  <strong>ResourceSpec</strong>：这由用户定义并描述系统所期望的状态，在创建或更新对象时填写；</li>
-<li>  <strong>ResourceStatus</strong>：这由服务器填写并报告系统的当前状态，只有 Kubernetes 组件才能填写此内容；</li>
-<li>  <strong>Resource ObjectMeta</strong>：这是关于资源的元数据，例如 name / type / api version / annotations / labels，包含可能由后端用户和系统更新的字段（如 annotations）</li>
-</ul>
+<p>缓存：说白了，就是让数据尽早进入缓存，离程序近一点，不要大量频繁的访问 DB。</p>
 
-<h4 id="toc_3">※ 资源操作</h4>
+<p>降级：如果不是核心链路，那么就把这个服务降级掉。打个比喻，现在的 APP 都讲究千人千面，拿到数据后，做个性化排序展示，如果在大流量下，这个排序就可以降级掉！</p>
 
-<p>大部分资源提供如下操作：</p>
+<p>限流：大家都知道，北京地铁早高峰，地铁站都会做一件事情，就是限流了！想法很直接，就是想在一定时间内把请求限制在一定范围内，保证系统不被冲垮，同时尽可能提升系统的吞吐量。</p>
 
-<p><strong>▶ Create</strong></p>
+<p>注意到，有些时候，缓存和降级是解决不了问题的，比如，电商的双十一，用户的购买，下单等行为，是涉及到大量写操作，而且是核心链路，无法降级的，这个时候，限流就比较重要了。</p>
 
-<p>Create 操作会在存储后端创建资源。资源创建后，系统将应用所期望的状态。</p>
+<p>那么接下来，我们重点说一下，限流。</p>
+</blockquote>
 
-<p><strong>▶ Update</strong></p>
+<h2 id="toc_2">限流的常用方式</h2>
 
-<p>更新有 2 种形式：<strong>Replace</strong> 和 <strong>Patch</strong></p>
+<blockquote>
+<p>限流的常用处理手段有：计数器、滑动窗口、漏桶、令牌。</p>
+</blockquote>
 
-<p><strong>Replace</strong>：替换资源对象将通过提供的 spec 替换现有的 spec 来更新资源。对于读写操作，这是安全的，因为如果资源在读和写之间被修改，则会发生乐观锁定失败。注意：ResourceStatus 将被系统忽略，并且不会被更新，要更新状态，必须调用特定的状态更新操作。</p>
+<p><strong>计数器</strong> </p>
 
-<p>注意：替换资源对象可能不会立即传播到下游对象。例如，替换 ConfigMap 或 Secret 资源不会导致所有 Pod 看到更改，除非 Pod 在带外重新启动。</p>
+<blockquote>
+<p>计数器是一种比较简单的限流算法，用途比较广泛，在接口层面，很多地方使用这种方式限流。在一段时间内，进行计数，与阀值进行比较，到了时间临界点，将计数器清 0。</p>
+</blockquote>
 
-<p><strong>Patch</strong>：Patch 会更改特定字段，如何合并更改是每个字段定义的。列表可以被替换或合并，合并列表不会保留排序。</p>
+<p><img src="http://i2.51cto.com/images/blog/201801/30/26433210356cfa9d26407d07d0819b14.png?x-oss-process=image/watermark,size_16,text_QDUxQ1RP5Y2a5a6i,color_FFFFFF,t_100,g_se,x_10,y_10,shadow_90,type_ZmFuZ3poZW5naGVpdGk=" alt=""/></p>
 
-<p><strong>Patch 操作永远不会导致乐观锁定失败，并且最后一次写入会获胜。</strong>如果在更新之前未读取完整状态，或者乐观锁定失败不可取，则建议使用 patch 操作。修补复杂 types、arrays 和 maps 时，如何应用修补程序是以每个字段为基础定义的，并可以替换字段的当前值，也可以将内容合并到当前值中。</p>
+<p><img src="http://i2.51cto.com/images/blog/201801/30/36bd0e076d23e7bcd10ac0b1ac498bb7.png?x-oss-process=image/watermark,size_16,text_QDUxQ1RP5Y2a5a6i,color_FFFFFF,t_100,g_se,x_10,y_10,shadow_90,type_ZmFuZ3poZW5naGVpdGk=" alt=""/></p>
 
-<p><strong>▶ Read</strong></p>
+<blockquote>
+<p>这里需要注意的是，存在一个时间临界点的问题。举个栗子，在 12:01:00 到 12:01:58 这段时间内没有用户请求，然后在 12:01:59 这一瞬时发出 100 个请求，OK，然后在 12:02:00 这一瞬时又发出了 100 个请求。这里你应该能感受到，在这个临界点可能会承受恶意用户的大量请求，甚至超出系统预期的承受。</p>
+</blockquote>
 
-<p>读取有 3 种方式：<strong>Get</strong> 、 <strong>List</strong> 和 <strong>Watch</strong></p>
+<p><strong>滑动窗口</strong> </p>
 
-<p><strong>Get</strong>： 按名称检索特定的资源对象；</p>
+<blockquote>
+<p>由于计数器存在临界点缺陷，后来出现了滑动窗口算法来解决。</p>
 
-<p><strong>List</strong>：检索命名空间内特定类型的所有资源对象，并且结果可以限制为与选择器查询结果匹配的资源；</p>
+<p><img src="http://i2.51cto.com/images/blog/201801/30/292f2358a31662de2846a122e25bb005.png?x-oss-process=image/watermark,size_16,text_QDUxQ1RP5Y2a5a6i,color_FFFFFF,t_100,g_se,x_10,y_10,shadow_90,type_ZmFuZ3poZW5naGVpdGk=" alt=""/></p>
 
-<p><strong>List All Namespaces</strong>：像 List 一样，但是跨所有命名空间检索资源；</p>
+<p>滑动窗口的意思是说把固定时间片，进行划分，并且随着时间的流逝，进行移动，这样就巧妙的避开了计数器的临界点问题。也就是说这些固定数量的可以移动的格子，将会进行计数判断阀值，因此格子的数量影响着滑动窗口算法的精度。</p>
+</blockquote>
 
-<p><strong>Watch</strong>：Watch 将在对象更新时汇出结果，类似于回调，watch 用于响应资源的更改。</p>
+<p><strong>漏桶</strong> </p>
 
-<p><strong>▶ Delete</strong></p>
+<blockquote>
+<p>虽然滑动窗口有效避免了时间临界点的问题，但是依然有时间片的概念，而漏桶算法在这方面比滑动窗口而言，更加先进。</p>
 
-<p>Delete 将删除资源。根据特定的资源，子对象可能会或可能不会被服务器当做垃圾收集，详情请参阅特定资源对象的注释。</p>
+<p>有一个固定的桶，进水的速率是不确定的，但是出水的速率是恒定的，当水满的时候是会溢出的。</p>
+</blockquote>
 
-<p><strong>▶ 额外操作</strong></p>
+<p><img src="http://i2.51cto.com/images/blog/201801/30/0bdc37469876669d8ff3813da367705d.png?x-oss-process=image/watermark,size_16,text_QDUxQ1RP5Y2a5a6i,color_FFFFFF,t_100,g_se,x_10,y_10,shadow_90,type_ZmFuZ3poZW5naGVpdGk=" alt=""/></p>
 
-<p>资源可以定义特定于该资源类型的附加操作。</p>
+<p><img src="http://i2.51cto.com/images/blog/201801/30/244ab47205fd764fd74e34f4f0da1cb8.png?x-oss-process=image/watermark,size_16,text_QDUxQ1RP5Y2a5a6i,color_FFFFFF,t_100,g_se,x_10,y_10,shadow_90,type_ZmFuZ3poZW5naGVpdGk=" alt=""/></p>
 
-<p><strong>Rollback</strong>：将 PodTemplate 回滚到以前的版本，仅适用于某些资源类型；</p>
+<p><strong>令牌桶</strong> </p>
 
-<p><strong>Read / Write Scale</strong>：读取或更新给定资源的副本数量，仅适用于某些资源类型；</p>
+<blockquote>
+<p>注意到，漏桶的出水速度是恒定的，那么意味着如果瞬时大流量的话，将有大部分请求被丢弃掉（也就是所谓的溢出）。为了解决这个问题，令牌桶进行了算法改进。</p>
 
-<p><strong>Read / Write Status</strong>：读取或更新资源对象的状态，状态只能通过这些更新操作进行更改。</p>
+<p><img src="http://i2.51cto.com/images/blog/201801/30/35a6b4a0842d6ac0e5f5b14b7c64189d.png?x-oss-process=image/watermark,size_16,text_QDUxQ1RP5Y2a5a6i,color_FFFFFF,t_100,g_se,x_10,y_10,shadow_90,type_ZmFuZ3poZW5naGVpdGk=" alt=""/></p>
 
-<h2 id="toc_4">WORKLOADS</h2>
+<p>生成令牌的速度是恒定的，而请求去拿令牌是没有速度限制的。这意味，面对瞬时大流量，该算法可以在短时间内请求拿到大量令牌，而且拿令牌的过程并不是消耗很大的事情。（有一点生产令牌，消费令牌的意味）</p>
 
-<p>Workloads 资源负责管理和运行集群上的容器。容器（Containers）由控制器（Controllers）通过 Pod 创建，Pods 运行容器并提供环境依赖，如注入到容器中的共享或永久存储卷、配置或加密数据。</p>
+<p>不论是对于令牌桶拿不到令牌被拒绝，还是漏桶的水满了溢出，都是为了保证大部分流量的正常使用，而牺牲掉了少部分流量，这是合理的，如果因为极少部分流量需要保证的话，那么就可能导致系统达到极限而挂掉，得不偿失。</p>
+</blockquote>
 
-<p>最常见的控制器是：</p>
+<p><img src="http://i2.51cto.com/images/blog/201801/30/6b63bf4412c0d412095131091144e357.png?x-oss-process=image/watermark,size_16,text_QDUxQ1RP5Y2a5a6i,color_FFFFFF,t_100,g_se,x_10,y_10,shadow_90,type_ZmFuZ3poZW5naGVpdGk=" alt=""/></p>
 
-<ul>
-<li>  Deployments 无状态持久应用（如 http servers）</li>
-<li>  StatefulSets 有状态持久应用（如 database）</li>
-<li>  Jobs 运行至完成的应用 （如 batch jobs）</li>
-</ul>
+<h2 id="toc_3">限流神器：Guava RateLimiter</h2>
 
-<h2 id="toc_5">DISCOVERY &amp; LOAD BALANCING</h2>
+<blockquote>
+<p>Guava 不仅仅在集合、缓存、异步回调等方面功能强大，而且还给我们封装好了限流的 API！</p>
 
-<p>Discovery and Load Balancing 负责将 Workloads “缝合” 到一个可从外部访问的负载均衡的服务中。默认情况下，Workloads 只能在群集内访问，它们必须通过 LoadBalancer 或 NodePort Service 暴露到外部。对于开发，可以使用 <code>kubectl proxy</code>命令通过代理 api 主机访问内部可访问的 Workloads 。</p>
+<p>Guava RateLimiter 基于令牌桶算法，我们只需要告诉 RateLimiter 系统限制的 QPS 是多少，那么 RateLimiter 将以这个速度往桶里面放入令牌，然后请求的时候，通过 tryAcquire() 方法向 RateLimiter 获取许可（令牌）。</p>
+</blockquote>
 
-<p>常用的资源类型：</p>
+<p><img src="http://i2.51cto.com/images/blog/201801/30/57203303c36a7c5fb5a0974ba98116d7.png?x-oss-process=image/watermark,size_16,text_QDUxQ1RP5Y2a5a6i,color_FFFFFF,t_100,g_se,x_10,y_10,shadow_90,type_ZmFuZ3poZW5naGVpdGk=" alt=""/></p>
 
-<ul>
-<li>  Services 提供跨多个 Workload 副本的负载均衡的单个 IP 端点。</li>
-<li>  Ingress 提供路由到一个或多个服务的 https(s) 端点</li>
-</ul>
+<h2 id="toc_4">分布式场景下的限流</h2>
 
-<h2 id="toc_6">CONFIG &amp; STORAGE</h2>
-
-<p>Config and Storage 资源负责将数据注入到应用程序中，并保留容器外部的数据。</p>
-
-<p>常用的资源类型：</p>
-
-<ul>
-<li>  ConfigMaps 通过环境变量、命令行参数或文件提供注入应用的 K-V 键值对</li>
-<li>  Secrets 通过文件提供注入应用的二进制数据</li>
-<li>  Volumes 提供容器外部的文件系统。 可能在同一个 Pod 中跨 Container 容器共享，并且其寿命持续超出 Container 或 Pod。</li>
-</ul>
-
-<h2 id="toc_7">METADATA</h2>
-
-<p>Metadata resources 负责集群内其他资源的行为。</p>
-
-<p>常用的资源类型：</p>
-
-<ul>
-<li>  HorizontalPodAutoscaler 自动缩放 workloads 的副本数量以响应加载</li>
-<li>  PodDisruptionBudget 在执行维护时，可以配置给定 workloads 中的多少副本可能同时不可用</li>
-<li>  ThirdPartyResource 使用自己的类型扩展 Kubernetes API</li>
-<li>  Event 群集中资源生命周期事件的通知</li>
-</ul>
-
-<h2 id="toc_8">API 调用方式</h2>
-
-<p><strong>▶ kubectl</strong></p>
-
-<p>示例：创建 Deployment</p>
-
-<pre><code>1.  `$ echo &#39;apiVersion: apps/v1`
-
-2.  `kind: Deployment`
-
-3.  `metadata:`
-
-4.  `name: deployment-example`
-
-5.  `spec:`
-
-6.  `replicas: 3`
-
-7.  `revisionHistoryLimit: 10`
-
-8.  `template:`
-
-9.  `metadata:`
-
-10.  `labels:`
-
-11.  `app: nginx`
-
-12.  `spec:`
-
-13.  `containers:`
-
-14.  `- name: nginx`
-
-15.  `image: nginx:1.10`
-
-16.  `ports:`
-
-17.  `- containerPort: 80`
-
-18.  `&#39; | kubectl create -f -`
-
-</code></pre>
-
-<p>yaml 文件编写的规则拆解如下图：</p>
-
-<p><img src="https://mmbiz.qpic.cn/mmbiz_png/wbiax4xEAl5xuUnZt7eHIfEe51sP9P3DjdKKVzb6BmPcZAQzsLM5ZM6SsD46djF4siaLHADeaQnrT6qOJDGSCkibw/640?wx_fmt=png" alt=""/></p>
-
-<p><img src="https://mmbiz.qpic.cn/mmbiz_png/wbiax4xEAl5xuUnZt7eHIfEe51sP9P3DjrdW9EOgJy7BickNuoCKaX7R5t1TZHqDF8RN8qSCRzse8nRDO23IA66w/640?wx_fmt=png" alt=""/></p>
-
-<p><img src="https://mmbiz.qpic.cn/mmbiz_png/wbiax4xEAl5xuUnZt7eHIfEe51sP9P3DjEr3QHuRt71DVQHpNZHibDhFnDibRvT6ghUdMvCOLqSuUIZYO7YXWZyLg/640?wx_fmt=png" alt=""/></p>
-
-<p><img src="https://mmbiz.qpic.cn/mmbiz_png/wbiax4xEAl5xuUnZt7eHIfEe51sP9P3Djl2MJd16ycvpxFCy7ibcQmaqMVo0ndFic3xlVqvyzwFtl4VTw6y3WuRdg/640?wx_fmt=png" alt=""/></p>
-
-<p>其他资源的创建或其他操作，都可以按照这种方式来操作。</p>
-
-<p><strong>▶ curl</strong></p>
-
-<p>需要使用 <code>kubectl proxy</code></p>
-
-<pre data-initialized="true" data-gclp-id="6" style="box-sizing: border-box;margin-top: 0px;margin-bottom: 0px;padding: 8px 0px 6px;background-color: rgb(241, 239, 238);border-radius: 0px;overflow-y: auto;color: rgb(80, 97, 109);font-size: 10px;line-height: 12px;">
-
-1.  `$ kubectl proxy`
-
-2.  `$ curl -X POST -H 'Content-Type: application/yaml' --data '`
-
-3.  `apiVersion: apps/v1beta1`
-
-4.  `kind: Deployment`
-
-5.  `metadata:`
-
-6.  `name: deployment-example`
-
-7.  `spec:`
-
-8.  `replicas: 3`
-
-9.  `revisionHistoryLimit: 10`
-
-10.  `template:`
-
-11.  `metadata:`
-
-12.  `labels:`
-
-13.  `app: nginx`
-
-14.  `spec:`
-
-15.  `containers:`
-
-16.  `- name: nginx`
-
-17.  `image: nginx:1.10`
-
-18.  `ports:`
-
-19.  `- containerPort: 80`
-
-20.  `' http://127.0.0.1:8001/apis/apps/v1/namespaces/default/deployments` 
-
-</pre>
-
-<p><section class="" powered-by="xiumi.us" style="white-space: normal;box-sizing: border-box;"></p>
-
-<p><section class="" style="box-sizing: border-box;"></p>
-
-<p><section class="" style="font-size: 14px;box-sizing: border-box;"></p>
-
-<p>推荐：<a href="http://mp.weixin.qq.com/s?__biz=MzU0MDEwMjgwNA==&amp;mid=2247484509&amp;idx=1&amp;sn=e8b7f12fb3660d15379e2087c2e0e5c6&amp;chksm=fb3f1da6cc4894b0421d62ebecd16c9de11a3abf919d2c506643d3b864d0357ffc4eec1bfd29&amp;scene=21#wechat_redirect">译：基于注解的控制器：Spring Web/WebFlux 和 测试</a></p>
-
-<p>上一篇：<a href="http://mp.weixin.qq.com/s?__biz=MzU0MDEwMjgwNA==&amp;mid=2247484512&amp;idx=1&amp;sn=4130871a4e6360b4f1b8c1b4dac4b101&amp;chksm=fb3f1d9bcc48948d5430ce9e1cef224c40421241d3a925a891bb1cf2c1753d90db040529848a&amp;scene=21#wechat_redirect">Spring-5-webflux 和阻塞与非阻塞 JDBC</a></p>
-
-<p></section></p>
-
-<p></section></p>
-
-<p></section></p>
-
-<p><section class="" powered-by="xiumi.us" style="white-space: normal;box-sizing: border-box;"></p>
-
-<p><section class="" style="box-sizing: border-box;"></p>
-
-<p><section class="" style="display: inline-block;vertical-align: top;width: 279px;box-sizing: border-box;"></p>
-
-<p><section class="" powered-by="xiumi.us" style="box-sizing: border-box;"></p>
-
-<p><section class="" style="box-sizing: border-box;"></p>
-
-<p><section class="" style="text-align: center;color: rgb(160, 160, 160);font-size: 14px;box-sizing: border-box;"></p>
-
-<p>最好的赞赏</p>
-
-<p>就是你的关注</p>
-
-<p></section></p>
-
-<p></section></p>
-
-<p></section></p>
-
-<p></section></p>
-
-<p><section class="" style="display: inline-block;vertical-align: top;width: 279px;box-sizing: border-box;"></p>
-
-<p><section class="" powered-by="xiumi.us" style="box-sizing: border-box;"></p>
-
-<p><section class="" style="margin-top: 10px;margin-bottom: 10px;text-align: center;box-sizing: border-box;"></p>
-
-<p><section class="" style="max-width: 100%;vertical-align: middle;display: inline-block;box-sizing: border-box;overflow: hidden !important;"><img src="https://mmbiz.qpic.cn/mmbiz_jpg/wbiax4xEAl5zQkzvFqgk7DUAem1u05eybPdhEythAoe3O0FxUHy0tmzgytKI7tJaiaDsEWib43ZFSYmEROK4MNNAQ/640?wx_fmt=jpeg" alt=""/></section></p>
-
-<p></section></p>
-
-<p></section></p>
-
-<p></section></p>
-
-<p></section></p>
-
-<p></section></p>
+<p><strong>上面所说的限流的一些方式，都是针对单机而言的，其实大部分的场景，单机的限流已经足够了。分布式下限流的手段常常需要多种技术相结合，比如 Nginx+Lua，Redis+Lua 等去做。本文主要讨论的是单机的限流，这里就不在详细介绍分布式场景下的限流了。</strong> <br/>
+<strong>一句话，让系统的流量，先到队列中排队、限流，不要让流量直接打到系统上。</strong></p>
 
                         
                       </div>
@@ -403,10 +221,10 @@
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/5/28</span>
+                    <span class="date">2018/6/18</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Container.html'>Container</a></span>
+          					    <span class="posted-in"><a href='Cocurrency.html'>Cocurrency</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -473,6 +291,8 @@
 
       	<p class="cat-list">
         
+            <a href="Team.html"><strong>Team</strong></a>
+        
             <a href="Infra.html"><strong>Infra</strong></a>
         
             <a href="Coding.html"><strong>Coding</strong></a>
@@ -496,31 +316,31 @@
 	      
 		      
 			      <li class="post">
-			        <a href="15277861393795.html">深入浅出Netty - EventLoop, EventLoopGroup</a>
+			        <a href="15301813999205.html">架构设计：负载均衡层设计方案（9）——负载均衡层总结下篇</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15277856731195.html">Functor and monad examples in plain Java</a>
+			        <a href="15301813109409.html">架构设计：负载均衡层设计方案（8）——负载均衡层总结上篇</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15277854106004.html">我必须得告诉大家的 MySQL 优化原理</a>
+			        <a href="15301812452579.html">架构设计：负载均衡层设计方案（7）——LVS + Keepalived + Nginx安装及配置</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15277850962764.html">Leaf——美团点评分布式ID生成系统</a>
+			        <a href="15301811967181.html">架构设计：负载均衡层设计方案（6）——Nginx + Keepalived构建高可用的负载层</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15277835170976.html">蚂蚁通信框架实践</a>
+			        <a href="15301811361753.html">架构设计：负载均衡层设计方案（5）——LVS单节点安装</a>
 			      </li>
 		     
 		  

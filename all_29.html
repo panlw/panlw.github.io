@@ -76,6 +76,8 @@
     <li><label>Categories</label></li>
 
         
+            <li><a href="Team.html">Team</a></li>
+        
             <li><a href="Infra.html">Infra</a></li>
         
             <li><a href="Coding.html">Coding</a></li>
@@ -105,422 +107,292 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15248840485977.html">
+                <a class="clearlink" href="15288661714760.html">
                 
-                  <h1>The Basics of Web Workers - HTML5 Rocks</h1>
+                  <h1>Python最广为使用的并发库futures使用入门与内部原理</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://www.html5rocks.com/en/tutorials/workers/basics/">https://www.html5rocks.com/en/tutorials/workers/basics/</a></p>
-
-<p>Eric Bidelman, July 26th, 2010</p>
+<p><a href="https://mp.weixin.qq.com/s?__biz=MzI0MzQyMTYzOQ==&amp;mid=2247484110&amp;idx=1&amp;sn=66d31f0a59cac900975ca724465d5527&amp;chksm=e96c1a66de1b9370468b2f1ed9b7d669f5c933ff5942550b58479df3197440e664ff7b8f4b48&amp;mpshare=1&amp;scene=23&amp;srcid=0613YZmmW3drwtB11sjqs4ZN%23rd">原文地址</a></p>
 </blockquote>
 
-<h2 id="toc_0">The Problem: JavaScript Concurrency</h2>
+<p>在使用 Python 处理任务时，限于单线程处理能力有限，需要将任务并行化，分散到多个线程或者是多个进程去执行。</p>
 
-<p>There are a number of bottlenecks preventing interesting applications from being ported (say, from server-heavy implementations) to client-side JavaScript. Some of these include browser compatibility, static typing, accessibility, and performance. Fortunately, the latter is quickly becoming a thing of the past as browser vendors rapidly improve the speed of their JavaScript engines.</p>
+<p>concurrent.futures 就是这样一种库，它可以让用户可以非常方便的将任务并行化。这个名字有点长，后面我直接使用词汇 concurrent 来代替 concurrent.futures。</p>
 
-<p>One thing that&#39;s remained a hindrance for JavaScript is actually the language itself. JavaScript is a single-threaded environment, meaning multiple scripts cannot run at the same time. As an example, imagine a site that needs to handle UI events, query and process large amounts of API data, and manipulate the DOM. Pretty common, right? Unfortunately all of that can&#39;t be simultaneous due to limitations in browsers&#39; JavaScript runtime. Script execution happens within a single thread.</p>
+<p><img src="media/15288661714760/15288662944396.jpg" alt=""/></p>
 
-<p>Developers mimic &#39;concurrency&#39; by using techniques like <code>setTimeout()</code>, <code>setInterval()</code>, <code>XMLHttpRequest</code>, and event handlers. Yes, all of these features run asynchronously, but non-blocking doesn&#39;t necessarily mean concurrency. Asynchronous events are processed after the current executing script has yielded. The good news is that HTML5 gives us something better than these hacks!</p>
+<p>concurrent 提供了两种并发模型，一个是多线程 ThreadPoolExecutor，一个是多进程 ProcessPoolExecutor。对于 IO 密集型任务宜使用多线程模型。对于计算密集型任务应该使用多进程模型。</p>
 
-<h2 id="toc_1">Introducing Web Workers: Bring Threading to JavaScript</h2>
+<p>为什么要这样选择呢？是因为 Python GIL 的存在让 Python 虚拟机在进行运算时无法有效利用多核心。对于纯计算任务，它永远最多只能榨干单个 CPU 核心。如果要突破这个瓶颈，就必须 fork 出多个子进程来分担计算任务。而对于 IO 密集型任务，CPU 使用率往往是极低的，使用多线程虽然会加倍 CPU 使用率，但是还远远到不了饱和 (100%) 的地步，在单核心可以应付整体计算的前提下，自然是应该选择资源占用少的模式，也就是多线程模式。</p>
 
-<p>The <a href="http://www.whatwg.org/specs/web-workers/current-work/">Web Workers</a> specification defines an API for spawning background scripts in your web application. Web Workers allow you to do things like fire up long-running scripts to handle computationally intensive tasks, but without blocking the UI or other scripts to handle user interactions. They&#39;re going to help put and end to that nasty &#39;unresponsive script&#39; dialog that we&#39;ve all come to love:</p>
+<p>接下来我们分别尝试一下两种模式来进行并行计算。</p>
 
-<p><img src="/static/images/screenshots/workers/unresponsive_script.gif" alt="Unresponsive script dialog" title="Unresponsive script dialog"/> Common unresponsive script dialog.</p>
+<h2 id="toc_0">多线程</h2>
 
-<p>Workers utilize thread-like message passing to achieve parallelism. They&#39;re perfect for keeping your UI refresh, performant, and responsive for users.</p>
+<p><img src="media/15288661714760/15288663302029.jpg" alt=""/></p>
 
-<h3 id="toc_2">Types of Web Workers</h3>
+<p>多线程模式适合 IO 密集型运算，这里我要使用 sleep 来模拟一下慢速的 IO 任务。同时为了方便编写命令行程序，这里使用 Google fire 开源库来简化命令行参数处理。</p>
 
-<p>It&#39;s worth noting that the <a href="http://www.whatwg.org/specs/web-workers/current-work/">specification</a> discusses two kinds of Web Workers, <a href="http://www.whatwg.org/specs/web-workers/current-work/#dedicated-workers-and-the-worker-interface">Dedicated Workers</a> and <a href="http://www.whatwg.org/specs/web-workers/current-work/#sharedworker">Shared Workers</a>. This article will only cover dedicated workers and I&#39;ll refer to them as &#39;web workers&#39; or &#39;workers&#39; throughout.</p>
+<pre><code class="language-py"># coding: utf8
+# t.py
+import time
+import fire
+import threading
+from concurrent.futures import ThreadPoolExecutor, wait
 
-<h2 id="toc_3">Getting Started</h2>
+# 分割子任务
+def each_task(index):
+    time.sleep(1)  # 睡1s，模拟IO
+    print &quot;thread %s square %d&quot; % (threading.current_thread().ident, index)
+    return index * index  # 返回结果
 
-<p>Web Workers run in an isolated thread. As a result, the code that they execute needs to be contained in a separate file. But before we do that, the first thing to do is create a new <code>Worker</code> object in your main page. The constructor takes the name of the worker script:</p>
 
-<pre><code class="language-js">var worker = new Worker(&#39;task.js&#39;);
+def run(thread_num, task_num):
+    # 实例化线程池，thread_num个线程
+    executor = ThreadPoolExecutor(thread_num)
+    start = time.time()
+    fs = []  # future列表
+    for i in range(task_num):
+        fs.append(executor.submit(each_task, i))  # 提交任务
+    wait(fs)  # 等待计算结束
+    end = time.time()
+    duration = end - start
+    s = sum([f.result() for f in fs])  # 求和
+    print &quot;total result=%s cost: %.2fs&quot; % (s, duration)
+    executor.shutdown()  # 销毁线程池
+
+if __name__ == &#39;__main__&#39;:
+    fire.Fire(run)
 </code></pre>
 
-<p>If the specified file exists, the browser will spawn a new worker thread, which is downloaded asynchronously. The worker will not begin until the file has completely downloaded and executed. If the path to your worker returns an 404, the worker will fail silently.</p>
+<p>运行<code>python t.py 2 10</code>，也就是 2 个线程跑 10 个任务，观察输出</p>
 
-<p>After creating the worker, start it by calling the <code>postMessage()</code> method:</p>
-
-<pre><code class="language-js">worker.postMessage(); // Start the worker.
+<pre><code class="language-log">thread 123145422131200 square 0
+thread 123145426337792 square 1
+thread 123145426337792 square 2
+thread 123145422131200 square 3
+thread 123145426337792 square 4
+thread 123145422131200 square 5
+thread 123145426337792 square 6
+thread 123145422131200 square 7
+thread 123145426337792 square 8
+thread 123145422131200 square 9
+total result=285 cost: 5.02s
 </code></pre>
 
-<h3 id="toc_4">Communicating with a Worker via Message Passing</h3>
+<p>我们看到计算总共花费了大概 5s，总共 sleep 了 10s 由两个线程分担，所以是 5s。读者也许会问，为什么输出乱了，这是因为 print 操作不是原子的，它是两个连续的 write 操作合成的，第一个 write 输出内容，第二个 write 输出换行符，write 操作本身是原子的，但是在多线程环境下，这两个 write 操作会交错执行，所以输出就不整齐了。如果将代码稍作修改，将 print 改成单个 write 操作，输出就整齐了 (关于 write 是否绝对原子性还需要进一步深入讨论)</p>
 
-<p>Communication between a work and its parent page is done using an event model and the <code>postMessage()</code> method. Depending on your browser/version, <code>postMessage()</code> can accept either a string or JSON object as its single argument. The latest versions of the modern browsers support passing a JSON object.</p>
-
-<p>Below is a example of using a string to pass &#39;Hello World&#39; to a worker in doWork.js. The worker simply returns the message that is passed to it.</p>
-
-<p>Main script:</p>
-
-<pre><code class="language-js">var worker = new Worker(&#39;doWork.js&#39;);
-
-worker.addEventListener(&#39;message&#39;, function(e) {
-  console.log(&#39;Worker said: &#39;, e.data);
-}, false);
-
-worker.postMessage(&#39;Hello World&#39;); // Send data to our worker.
+<pre><code class="language-py"># 分割子任务
+def each_task(index):
+    time.sleep(1)  # 睡1s，模拟IO
+    import sys
+    sys.stdout.write(&quot;thread %s square %d\n&quot; % (threading.current_thread().ident, index))
+    return index * index  # 返回结果
 </code></pre>
 
-<p>doWork.js (the worker):</p>
+<p>我们再跑一下<code>python t.py 2 10</code>，观察输出</p>
 
-<pre><code class="language-js">self.addEventListener(&#39;message&#39;, function(e) {
-  self.postMessage(e.data);
-}, false);
+<pre><code class="language-log">thread 123145438244864 square 0
+thread 123145442451456 square 1
+thread 123145442451456 square 2
+thread 123145438244864 square 3
+thread 123145438244864 square 4
+thread 123145442451456 square 5
+thread 123145438244864 square 6
+thread 123145442451456 square 7
+thread 123145442451456 square 9
+thread 123145438244864 square 8
+total result=285 cost: 5.02s
 </code></pre>
 
-<p>When <code>postMessage()</code> is called from the main page, our worker handles that message by defining an <code>onmessage</code> handler for the <code>message</code> event. The message payload (in this case &#39;Hello World&#39;) is accessible in <code>Event.data</code>. Although this particular example isn&#39;t very exciting, it demonstrates that <code>postMessage()</code> is also your means for passing data back to the main thread. Convenient!</p>
+<p>接下来，我们改变参数，扩大到 10 个线程，看看所有任务总共需要多久完成</p>
 
-<p>Messages passed between the main page and workers are copied, not shared. For example, in the next example the &#39;msg&#39; property of the JSON message is accessible in both locations. It appears that the object is being passed directly to the worker even though it&#39;s running in a separate, dedicated space. In actuality, what is happening is that the object is being serialized as it&#39;s handed to the worker, and subsequently, de-serialized on the other end. The page and worker do not share the same instance, so the end result is that a duplicate is created on each pass. Most browsers implement this feature by automatically JSON encoding/decoding the value on either end.</p>
-
-<p>The following is a more complex example that passes messages using JSON objects.</p>
-
-<p>Main script:</p>
-
-<pre><code class="language-js">&lt;button onclick=&quot;sayHI()&quot;&gt;Say HI&lt;/button&gt;
-&lt;button onclick=&quot;unknownCmd()&quot;&gt;Send unknown command&lt;/button&gt;
-&lt;button onclick=&quot;stop()&quot;&gt;Stop worker&lt;/button&gt;
-&lt;output id=&quot;result&quot;&gt;&lt;/output&gt;
-
-&lt;script&gt;
-  function sayHI() {
-    worker.postMessage({&#39;cmd&#39;: &#39;start&#39;, &#39;msg&#39;: &#39;Hi&#39;});
-  }
-
-  function stop() {
-    // worker.terminate() from this script would also stop the worker.
-    worker.postMessage({&#39;cmd&#39;: &#39;stop&#39;, &#39;msg&#39;: &#39;Bye&#39;});
-  }
-
-  function unknownCmd() {
-    worker.postMessage({&#39;cmd&#39;: &#39;foobard&#39;, &#39;msg&#39;: &#39;???&#39;});
-  }
-
-  var worker = new Worker(&#39;doWork2.js&#39;);
-
-  worker.addEventListener(&#39;message&#39;, function(e) {
-    document.getElementById(&#39;result&#39;).textContent = e.data;
-  }, false);
-&lt;/script&gt;
+<pre><code class="language-log">&gt; python t.py 10 10
+thread 123145327464448 square 0
+thread 123145335877632 square 2
+thread 123145331671040 square 1
+thread 123145344290816 square 4
+thread 123145340084224 square 3
+thread 123145348497408 square 5
+thread 123145352704000 square 6
+thread 123145356910592 square 7
+thread 123145365323776 square 9
+thread 123145361117184 square 8
+total result=285 cost: 1.01s
 </code></pre>
 
-<p>doWork2.js:</p>
+<p>可以看到 1s 中就完成了所有的任务。这就是多线程的魅力，可以将多个 IO 操作并行化，减少整体处理时间。</p>
 
-<pre><code class="language-js">self.addEventListener(&#39;message&#39;, function(e) {
-  var data = e.data;
-  switch (data.cmd) {
-    case &#39;start&#39;:
-      self.postMessage(&#39;WORKER STARTED: &#39; + data.msg);
-      break;
-    case &#39;stop&#39;:
-      self.postMessage(&#39;WORKER STOPPED: &#39; + data.msg +
-                       &#39;. (buttons will no longer work)&#39;);
-      self.close(); // Terminates the worker.
-      break;
-    default:
-      self.postMessage(&#39;Unknown command: &#39; + data.msg);
-  };
-}, false);
+<h2 id="toc_1">多进程</h2>
+
+<p><img src="media/15288661714760/15288664619676.jpg" alt=""/></p>
+
+<p>相比多线程适合处理 IO 密集型任务，多进程适合计算密集型。接下来我们要模拟一下计算密集型任务。我的个人电脑有 2 个核心，正好可以体验多核心计算的优势。</p>
+
+<p>那这个密集型计算任务怎么模拟呢，我们可以使用圆周率计算公式。</p>
+
+<p><img src="media/15288661714760/15288664769272.jpg" alt=""/></p>
+
+<p>通过扩大级数的长度 n，就可以无限逼近圆周率。当 n 特别大时，计算会比较缓慢，这时候 CPU 就会一直处于繁忙状态，这正是我们所期望的。</p>
+
+<p>好，下面开写多进程并行计算代码</p>
+
+<pre><code class="language-py"># coding: utf8
+# p.py
+import os
+import sys
+import math
+import time
+import fire
+from concurrent.futures import ProcessPoolExecutor, wait
+
+# 分割子任务
+def each_task(n):
+    # 按公式计算圆周率
+    s = 0.0
+    for i in range(n):
+        s += 1.0/(i+1)/(i+1)
+    pi = math.sqrt(6*s)
+    # os.getpid可以获得子进程号
+    sys.stdout.write(&quot;process %s n=%d pi=%s\n&quot; % (os.getpid(), n, pi))
+    return pi
+    
+def run(process_num, *ns):  # 输入多个n值，分成多个子任务来计算结果
+    # 实例化进程池，process_num个进程
+    executor = ProcessPoolExecutor(process_num)
+    start = time.time()
+    fs = []  # future列表
+    for n in ns:
+        fs.append(executor.submit(each_task, int(n)))  # 提交任务
+    wait(fs)  # 等待计算结束
+    end = time.time()
+    duration = end - start
+    print &quot;total cost: %.2fs&quot; % duration
+    executor.shutdown()  # 销毁进程池
+
+if __name__ == &#39;__main__&#39;:
+    fire.Fire(run)
 </code></pre>
 
-<p><strong>Note</strong>: There are two ways to stop a worker: by calling <code>worker.terminate()</code> from the main page or by calling <code>self.close()</code> inside of the worker itself.</p>
+<p>通过代码可以看出多进程模式在代码的编写上和多线程没有多大差异，仅仅是换了一个类名，其它都一摸一样。这也是 concurrent 库的魅力所在，将多线程和多进程模型抽象出了一样的使用接口。</p>
 
-<p><strong>Example</strong>: Run this worker!</p>
+<p>接下来我们运行一下<code>python p.py 1 5000000 5001000 5002000 5003000</code>，总共计算 4 次 pi，只用一个进程。观察输出</p>
 
-<p><button onclick="sayHI()">Say HI</button> <button onclick="unknownCmd()">Send unknown command</button> <button onclick="stop()">Stop worker</button></p>
-
-<h2 id="toc_5">Transferrable objects</h2>
-
-<p>Most browsers implement the <a href="http://updates.html5rocks.com/2011/09/Workers-ArrayBuffer">structured cloning</a> algorithm, which allows you to pass more complex types in/out of Workers such as <code>File</code>, <code>Blob</code>, <code>ArrayBuffer</code>, and JSON objects. However, when passing these types of data using <code>postMessage()</code>, a copy is still made. Therefore, if you&#39;re passing a large 50MB file (for example), there&#39;s a noticeable overhead in getting that file between the worker and the main thread.</p>
-
-<p>Structured cloning is great, but a copy can take hundreds of milliseconds. To combat the perf hit, you can use <a href="http://www.w3.org/html/wg/drafts/html/master/infrastructure.html#transferable-objects">Transferable Objects</a>.</p>
-
-<p>With Transferable Objects, data is transferred from one context to another. It is zero-copy, which vastly improves the performance of sending data to a Worker. Think of it as pass-by-reference if you&#39;re from the C/C++ world. However, unlike pass-by-reference, the &#39;version&#39; from the calling context is no longer available once transferred to the new context. For example, when transferring an ArrayBuffer from your main app to Worker, the original <code>ArrayBuffer</code> is cleared and no longer usable. Its contents are (quiet literally) transferred to the Worker context.</p>
-
-<p>To use transferrable objects, use a slightly different signature of <code>postMessage()</code>:</p>
-
-<pre><code class="language-js">worker.postMessage(arrayBuffer, [arrayBuffer]);
-window.postMessage(arrayBuffer, targetOrigin, [arrayBuffer]);
+<pre><code class="language-log">process 96354 n=5000000 pi=3.1415924626
+process 96354 n=5001000 pi=3.14159246264
+process 96354 n=5002000 pi=3.14159246268
+process 96354 n=5003000 pi=3.14159246272
+total cost: 9.45s
 </code></pre>
 
-<p>The worker case, the first argument is the data and the second is the list of items that should be transferred. The first argument doesn&#39;t have to be an <code>ArrayBuffer</code> by the way. For example, it can be a JSON object:</p>
+<p>可以看出来随着 n 的增大，结果越来越逼近圆周率，因为只用了一个进程，所以任务是串行执行，总共花了大约 9.5s。</p>
 
-<pre><code class="language-js">worker.postMessage({data: int8View, moreData: anotherBuffer},
-                   [int8View.buffer, anotherBuffer]);
+<p>接下来再增加一个进程，观察输出</p>
+
+<pre><code>&gt; python p.py 2 5000000 5001000 5002000 5003000
+process 96529 n=5001000 pi=3.14159246264
+process 96530 n=5000000 pi=3.1415924626
+process 96529 n=5002000 pi=3.14159246268
+process 96530 n=5003000 pi=3.14159246272
+total cost: 4.98s
 </code></pre>
 
-<p>The important point being: the second argument must be an array of <code>ArrayBuffer</code>s. This is your list of transferrable items.</p>
+<p>从耗时上看缩短了接近 1 半，说明多进程确实起到了计算并行化的效果。此刻如果使用 top 命令观察进程的 CPU 使用率，这两个进程的 CPU 使用率都占到了接近 100%。</p>
 
-<p>To see the speed improvement of transferrables, check out this <a href="http://html5-demos.appspot.com/static/workers/transferables/index.html">DEMO</a>. For more information on transferrables, see our <a href="http://updates.html5rocks.com/2011/12/Transferable-Objects-Lightning-Fast">HTML5Rock post</a>.</p>
+<p>如果我们再增加 2 个进程，是不是还能继续压缩计算时间呢</p>
 
-<h2 id="toc_6">The Worker Environment</h2>
-
-<h3 id="toc_7">Worker Scope</h3>
-
-<p>In the context of a worker, both <code>self</code> and <code>this</code> reference the global scope for the worker. Thus, the previous example could also be written as:</p>
-
-<pre><code class="language-js">addEventListener(&#39;message&#39;, function(e) {
-  var data = e.data;
-  switch (data.cmd) {
-    case &#39;start&#39;:
-      postMessage(&#39;WORKER STARTED: &#39; + data.msg);
-      break;
-    case &#39;stop&#39;:
-  ...
-}, false);
+<pre><code>&gt; python p.py 4 5000000 5001000 5002000 5003000
+process 96864 n=5002000 pi=3.14159246268
+process 96862 n=5000000 pi=3.1415924626
+process 96863 n=5001000 pi=3.14159246264
+process 96865 n=5003000 pi=3.14159246272
+total cost: 4.86s
 </code></pre>
 
-<p>Alternatively, you could set the <code>onmessage</code> event handler directly (though <code>addEventListener</code> is always encouraged by JavaScript ninjas).</p>
+<p>看来耗时不能继续节约了，因为只有 2 个计算核心，2 个进程已经足以榨干它们了，即使再多加进程也只有 2 个计算核心可用。</p>
 
-<pre><code class="language-js">onmessage = function(e) {
-  var data = e.data;
-  ...
-};
+<h2 id="toc_2">深入原理</h2>
+
+<p>concurrent 用的时候非常简单，但是内部实现并不是很好理解。在深入分析内部的结构之前，我们需要先理解一下 Future 这个对象。在前面的例子中，executor 提交 (submit) 任务后都会返回一个 Future 对象，它表示一个结果的坑，在任务刚刚提交时，这个坑是空的，一旦子线程运行任务结束，就会将运行的结果塞到这个坑里，主线程就可以通过 Future 对象获得这个结果。简单一点说，Future 对象是主线程和子线程通信的媒介。</p>
+
+<p><img src="media/15288661714760/15288665896000.jpg" alt=""/></p>
+
+<p>Future 对象的内部逻辑简单一点可以使用下面的代码进行表示</p>
+
+<pre><code class="language-py">class Future(object):
+
+    def __init__(self):
+        self._condition = threading.Condition()  # 条件变量
+        self._result = None
+
+    def result(self, timeout=None):
+        self._condition.wait(timeout)
+        return self._result
+
+    def set_result(self, result):
+        self._result = result
+        self._condition.notify_all()
 </code></pre>
 
-<h3 id="toc_8">Features Available to Workers</h3>
+<p>主线程将任务塞进线程池后得到了这个 Future 对象，它内部的_result 还是空的。如果主线程调用 result() 方法获取结果，就会阻塞在条件变量上。如果子线程计算任务完成了就会立即调用 set_result() 方法将结果填充进 future 对象，并唤醒阻塞在条件变量上的线程，也就是主线程。这时主线程立即醒过来并正常返回结果。</p>
 
-<p>Due to their multi-threaded behavior, web workers only has access to a subset of JavaScript&#39;s features:</p>
+<h2 id="toc_3">线程池内部结构</h2>
 
-<ul>
-<li>  The <code>navigator</code> object</li>
-<li>  The <code>location</code> object (read-only)</li>
-<li>  <code>XMLHttpRequest</code></li>
-<li>  <code>setTimeout()/clearTimeout()</code> and <code>setInterval()/clearInterval()</code></li>
-<li>  The <a href="/tutorials/appcache/beginner/">Application Cache</a></li>
-<li>  Importing external scripts using the <code>importScripts()</code> method</li>
-<li>  <a href="#toc-enviornment-subworkers">Spawning other web workers</a></li>
-</ul>
+<p>主线程和子线程交互分为两部分，第一部分是主线程如何将任务传递给子线程，第二部分是子线程如何将结果传递给主线程。第二部分已经讲过了是通过 Future 对象来完成的。那第一部分是怎么做到的呢？</p>
 
-<p>Workers do NOT have access to:</p>
+<p><img src="media/15288661714760/15288666117893.jpg" alt=""/></p>
 
-<ul>
-<li>  The DOM (it&#39;s not thread-safe)</li>
-<li>  The <code>window</code> object</li>
-<li>  The <code>document</code> object</li>
-<li>  The <code>parent</code> object</li>
-</ul>
+<p>如上图所示，秘密就在于这个队列，主线程是通过队列将任务传递给多个子线程的。一旦主线程将任务塞进任务队列，子线程们就会开始争抢，最终只有一个线程能抢到这个任务，并立即进行执行，执行完后将结果放进 Future 对象就完成了这个任务的完整执行过程。</p>
 
-<h3 id="toc_9">Loading External Scripts</h3>
+<h2 id="toc_4">线程池的缺点</h2>
 
-<p>You can load external script files or libraries into a worker with the <code>importScripts()</code> function. The method takes zero or more strings representing the filenames for the resources to import.</p>
+<p>concurrent 的线程池有个重大的设计问题，那就是任务队列是无界的。如果队列的生产者任务生产的太快，而线程池消费太慢处理不过来，任务就会堆积。如果堆积一直持续下去，内存就会持续增长直到 OOM，任务队列里堆积的所有任务全部彻底丢失。用户使用时一定要注意这点，并做好适当的控制。</p>
 
-<p>This example loads <code>script1.js</code> and <code>script2.js</code> into the worker:</p>
+<h2 id="toc_5">进程池内部结构</h2>
 
-<p>worker.js:</p>
+<p>进程池内部结构复杂，连 concurent 库的作者自己也觉得特别复杂，所以在代码里专门画了一张 ascii 图来讲解模型内部结构</p>
 
-<pre><code class="language-js">importScripts(&#39;script1.js&#39;);
-importScripts(&#39;script2.js&#39;);
-</code></pre>
+<p><img src="media/15288661714760/15288666342206.jpg" alt=""/></p>
 
-<p>Which can also be written as a single import statement:</p>
+<p><img src="media/15288661714760/15288666482842.jpg" alt=""/></p>
 
-<pre><code class="language-js">importScripts(&#39;script1.js&#39;, &#39;script2.js&#39;);
-</code></pre>
+<p>我觉得作者的这张图还不够好懂，所以也单独画了一张图，请读者们仔细结合上面两张图，一起来过一边完整的任务处理过程。</p>
 
-<h3 id="toc_10">Subworkers</h3>
+<ol>
+<li> 主线程将任务塞进 TaskQueue(普通内存队列)，拿到 Future 对象</li>
+<li> 唯一的管理线程从 TaskQueue 获取任务，塞进 CallQueue(分布式跨进程队列)</li>
+<li> 子进程从 CallQueue 中争抢任务进行处理</li>
+<li> 子进程将处理结果塞进 ResultQueue(分布式跨进程队列)</li>
+<li> 管理线程从 ResultQueue 中获取结果，塞进 Future 对象</li>
+<li> 主线程从 Future 对象中拿到结果</li>
+</ol>
 
-<p>Workers have the ability to spawn child workers. This is great for further breaking up large tasks at runtime. However, subworkers come with a few caveats:</p>
+<p>这个复杂的流程中涉及到 3 个队列，还有中间附加的管理线程。那为什么作者要设计的这么复杂，这样的设计有什么好处？</p>
 
-<ul>
-<li>  Subworkers must be hosted within the same origin as the parent page.</li>
-<li>  URIs within subworkers are resolved relative to their parent worker&#39;s location (as opposed to the main page).</li>
-</ul>
+<p>首先，我们看这张图的左半边，它和线程池的处理流程没有太多区别，区别仅仅是管理线程只有一个，而线程池的子线程会有多个。这样设计可以使得多进程模型和多线程模型的使用方法保持一致，这就是为什么两个模型使用起来没有任何区别的原因所在——通过中间的管理线程隐藏了背后的多进程交互逻辑。</p>
 
-<p>Keep in mind most browsers spawn separate processes for each worker. Before you go spawning a worker farm, be cautious about hogging too many of the user&#39;s system resources. One reason for this is that messages passed between main pages and workers are copied, not shared. See <a href="#toc-gettingstarted-workercomm">Communicating with a Worker via Message Passing</a>.</p>
+<p>然后我们再看这张图的右半边，管理线程通过两个队列来和子进程们进行交互，这两个队列都是跨进程队列 (multiprocessing.Queue)。CallQueue 是单生产者多消费者，ResultQueue 是多生产者单消费者。</p>
 
-<p>For an sample of how to spawn a subworker, see <a href="http://www.whatwg.org/specs/web-workers/current-work/#delegation">the example</a> in the specification.</p>
+<p>CallQueue 是个有界队列，它的上限在代码里写死了为「子进程数 + 1」。如果子进程们处理不过来，CallQueue 就会变满，管理线程就会停止往里面塞数据。但是这里也遭遇了和线程池一样的问题，TaskQueue 是无界队列，它的内容可不管消费者是否在持续 (管理线程) 消费，TaskQueue 会无限制的持续生长，于是最终也会会导致 OOM。</p>
 
-<h2 id="toc_11">Inline Workers</h2>
+<h2 id="toc_6">跨进程队列</h2>
 
-<p>What if you want to create your worker script on the fly, or create a self-contained page without having to create separate worker files? With <code>Blob()</code>, you can &quot;inline&quot; your worker in the same HTML file as your main logic by creating a URL handle to the worker code as a string:</p>
+<p>进程池模型中的跨进程队列是用 multiprocessing.Queue 实现的。那这个跨进程队列内部细节是怎样的，它又是用什么高科技来实现的呢</p>
 
-<pre><code class="language-js">var blob = new Blob([&quot;onmessage = function(e) { postMessage(&#39;msg from worker&#39;); }&quot;]);
+<p>笔者仔细阅读了 multiprocessing.Queue 的源码发现，它使用无名套接字 sockerpair 来完成的跨进程通信，socketpair 和 socket 的区别就在于 socketpair 不需要端口，不需要走网络协议栈，通过内核的套接字读写缓冲区直接进行跨进程通信。</p>
 
-// Obtain a blob URL reference to our worker &#39;file&#39;.
-var blobURL = window.URL.createObjectURL(blob);
+<p><img src="media/15288661714760/15288666709878.jpg" alt=""/></p>
 
-var worker = new Worker(blobURL);
-worker.onmessage = function(e) {
-  // e.data == &#39;msg from worker&#39;
-};
-worker.postMessage(); // Start the worker.
-</code></pre>
+<p>当父进程要传递任务给子进程时，先使用 pickle 将任务对象进行序列化成字节数组，然后将字节数组通过 socketpair 的写描述符写入内核的 buffer 中。子进程接下来就可以从 buffer 中读取到字节数组，然后再使用 pickle 对字节数组进行反序列化来得到任务对象，这样总算可以执行任务了。同样子进程将结果传递给父进程走的也是一样的流程，只不过这里的 socketpair 是 ResultQueue 内部创建的无名套接字。</p>
 
-<h3 id="toc_12">Blob URLs</h3>
+<p>multiprocessing.Queue 是支持双工通信，数据流向可以是父到子，也可以是子到父，只不过在 concurrent 的进程池实现中只用到了单工通信。CallQueue 是从父到子，ResultQueue 是从子到父。</p>
 
-<p>The magic comes with the call to <a href="http://dev.w3.org/2006/webapi/FileAPI/#dfn-createObjectURL"><code>window.URL.createObjectURL()</code></a>. This method creates a simple URL string which can be used to reference data stored in a DOM <code>File</code> or <code>Blob</code> object. For example:</p>
+<h2 id="toc_7">总结</h2>
 
-<pre><code class="language-js">blob:http://localhost/c745ef73-ece9-46da-8f66-ebes574789b1
-</code></pre>
-
-<p>Blob URLs are unique and last for the lifetime of your application (e.g. until the <code>document</code> is unloaded). If you&#39;re creating many Blob URLs, it&#39;s a good idea to release references that are no longer needed. You can explicitly release a Blob URLs by passing it to <a href="http://dev.w3.org/2006/webapi/FileAPI/#dfn-revokeObjectURL"><code>window.URL.revokeObjectURL()</code></a>:</p>
-
-<pre><code class="language-js">window.URL.revokeObjectURL(blobURL);
-</code></pre>
-
-<p>In Chrome, there&#39;s a nice page to view all of the created blob URLs: <code>chrome://blob-internals/</code>.</p>
-
-<h3 id="toc_13">Full Example</h3>
-
-<p>Taking this one step further, we can get clever with how the worker&#39;s JS code is inlined in our page. This technique uses a <code>&lt;script&gt;</code> tag to define the worker:</p>
-
-<pre><code class="language-js">&lt;!DOCTYPE html&gt;
-&lt;html&gt;
-&lt;head&gt;
-  &lt;meta charset=&quot;utf-8&quot; /&gt;
-&lt;/head&gt;
-&lt;body&gt;
-
-  &lt;div id=&quot;log&quot;&gt;&lt;/div&gt;
-
-  &lt;script id=&quot;worker1&quot; type=&quot;javascript/worker&quot;&gt;
-    // This script won&#39;t be parsed by JS engines
-    // because its type is javascript/worker.
-    self.onmessage = function(e) {
-      self.postMessage(&#39;msg from worker&#39;);
-    };
-    // Rest of your worker code goes here.
-  &lt;/script&gt;
-
-  &lt;script&gt;
-    function log(msg) {
-      // Use a fragment: browser will only render/reflow once.
-      var fragment = document.createDocumentFragment();
-      fragment.appendChild(document.createTextNode(msg));
-      fragment.appendChild(document.createElement(&#39;br&#39;));
-
-      document.querySelector(&quot;#log&quot;).appendChild(fragment);
-    }
-
-    var blob = new Blob([document.querySelector(&#39;#worker1&#39;).textContent]);
-
-    var worker = new Worker(window.URL.createObjectURL(blob));
-    worker.onmessage = function(e) {
-      log(&quot;Received: &quot; + e.data);
-    }
-    worker.postMessage(); // Start the worker.
-  &lt;/script&gt;
-&lt;/body&gt;
-&lt;/html&gt;
-</code></pre>
-
-<p>In my opinion, this new approach is a bit cleaner and more legible. It defines a script tag with <var>id=&quot;worker1&quot;</var> and <var>type=&#39;javascript/worker&#39;</var> (so the browser doesn&#39;t parse the JS). That code is extracted as a string using <code>document.querySelector(&#39;#worker1&#39;).textContent</code> and passed to <code>Blob()</code> to create the file.</p>
-
-<h3 id="toc_14">Loading External Scripts</h3>
-
-<p>When using these techniques to inline your worker code, <code>importScripts()</code> will only work if you supply an absolute URI. If you attempt to pass a relative URI, the browser will complain with a security error. The reason being: the worker (now created from a blob URL) will be resolved with a <code>blob:</code> prefix, while your app will be running from a different (presumably <code>http://</code>) scheme. Hence, the failure will be due to cross origin restrictions.</p>
-
-<p>One way to utilize <code>importScripts()</code> in an inline worker is to &quot;inject&quot; the current url of your main script is running from by passing it to the inline worker and constructing the absolute URL manually. This will insure the external script is imported from the same origin. Assuming your main app is running from <a href="http://example.com/index.html">http://example.com/index.html</a>:</p>
-
-<pre><code class="language-js">...
-&lt;script id=&quot;worker2&quot; type=&quot;javascript/worker&quot;&gt;
-self.onmessage = function(e) {
-  var data = e.data;
-
-  if (data.url) {
-    var url = data.url.href;
-    var index = url.indexOf(&#39;index.html&#39;);
-    if (index != -1) {
-      url = url.substring(0, index);
-    }
-    importScripts(url + &#39;engine.js&#39;);
-  }
-  ...
-};
-&lt;/script&gt;
-&lt;script&gt;
-  var worker = new Worker(window.URL.createObjectURL(bb.getBlob()));
-  worker.postMessage(**{url: document.location}**);
-&lt;/script&gt;
-</code></pre>
-
-<h2 id="toc_15">Handling Errors</h2>
-
-<p>As with any JavaScript logic, you&#39;ll want to handle any errors that are thrown in your web workers. If an error occurs while a worker is executing, the an <code>ErrorEvent</code> is fired. The interface contains three useful properties for figuring out what went wrong: <code>filename</code> - the name of the worker script that caused the error, <code>lineno</code> - the line number where the error occurred, and <code>message</code> - a meaningful description of the error. Here is an example of setting up an <code>onerror</code> event handler to print the properties of the error:</p>
-
-<pre><code class="language-js">&lt;output id=&quot;error&quot; style=&quot;color: red;&quot;&gt;&lt;/output&gt;
-&lt;output id=&quot;result&quot;&gt;&lt;/output&gt;
-
-&lt;script&gt;
-  function onError(e) {
-    document.getElementById(&#39;error&#39;).textContent = [
-      &#39;ERROR: Line &#39;, e.lineno, &#39; in &#39;, e.filename, &#39;: &#39;, e.message
-    ].join(&#39;&#39;);
-  }
-
-  function onMsg(e) {
-    document.getElementById(&#39;result&#39;).textContent = e.data;
-  }
-
-  var worker = new Worker(&#39;workerWithError.js&#39;);
-  worker.addEventListener(&#39;message&#39;, onMsg, false);
-  worker.addEventListener(&#39;error&#39;, onError, false);
-  worker.postMessage(); // Start worker without a message.
-&lt;/script&gt;
-</code></pre>
-
-<p><strong>Example</strong>: workerWithError.js tries to perform 1/x, where x is undefined.</p>
-
-<p><button onclick="startErrorWorker()">Run it</button></p>
-
-<p>workerWithError.js:</p>
-
-<pre><code class="language-js">self.addEventListener(&#39;message&#39;, function(e) {
-  postMessage(1/x); // Intentional error.
-};
-</code></pre>
-
-<h2 id="toc_16">A Word on Security</h2>
-
-<h3 id="toc_17">Restrictions with Local Access</h3>
-
-<p>Due to Google Chrome&#39;s security restrictions, workers will not run locally (e.g. from <code>file://</code>) in the latest versions of the browser. Instead, they fail silently! To run your app from the <code>file://</code> scheme, run Chrome with the <code>--allow-file-access-from-files</code> flag set. <strong>NOTE</strong>: It is not recommended to run your primary browser with this flag set. It should only be used for testing purposes and not regular browsing.</p>
-
-<p>Other browsers do not impose the same restriction.</p>
-
-<h3 id="toc_18">Same Origin Considerations</h3>
-
-<p>Worker scripts must be external files with the same scheme as their calling page. Thus, you cannot load a script from a <code>data:</code> URL or <code>javascript:</code> URL, and an <code>https:</code> page cannot start worker scripts that begin with <code>http:</code> URLs.</p>
-
-<h2 id="toc_19">Use Cases</h2>
-
-<p>So what kind app would utilize web workers? Unfortunately, web workers are still relatively new and the majority of samples/tutorials out there involve computing prime numbers. Although that isn&#39;t very interesting, it&#39;s useful for understanding the concepts of web workers. Here are a few more ideas to get your brain churning:</p>
-
-<ul>
-<li>  Prefetching and/or caching data for later use</li>
-<li>  Code syntax highlighting or other real-time text formatting</li>
-<li>  Spell checker</li>
-<li>  Analyzing video or audio data</li>
-<li>  Background I/O or polling of webservices</li>
-<li>  Processing large arrays or humungous JSON responses</li>
-<li>  Image filtering in <code>&lt;canvas/&gt;</code></li>
-<li>  Updating many rows of a local web database</li>
-</ul>
-
-<h2 id="toc_20">Demos</h2>
-
-<ul>
-<li>  Example from <a href="http://slides.html5rocks.com/#web-workers">HTML5Rocks slides</a></li>
-<li>  <a href="http://htmlfive.appspot.com/static/tracker1.html">Motion tracker</a></li>
-<li>  <a href="http://people.mozilla.com/%7Eprouget/demos/worker_and_simulatedannealing/index.xhtml">Simulated Annealing</a></li>
-<li>  <a href="http://html5demos.com/worker">HTML5demos sample</a></li>
-</ul>
-
-<h2 id="toc_21">References</h2>
-
-<ul>
-<li>  <a href="http://www.whatwg.org/specs/web-workers/current-work/">Web Workers</a> specification</li>
-<li>  <a href="http://developer.mozilla.org/en/Using_web_workers">&quot;Using web workers&quot;</a> from Mozilla Developer Network</li>
-<li>  <a href="http://dev.opera.com/articles/view/web-workers-rise-up/">&quot;Web Workers rise up!&quot;</a> from Dev.Opera</li>
-</ul>
+<p>concurrent.futures 框架非常好用，虽然内部实现机制异常复杂，读者也无需完全理解内部细节就可以直接使用了。但是需要特别注意的是不管是线程池还是进程池其内部的任务队列都是无界的，一定要避免消费者处理不及时内存持续攀升的情况发生。</p>
 
                         
                       </div>
@@ -529,10 +401,10 @@ self.onmessage = function(e) {
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/4/28</span>
+                    <span class="date">2018/6/13</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Node.js.html'>Node.js</a></span>
+          					    <span class="posted-in"><a href='Cocurrency.html'>Cocurrency</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -599,6 +471,8 @@ self.onmessage = function(e) {
 
       	<p class="cat-list">
         
+            <a href="Team.html"><strong>Team</strong></a>
+        
             <a href="Infra.html"><strong>Infra</strong></a>
         
             <a href="Coding.html"><strong>Coding</strong></a>
@@ -622,31 +496,31 @@ self.onmessage = function(e) {
 	      
 		      
 			      <li class="post">
-			        <a href="15277861393795.html">深入浅出Netty - EventLoop, EventLoopGroup</a>
+			        <a href="15301813999205.html">架构设计：负载均衡层设计方案（9）——负载均衡层总结下篇</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15277856731195.html">Functor and monad examples in plain Java</a>
+			        <a href="15301813109409.html">架构设计：负载均衡层设计方案（8）——负载均衡层总结上篇</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15277854106004.html">我必须得告诉大家的 MySQL 优化原理</a>
+			        <a href="15301812452579.html">架构设计：负载均衡层设计方案（7）——LVS + Keepalived + Nginx安装及配置</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15277850962764.html">Leaf——美团点评分布式ID生成系统</a>
+			        <a href="15301811967181.html">架构设计：负载均衡层设计方案（6）——Nginx + Keepalived构建高可用的负载层</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15277835170976.html">蚂蚁通信框架实践</a>
+			        <a href="15301811361753.html">架构设计：负载均衡层设计方案（5）——LVS单节点安装</a>
 			      </li>
 		     
 		  

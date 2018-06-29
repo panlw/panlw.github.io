@@ -76,6 +76,8 @@
     <li><label>Categories</label></li>
 
         
+            <li><a href="Team.html">Team</a></li>
+        
             <li><a href="Infra.html">Infra</a></li>
         
             <li><a href="Coding.html">Coding</a></li>
@@ -105,159 +107,101 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15263920307765.html">
+                <a class="clearlink" href="15290745541526.html">
                 
-                  <h1>“Exit Trap” 让你的 Bash 脚本更稳固可靠</h1>
+                  <h1>蚂蚁金服RPC框架结构分析</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://linux.cn/article-9639-1.html">https://linux.cn/article-9639-1.html</a> 2017-02-17<br/>
-作者：<a href="http://redsymbol.net/">aaron maxwell</a> 译者：<a href="https://github.com/Dotcra">Dotcra</a> 校对：<a href="https://github.com/wxy">wxy</a><br/>
-作者简介：美国加利福尼亚旧金山的作家，软件工程师，企业家。<a href="https://www.amazon.com/d/0692878971">Powerful Python</a> 的作者，他的 <a href="https://powerfulpython.com/blog/">blog</a>。</p>
+<p><a href="https://juejin.im/post/5b0573046fb9a07aa542ad58">https://juejin.im/post/5b0573046fb9a07aa542ad58</a></p>
 </blockquote>
 
-<p>有个简单实用的技巧可以让你的 bash 脚本更稳健 -- 确保总是执行必要的收尾工作，哪怕是在发生异常的时候。要做到这一点，秘诀就是 bash 提供的一个叫做 EXIT 的伪信号，你可以 <a href="http://www.gnu.org/software/bash/manual/bashref.html#index-trap">trap</a> 它，当脚本因为任何原因退出时，相应的命令或函数就会执行。我们来看看它是如何工作的。</p>
+<p>蚂蚁金服近期开源了研发多年的SOFA一篮子框架，其中就有一个非常核心的RPC框架，它叫SOFA-BOLT。小编今天花了近一天的时间仔细阅读研究它的源码，阅读过程中遇到了不少问题，蚂蚁金服的相关技术人员都非常耐心的及时解答了我的疑难。这里将我从中学到的知识点一并分享给大家。</p>
 
-<p>基本的代码结构看起来像这样：</p>
+<p>SOFA-BOLT基于开源的Netty框架，同时提供了服务器和客户端的实现。它的源码非常值得一读，结构简单，考虑周全，绝不是一个普通的玩具。它没有滥用设计模式，源码阅读起来比较直接，没有太多绕来绕去的复杂结构。</p>
 
-<pre><code class="language-sh">#!/bin/bash
-function finish {
-  # 你的收尾代码
-}
-trap finish EXIT
-</code></pre>
+<p><img src="media/15290745541526/15290751810439.jpg" alt=""/></p>
 
-<p>你可以把任何你觉得务必要运行的代码放在这个 <code>finish</code> 函数里。一个很好的例子是：创建一个临时目录，事后再删除它。</p>
+<p>一个节点既可以同时既是RPC服务器又是客户端，作为客户端该节点需要其它节点提供服务，作为服务器它可以为其它节点提供服务。不过上面这张图并不是合理的结构，因为两个服务相互耦合了，我需要你，你也需要我，就成了鸡蛋问题。比较合理的结构一般如下图所示，它们之间不构成环。<br/>
+<img src="media/15290745541526/15290751964181.jpg" alt=""/></p>
 
-<pre><code class="language-sh">#!/bin/bash
-scratch=$(mktemp -d -t tmp.XXXXXXXXXX)
-function finish {
-  rm -rf &quot;$scratch&quot;
-}
-trap finish EXIT
-</code></pre>
+<h2 id="toc_0">通讯协议</h2>
 
-<p>这样，在你的核心代码中，你就可以在这个 <code>$scratch</code> 目录里下载、生成、操作中间或临时数据了。<sup><a href="http://redsymbol.net/articles/bash-exit-traps/#footnote-1">注 1</a></sup></p>
+<p>通讯协议是客户端和服务器之间交流的语言，SOFA定义了自己的一套通讯协议，它的编码解码分为二层，第一层是消息体对象的二进制序列化，这部分默认由开源的Hession协议库序列化完成，第二层是负责给序列化的消息体增加一系列包装字段，形成一个完整的消息。包括请求ID、消息体的长度、协议版本号和CRC32校验位等等<br/>
+如果希望进一步优化网络性能，SOFA还提供了Snappy压缩协议，可以在现有的两层协议基础上增加第三层，能显著降低网络传输负担。压缩是时间换空间，提升网络性能的同时，它也会加重CPU计算，所以在使用时需要适当进行权衡。</p>
 
-<pre><code class="language-sh"># 下载所有版本的 linux 内核…… 为了科学研究！
-for major in {1..4}; do
-  for minor in {0..99}; do
-    for patchlevel in {0..99}; do
-      tarball=&quot;linux-${major}-${minor}-${patchlevel}.tar.bz2&quot;
-      curl -q &quot;http://kernel.org/path/to/$tarball&quot; -o &quot;$scratch/$tarball&quot; || true
-      if [ -f &quot;$scratch/$tarball&quot; ]; then
-        tar jxf &quot;$scratch/$tarball&quot;
-      fi
-    done
-  done
-done
-# 整合成单个文件
-# 复制到目标位置
-cp &quot;$scratch/frankenstein-linux.tar.bz2&quot; &quot;$1&quot;
-# 脚本结束， scratch 目录自动被删除
-</code></pre>
+<p><img src="media/15290745541526/15290752045597.jpg" alt=""/></p>
 
-<p>比较一下如果不用 <code>trap</code> ，你是怎么删除 <code>scratch</code> 目录的：</p>
+<h2 id="toc_1">连接池</h2>
 
-<pre><code class="language-sh">#!/bin/bash
-# 别这样做！
+<p>客户端和服务器之间一般需要建立多个连接，但是也不能每个请求都建立一个连接。一般是通过维护一个连接池，限定最大连接数。客户端通过有限的连接来和服务器进行通信。</p>
 
-scratch=$(mktemp -d -t tmp.XXXXXXXXXX)
+<p>我们在使用Jedis客户端和Redis服务器进行通信时，也是通过连接池来获取连接的。Jedis的连接必须是线程独占的，因为它不是线程安全的。从连接池中获取连接时，其它线程就暂时拿不到这个连接了，待当前线程处理完毕后，要将连接归还给线程池，这样其它线程才可以继续使用这个连接。</p>
 
-# 在这里插入你的几十上百行代码
+<p><img src="media/15290745541526/15290752153060.jpg" alt=""/></p>
 
-# 都搞定了，退出之前把目录删除
-rm -rf &quot;$scratch&quot;
-</code></pre>
+<p>Redis的客户端请求和应答是顺序性的，一问一答，所以请求和应答不需要唯一ID就可以建立起关联。</p>
 
-<p>这有什么问题么？很多：</p>
+<p>Bolt不一样，它的问答是乱序的，问和答之间是必须通过请求的唯一ID来建立起关联。Bolt的客户端是线程安全的，它可以同时传递多个请求，连接对象会维护一个正在处理的RPC请求对象字典。当客户端想要发起RPC请求时，它不是从连接池中摘出一个独占连接，而是随意选择一个连接来传递自己的请求，这个连接也可以被其它线程同时使用。</p>
 
-<ul>
-<li>  如果运行出错导致脚本提前退出， <code>scratch</code> 目录及里面的内容不会被删除。这会导致资料泄漏，可能引发安全问题。</li>
-<li><p>如果这个脚本的设计初衷就是在脚本末尾以前退出，那么你必须手动复制粘贴 <code>rm</code> 命令到每一个出口。</p></li>
-<li><p>这也给维护带来了麻烦。如果今后在脚本某处添加了一个 <code>exit</code> ，你很可能就忘了加上删除操作 -- 从而制造潜在的安全漏洞。</p></li>
-</ul>
+<h2 id="toc_2">负载均衡</h2>
 
-<h3 id="toc_0">无论如何，服务要在线</h3>
-
-<p>另外一个场景： 想象一下你正在运行一些自动化系统运维任务，要临时关闭一项服务，最后这项服务需要重启，而且要万无一失，即使脚本运行出错。那么你可以这样做：</p>
-
-<pre><code class="language-sh">function finish {
-  # 重启服务
-  sudo /etc/init.d/something start
-}
-trap finish EXIT
-sudo /etc/init.d/something stop
-# 主要任务代码
-
-# 脚本结束，执行 finish 函数重启服务
-</code></pre>
-
-<p>一个具体的实例：比如 Ubuntu 服务器上运行着 MongoDB ，你要为 crond 写一个脚本来临时关闭服务并做一些日常维护工作。你应该这样写：</p>
-
-<pre><code class="language-sh">function finish {
-  # 重启服务
-  sudo service mongdb start
-}
-trap finish EXIT
-# 关闭 mongod 服务
-sudo service mongdb stop
-# （如果 mongod 配置了 fork ，比如 replica set ，你可能需要执行 “sudo killall --wait /usr/bin/mongod”）
-</code></pre>
-
-<h3 id="toc_1">控制开销</h3>
-
-<p>有一种情况特别能体现 EXIT <code>trap</code> 的价值：如果你的脚本运行过程中需要初始化一下成本高昂的资源，结束时要确保把它们释放掉。比如你在 AWS (Amazon Web Services) 上工作，要在脚本中创建一个镜像。</p>
-
-<p>（名词解释: 在亚马逊云上的运行的服务器叫 “<a href="http://aws.amazon.com/ec2/">实例</a>”。实例从<ruby>亚马逊机器镜像 <rt>Amazon Machine Image</rt></ruby> 创建而来，通常被称为 “AMI” 或 “镜像” 。AMI 相当于某个特殊时间点的服务器快照。）</p>
-
-<p>我们可以这样创建一个自定义的 AMI ：</p>
+<p>客户端提供了多种复杂均衡的实现，阿里默认使用带权重的随机算法(RandomLoadBalancer)，此外还有</p>
 
 <ol>
-<li>基于一个基准 AMI 运行一个实例（例如，启动一个服务器）。</li>
-<li>在实例中手动或运行脚本来做一些修改。</li>
-<li>用修改后的实例创建一个镜像。</li>
-<li>如果不再需要这个实例，可以将其删除。</li>
+<li>ConsistentHashLoaderBalancer 一致性hash，客户端和服务器之间的连接关系(谁跟谁连)比较稳定</li>
+<li>LocalPreferenceLoadBalancer 本地环回地址优先，提升本机调用性能</li>
+<li>RoundRobinLoadBalancer 循环依次来</li>
+<li>WeightedRoundRobinLoadBalancer 带权重的循环依次来</li>
+<li>RandomLoadBalancer 这个是带权重的随机，阿里的默认使用</li>
 </ol>
 
-<p>最后一步<strong>相当重要</strong>。如果你的脚本没有把实例删除掉，它会一直运行并计费。（到月底你的账单让你大跌眼镜时，恐怕哭都来不及了！）</p>
+<h2 id="toc_3">服务器线程模型</h2>
 
-<p>如果把 AMI 的创建封装在脚本里，我们就可以利用 <code>trap</code> EXIT 来删除实例了。我们还可以用上 EC2 的命令行工具：</p>
+<p>服务器采用传统netty多线程模型，一个acceptor线程专门用来接收连接，然后扔给io线程处理读消息并解码成请求对象，最后扔给业务线程池进行处理。<br/>
+<img src="media/15290745541526/15290752347331.jpg" alt=""/></p>
 
-<pre><code class="language-sh">#!/bin/bash
-# 定义基准 AMI 的 ID
-ami=$1
-# 保存临时实例的 ID
-instance=&#39;&#39;
-# 作为 IT 人，让我们看看 scratch 目录的另类用法
-scratch=$(mktemp -d -t tmp.XXXXXXXXXX)
-function finish {
-  if [ -n &quot;$instance&quot; ]; then
-    ec2-terminate-instances &quot;$instance&quot;
-  fi
-  rm -rf &quot;$scratch&quot;
-}
-trap finish EXIT
-# 创建实例，将输出(包含实例 ID )保存到 scratch 目录下的文件里
-ec2-run-instances &quot;$ami&quot; &gt; &quot;$scratch/run-instance&quot;
-# 提取实例 ID
-instance=$(grep &#39;^INSTANCE&#39; &quot;$scratch/run-instance&quot; | cut -f 2)
+<h2 id="toc_4">心跳</h2>
+
+<p>客户端和服务器之间会有定时心跳检测连接的存活，默认30s来一次。tcp的关闭是通过FIN包来通知对方的，如果因为网络问题，对方连FIN包都收不到，那么即使一边关闭了套接字，另一边可能还以为连接正常。所以心跳检测存活机制在长连接应用里非常普遍。如果客户端连续发了三次心跳都没有收到服务器的回复，那么就认为连接已经关闭。服务器也会有连接存活检测，如果一个客户端连接90s内没有任何消息进来，那么也认为该连接已经断开。服务器不会主动发送心跳消息。</p>
+
+<h2 id="toc_5">双工通信</h2>
+
+<p>RPC一般是由客户端向服务器发起一个请求，然后收到服务器的应答。Bolt的RPC是双工通信，服务器也可以向客户端主动发起请求，它们共享一个TCP连接。TCP连接本身就是双工的，所以这也不算什么奇迹。只是服务器在什么业务场景需要向客户端主动发起请求，这个蚂蚁并没有进行详细说明。<br/>
+<img src="media/15290745541526/15290752519556.jpg" alt=""/></p>
+
+<p>客户端作为主动连接方，它要负责重连和发起心跳消息。服务器作为被动方，它不需要处理重连，如果连接断开，它就直接将连接从集合中移除就行，不需要做特殊的处理，但是它会检测心跳消息，如果在一定时间内连接通道没有任何消息到来，它就会主动关闭。</p>
+
+<h2 id="toc_6">重连</h2>
+
+<p>客户端的重连策略是一个单独的模块，有两个地方会成为重连的入口。一个是正常连接断开触发channelInActive回调，另一个就是重连连接不能建立成功时需要进行重试。Bolt有一个单独的重连线程，所有需要重连的连接会被包装成一个任务塞进这个线程的任务队列，该线程不断地从队列里拿任务进行重连处理，如果重连失败会尝试再将任务重新包装进队列延后继续处理。默认是1s钟处理一个重连任务。<br/>
+<img src="media/15290745541526/15290752597075.jpg" alt=""/></p>
+
+<p>RPC连接是延迟建立的，它在第一次客户端发送RPC请求时尝试进行连接，如果连接失败，它会立即继续重连最多默认两次。如果三次尝试连接后还是没有建立成功，就向上层爆出异常。它不需要包装一个重连任务塞进ReconnectManager，因为后续客户端请求会继续触发连接。</p>
+
+<h2 id="toc_7">单向消息</h2>
+
+<p>RPC通常是一应一答，客户端可以同步等待响应，也可以提供回调接口等待结果通知。Bolt除了提供应答模式之外，还提供了oneway单向消息，这种消息服务器收到后不用回复，客户端发送请求之后就立即返回了也不需要等待结果。<br/>
+oneway消息一般用于不那么重要的日志类消息，它不能保证服务器一定能收到，所以此种业务消息应该是那种允许丢失的消息，形式上类似于UDP，它在牺牲可靠性的前提下能大幅提升消息的吞吐量。</p>
+
+<h2 id="toc_8">消息追踪</h2>
+
+<p>Bolt提供了回调接口，方便监控系统可以对请求的调用状况进行分析。监控的客户端可以通过实现该接口，注册进RPC的客户端和服务器进行打点收集日志，然后发送到日志分析系统。</p>
+
+<pre><code>`interface Tracer {
+    void startRpc(SofaRequest request);
+    void serverReceived(SofaRequest request);
+    void serverSend(SofaRequest request, SofaResponse response, Throwable throwable);
+    void clientReceived(SofaRequest request, SofaResponse response, Throwable throwable);
+    ...
+}`
 </code></pre>
 
-<p>脚本执行到这里，实例（EC2 服务器）已经开始运行 <sup><a href="http://redsymbol.net/articles/bash-exit-traps/#footnote-2">注 2</a>。接下来你可以做任何事情：在实例中安装软件，修改配置文件等，然后为最终版本创建一个镜像。实例会在脚本结束时被删除</sup> -- 即使脚本因错误而提前退出。（请确保实例创建成功后再运行业务代码。）</p>
+<h2 id="toc_9">总结</h2>
 
-<h3 id="toc_2">更多应用</h3>
-
-<p>这篇文章只讲了些皮毛。我已经使用这个 bash 技巧很多年了，现在还能不时发现一些有趣的用法。你也可以把这个方法应用到你自己的场景中，从而提升你的 bash 脚本的可靠性。</p>
-
-<h3 id="toc_3">尾注</h3>
-
-<ul>
-<li>  注 1. <code>mktemp</code> 的选项 <code>-t</code> 在 Linux 上是可选的，在 OS X 上是必需的。带上此选项可以让你的脚本有更好的可移植性。</li>
-<li>  注 2. 如果只是为了获取实例 ID ，我们不用创建文件，直接写成 <code>instance=$(ec2-run-instances &quot;$ami&quot; | grep &#39;^INSTANCE&#39; | cut -f 2)</code> 就可以。但把输出写入文件可以记录更多有用信息，便于调试 ，代码可读性也更强。</li>
-</ul>
+<p>Bolt是一个成熟的比较复杂的RPC系统，这篇小文章只讲解了其中一部分，内部还有大量的实现细节有待去挖掘。</p>
 
                         
                       </div>
@@ -266,10 +210,10 @@ instance=$(grep &#39;^INSTANCE&#39; &quot;$scratch/run-instance&quot; | cut -f 2
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/5/15</span>
+                    <span class="date">2018/6/15</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Bash.html'>Bash</a></span>
+          					    <span class="posted-in"><a href='Microservice.html'>Microservice</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -336,6 +280,8 @@ instance=$(grep &#39;^INSTANCE&#39; &quot;$scratch/run-instance&quot; | cut -f 2
 
       	<p class="cat-list">
         
+            <a href="Team.html"><strong>Team</strong></a>
+        
             <a href="Infra.html"><strong>Infra</strong></a>
         
             <a href="Coding.html"><strong>Coding</strong></a>
@@ -359,31 +305,31 @@ instance=$(grep &#39;^INSTANCE&#39; &quot;$scratch/run-instance&quot; | cut -f 2
 	      
 		      
 			      <li class="post">
-			        <a href="15277861393795.html">深入浅出Netty - EventLoop, EventLoopGroup</a>
+			        <a href="15301813999205.html">架构设计：负载均衡层设计方案（9）——负载均衡层总结下篇</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15277856731195.html">Functor and monad examples in plain Java</a>
+			        <a href="15301813109409.html">架构设计：负载均衡层设计方案（8）——负载均衡层总结上篇</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15277854106004.html">我必须得告诉大家的 MySQL 优化原理</a>
+			        <a href="15301812452579.html">架构设计：负载均衡层设计方案（7）——LVS + Keepalived + Nginx安装及配置</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15277850962764.html">Leaf——美团点评分布式ID生成系统</a>
+			        <a href="15301811967181.html">架构设计：负载均衡层设计方案（6）——Nginx + Keepalived构建高可用的负载层</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15277835170976.html">蚂蚁通信框架实践</a>
+			        <a href="15301811361753.html">架构设计：负载均衡层设计方案（5）——LVS单节点安装</a>
 			      </li>
 		     
 		  

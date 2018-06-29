@@ -76,6 +76,8 @@
     <li><label>Categories</label></li>
 
         
+            <li><a href="Team.html">Team</a></li>
+        
             <li><a href="Infra.html">Infra</a></li>
         
             <li><a href="Coding.html">Coding</a></li>
@@ -105,135 +107,374 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15277814705334.html">
+                <a class="clearlink" href="15301811967181.html">
                 
-                  <h1>有货移动端DevOps-自建APM系统</h1>
+                  <h1>架构设计：负载均衡层设计方案（6）——Nginx + Keepalived构建高可用的负载层</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p>原创：曹镏  高效开发运维 2018/05/28</p>
-
-<p><a href="https://mp.weixin.qq.com/s?__biz=MzIzNjUxMzk2NQ==&amp;mid=2247489376&amp;idx=1&amp;sn=2c06cd726d03317ab3b2134e393d101e&amp;chksm=e8d7e8a2dfa061b4b8f4b95a710e7538becf501951ca451c63473e219d9e610c230549ceb709&amp;mpshare=1&amp;scene=23&amp;srcid=0529xDVbCCeY0HgyVSeq5kjF%23rd">原文地址</a></p>
+<p><a href="https://blog.csdn.net/yinwenjie/article/details/47130609">https://blog.csdn.net/yinwenjie/article/details/47130609</a></p>
 </blockquote>
 
-<pre><code>本文概述了有货 App 团队的同学，在资源有限的情况下，自己动手，借助多种数据工具，通过简洁的架构，为有货 App 开发一套多维实时的监控系统，从而更好地完成自己的工作，也给其他团队的小伙伴在自建 APM 的道路上提供一个参考，为移动端的 DevOps 打开一些思路。
+<h1 id="toc_0"><a></a>1、概述</h1>
+
+<p>前两遍文章中，我们一直在说后文要介绍 Nginx + Keepalived 的搭建方式。这篇文章开始，我们就来兑现前文的承诺，后续的两篇文章我们将介绍 Nginx + Keepalived 和 LVS + Keepalived 搭建高可用的负载层系统。如果你还不了解 Nginx 和 LVS 的相关知识，请参见我之前的两篇文章《架构设计：负载均衡层设计方案（2）——Nginx 安装》（<a href="http://blog.csdn.net/yinwenjie/article/details/46620711">http://blog.csdn.net/yinwenjie/article/details/46620711</a>）、《架构设计：负载均衡层设计方案（4）——LVS 原理》（<a href="http://blog.csdn.net/yinwenjie/article/details/46845997">http://blog.csdn.net/yinwenjie/article/details/46845997</a>）</p>
+
+<h1 id="toc_1"><a></a>2、准备工作</h1>
+
+<h2 id="toc_2"><a></a>2.1、准备两台独立工作的 Nginx 系统</h2>
+
+<p>准备两台 Nginx 的主机，如果您不知道为什么需要准备两台，没关系，准备就行。保证两台 Nginx 主机能够被外网访问。在我这里，安装两台 Nginx 的虚拟机 IP 地址分别是：</p>
+
+<ul>
+<li>  Nginx VM1：192.168.61.129:80</li>
+<li>  Nginx VM2：192.168.61.130:80</li>
+</ul>
+
+<p>访问相关的地址，确保两台 Nginx 都是可用的：</p>
+
+<ul>
+<li><p>VM1：<br/>
+<img src="https://img-blog.csdn.net/20150730141119869" alt=""/></p></li>
+<li><p>VM2：<br/>
+<img src="https://img-blog.csdn.net/20150730141305112" alt=""/></p></li>
+</ul>
+
+<p>Nginx 的安装在我的前文《架构设计：负载均衡层设计方案（2）——Nginx 安装》（<a href="http://blog.csdn.net/yinwenjie/article/details/46620711">http://blog.csdn.net/yinwenjie/article/details/46620711</a>）中已经进行了详细的讲解，所以这里的讲解就一笔带过。</p>
+
+<h2 id="toc_3"><a></a>2.2、再分别独立安装 Keepalived 系统</h2>
+
+<p>我们的目标是 “<strong>在一台工作的 Nginx 崩溃的情况下，系统能够检测到，并自动将请求切换到另外一台备份的 Nginx 服务器上</strong>”。所以，之前安装的两台 Nginx，一台是 Master 服务器是主要的工作服务器，另一台是备份服务器，在 Master 服务器出现问题后，由后者接替其工作。如下图所示（外网的请求使用一个由 keepalived 控制的虚拟的浮动 IP 进行访问）：</p>
+
+<p><img src="https://img-blog.csdn.net/20150730143806220" alt=""/></p>
+
+<ul>
+<li><p>请到 <a href="http://www.keepalived.org">www.keepalived.org</a> 下载 keepalived 的稳定版本，我下载的是 1.2.17 版本。</p></li>
+<li><p>解压，并且安装。注意，我在这里制定了 perfix 参数，指定安装位置，这是为了我自己便于管理。您在安装的时候，可以根据自己的情况来决定是不是加这个参数：</p>
+
+<pre><code>tar -zxvf keepalived-1.2.17.tar.gz
+
+./configure --perfix=/usr/keepalived-1.2.17
+
+make &amp; make install 
+
+</code></pre></li>
+<li><p>如果您不是安装到默认路径，那么为了将 keepalived 做成系统服务，您需要拷贝一些文件到指定的路径下，如下：</p>
+
+<pre><code>cp /usr/keepalived-1.2.17/etc/sysconfig/keepalived  /etc/sysconfig/keepalived
+
+cp /usr/keepalived-1.2.17/sbin/keepalived /usr/sbin/keepalived
+
+cp /usr/keepalived-1.2.17/etc/rc.d/init.d/keepalived  /etc/rc.d/init.d/keepalived
+
+mkdir /etc/keepalived
+
+cp /usr/keepalived-1.2.17/etc/keepalived/keepalived.conf /etc/keepalived/keepalived.conf
+
+</code></pre></li>
+<li><p>然后您可以将 keepalived 做成服务了：</p>
+
+<pre><code>/etc/rc.d/init.d/keepalived
+
+chkconfig keepalived on
+
+</code></pre></li>
+</ul>
+
+<h1 id="toc_4"><a></a>3、检查 Nginx 状态</h1>
+
+<p>在正式介绍 Nginx + Keepalived 的配置前，我们首先介绍一下如何检查 Nginx 的状态。是的，这是为下一小节做准备。<strong>我们只有能够正确检查 Nginx 的状态，才说得上在 Nginx 节点出现问题的情况下，切换到另一台 Nginx 上接替其工作</strong>。</p>
+
+<p>Nginx 为什么会停止响应呢？在我的工作经验中，无非有以下几种情况：</p>
+
+<ul>
+<li><p>Nginx 的所有进程被强行终止（或管理进程）。<br/>
+这种情况，是我们需要检查和切换的。无论什么情况下进程被终止了，如果它不能重启，我们就要切换到备机。</p></li>
+<li><p>Nginx 日志盘的挂载点崩溃或者磁盘写满。<br/>
+这个也是我们需要检查和切换的。</p></li>
+<li><p>Nginx 已经达到设置的最大连接数，暂时停止响应。<br/>
+这种情况下，我们不能进行备机切换，因为通过 VIP:192.168.61.100 连接过来的用户请求比较多（在我们优化参数后，可以达到 65535 / 4 的数量），一旦我们进行备机切换，这些用户请求将全部异常。这个问题的解决需要靠增加负载机器，而不是主备切换。</p></li>
+<li><p>Nginx 物理机异常关机。<br/>
+这个肯定是需要进行检查和切换的。</p></li>
+</ul>
+
+<p>我们来看一段 Linux 脚本：</p>
+
+<pre><code>#!/bin/sh
+if [ $(ps -C nginx --no-header | wc -l) -eq 0 ]; then
+    /usr/nginx-1.6.2/sbin/nginx
+fi
+
+sleep 2
+if [ $(ps -C nginx --no-header | wc -l) -eq 0 ]; then
+    service keepalived stop
+fi
+
 </code></pre>
 
-<p>得益于智能手机的发展，当下我们对用户的体验追求已经到了几乎极致的程度。主流的监控 OneAPM，New Relic… 由于面向广大用户，强调数据共性，很难通过 UDID 或者 UID 来定位一些比较难以复现或局部的问题。同时由于数据保密性等原因，对事件上报的信息量也是非常的有限。随着用户规模的增长，特殊问题，局部问题覆盖的用户越来越来，自建监控就一个必然的选择。</p>
+<p>我们大致讲解一下 “ps -C nginx –no-header | wc -l” 这个命令：<br/>
+- ps 这个命令用来进行 Linux 中进程相关的查询，-C 意思是按照进程名称进行查询。查询出来后的结果如下：</p>
 
-<p>需求是迫切的，资源是有限的。为了尽快的上线监控系统。有货 iOS 和 Android 的小伙伴们本着 “流自己的汗，吃自己的饭，自己的事情自己干” 的原则，不强调客观条件，自己撸出了一套 App 的 APM 监控系统。</p>
+<pre><code>[root@vm2 ~]# ps -C nginx
+  PID TTY          TIME CMD
+ 3374 ?        00:00:00 nginx
+ 3375 ?        00:00:01 nginx
 
-<h2 id="toc_0">设计</h2>
+</code></pre>
 
-<p>我们把问题处理的流程大致梳理为 “持续监控”、“发现问题” 、“定位问题”、“修复问题”。这往复的四个步骤，其中“监控”，“发现” 和“定位”都依赖于系统的采集和上报。</p>
+<ul>
+<li><p>如果要去掉统计出来的结果表的头部，那么要使用 –no-header 参数，加上参数后，查询结果如下：</p>
 
-<p><img src="https://mmbiz.qpic.cn/mmbiz_png/FE4VibF0SjfMusg7SyM0ljwABGInyksDablCiaxacwcMhpe7mshHNYgG6nx8TaOGTPnjoPibnP1wcibNY1QOSvibbKg/640?wx_fmt=png" alt=""/></p>
+<pre><code>[root@vm2 ~]# ps -C nginx  --no-header
+ 3374 ?        00:00:00 nginx
+ 3375 ?        00:00:01 nginx
 
-<p>通过对需求的分析，我们把数据以事件的形式上报，上报后数据根据场景分为两类：</p>
+</code></pre></li>
+<li><p>“|”，这是 Linux 中的管道流命令，将上一个命令的输出结果作为下一个命令的输入。</p></li>
+<li><p>wc 统计命令，-l 参数，代表按行数进行统计。所以整个命令的输出结果为：</p>
 
-<ol>
-<li> 指标类数据</li>
-<li> 日志类数据</li>
-</ol>
+<pre><code>[root@vm2 ~]# ps -C nginx --no-header | wc -l
+2
 
-<h3 id="toc_1">1. 指标类数据</h3>
+</code></pre></li>
+</ul>
 
-<p>指标类数据主要是对用户上报的信息根据我们需要的维度做聚合，便于我们掌握 app 的整体情况，比如用户整体的网络错误，网络延时。从整体的角度观察我们 app 的健康程度。 这个过程概括为 “发现问题”。</p>
+<p>清楚了其中最关键的命令，我们再来讲解一下整个脚本的含义：<br/>
+第一个判断说明的是，如果当前 nginx 的进程数量 == 0，那么执行 nginx 的启动命令，试图重新启动 nginx；接下来等待 2 秒（这是为了给 nginx 一定的启动时间），然后再次查看 Nginx 的进程数量，如果仍然 == 0，那么停止这台机器的 keepalived 服务，以便备用的 Keepalived 节点检查到 Keepalived 已经停止这个事件，并将浮动 IP 切换到备用服务器上。</p>
 
-<h3 id="toc_2">2. 日志类数据</h3>
+<p><strong>注意，这段脚本是和我机器上的 Nginx 安装路径、Keepalived 服务的状态有关的，您如果要用的话，请进行相应的更改</strong>。</p>
 
-<p>日志类数据则记录完整的上报数据，用于我们对问题的诊断。 这个过程概括为 “定位问题”。<br/>
-围绕这两类数据的采集和分析，我们启动了第一阶段的项目。</p>
+<h1 id="toc_5"><a></a>4、Nginx + Keepalived 最简配置</h1>
 
-<h2 id="toc_3">第一阶段</h2>
+<h2 id="toc_6"><a></a>4.1、请再次确认前提</h2>
 
-<p><img src="https://mmbiz.qpic.cn/mmbiz_png/FE4VibF0SjfMusg7SyM0ljwABGInyksDaGjaAY4ibHZrcU93rkaS4Mrb4DSFRibVMMfXia9e5Pbyfcru4WHIBLaACw/640?wx_fmt=png" alt=""/></p>
+<p>（首先，为了保证不会出现额外的问题，请首先关闭防火墙，当然正式环境里面，防火墙不能关闭）</p>
 
-<p>App 将事件数据上报至 OpenResty，在 OpenResty 中对请求进行简单的处理和封装，拆分成指标和日志，然后将处理完成的数据分别写入 InfluxDB 和 MongoDB 中。再通过 Grafana 实现数据可视化。通过一个 Web 页面来查询存储在 MongoDB 中的日志。</p>
+<p>外网进行 Nginx 访问的浮动 IP：192.168.61.100</p>
 
-<p>App 上报的数据转换为有意义的指标, 这个过程是靠 “聚合” 来实现的。这套系统中 “聚合” 则是借助 InfluxDB 完成的。</p>
+<ul>
+<li><p>我们将 192.168.61.129 这台服务器上运行的 Nginx 作为主要的 Nginx，其上的 keepalived 服务我们设置成 Master 方式。</p></li>
+<li><p>我们将 192.168.61.129 这台服务器上运行的 Nginx 作为备用的 Nginx 服务，其上的 keepalived 服务我们设置为 Backup 方式。</p></li>
+</ul>
 
-<h3 id="toc_4">InfluxDB</h3>
+<h2 id="toc_7"><a></a>4.2、正式开始设置</h2>
 
-<p>在 InfluxDB 中，我们先将所有数据写入不同类型的事实表中，然后通过多个 Continuous Query 对数据进行聚合处理，把大量的明细数据聚合成一定时间周期的聚合数据（主要的周期为 30 秒或 1 分钟），再通过 Retention Policy 来控制不同类型表的数据有效期，达到资源最高效利用的目的。</p>
+<p>注意，经过安装，您的 keepalived 配置文件的位置在 “/etc/keepalived/keepalived.conf”（如果没有，请创建一个，但是经过之前的步骤，这个位置肯定是有文件的，如果没有可能是之前您的步骤出现了什么问题）。</p>
 
-<p><img src="https://mmbiz.qpic.cn/mmbiz_png/FE4VibF0SjfMusg7SyM0ljwABGInyksDaPyFpDrdMAVBjicTsq0VNibcEaDz40Cia8A6RgHOB9hNpSMpGafRfl1LZA/640?wx_fmt=png" alt=""/></p>
+<h2 id="toc_8"><a></a>4.2.1、设置 192.168.61.129 上的 MASTER</h2>
 
-<p>数据可视化部分则用 Grafana 来支撑的，我们的 Main Dashboard 通过 20 张的图表来展示整体的健康状况，同时在这 20 张图表背后，还有数个更加详细的图表支撑微观方面数据。</p>
+<p>我们先来看看 192.168.61.129 上的原始 ip 信息：</p>
 
-<p>比如有张图表绘制的是当前全网用户设备发生的网络错误率。 通过这个指标和 24 小时前的对比，我们能够直观了解整体的网络健康状况。当该指标超过某个阈值或相比昨天同时段对比有明显上升，则触发告警。实现 “发现问题”。</p>
+<p><img src="https://img-blog.csdn.net/20150730181017823" alt=""/></p>
 
-<p><img src="https://mmbiz.qpic.cn/mmbiz_png/FE4VibF0SjfMusg7SyM0ljwABGInyksDaoHzy1BDC7ichtoHqVhdAB7UFB2CgYrGYSiadsNGM8VruT7cwzic8CePoQ/640?wx_fmt=png" alt=""/></p>
+<p>注意，这个 129 机器上的网卡设备号是 eth1，而不是 eth0，这个参数我们将在配置 keepalived 的时候使用到。</p>
 
-<p>当出现告警后，通过网络相关的 dashboard 查看是由哪个接口发生的，什么类型的错误。再根据错误类型去日志平台查询日志。完成 “定位问题”。</p>
+<p>下面是 129 上 keepalived 的最简配置：</p>
 
-<h3 id="toc_5">MongoDB</h3>
+<pre><code>! Configuration File for keepalived
+# global setting , notify email setting
+global_defs {
+   #存在于同一个网段中，一组keepalived的各个节点都有不同的名字
+   #在全局设置中，我们还可以设置管理员的email信息等。
+   router_id LVS_V1
+}
 
-<p>对于日志数据我们直接将上报的 json 内容逐条拆分后写入 Mongodb。直接通过 web 页面从 Mongodb 查询对应时间的 App 日志。</p>
+#这个是我们在上一小结讲到的nginx检查脚本，我们保存在这个文件中（注意文件权限）
+vrrp_script chknginx {
+    script &quot;/usr/keepalived-1.2.17/bin/checknginx.sh&quot;
+    #每10秒钟，检查一次
+    interval 10
+}
 
-<p>这套系统的优势体现在架构非常的轻盈，成本很低。只需要简单的 OpenResty 的开发以及对 InfluxDB 做一些连续查询。在日志量不大的情况下，完全可以满足基本的移动端性能监控以及异常监测的需求。</p>
+#keepalived实例设置，是最重要的设置信息
+vrrp_instance VI_1 {
+    #state状态MASTER表示是主要工作节点。
+    #一个keepalived组中，最多只有一个MASTER节点，当然也可以没有
+    state MASTER
+    #实例所绑定的网卡设备，我的网卡设备是eth1。您按照您自己的来
+    interface eth1
+    #同一个keepalived组，节点的设置必须一样，这样才会被识别
+    virtual_router_id 52
+    #节点优先级，BACKUP的优先级一定要比MASTER的优先级低
+    priority 100
+    #组播信息发送间隔，两个节点设置必须一样
+    advert_int 1
+    #实际的eth1上的固定ip地址
+    mcast_src_ip=192.168.61.129
+    #验证信息，只有验证信息相同，才能被加入到一个组中。
+    authentication {
+        auth_type PASS
+        auth_pass 1111
+    }
+    #虚拟地址和绑定的端口，如果有多个，就绑定多个
+    #dev 是指定浮动IP要绑定的网卡设备号
+    virtual_ipaddress {
+        192.168.61.100 dev eth1
+    }
 
-<p>在运行了一段时间后，我们有了新的需求。</p>
+    #设置的检查脚本
+    #关联上方的“vrrp_script chknginx”
+    track_script {
+        chknginx
+    }
+}
 
-<p>中国有 23 个省，5 个自治区，4 个直辖市，以及香港、澳门 2 个特别行政区。电信、联通、移动三大运营商。网络制式从 2G、3G、4G 到 WiFi，还有各种各样的移动设备。这些条件构成了数量难以想象的场景。当仅仅在个别场景下发生问题，或是部分场景下发生问题的时候。我们 “发现问题” 的即时性会变差，“定位问题”所用的时间也越发的变长。</p>
+</code></pre>
 
-<p>为了缩短 “定位问题” 的时间。提高发现问题和解决问题的效率。多维分析能力是我们所渴望的，如果在原有的系统上做多维分析，存在如下问题：</p>
+<h2 id="toc_9"><a></a>4.2.2、设置 192.168.61.130 上的 BACKUP</h2>
 
-<ol>
-<li><p>InfluxDB 缺乏合理免费的集群方案，我们在建立了自己的 APM 以后，客户端同学对数据和监测的需求突飞猛进，数据量每天以几何级数增长，再对其进行多维分析，单机的 InfluxDB 很难满足性能要求。</p></li>
-<li><p>MongoDB 在数据量很大的场景下，直接查询速度很慢。由于我们日志数据的多样性，在对多个维度建索引后，整体索引效率很低。</p></li>
-</ol>
+<p>再来看看 192.168.61.130 这个备用节点上 keepalived 的设置：</p>
 
-<p><section class="" style="font-family: Avenir, -apple-system-font, 微软雅黑, sans-serif;line-height: 1.1;color: rgb(63, 63, 63);font-size: 20px;text-align: center;white-space: normal;background-color: rgb(255, 255, 255);">第二阶段</section></p>
+<pre><code>! Configuration File for keepalived
+# global setting , notify email setting
+global_defs {
+   #这里和master节点不同
+   router_id LVS_V2
+}
 
-<p><img src="https://mmbiz.qpic.cn/mmbiz_png/FE4VibF0SjfMusg7SyM0ljwABGInyksDaFpHbicibZsT8FMpAf9ibF97iadUDnfFBjvvWcW3CU2gcGP4oTmYk6qVVlw/640?wx_fmt=png" alt=""/></p>
+#check nginx
+vrrp_script chknginx {
+    script &quot;/usr/keepalived-1.2.17/bin/checknginx.sh&quot;
+    interval 10
+}
 
-<p>为了满足大量（这里暂时不成为海量）数据的多维实时查询的需求，我们对架构中数据库和数据摄入过程进行了升级，InfluxDB 变更为 Druid， MongoDB 变更为 Greenplum， 数据也不再由 OpenResty 直接插入，而是通过了 Kafka 和 log 文件把写入过程解耦，减少数据写入次数，提升处理数据的量级。</p>
+# instance setting
+vrrp_instance VI_1 {
+    # 这里和Master节点不一样
+    state BACKUP
+    interface eth1
+    # 这里一定是一样的
+    virtual_router_id 52
+    # 这里的优先级比Master节点低
+    priority 99
+    advert_int 1
+    # 这里和Master节点不一样
+    mcast_src_ip=192.168.61.130
+    authentication {
+        auth_type PASS
+        auth_pass 1111
+    }
+    virtual_ipaddress {
+        192.168.61.100 dev eth1
+    }
 
-<h3 id="toc_6">Druid</h3>
+    track_script {
+        chknginx
+    }
+}
 
-<p>Druid 是在海量时序数据上面提供实时分析查询的开源 OLAP 数据存储。</p>
+</code></pre>
 
-<p>Druid 本身对于 join 这样的操作很不友好，所以我们没有考虑用一些模型（星型或者雪花型），而是采用大的事实表，其中包含了一次事实关联的所有维度，看着很臃肿，但是查询的性能让人满意。在随时变更维度的情况下，Druid 实时查询依然维持在秒级。这不得不让人刮目相看。</p>
+<h2 id="toc_10"><a></a>4.3、启动主节点和备用节点</h2>
 
-<p>同时丰富的查询组件和聚合函数，让复杂的查询得以简单的实现。所以在查询性能、便捷性、数据量等方面的综合考量下，我们选择了 Druid 作为 InfluxDB 的升级方案。</p>
+<p>以上配置中请注意几个关键点：</p>
 
-<p>不同于 InfluxDB，我们不再通过连续查询来做数据聚合，Druid 自身在摄入的过程中可以对指定的 Dimension 进行 roll-up 操作。极大的压缩了数据量。我们的数据经过 roll-up，每分钟从 25 万条压缩到了 8 万多条，效果比较显著。不过压缩数据是以牺牲原始数据为代价的，预聚合仅保留指定的 Dimension 及 Aggregations 结果，所以请妥善设置 Dimension。 Dimension 会发生 SQL 中 Group By 的效果，参数维度多势必降低聚合效果。尤其需要的注意 Dimension 的选择，如果一不小心选择了高基字段作为 Dimension，那么压缩效率会低的惊人。我们曾经因为数据处理的失误，将一个 Dimension 的 Value 数从 2000 变成了 200W, 直接导致当天的 segments 占用的空间比以往大 22 倍。通过摄入周期的调整，还可以做到更大的压缩比，这个取决 queryGranularity 字段，它决定了压缩后的数据最小时间粒度，目前我们使用的是分钟。</p>
+<ul>
+<li>  注意 nginx 状态检查的脚本的位置，根据自己创建文件的位置不一样，脚本检查的指定位置也不一样</li>
+<li>  注意优先级，MASTER 节点的优先级一定要高于所有的 BACKUP 节点。</li>
+<li>  <strong>注意局域网的组播地址，一定要可用</strong>。局域网内所有 keepalived 节点都是利用组播方式寻找对方。</li>
+<li>  谁说 BACKUP 节点只能有一个！？</li>
+<li>  最后，keepalived 一定要注册成服务形式，您可以想象上面所有脚本、配置、命令如果重启后再来一次，会是什么情况。</li>
+</ul>
 
-<p>在使用 Grafana 接入 Druid 的时候还是遇到一些小坑，由于 Grafana 官方集成的 Druid 插件实在是功能太有限，比如对 Time Range 的限制，我们不得不在源码的基础上做了部分调整。</p>
+<p>接下来，我们要开始启动 Master 节点和 Backup 节点了，为了准确的查看日志状态，您需要观察系统日志。系统日志所在的位置：</p>
 
-<p><section class="" style="font-family: Avenir, -apple-system-font, 微软雅黑, sans-serif;line-height: 1.1;color: rgb(63, 63, 63);font-size: 16px;text-align: center;white-space: normal;background-color: rgb(255, 255, 255);">Kafka</section></p>
+<pre><code>tail -f /var/log/messages
 
-<p>Druid 两种数据摄入源:</p>
+</code></pre>
 
-<ol>
-<li> 流式数据</li>
-<li> 静态文件数据</li>
-</ol>
+<p>先启动 Master 节点：</p>
 
-<p>这两种数据源又都有两种方式摄入，分别为 pull 方式和 push 方式。我们采用了 real time index（push 的一种）方式，启动实时 task 来从 kafka 中摄取数据。</p>
+<pre><code>service keepalived start
 
-<h3 id="toc_7">Greenplum</h3>
+</code></pre>
 
-<p>Greenplum 相比我们原先使用的 MongoDB, 支持列式存储, 并行查询效率更高。在不建索引的情况下，50 列千万级别的数据在 1，2 秒能查完，完全满足我们对日志查询的需求。</p>
+<p>再启动 Backup 节点：</p>
 
-<p>起初我们使用 Http 的方式批量插入 Greenplum，但是当写入速度超过 6 千条每秒时，查询速度直线下降。</p>
+<pre><code>service keepalived start
 
-<p>明显写入不是 Greenplum 的强项，为了解决这个问题，我们是把日志以文件的形式写入 NFS 中, 由 Greenplum 定时摄入。</p>
+</code></pre>
 
-<p>同时为了保证性能和简化写入，还对 OpenResty 的写入进行了优化，利用 nginx 的 subrequest 写 access.log 的功能来实现日志写入，并且整个过程封装到协程中执行。调整后每分钟能够轻松写入 50 万条。</p>
+<p><strong>如果设置和启动都是成功的，您不会在日志信息中收到任何的 keepalived 报错信息</strong>。接下来您就可以使用 192.168.61.100 这个 IP 访问 Nginx 了：</p>
 
-<p><img src="https://mmbiz.qpic.cn/mmbiz_png/FE4VibF0SjfMusg7SyM0ljwABGInyksDaHan3wopRd9Jujiay2MExXXoq7zpGiaRwhmHJjdh0NwWnAclbFzqB1VJg/640?wx_fmt=png" alt=""/></p>
+<p><img src="https://img-blog.csdn.net/20150730210724952" alt=""/></p>
 
-<h2 id="toc_8">总结</h2>
+<p>另外，这个绑定在 192.168.61.129 上的浮动 ip：192.168.61.100，您通过 ipconfig 命令一般是看不到的，要使用 ip addr 命令进行查看：</p>
 
-<p>这套系统对个性问题，共性问题的快速甄别起到了关键性的作用，也极大的提升了定位问题的速度。在针对某些维度或特征做针对性的优化的时候，效果也更容易监控。</p>
+<p><img src="https://img-blog.csdn.net/20150730211138410" alt=""/></p>
 
-<p>通过不同类型事件的采集，我们还实现了页面响应时间（多维）、http 请求分阶段响应时间（多维）、页面卡顿分析、页面加载性能监控等多方位的监控系统，为我们的优化工作指明了方向。对于 iOS 或者 Android 开发的同学，这样一套系统既能满足需求，也易于开发，相比传统 ELK 日志分析在实时性和简易性都提升很多。</p>
+<p>为了试验，我们主动停止 Master 节点上的 keepalived 服务（注意，杀 Nginx 进程不起作用，因为我们的检查脚本会试图重新启动 Nginx 进程），接下来我们可以看到浮动 IP 漂移到了 130 备机上：</p>
 
-<p>如果技术团队的资源比较紧张，移动端的同学自己动手实践下 DevOps 也是不错的选择。</p>
+<p><img src="https://img-blog.csdn.net/20150730211530195" alt=""/></p>
+
+<h1 id="toc_11"><a></a>5、Nginx + Keepalived 非抢占模式</h1>
+
+<p>通过第 4 节的详细介绍，相信您对 Nginx + Keepalived 的安装方式有了一个明确的理解。keepalived 的切换可以是自动的，但是却做不到毫秒级别，他怎么都需要几秒钟的时间进行切换。</p>
+
+<p>这就有一个问题，虽然在主节点出现问题我们转向备份节点时，这个延时无可避免，但是在我们修复主节点后，实际上并没有必要再马上做一次切换，所以 Keepalived 提供了一种非抢占模式，来满足这个要求。</p>
+
+<p>下面我们就来介绍一下 Keepalived 的非抢占模式的配置（无 MASTER 节点，全部依据优先级确定哪个节点进行工作）：</p>
+
+<h2 id="toc_12"><a></a>5.1、原来主节点的配置改动</h2>
+
+<pre><code>! Configuration File for keepalived
+# global setting , notify email setting
+global_defs {
+   router_id LVS_V1
+}
+
+vrrp_script chknginx {
+    script &quot;/usr/keepalived-1.2.17/bin/checknginx.sh&quot;
+    interval 10
+    # 一旦节点失效，节点的优先级就减少2
+    # 有多少个keepalived节点，就填写多少数量。
+    # 这样保证这个节点的优先级比其他节点都低
+    weight -2
+    # fall 表示多少次检查失败，就算节点失效。默认1
+    #fall 1
+}
+
+vrrp_instance VI_1 {
+    #state状态都是BACKUP表示是主要工作节点。
+    state BACKUP
+    interface eth1
+    virtual_router_id 52
+    # 这个关键配置项，设置为“非抢占”模式
+    nopreempt
+    # 每个节点的优先级一定要不一样
+    priority 100
+    advert_int 1
+    mcast_src_ip=192.168.61.129
+    authentication {
+        auth_type PASS
+        auth_pass 1111
+    }
+    #虚拟地址和绑定的端口，如果有多个，就绑定多个
+    #dev 是指定浮动IP要绑定的网卡设备号
+    virtual_ipaddress {
+        192.168.61.100 dev eth1
+    }
+
+    #设置的检查脚本
+    #关联上方的“vrrp_script chknginx”
+    track_script {
+        chknginx
+    }
+}
+
+</code></pre>
+
+<p>原来的主节点设置更改完成。</p>
+
+<h2 id="toc_13"><a></a>5.2、原来备份节点的配置改动</h2>
+
+<p>加入 “非抢占” 模式的关键字、更改一个确定的优先级，设置检查失败后优先级的递减量，就行了。</p>
+
+<h1 id="toc_14"><a></a>6、后文介绍</h1>
+
+<p>这是我 8 月份的首篇文章，后文我们将介绍 LVS + Keepalived + Nginx 的安装和配置方式。注意，LVS 被 Keepalived 后，就没有必要在对 Nginx 做 Keepalived 了。</p>
 
                         
                       </div>
@@ -242,10 +483,10 @@
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/5/31</span>
+                    <span class="date">2018/6/28</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Container.html'>Container</a></span>
+          					    <span class="posted-in"><a href='Network.html'>Network</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -312,6 +553,8 @@
 
       	<p class="cat-list">
         
+            <a href="Team.html"><strong>Team</strong></a>
+        
             <a href="Infra.html"><strong>Infra</strong></a>
         
             <a href="Coding.html"><strong>Coding</strong></a>
@@ -335,31 +578,31 @@
 	      
 		      
 			      <li class="post">
-			        <a href="15277861393795.html">深入浅出Netty - EventLoop, EventLoopGroup</a>
+			        <a href="15301813999205.html">架构设计：负载均衡层设计方案（9）——负载均衡层总结下篇</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15277856731195.html">Functor and monad examples in plain Java</a>
+			        <a href="15301813109409.html">架构设计：负载均衡层设计方案（8）——负载均衡层总结上篇</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15277854106004.html">我必须得告诉大家的 MySQL 优化原理</a>
+			        <a href="15301812452579.html">架构设计：负载均衡层设计方案（7）——LVS + Keepalived + Nginx安装及配置</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15277850962764.html">Leaf——美团点评分布式ID生成系统</a>
+			        <a href="15301811967181.html">架构设计：负载均衡层设计方案（6）——Nginx + Keepalived构建高可用的负载层</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15277835170976.html">蚂蚁通信框架实践</a>
+			        <a href="15301811361753.html">架构设计：负载均衡层设计方案（5）——LVS单节点安装</a>
 			      </li>
 		     
 		  

@@ -76,6 +76,8 @@
     <li><label>Categories</label></li>
 
         
+            <li><a href="Team.html">Team</a></li>
+        
             <li><a href="Infra.html">Infra</a></li>
         
             <li><a href="Coding.html">Coding</a></li>
@@ -105,76 +107,365 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15274377762013.html">
+                <a class="clearlink" href="15301812452579.html">
                 
-                  <h1>Never touch your local /etc/hosts file in OS X again</h1>
+                  <h1>架构设计：负载均衡层设计方案（7）——LVS + Keepalived + Nginx安装及配置</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://gist.github.com/ogrrd/5831371">原文地址</a></p>
-
-<p>To setup your computer to work with *.dev domains, e.g. project.dev, awesome.dev and so on, without having to add to your hosts file each time.</p>
+<p><a href="https://blog.csdn.net/yinwenjie/article/details/47211551">https://blog.csdn.net/yinwenjie/article/details/47211551</a></p>
 </blockquote>
 
-<h2 id="toc_0">Requirements</h2>
+<h2 id="toc_0"><a></a>1、概述</h2>
 
-<ul>
-<li><a href="http://mxcl.github.io/homebrew/">Homebrew</a></li>
-<li>Mountain Lion</li>
-</ul>
+<p>上篇文章《架构设计：负载均衡层设计方案（6）——Nginx + Keepalived 构建高可用的负载层》(<a href="http://blog.csdn.net/yinwenjie/article/details/47130609">http://blog.csdn.net/yinwenjie/article/details/47130609</a>) 我们讲解了 Nginx 的故障切换，并且承诺各位读者会尽快讲解 LVS + Keepalived + Nginx 的安装和配置。在中间由于工作的原因，我又插写了三篇关于 zookeeper 的原理使用的文章。今天这边文章我们回归主题，为各位读者讲解 LVS + Keepalived + Nginx 的安装及配置。</p>
 
-<h2 id="toc_1">Install</h2>
+<h2 id="toc_1"><a></a>2、安装计划和准备工作</h2>
 
-<pre><code>brew install dnsmasq
+<p>下图，我们表示了本篇文章要搭建的整个集成架构的抽象结构：</p>
+
+<p><img src="https://img-blog.csdn.net/20150822113121644" alt=""/></p>
+
+<p>我们采用两个 LVS 节点（141 和 142），但是一个时间工作的只有一个 LVS 节点，另一个始终处于热备 standby 状态，由 keepalived 监控这两个节点的工作状态并完成切换。</p>
+
+<p>在 LVS 节点下，我们采用 LVS-DR 工作模式挂载了两个 Nginx 节点（131、132）。并最终将外网请求交由这两个节点进行处理。<strong>注意：在实际工作中，Nginx 下面一般就是访问静态资源、动态资源的配置了。</strong></p>
+
+<h2 id="toc_2"><a></a>2-1、准备两个 keepalived 节点</h2>
+
+<p>首先我们在将要安装 LVS 的两个节点上，先安装 keepalived，并保证这两个 keepalived 节点能够正常工作（监控批次的状态）。当然，您也可以先准备 LVS，在准备 keepalived。</p>
+
+<p>我想准备 keepalived 节点，大家应该轻车熟路了吧，在<a href="http://blog.csdn.net/yinwenjie/article/details/47130609#t5%20%E6%9E%B6%E6%9E%84%E8%AE%BE%E8%AE%A1%EF%BC%9A%E8%B4%9F%E8%BD%BD%E5%9D%87%E8%A1%A1%E5%B1%82%E8%AE%BE%E8%AE%A1%E6%96%B9%E6%A1%88%EF%BC%886%EF%BC%89%E2%80%94%E2%80%94Nginx%20+%20Keepalived%E6%9E%84%E5%BB%BA%E9%AB%98%E5%8F%AF%E7%94%A8%E7%9A%84%E8%B4%9F%E8%BD%BD%E5%B1%82">《架构设计：负载均衡层设计方案（6）——Nginx + Keepalived 构建高可用的负载层》</a>这篇文章中详细介绍了 keepalived 的最简配置方式。为了大家阅读方便，我们在这里再进行依次简要说明。准备 keepalived 的整个过程包括：</p>
+
+<ol>
+<li> 安装必要的支撑组件，源码安装 keepalived</li>
+<li> 将 keepalived 注册成节点的服务，以便保证 keepalived 在节点启动时就开始工作</li>
+<li> 更改 keepalived 的配置文件，让其可以正常工作</li>
+<li> 验证准备工作</li>
+</ol>
+
+<p>============= 安装 keepalived</p>
+
+<pre><code>[root@lvs1 ~]# yum install -y zlib zlib-devel gcc gcc-c++ openssl openssl-devel openssh
+[root@lvs1 ~]# tar -zxvf keepalived-1.2.17.tar.gz
+[root@lvs1 ~]# cd keepalived-1.2.17
+[root@lvs1 ~]# ./configure --perfix=/usr/keepalived-1.2.17
+[root@lvs1 ~]# make &amp; make install 
 </code></pre>
 
-<h2 id="toc_2">Setup</h2>
+<p>============= 将 keepalived 注册成服务（如果您使用的默认路径安装，就不需要 cp 命令了）</p>
 
-<h3 id="toc_3">Create config directory</h3>
-
-<pre><code>mkdir -pv $(brew --prefix)/etc/
+<pre><code>[root@lvs1 ~]# cp /usr/keepalived-1.2.17/etc/sysconfig/keepalived  /etc/sysconfig/keepalived 
+[root@lvs1 ~]# cp /usr/keepalived-1.2.17/sbin/keepalived /usr/sbin/keepalived
+[root@lvs1 ~]# cp /usr/keepalived-1.2.17/etc/rc.d/init.d/keepalived  /etc/rc.d/init.d/keepalived
+[root@lvs1 ~]# mkdir /etc/keepalived
+[root@lvs1 ~]# cp /usr/keepalived-1.2.17/etc/keepalived/keepalived.conf /etc/keepalived/keepalived.conf
+[root@lvs1 ~]# 可以做成服务了（不要拷贝，没用的）
+[root@lvs1 ~]# chkconfig keepalived on
 </code></pre>
 
-<h3 id="toc_4">Setup *.dev</h3>
+<p>做成服务后，先不要急着启动，因为配置文件还没有改好。<br/>
+======== 配置 keepalived（配置文件在：/etc/keepalived/keepalived.conf）</p>
 
-<pre><code>echo &#39;address=/.dev/127.0.0.1&#39; &gt; $(brew --prefix)/etc/dnsmasq.conf
+<pre><code>! Configuration File for keepalived
+
+global_defs {
+   #notification_email {
+   #  acassen@firewall.loc
+   #  failover@firewall.loc
+   #  sysadmin@firewall.loc
+   #}
+   #notification_email_from Alexandre.Cassen@firewall.loc
+   #smtp_server 192.168.200.1
+   #smtp_connect_timeout 30
+   router_id LVS_DEVEL
+}
+
+vrrp_instance VI_1 {
+    #141节点设置为MASTER，142或者还有其他的节点设置为BACKUP
+    #还记得我们前面文章讲到的无抢占设置吗？这里也可以用哦。
+    state MASTER
+    #网络适配器名称
+    interface eth0
+    virtual_router_id 51
+    #所有的SLAVE节点的优先级都要比这个设置值低
+    priority 120
+    advert_int 1
+    #真实ip，142要改成相应的lvs节点真实ip
+    mcast_src_ip=192.168.220.141
+    authentication {
+        auth_type PASS
+        auth_pass 1111
+    }
+    #虚拟/浮动IP
+    virtual_ipaddress {
+        192.168.220.140
+    }
+}
 </code></pre>
 
-<p>You should probably add <code>strict-order</code> to <code>dnsmasq.conf</code> to keep nameserver order of <code>resolv.conf</code> (<a href="https://gist.github.com/drye/5387341">see here</a>).</p>
+<p>以上配置还是最简单的 keepalived 配置，因为我们还没有加上配合 LVS 使用的虚拟 ip 监测设置和下层真实 ip 监测的设置。最简配置主要是为了保证 keepalived 节点是工作正常的。</p>
 
-<h2 id="toc_5">Autostart</h2>
+<p><strong>将以上的配置分别对应到 LVS 的两个节点（注意要改动的地方哦）</strong></p>
 
-<h3 id="toc_6">Work after reboot</h3>
+<p>========== 进行 keepalived 工作状态的检查：</p>
 
-<pre><code>sudo cp -v $(brew --prefix dnsmasq)/homebrew.mxcl.dnsmasq.plist /Library/LaunchDaemons
+<pre><code>[root@lvs1 ~]# /etc/init.d/keepalived start
 </code></pre>
 
-<h3 id="toc_7">Get it going right now</h3>
+<p>现在设置为 MASTER 的 keepalived 节点（或者在非抢占模式下，优先级最高的那个节点），已经绑定了 140 这个虚拟 ip 了：</p>
 
-<pre><code>sudo launchctl load -w /Library/LaunchDaemons/homebrew.mxcl.dnsmasq.plist
+<pre><code>[root@lvs2 ~]# ip addr
+1: lo: &lt;LOOPBACK,UP,LOWER_UP&gt; mtu 16436 qdisc noqueue state UNKNOWN 
+    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00
+    inet 127.0.0.1/8 scope host lo
+    inet6 ::1/128 scope host 
+       valid_lft forever preferred_lft forever
+2: eth0: &lt;BROADCAST,MULTICAST,UP,LOWER_UP&gt; mtu 1500 qdisc pfifo_fast state UP qlen 1000
+    link/ether 00:0c:29:39:75:9f brd ff:ff:ff:ff:ff:ff
+    inet 192.168.220.141/24 brd 192.168.220.255 scope global eth0
+    inet 192.168.220.140/32 scope global eth0
+    inet6 fe80::20c:29ff:fe39:759f/64 scope link 
+       valid_lft forever preferred_lft forever
 </code></pre>
 
-<h2 id="toc_8">Add to resolvers</h2>
+<p>当然您也可以通过 /var/log/message 的日志进行 keepalived 是否正常工作的验证。</p>
 
-<h3 id="toc_9">Create resolver directory</h3>
+<h2 id="toc_3"><a></a>2-2、继续两个 keepalived 节点上准备 LVS</h2>
 
-<pre><code>sudo mkdir -v /etc/resolver
+<p>准备 lvs 的工作就太简单了，因为 centos6.4、6.5、6.6 都已经集成了 LVS 的核心，我们只需要安装 LVS 的管理工具就行了：</p>
+
+<p>两个 LVS 节点都执行：</p>
+
+<pre><code>yum -y install ipvsadm
 </code></pre>
 
-<h3 id="toc_10">Add your nameserver to resolvers</h3>
+<p>还记得 lvs 管理工具怎么使用吗？请参见我介绍 LVS 单节点安装的博文：<a href="http://blog.csdn.net/yinwenjie/article/details/47010569%20%E6%9E%B6%E6%9E%84%E8%AE%BE%E8%AE%A1%EF%BC%9A%E8%B4%9F%E8%BD%BD%E5%9D%87%E8%A1%A1%E5%B1%82%E8%AE%BE%E8%AE%A1%E6%96%B9%E6%A1%88%EF%BC%885%EF%BC%89%E2%80%94%E2%80%94LVS%E5%8D%95%E8%8A%82%E7%82%B9%E5%AE%89%E8%A3%85">《架构设计：负载均衡层设计方案（5）——LVS 单节点安装》</a>。这里为了方便阅读，给出主要参数的含义列表：</p>
 
-<pre><code>sudo bash -c &#39;echo &quot;nameserver 127.0.0.1&quot; &gt; /etc/resolver/dev&#39;
+<pre><code>-A –add-service 在内核的虚拟服务器表中添加一条新的虚拟服务器记录。也就是增加一台新的虚拟服务器。
+-E –edit-service 编辑内核虚拟服务器表中的一条虚拟服务器记录。
+-D –delete-service 删除内核虚拟服务器表中的一条虚拟服务器记录。
+-C –clear 清除内核虚拟服务器表中的所有记录。
+-R –restore 恢复虚拟服务器规则
+-S –save 保存虚拟服务器规则，输出为-R 选项可读的格式
+-a –add-server 在内核虚拟服务器表的一条记录里添加一条新的真实服务器记录。也就是在一个虚拟服务器中增加一台新的真实服务器
+-e –edit-server 编辑一条虚拟服务器记录中的某条真实服务器记录
+-d –delete-server 删除一条虚拟服务器记录中的某条真实服务器记录
+-L –list 显示内核虚拟服务器表
+-Z –zero 虚拟服务表计数器清零（清空当前的连接数量等）
+–set tcp tcpfin udp 设置连接超时值
+–start-daemon 启动同步守护进程。他后面可以是master 或backup，用来说明LVS Router 是master 或是backup。在这个功能上也可以采用keepalived 的VRRP 功能。
+–stop-daemon 停止同步守护进程
+-t –tcp-service service-address 说明虚拟服务器提供的是tcp 的服务[vip:port] or [real-server-ip:port]
+-u –udp-service service-address 说明虚拟服务器提供的是udp 的服务[vip:port] or [real-server-ip:port]
+-f –fwmark-service fwmark 说明是经过iptables 标记过的服务类型。
+-s –scheduler scheduler 使用的调度算法，选项：rr|wrr|lc|wlc|lblc|lblcr|dh|sh|sed|nq, 默认的调度算法是： wlc.
+-p –persistent [timeout] 持久稳固的服务。这个选项的意思是来自同一个客户的多次请求，将被同一台真实的服务器处理。timeout 的默认值为300 秒。
+-M –netmask netmask persistent granularity mask
+-r –real-server server-address 真实的服务器[Real-Server:port]
+-g –gatewaying 指定LVS 的工作模式为直接路由模式DR模式（也是LVS默认的模式）
+-i –ipip 指定LVS 的工作模式为隧道模式
+-m –masquerading 指定LVS 的工作模式为NAT 模式
+-w –weight weight 真实服务器的权值
+–mcast-interface interface 指定组播的同步接口
+–connection 显示LVS 目前的连接 如：ipvsadm -L -c
+–timeout 显示tcp tcpfin udp 的timeout 值 如：ipvsadm -L –timeout
+–daemon 显示同步守护进程状态
+–stats 显示统计信息
+–rate 显示速率信息
+–sort 对虚拟服务器和真实服务器排序输出
+–numeric -n 输出IP 地址和端口的数字形式
 </code></pre>
 
-<h2 id="toc_11">Add local DNS to search order in System Preferences</h2>
+<p>到后面正式启动 LVS 的时候，就不要问我参数含义咯。<sup>_^</sup></p>
 
-<p>System Preferences &gt; Network &gt; Wi-Fi (or whatever you use) &gt; Advanced... &gt; DNS &gt; add 127.0.0.1 to top of the list.</p>
+<h2 id="toc_4"><a></a>2-3、准备两个 Nginx 节点并保证可用</h2>
 
-<h2 id="toc_12">Finished</h2>
+<p>在《架构设计：负载均衡层设计方案（5）——LVS 单节点安装》(<a href="http://blog.csdn.net/yinwenjie/article/details/47010569">http://blog.csdn.net/yinwenjie/article/details/47010569</a>) 这篇文章中，我们详细讲解了 Nginx 节点的准备工作，但是为了方便各位读者阅读，这里我们大致再讲一下。</p>
 
-<p>That&#39;s it! You can run scutil --dns to show all of your current resolvers, and you should see that all requests for a domain ending in .dev will go to the DNS server at 127.0.0.1</p>
+<p>Nginx 节点的准备工作主要由以下步骤构成（这个不是本文的重点，点到即可）：</p>
+
+<ol>
+<li> 安装 Nginx（当然，正式系统中，还涉及到 Nginx 的参数调优，可以参见<a href="http://blog.csdn.net/yinwenjie/article/details/46620711#t7%20%E6%9E%B6%E6%9E%84%E8%AE%BE%E8%AE%A1%EF%BC%9A%E8%B4%9F%E8%BD%BD%E5%9D%87%E8%A1%A1%E5%B1%82%E8%AE%BE%E8%AE%A1%E6%96%B9%E6%A1%88%EF%BC%882%EF%BC%89%E2%80%94%E2%80%94Nginx%E5%AE%89%E8%A3%85">《架构设计：负载均衡层设计方案（2）——Nginx 安装》这篇文章</a>）</li>
+<li> 打开 Nginx 所在服务器的 “路由” 功能、关闭 “ARP 查询” 功能</li>
+<li> 将 VIP：192.168.220.140 设置成 Nginx 所在节点的回环 IP</li>
+</ol>
+
+<p>============= 安装 Nginx</p>
+
+<pre><code>[root@vm1 ~]# yum -y install make zlib zlib-devel gcc gcc-c++ ssh libtool
+[root@vm1 ~]# 下载nginx（别拷贝，不能执行的）
+[root@vm1 ~]# 解压nginx（别拷贝，不能执行的）
+[root@vm1 ~]# ./configure –prefix=/usr/nginx-1.8.0 
+[root@vm1 ~]# make &amp;&amp; make install 
+[root@vm1 ~]# 设置环境变量（别拷贝，不能执行的）
+[root@vm1 ~]# 启动nginx
+</code></pre>
+
+<p>============= 打开 Nginx 所在服务器的 “路由” 功能、关闭 “ARP 查询” 功能</p>
+
+<pre><code>[root@vm1 ~]# echo &quot;1&quot; &gt;/proc/sys/net/ipv4/conf/lo/arp_ignore
+[root@vm1 ~]# echo &quot;2&quot; &gt;/proc/sys/net/ipv4/conf/lo/arp_announce
+[root@vm1 ~]# echo &quot;1&quot; &gt;/proc/sys/net/ipv4/conf/all/arp_ignore
+[root@vm1 ~]# echo &quot;2&quot; &gt;/proc/sys/net/ipv4/conf/all/arp_announce
+</code></pre>
+
+<p>============= 设置回环 IP</p>
+
+<pre><code>[root@vm1 ~]# ifconfig lo:0 192.168.220.140 broadcast 192.168.220.140 netmask 255.255.255.255 up
+[root@vm1 ~]# route add -host 192.168.220.140 dev lo:0
+</code></pre>
+
+<p>两台 Nginx 的节点都按照这样的方法去设置。然后使用浏览器，看看这两个节点的 Nginx 是否工作正常：</p>
+
+<p><img src="https://img-blog.csdn.net/20150822115708460" alt=""/></p>
+
+<h1 id="toc_5"></h1>
+
+<p><img src="https://img-blog.csdn.net/20150822115814724" alt=""/></p>
+
+<h2 id="toc_6"><a></a>2-4、其他说明</h2>
+
+<p>keepalived 和 LVS 是天生配合完美的一对，<strong>LVS 负责进行请求转发不负责任何节点的健康监测；keepalived 负责监控整个环境中，包括虚拟 ip，真实 ip 对应的下层节点的健康状态监测</strong>。</p>
+
+<h2 id="toc_7"><a></a>3、开始配置：LVS-DR 工作模式</h2>
+
+<h2 id="toc_8"><a></a>3-1、keepalived 的更改——健康监测</h2>
+
+<p>首先我们要更改之前配置的 “最简 keepalived” 配置，让 keepalived 能够对结构中所有节点和虚拟 ip 的健康状态进行监测。更改配置和含义如下：</p>
+
+<pre><code>! Configuration File for keepalived
+
+global_defs {
+   #notification_email {
+   #  acassen@firewall.loc
+   #  failover@firewall.loc
+   #  sysadmin@firewall.loc
+   #}
+   #notification_email_from Alexandre.Cassen@firewall.loc
+   #smtp_server 192.168.200.1
+   #smtp_connect_timeout 30
+   router_id LVS_DEVEL
+}
+
+vrrp_instance VI_1 {
+    #141节点设置为MASTER，142或者还有其他的节点设置为BACKUP
+    #还记得我们前面文章讲到的无抢占设置吗？这里也可以用哦。
+    state MASTER
+    #网络适配器名称
+    interface eth0
+    virtual_router_id 51
+    #所有的SLAVE节点的优先级都要比这个设置值低
+    priority 120
+    advert_int 1
+    #真实ip，142要改成相应的lvs节点真实ip
+    mcast_src_ip=192.168.220.141
+    authentication {
+        auth_type PASS
+        auth_pass 1111
+    }
+    #虚拟/浮动IP
+    virtual_ipaddress {
+        192.168.220.140
+    }
+}
+
+virtual_server 192.168.220.140 80 {
+    #健康时间检查，单位秒
+    delay_loop 6
+    #负载均衡调度算法wlc|rr，和您将使用的LVS的调度算法保持原则一致
+    lb_algo rr
+    #负载均衡转发规则 DR NAT TUN。和您将启动的LVS的工作模式设置一致
+    lb_kind DR
+    #虚拟地址的子网掩码
+    nat_mask 255.255.255.0
+    #会话保持时间，因为我们经常使用的是无状态的集群架构，所以这个设置可有可无
+    #persistence_timeout 50
+    #转发协议，当然是TCP
+    protocol TCP
+
+    #真实的下层Nginx节点的健康监测
+    real_server 192.168.220.131 80 {
+        #节点权重，
+        weight 10
+        #设置检查方式，可以设置HTTP_GET | SSL_GET
+        HTTP_GET {
+            url {
+              path /
+              digest ff20ad2481f97b1754ef3e12ecd3a9cc
+            }
+            #超时时间，秒。如果在这个时间内没有返回，则说明一次监测失败
+            connect_timeout 3
+            #设置多少次监测失败，就认为这个真实节点死掉了
+            nb_get_retry 3
+            #重试间隔
+            delay_before_retry 3
+        }
+    }
+
+    real_server 192.168.220.132 80 {
+        weight 10
+        HTTP_GET {
+            url {
+              path /
+              digest 640205b7b0fc66c1ea91c463fac6334d
+            }
+            connect_timeout 3
+            nb_get_retry 3
+            delay_before_retry 3
+        }
+    }
+}
+</code></pre>
+
+<p>这样一来，keepalived 就可以检查整个架构中的所有节点状态了。<strong>另外要说明的是，这个检查过程并不是必须的，您使用 keepalived 的最简配置也是可以的，不过您就需要自己写监测脚本了（道理是一样的）</strong>。</p>
+
+<h2 id="toc_9"><a></a>3-2、启动两个 LVS 节点</h2>
+
+<p>启动 LVS 的过程就太简单了（两个节点都是一样的启动方式）：</p>
+
+<pre><code>[root@lvs2 ~]# ipvsadm -C
+[root@lvs2 ~]# ipvsadm -At 192.168.220.140:80 -s rr 
+[root@lvs2 ~]# ipvsadm -at 192.168.220.140:80 -r 192.168.220.131 -g
+[root@lvs2 ~]# ipvsadm -at 192.168.220.140:80 -r 192.168.220.132 -g
+[root@lvs2 ~]# 然后我们可以使用ipvsadm 监控目前LVS的状态
+[root@lvs2 ~]# ipvsadm
+</code></pre>
+
+<p><strong>注意：处于 standby 的 lvs1 节点也要这样进行设置。</strong><br/>
+<strong>还有，以上的 LVS 的设置，和 real server 上的设置，在重启后都会消失，所以一定要做成脚本哦。</strong></p>
+
+<h2 id="toc_10"><a></a>4、验证工作</h2>
+
+<p>这样 LVS + Keepalived + Nginx 方式的配置就做完了。现在我们进行搭建效果的监测：</p>
+
+<h2 id="toc_11"><a></a>4-1、验证 Master-LVS 节点的工作</h2>
+
+<p>我们使用两个不同的浏览器，验证 Master-LVS 节点的工作：</p>
+
+<p>========= 浏览器 1：<br/>
+<img src="https://img-blog.csdn.net/20150822160827352" alt=""/></p>
+
+<p>========= 浏览器 2：<br/>
+<img src="https://img-blog.csdn.net/20150822160919601" alt=""/></p>
+
+<p>看来 140 这个 VIP 下的 LVS 工作是正常的。</p>
+
+<h2 id="toc_12"><a></a>4-2、验证 Master-LVS 节点停止后的效果</h2>
+
+<p>下面我们停止 Master-LVS1：</p>
+
+<pre><code>[root@lvs2 ~]# service keepalived stop
+</code></pre>
+
+<p>在经历了一些访问停顿后，浏览器 1 显示的效果如下（这就是为什么 keepalived 最好设置为非抢占模式）：</p>
+
+<p><img src="https://img-blog.csdn.net/20150822161511700" alt=""/></p>
+
+<h2 id="toc_13"><a></a>5、后文介绍</h2>
+
+<p>好了，到这里负载均衡层所使用的几个标准工具就介绍完了。下一篇文章我们将进行总结，然后进入架构设计：业务层设计方案 的系列文章。在下一个系列文章中，我们将介绍至少两套 SOA 的实现、至少两套系统间通信使用的消息队列。哦，应我朋友的要求，我会专门写几篇文章，介绍 java 中线程的基础知识和进阶知识。</p>
 
                         
                       </div>
@@ -183,7 +474,7 @@
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/5/28</span>
+                    <span class="date">2018/6/28</span>
                     <span>posted in&nbsp;</span> 
           				  
           					    <span class="posted-in"><a href='Network.html'>Network</a></span>
@@ -253,6 +544,8 @@
 
       	<p class="cat-list">
         
+            <a href="Team.html"><strong>Team</strong></a>
+        
             <a href="Infra.html"><strong>Infra</strong></a>
         
             <a href="Coding.html"><strong>Coding</strong></a>
@@ -276,31 +569,31 @@
 	      
 		      
 			      <li class="post">
-			        <a href="15277861393795.html">深入浅出Netty - EventLoop, EventLoopGroup</a>
+			        <a href="15301813999205.html">架构设计：负载均衡层设计方案（9）——负载均衡层总结下篇</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15277856731195.html">Functor and monad examples in plain Java</a>
+			        <a href="15301813109409.html">架构设计：负载均衡层设计方案（8）——负载均衡层总结上篇</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15277854106004.html">我必须得告诉大家的 MySQL 优化原理</a>
+			        <a href="15301812452579.html">架构设计：负载均衡层设计方案（7）——LVS + Keepalived + Nginx安装及配置</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15277850962764.html">Leaf——美团点评分布式ID生成系统</a>
+			        <a href="15301811967181.html">架构设计：负载均衡层设计方案（6）——Nginx + Keepalived构建高可用的负载层</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15277835170976.html">蚂蚁通信框架实践</a>
+			        <a href="15301811361753.html">架构设计：负载均衡层设计方案（5）——LVS单节点安装</a>
 			      </li>
 		     
 		  

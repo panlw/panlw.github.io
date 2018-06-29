@@ -76,6 +76,8 @@
     <li><label>Categories</label></li>
 
         
+            <li><a href="Team.html">Team</a></li>
+        
             <li><a href="Infra.html">Infra</a></li>
         
             <li><a href="Coding.html">Coding</a></li>
@@ -105,200 +107,303 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15277832551515.html">
+                <a class="clearlink" href="15301797659390.html">
                 
-                  <h1>【原创】分布式之redis复习精讲</h1>
+                  <h1>架构设计：负载均衡层设计方案（3）——Nginx 进阶</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p>原文地址 <a href="http://www.cnblogs.com/rjzheng/p/9096228.html">http://www.cnblogs.com/rjzheng/p/9096228.html</a></p>
+<p><a href="https://blog.csdn.net/yinwenjie/article/details/46742661">https://blog.csdn.net/yinwenjie/article/details/46742661</a></p>
 </blockquote>
 
-<h2 id="toc_0">引言</h2>
+<p>上篇文章《架构设计：负载均衡层设计方案（2）——Nginx 安装》（<a href="http://blog.csdn.net/yinwenjie/article/details/46620711">http://blog.csdn.net/yinwenjie/article/details/46620711</a>），我们介绍了 Nginx 的核心设计思想、基本安装和使用。本来准备继续介绍 Nginx 的几个使用特性，但是奈何博文篇幅太长，只有将一篇文章拆成两篇。本文我们将承接上文，继续讲解 Nginx 的实用特性，包括 gzip 功能、rewirte 功能和一个第三方的节点监测模块。本文我们还将提到 Taobao 团队对 Nginx 的深度改造 Tengine。</p>
 
-<h3 id="toc_1">为什么写这篇文章?</h3>
+<h1 id="toc_0"><a></a>1、Nginx 继续进阶</h1>
 
-<p>博主的<a href="http://www.cnblogs.com/rjzheng/p/8994962.html">《分布式之消息队列复习精讲》</a>得到了大家的好评，内心诚惶诚恐，想着再出一篇关于复习精讲的文章。但是还是要说明一下，复习精讲的文章偏面试准备，真正在开发过程中，还是脚踏实地，一步一个脚印，不要投机取巧。<br/>
-考虑到绝大部分写业务的程序员，在实际开发中使用 redis 的时候，只会 setvalue 和 getvalue 两个操作，对 redis 整体缺乏一个认知。又恰逢博主某个同事下周要去培训 redis，所以博主斗胆以 redis 为题材，对 redis 常见问题做一个总结，希望能够弥补大家的知识盲点。</p>
+<h2 id="toc_1"><a></a>1.1、gzip</h2>
 
-<h3 id="toc_2">复习要点?</h3>
-
-<p>本文围绕以下几点进行阐述<br/>
-1、为什么使用 redis<br/>
-2、使用 redis 有什么缺点<br/>
-3、单线程的 redis 为什么这么快<br/>
-4、redis 的数据类型，以及每种数据类型的使用场景<br/>
-5、redis 的过期策略以及内存淘汰机制<br/>
-6、redis 和数据库双写一致性问题<br/>
-7、如何应对缓存穿透和缓存雪崩问题<br/>
-8、如何解决 redis 的并发竞争问题</p>
-
-<h2 id="toc_3">正文</h2>
-
-<h3 id="toc_4">1、为什么使用 redis</h3>
-
-<p><strong>分析</strong>: 博主觉得在项目中使用 redis，主要是从两个角度去考虑: <strong>性能</strong>和<strong>并发</strong>。当然，redis 还具备可以做分布式锁等其他功能，但是如果只是为了分布式锁这些其他功能，完全还有其他中间件 (如 zookpeer 等) 代替，并不是非要使用 redis。因此，这个问题主要从性能和并发两个角度去答。<br/>
-<strong>回答</strong>: 如下所示，分为两点<br/>
-<strong>（一）性能</strong><br/>
-如下图所示，我们在碰到需要执行耗时特别久，且结果不频繁变动的 SQL，就特别适合将运行结果放入缓存。这样，后面的请求就去缓存中读取，使得请求能够<strong>迅速响应</strong>。<br/>
-<img src="https://images.cnblogs.com/cnblogs_com/rjzheng/1202350/o_redis1.png" alt=""/><br/>
-<strong>题外话：</strong>忽然想聊一下这个<strong>迅速响应</strong>的标准。其实根据交互效果的不同，这个响应时间没有固定标准。不过曾经有人这么告诉我:&quot; 在理想状态下，我们的页面跳转需要在<strong>瞬间</strong>解决，对于页内操作则需要在<strong>刹那</strong>间解决。另外，超过<strong>一弹指</strong>的耗时操作要有进度提示，并且可以随时中止或取消，这样才能给用户最好的体验。&quot;<br/>
-那么<strong>瞬间、刹那、一弹指</strong>具体是多少时间呢？<br/>
-根据《摩诃僧祗律》记载</p>
-
-<pre><code>一刹那者为一念，二十念为一瞬，二十瞬为一弹指，二十弹指为一罗预，二十罗预为一须臾，一日一夜有三十须臾。
-</code></pre>
-
-<p>那么，经过周密的计算，一<strong>瞬间</strong>为 0.36 秒, 一<strong>刹那</strong>有 0.018 秒. 一<strong>弹指</strong>长达 7.2 秒。<br/>
-<strong>（二）并发</strong><br/>
-如下图所示，在大并发的情况下，所有的请求直接访问数据库，数据库会出现连接异常。这个时候，就需要使用 redis 做一个缓冲操作，让请求先访问到 redis，而不是直接访问数据库。<br/>
-<img src="https://images.cnblogs.com/cnblogs_com/rjzheng/1202350/o_redis2.png" alt=""/></p>
-
-<h3 id="toc_5">2、使用 redis 有什么缺点</h3>
-
-<p><strong>分析</strong>: 大家用 redis 这么久，这个问题是必须要了解的，基本上使用 redis 都会碰到一些问题，常见的也就几个。<br/>
-<strong>回答</strong>: 主要是四个问题<br/>
-(一) 缓存和数据库双写一致性问题<br/>
-(二) 缓存雪崩问题<br/>
-(三) 缓存击穿问题<br/>
-(四) 缓存的并发竞争问题<br/>
-这四个问题，我个人是觉得在项目中，比较常遇见的，具体解决方案，后文给出。</p>
-
-<h3 id="toc_6">3、单线程的 redis 为什么这么快</h3>
-
-<p><strong>分析</strong>: 这个问题其实是对 redis 内部机制的一个考察。其实根据博主的面试经验，很多人其实都不知道 redis 是单线程工作模型。所以，这个问题还是应该要复习一下的。<br/>
-<strong>回答</strong>: 主要是以下三点<br/>
-(一) 纯内存操作<br/>
-(二) 单线程操作，避免了频繁的上下文切换<br/>
-(三) 采用了非阻塞 <strong>I/O 多路复用机制</strong></p>
-
-<p><strong>题外话：</strong>我们现在要仔细的说一说 I/O 多路复用机制，因为这个说法实在是太通俗了，通俗到一般人都不懂是什么意思。博主打一个比方：小曲在 S 城开了一家快递店，负责同城快送服务。小曲因为资金限制，雇佣了<strong>一批</strong>快递员，然后小曲发现资金不够了，只够买<strong>一辆</strong>车送快递。<br/>
-<strong>经营方式一</strong><br/>
-客户每送来一份快递，小曲就让一个快递员盯着，然后快递员开车去送快递。慢慢的小曲就发现了这种经营方式存在下述问题</p>
+<p>nginx 对返回给浏览器的 http response body 是可以进行压缩的。虽然需要消耗一点 cpu 和内存资源，但是想到 100KB 的数据量可以压缩到 60KB 甚至更小进行传输，是否有一定的吸引力？这里我的建议是，不要为了节约成本将业务服务和负载层服务放在一台物理服务器上，这样做既影响性能又增加了运维难度。http 返回数据进行压缩的功能在很多场景下都实用：</p>
 
 <ul>
-<li>  几十个快递员基本上时间都花在了抢车上了，大部分快递员都处在闲置状态，谁抢到了车，谁就能去送快递</li>
-<li>  随着快递的增多，快递员也越来越多，小曲发现快递店里越来越挤，没办法雇佣新的快递员了</li>
-<li>  快递员之间的协调很花时间</li>
+<li><p>如果浏览器使用的是 3G/4G 网络，那么流量对于用户来说就是 money。</p></li>
+<li><p>压缩可节约服务器机房的对外带宽，为更多用户服务。按照目前的市场价良好的机房带宽资源的一般在 200RMB/Mbps，而服务器方案的压力往往也来自于机房带宽。</p></li>
+<li><p>主要注意的是，不是 Nginx 开启了 gzip 功能，HTTP 响应的数据就一定会被压缩，除了满足 Nginx 设置的 “需要压缩的 http 格式” 以外，客户端（浏览器）也需要支持 gzip（不然它怎么解压呢），一个好消息是，目前大多数浏览器和 API 都支持 http 压缩。</p>
+
+<p>我们首先来讲解 Nginx 中的 gzip 的设置参数，然后我们讲解当开启压缩功能后，HTTP 的交互过程和过程中关键的几个属性。我们首先来看看 Nginx 中开启 gzip 的属性（gzip 的设置放置在 HTTP 主配置区域）：</p></li>
 </ul>
 
-<p>综合上述缺点，小曲痛定思痛，提出了下面的经营方式<br/>
-<strong>经营方式二</strong><br/>
-小曲只雇佣一个快递员。然后呢，客户送来的快递，小曲按<strong>送达地点</strong>标注好，然后<strong>依次</strong>放在一个地方。最后，那个快递员<strong>依次</strong>的去取快递，一次拿一个，然后开着车去送快递，送好了就回来拿下一个快递。</p>
+<pre><code class="language-conf">#开启 gzip 压缩服务，
+gzip on;
 
-<p><strong>对比</strong><br/>
-上述两种经营方式对比，是不是明显觉得第二种，效率更高，更好呢。在上述比喻中:</p>
+#gzip 压缩是要申请临时内存空间的，假设前提是压缩后大小是小于等于压缩前的。例如，如果原始文件大小为 10K，那么它超过了 8K，所以分配的内存是 8 * 2 = 16K; 再例如，原始文件大小为 18K，很明显 16K 也是不够的，那么按照 8 * 2 * 2 = 32K 的大小申请内存。如果没有设置，默认值是申请跟原始数据相同大小的内存空间去存储 gzip 压缩结果。
+gzip_buffers 2 8k;
 
-<ul>
-<li>  每个快递员 ------------------&gt; 每个线程</li>
-<li>  每个快递 --------------------&gt; 每个 socket(I/O 流)</li>
-<li>  快递的送达地点 --------------&gt;socket 的不同状态</li>
-<li>  客户送快递请求 --------------&gt; 来自客户端的请求</li>
-<li>  小曲的经营方式 --------------&gt; 服务端运行的代码</li>
-<li>  一辆车 ----------------------&gt;CPU 的核数</li>
-</ul>
+#进行压缩的原始文件的最小大小值，也就是说如果原始文件小于 5K，那么就不会进行压缩了
+gzip_min_length 5K;
 
-<p>于是我们有如下结论<br/>
-1、经营方式一就是传统的并发模型，每个 I/O 流 (快递) 都有一个新的线程 (快递员) 管理。<br/>
-2、经营方式二就是 I/O 多路复用。只有单个线程 (一个快递员)，通过跟踪每个 I/O 流的状态 (每个快递的送达地点)，来管理多个 I/O 流。</p>
+#gzip 压缩基于的 http 协议版本，默认就是 HTTP 1.1
+gzip_http_version 1.1;
 
-<p>下面类比到真实的 redis 线程模型，如图所示<br/>
-<img src="https://images.cnblogs.com/cnblogs_com/rjzheng/1202350/o_redis3.png" alt=""/><br/>
-参照上图，简单来说，就是。我们的 redis-client 在操作的时候，会产生具有不同事件类型的 socket。在服务端，有一段 I/0 多路复用程序，将其置入队列之中。然后，文件事件分派器，依次去队列中取，转发到不同的事件处理器中。<br/>
-需要说明的是，这个 I/O 多路复用机制，redis 还提供了 select、epoll、evport、kqueue 等多路复用函数库，大家可以自行去了解。</p>
+# gzip 压缩级别 1-9，级别越高压缩率越大，压缩时间也就越长 CPU 越高
+gzip_comp_level 5;
 
-<h3 id="toc_7">4、redis 的数据类型，以及每种数据类型的使用场景</h3>
-
-<p><strong>分析</strong>：是不是觉得这个问题很基础，其实我也这么觉得。然而根据面试经验发现，至少百分八十的人答不上这个问题。建议，在项目中用到后，再类比记忆，体会更深，不要硬记。基本上，一个合格的程序员，五种类型都会用到。<br/>
-<strong>回答</strong>：一共五种<br/>
-(一)String<br/>
-这个其实没啥好说的，最常规的 set/get 操作，value 可以是 String 也可以是数字。一般做<strong>一些复杂的计数功能的缓存。</strong><br/>
-(二)hash<br/>
-这里 value 存放的是结构化的对象，比较方便的就是操作其中的某个字段。博主在做<strong>单点登录</strong>的时候，就是用这种数据结构存储用户信息，以 cookieId 作为 key，设置 30 分钟为缓存过期时间，能很好的模拟出类似 session 的效果。<br/>
-(三)list<br/>
-使用 List 的数据结构，可以<strong>做简单的消息队列的功能</strong>。另外还有一个就是，可以利用 lrange 命令，<strong>做基于 redis 的分页功能</strong>，性能极佳，用户体验好。<br/>
-(四)set<br/>
-因为 set 堆放的是一堆不重复值的集合。所以可以做<strong>全局去重的功能</strong>。为什么不用 JVM 自带的 Set 进行去重？因为我们的系统一般都是集群部署，使用 JVM 自带的 Set，比较麻烦，难道为了一个做一个全局去重，再起一个公共服务，太麻烦了。<br/>
-另外，就是利用交集、并集、差集等操作，可以<strong>计算共同喜好，全部的喜好，自己独有的喜好等功能</strong>。<br/>
-(五)sorted set<br/>
-sorted set 多了一个权重参数 score, 集合中的元素能够按 score 进行排列。可以做<strong>排行榜应用，取 TOP N 操作</strong>。另外，参照另一篇<a href="https://www.cnblogs.com/rjzheng/p/8972725.html">《分布式之延时任务方案解析》</a>，该文指出了 sorted set 可以用来做<strong>延时任务</strong>。最后一个应用就是可以做<strong>范围查找</strong>。</p>
-
-<h3 id="toc_8">5、redis 的过期策略以及内存淘汰机制</h3>
-
-<p><strong>分析</strong>: 这个问题其实相当重要，到底 redis 有没用到家，这个问题就可以看出来。比如你 redis 只能存 5G 数据，可是你写了 10G，那会删 5G 的数据。怎么删的，这个问题思考过么？还有，你的数据已经设置了过期时间，但是时间到了，内存占用率还是比较高，有思考过原因么?<br/>
-<strong>回答</strong>:<br/>
-redis 采用的是定期删除 + 惰性删除策略。<br/>
-<strong>为什么不用定时删除策略?</strong><br/>
-定时删除, 用一个定时器来负责监视 key, 过期则自动删除。虽然内存及时释放，但是十分消耗 CPU 资源。在大并发请求下，CPU 要将时间应用在处理请求，而不是删除 key, 因此没有采用这一策略.<br/>
-<strong>定期删除 + 惰性删除是如何工作的呢?</strong><br/>
-定期删除，redis 默认每个 100ms 检查，是否有过期的 key, 有过期 key 则删除。需要说明的是，redis 不是每个 100ms 将所有的 key 检查一次，而是随机抽取进行检查 (如果每隔 100ms, 全部 key 进行检查，redis 岂不是卡死)。因此，如果只采用定期删除策略，会导致很多 key 到时间没有删除。<br/>
-于是，惰性删除派上用场。也就是说在你获取某个 key 的时候，redis 会检查一下，这个 key 如果设置了过期时间那么是否过期了？如果过期了此时就会删除。<br/>
-<strong>采用定期删除 + 惰性删除就没其他问题了么?</strong><br/>
-不是的，如果定期删除没删除 key。然后你也没即时去请求 key，也就是说惰性删除也没生效。这样，redis 的内存会越来越高。那么就应该采用<strong>内存淘汰机制</strong>。<br/>
-在 redis.conf 中有一行配置</p>
-
-<pre><code># maxmemory-policy volatile-lru
+#需要进行 gzip 压缩的 Content-Type 的 Header 的类型。建议 js、text、css、xml、json 都要进行压缩；图片就没必要了，gif、jpge 文件已经压缩得很好了，就算再压，效果也不好，而且还耗费 cpu。
+Igzip_types text/HTML text/plain application/x-javascript text/css application/xml;
 </code></pre>
 
-<p>该配置就是配内存淘汰策略的 (什么，你没配过？好好反省一下自己)<br/>
-1）noeviction：当内存不足以容纳新写入数据时，新写入操作会报错。<strong>应该没人用吧。</strong><br/>
-2）allkeys-lru：当内存不足以容纳新写入数据时，在键空间中，移除最近最少使用的 key。<strong>推荐使用，目前项目在用这种。</strong><br/>
-3）allkeys-random：当内存不足以容纳新写入数据时，在键空间中，随机移除某个 key。<strong>应该也没人用吧，你不删最少使用 Key, 去随机删。</strong><br/>
-4）volatile-lru：当内存不足以容纳新写入数据时，在设置了过期时间的键空间中，移除最近最少使用的 key。<strong>这种情况一般是把 redis 既当缓存，又做持久化存储的时候才用。不推荐</strong><br/>
-5）volatile-random：当内存不足以容纳新写入数据时，在设置了过期时间的键空间中，随机移除某个 key。<strong>依然不推荐</strong><br/>
-6）volatile-ttl：当内存不足以容纳新写入数据时，在设置了过期时间的键空间中，有更早过期时间的 key 优先移除。<strong>不推荐</strong><br/>
-ps：如果没有设置 expire 的 key, 不满足先决条件 (prerequisites); 那么 volatile-lru, volatile-random 和 volatile-ttl 策略的行为, 和 noeviction(不删除) 基本上一致。</p>
-
-<h3 id="toc_9">6、redis 和数据库双写一致性问题</h3>
-
-<p><strong>分析</strong>: 一致性问题是分布式常见问题，还可以再分为最终一致性和强一致性。数据库和缓存双写，就必然会存在不一致的问题。答这个问题，先明白一个前提。就是<strong>如果对数据有强一致性要求，不能放缓存。</strong>我们所做的一切，只能保证最终一致性。另外，我们所做的方案其实从根本上来说，只能说<strong>降低不一致发生的概率</strong>，无法完全避免。因此，有强一致性要求的数据，不能放缓存。<br/>
-<strong>回答</strong>:<a href="https://www.cnblogs.com/rjzheng/p/9041659.html">《分布式之数据库和缓存双写一致性方案解析》</a>给出了详细的分析，在这里简单的说一说。首先，采取正确更新策略，先更新数据库，再删缓存。其次，因为可能存在删除缓存失败的问题，提供一个补偿措施即可，例如利用消息队列。</p>
-
-<h3 id="toc_10">7、如何应对缓存穿透和缓存雪崩问题</h3>
-
-<p><strong>分析</strong>: 这两个问题，说句实在话，一般中小型传统软件企业，很难碰到这个问题。如果有大并发的项目，流量有几百万左右。这两个问题一定要深刻考虑。<br/>
-<strong>回答</strong>: 如下所示<br/>
-<strong>缓存穿透</strong>，即黑客故意去请求缓存中不存在的数据，导致所有的请求都怼到数据库上，从而数据库连接异常。<br/>
-<strong>解决方案</strong>:<br/>
-(一) 利用互斥锁，缓存失效的时候，先去获得锁，得到锁了，再去请求数据库。没得到锁，则休眠一段时间重试<br/>
-(二) 采用异步更新策略，无论 key 是否取到值，都直接返回。value 值中维护一个缓存失效时间，缓存如果过期，异步起一个线程去读数据库，更新缓存。需要做<strong>缓存预热</strong> (项目启动前，先加载缓存) 操作。<br/>
-(三) 提供一个能迅速判断请求是否有效的拦截机制，比如，利用布隆过滤器，内部维护一系列合法有效的 key。迅速判断出，请求所携带的 Key 是否合法有效。如果不合法，则直接返回。<br/>
-<strong>缓存雪崩</strong>，即缓存同一时间大面积的失效，这个时候又来了一波请求，结果请求都怼到数据库上，从而导致数据库连接异常。<br/>
-<strong>解决方案</strong>:<br/>
-(一) 给缓存的失效时间，加上一个随机值，避免集体失效。<br/>
-(二) 使用互斥锁，但是该方案吞吐量明显下降了。<br/>
-(三) 双缓存。我们有两个缓存，缓存 A 和缓存 B。缓存 A 的失效时间为 20 分钟，缓存 B 不设失效时间。自己做缓存预热操作。然后细分以下几个小点</p>
-
-<ul>
-<li>  I 从缓存 A 读数据库，有则直接返回</li>
-<li>  II A 没有数据，直接从 B 读数据，直接返回，并且异步启动一个更新线程。</li>
-<li>  III 更新线程同时更新缓存 A 和缓存 B。</li>
-</ul>
-
-<h3 id="toc_11">8、如何解决 redis 的并发竞争 key 问题</h3>
-
-<p><strong>分析</strong>: 这个问题大致就是，同时有多个子系统去 set 一个 key。这个时候要注意什么呢？大家思考过么。需要说明一下，博主提前百度了一下，发现答案基本都是推荐用 redis 事务机制。博主<strong>不推荐使用 redis 的事务机制。</strong>因为我们的生产环境，基本都是 redis 集群环境，做了数据分片操作。你一个事务中有涉及到多个 key 操作的时候，这多个 key 不一定都存储在同一个 redis-server 上。因此，<strong>redis 的事务机制，十分鸡肋。</strong><br/>
-<strong>回答:</strong> 如下所示<br/>
-(1) 如果对这个 key 操作，<strong>不要求顺序</strong><br/>
-这种情况下，准备一个分布式锁，大家去抢锁，抢到锁就做 set 操作即可，比较简单。<br/>
-(2) 如果对这个 key 操作，<strong>要求顺序</strong><br/>
-假设有一个 key1, 系统 A 需要将 key1 设置为 valueA, 系统 B 需要将 key1 设置为 valueB, 系统 C 需要将 key1 设置为 valueC.<br/>
-期望按照 key1 的 value 值按照 valueA--&gt;valueB--&gt;valueC 的顺序变化。这种时候我们在数据写入数据库的时候，需要保存一个时间戳。假设时间戳如下</p>
-
-<pre><code>系统A key 1 {valueA  3:00}
-系统B key 1 {valueB  3:05}
-系统C key 1 {valueC  3:10}
+<pre><code>设置完成后，重启 nginx，即可生效。下面我们来看看浏览器和服务器进行 gzip 压缩的请求和处理返回过程（实际上在我的《标准 Web 系统的架构分层》文章中，已经有所提及）：
 </code></pre>
 
-<p>那么，假设这会系统 B 先抢到锁，将 key1 设置为 {valueB 3:05}。接下来系统 A 抢到锁，发现自己的 valueA 的时间戳早于缓存中的时间戳，那就不做 set 操作了。以此类推。</p>
+<p><img src="https://img-blog.csdn.net/20150709162940954" alt=""/></p>
 
-<p>其他方法，比如利用队列，将 set 方法变成串行访问也可以。总之，灵活变通。</p>
+<ul>
+<li><p>整个请求过程来看，开启 gzip 和不开启 gip 功能，其 http 的请求和返回过程是一致的，不同的是参数。这个可以看看我的另外一篇文章《标准 Web 系统的架构分层》<a href="http://blog.csdn.net/yinwenjie/article/details/46480485">http://blog.csdn.net/yinwenjie/article/details/46480485</a></p></li>
+<li><p>当开启 HTTP 的 gzip 功能时，客户端发出 http 请求时，会通过 headers 中的 Accept-Encoding 属性告诉服务器 “我支持 gzip 解压，解压格式（算法）deflate,sdch 为：”。Accept-Encoding:gzip,deflate,sdch</p></li>
+<li><p>注意，不是 request 说自己支持解压，Nginx 返回 response 数据的时候就一定会压缩。这还要看本次 Nginx 返回数据的格式是什么，如果返回数据的原始数据格式，和设置的 gzip_types 相符合，这时 Nginx 才会进行压缩。</p></li>
+<li><p>Nginx 返回 response headers 是，如果数据被压缩了，就会在 Content-Encoding 属性中标示 gzip，表示接下来返回的 response content 是经过压缩的；并且在 Content-Type 属性中表示数据的原始格式。</p></li>
+<li><p>最后返回经过压缩的 response content 给客户端，客户端再进行解压。这里注意一下，在客户端发送的 headers 里面，有一个 deflate,sdch。这是两种压缩算法，如果读者感兴趣，可以查查相关的资料（我建议查查，了解哈弗曼压缩算法对扩展自己的架构思路很有帮助）</p></li>
+</ul>
 
-<h2 id="toc_12">总结</h2>
+<h2 id="toc_2"><a></a>1.2、rewrite</h2>
 
-<p>本文对 redis 的常见问题做了一个总结。大部分是博主自己在工作中遇到，以及以前面试别人的时候，爱问的一些问题。另外，<strong>不推荐大家临时抱佛脚</strong>，真正碰到一些有经验的工程师，其实几下就能把你问懵。最后，希望大家有所收获吧。</p>
+<p>本小结内容，假定读者了解正则表达式。如果您不清楚正则表达式，请首先 Google 或者百度，正则表达式不在我们讨论的范围内。</p>
+
+<p>Nginx 的强大在于其对 URL 请求的重写（重定位）。Nginx 的 rewrite 功能依赖于 PCRE Lib，请一定在 Nginx 编译安装时，安装 Pcre lib。请参见我的上一篇文章《架构设计：负载均衡层设计方案（2）——Nginx 安装》<a href="http://blog.csdn.net/yinwenjie/article/details/46620711">http://blog.csdn.net/yinwenjie/article/details/46620711</a></p>
+
+<p>我们先从讲解 rewrite 的关键语法，然后出示几个示例，由示例进行讲解。先来说一下 Nginx 中几个关键的语法：</p>
+
+<p><strong>正在表达式匹配：</strong></p>
+
+<ul>
+<li>  ~ 区分大小写进行正则表达式匹配</li>
+<li>  ~* 不区分大小写进行正则表达式匹配</li>
+<li>  !~ 区分大小写进行正则表达式不匹配</li>
+<li>  !~* 不区分大小写进行正则表达式不匹配</li>
+</ul>
+
+<p>举例说明:</p>
+
+<pre><code>示例1：location ~* \.(jpg|gif|png|ioc|jpeg)$
+
+location是Nginx中的关键字，代表当前的URL请求值。
+以上表达式表示对URL进行不区分大小写的匹配，一旦URL以jpg或gif或png或ioc或jpeg结尾时，匹配成功。
+
+示例2：$var1 ~ ^(\d+)$
+
+var1是Nginx中使用set关键字定义的变量，以上语句代表var1和一个整数进行匹配。
+
+</code></pre>
+
+<p><strong>Nginx 中的全局变量：</strong><br/>
+从上面的各个实例中，我们已经发现 Nginx 是支持变量的，Nginx 还内置了一些全局变量，这里列举一些比较重要的全局变量：</p>
+
+<ul>
+<li>  $content_length: 获取 request 中 header 部分的 “Content_Length” 值。</li>
+<li>  $content_type: 获取 request 中 header 部分的 “Content_type” 值。</li>
+<li>  $request_method: 请求方式，常用的有两种请求方式：POST、GET</li>
+<li>  $remote_addr: 发送请求的客户端 ip</li>
+<li>  $remote_port: 发送请求的客户端端口</li>
+<li>  $request_uri: 含有参数的完整的初始 URI</li>
+<li>  $server_addr: request 到达的 server 的 ip。</li>
+<li>  $server_port: 请求到达的服务器的端口号。</li>
+</ul>
+
+<p><strong>rewrite 语法</strong></p>
+
+<pre><code>rewrite regex replacement flag
+
+#regex：表示当前匹配的正则表达式。只有$url大小写相关匹配regex正则表达式，这个$url才会被rewrite进行重定向。
+
+#replacement：重定向目标规则。这个目标规则支持动态变量绑定，这个问题下文马上用示例来讲。
+
+#flag：重定向规则。
+
+</code></pre>
+
+<p><strong>rewrite 中的 Flag 关键字</strong></p>
+
+<ul>
+<li>  redirect：通知客户端重定向到 rewrtie 后面的地址。</li>
+<li>  permanent：通知客户端永久重定向到 rewrtie 后面的地址。</li>
+<li>  last：将 rewrite 后的地址重新在 server 标签执行。</li>
+<li>  break：将 rewrite 后地址重新在当前的 location 标签执行。</li>
+</ul>
+
+<p>实际上针对客户端来说，其效果是一样的，都是由客户端重新发起 http 请求，请求地址重新定位到 replacement 规则的 URL 地址；这里关键要讲解最常用的 last 和 break 两个关键字：</p>
+
+<pre><code>所有的rewrite语句都是要在server中的location中书写的，如下：
+server {
+    。。。。。。
+    。。。。。。
+    location ... {
+        if(...) {
+            rewirte regex replacement flag;
+        }
+        rewirte regex replacement flag;
+    }
+}
+
+那么，break关键字说明重写的replacement地址在当前location的区域马上执行。
+last关键字说明重写的replacement地址在当前server所有的location中重新再做匹配。
+
+</code></pre>
+
+<p>下面我们结合 rewrite 关键字和 rewrite flag 关键字给出典型的示例进行讲解：</p>
+
+<pre><code>示例1：
+location ~* ^/(.+)/(.+)\.(jpg|gif|png|jpeg)$ {
+    rewrite ^/orderinfo/(.+)\.(jpg|gif|png|jpeg)$   /img/$1.$2   break;
+    root   /cephclient;
+}
+
+location在不进行大小写区分的情况下利用正则表达式对$url进行匹配。当匹配成功后进行rewrite重定位。
+rewrite进行重写url的规则是：regex表达式第一个括号中的内容对应$1，regex表达式第二个括号中的内容对应$2，以此类推。
+这样重定位的意义就很明确了：将任何目录下的文件名重定位到img目录下的对应文件名，
+并且马上在这个location中（注意是Nginx，而不是客户端）执行这个重写后的URL定位。
+
+示例2：
+server {
+    。。。。
+    。。。。
+    location ~* ^/orderinfo/(.+)\.(jpg|gif|png|jpeg)$ {
+        rewrite ^/orderinfo/(.+)\.(.+)$  /img/$1.$2   last;
+    }
+
+    location / {
+        root   /cephclient;
+    }
+}
+
+在server中，有两个location位置，当url需要访问orderinfo目录下的某一个图片时，rewrite将重写这个url，
+并且重新带入这个url到server执行，这样“location /”这个location就会执行了，并找到图片存储的目录。
+
+</code></pre>
+
+<h2 id="toc_3"><a></a>1.3、健康检查模块</h2>
+
+<p>在本小节我们介绍一个用于 Nginx 对后端 UpStream 集群节点健康状态检查的第三方模块：nginx_upstream_check_module（<a href="https://github.com/yaoweibin/nginx_upstream_check_module">https://github.com/yaoweibin/nginx_upstream_check_module</a>）。这个模块有资料介绍是 TaoBao 团队开发的，但是我在 GitHua 上试图求证时并没有找到直接证据。</p>
+
+<p>这里需要说明的是，目前有很多 Nginx 模块实现 Nginx 对后端集群节点的健康监测，不止 nginx_upstream_check_module。Nginx 官方有一个模块 healthcheck_nginx_upstreams 也可以实现对后端节点的健康监测（<a href="https://github.com/cep21/healthcheck_nginx_upstreams">https://github.com/cep21/healthcheck_nginx_upstreams</a> 有详细的安装和使用介绍）</p>
+
+<p>我们回到对 nginx_upstream_check_module 的讲解，<strong>要使用这个第三方模块首先您需要进行下载，然后通过 patch 命令将补丁打入您原有的 Nginx 源码中，并且重新进行编译安装</strong>。下面我们来重点讲解一下这个模块的安装和使用。</p>
+
+<p><strong>下载 nginx_upstream_check_module 模块：</strong></p>
+
+<pre><code>wget https://codeload.github.com/yaoweibin/nginx_upstream_check_module/zip/master
+
+您也可以直接到GitHua上进行下载，还一个在linux系统上使用git命令进行下载。
+
+</code></pre>
+
+<p><strong>解压安装，并补丁打入 Nginx 源码</strong></p>
+
+<pre><code># unzip ./nginx_upstream_check_module-master.zip
+
+注意是将补丁打入Nginx源码，不是Nginx的安装路径：
+
+# cd ./nginx-1.6.2
+
+# patch -p1 &lt; ../nginx_upstream_check_module-master/check_1.5.12+.patch
+
+如果补丁安装成功，您将看到以下的提示信息：
+patching file src/http/modules/ngx_http_upstream_ip_hash_module.c
+patching file src/http/modules/ngx_http_upstream_least_conn_module.c
+patching file src/http/ngx_http_upstream_round_robin.c
+patching file src/http/ngx_http_upstream_round_robin.h
+
+这里请注意：在nginx_upstream_check_module官网的安装说明中，有一个打补丁的注意事项：
+If you use nginx-1.2.1 or nginx-1.3.0, the nginx upstream round robin
+module changed greatly. You should use the patch named
+&#39;check_1.2.1.patch&#39;.
+If you use nginx-1.2.2+ or nginx-1.3.1+, It added the upstream
+least_conn module. You should use the patch named &#39;check_1.2.2+.patch&#39;.
+If you use nginx-1.2.6+ or nginx-1.3.9+, It adjusted the round robin
+module. You should use the patch named &#39;check_1.2.6+.patch&#39;.
+If you use nginx-1.5.12+, You should use the patch named
+&#39;check_1.5.12+.patch&#39;.
+If you use nginx-1.7.2+, You should use the patch named
+&#39;check_1.7.2+.patch&#39;.
+
+这里我们的Nginx的版本是1.6.2，那么就应该打入check_1.5.12+.patch这个补丁
+
+</code></pre>
+
+<p><strong>重新编译安装 Nginx：</strong></p>
+
+<pre><code>注意重新编译Nginx，要使用add-module参数将这个第三方模块安装进去：
+
+# ./configure --prefix=/usr/nginx-1.6.2/ --add-module=../nginx_upstream_check_module-master/
+
+# make &amp;&amp; make install
+
+</code></pre>
+
+<p>通过以上的步骤，第三方的 nginx_upstream_check_module 模块就在 Nginx 中准备好了。接下来我们讲解一下如何使用这个模块。首先看一下 upstream 的配置信息：</p>
+
+<pre><code>upstream cluster {
+    # simple round-robin
+    server 192.168.0.1:80;
+    server 192.168.0.2:80;
+
+    check interval=5000 rise=1 fall=3 timeout=4000;
+
+    #check interval=3000 rise=2 fall=5 timeout=1000 type=ssl_hello;
+    #check interval=3000 rise=2 fall=5 timeout=1000 type=http;
+    #check_http_send &quot;HEAD / HTTP/1.0\r\n\r\n&quot;;
+    #check_http_expect_alive http_2xx http_3xx;
+}
+
+</code></pre>
+
+<p>上面的代码中，check 部分就是调用 nginx_upstream_check_module 模块的语法：</p>
+
+<pre><code>check interval=milliseconds [fall=count] [rise=count]
+[timeout=milliseconds] [default_down=true|false]
+[type=tcp|http|ssl_hello|mysql|ajp|fastcgi]
+
+</code></pre>
+
+<p>interval：必要参数，检查请求的间隔时间。</p>
+
+<p>fall：当检查失败次数超过了 fall，这个服务节点就变成 down 状态。</p>
+
+<p>rise：当检查成功的次数超过了 rise，这个服务节点又会变成 up 状态。</p>
+
+<p>timeout：请求超时时间，超过等待时间后，这次检查就算失败。</p>
+
+<p>default_down：后端服务器的初始状态。默认情况下，检查功能在 Nginx 启动的时候将会把所有后端节点的状态置为 down，检查成功后，在置为 up。</p>
+
+<p>type：这是检查通信的协议类型，默认为 http。以上类型是检查功能所支持的所有协议类型。</p>
+
+<pre><code>check_http_send http_packet
+
+http_packet的默认格式为：&quot;GET / HTTP/1.0\r\n\r\n&quot;
+
+</code></pre>
+
+<p>check_http_send 设置，这个设置描述了检查模块在每次检查时，向后端节点发送什么样的信息</p>
+
+<pre><code>check_http_expect_alive [ http_2xx | http_3xx | http_4xx | http_5xx ]
+
+</code></pre>
+
+<p>这些状态代码表示服务器的 HTTP 响应上是 OK 的，后端节点是可用的。默认情况的设置是：http_2xx | http_3xx</p>
+
+<p>当您根据您的配置要求完成检查模块的配置后，请首先使用 nginx -t 命令监测配置文件是否可用，然后在用 nginx -s reload 重启 nginx。</p>
+
+<h2 id="toc_4"><a></a>1.4、不得不提的 tengine</h2>
+
+<p>Tengine 是由淘宝网发起的 Web 服务器项目。它在 Nginx 的基础上，针对大访问量网站的需求，添加了很多高级功能和特性。Tengine 的性能和稳定性已经在大型的网站如淘宝网，天猫商城等得到了很好的检验。它的最终目标是打造一个高效、稳定、安全、易用的 Web 平台（<a href="http://tengine.taobao.org/">http://tengine.taobao.org/</a>）。</p>
+
+<p>您应该懂了，我建议您根据业务的实际情况，适时在生产环境引入 Tengine。但在本博客发布时，Tengine 的 2.X 版本还不稳定，所以建议实用 1.5.2 的稳定版本。<strong>请记住 Tengine 就是经过升读改造后的 Nginx</strong>。</p>
+
+<h1 id="toc_5"><a></a>2、后文介绍</h1>
+
+<p>花了两篇文章的功夫，终于将我想给大家讲解的 nginx 的实用特性讲完了，但是 nginx 远远不止这些特性。后面有时间我们会再回到 Nginx，重点讲解针对 Nginx 的脚本开发，我们还会讲解 Nginx 和 Lua 的集成。但是为了不扰乱这个系列博文的时间安排，下篇文章我们将开始介绍 LVS 技术，争取用一篇文章的篇幅讲清楚 LVS 核心设计思想、单节点安装和使用。再下篇文章我们介绍 Keepalived 技术，以及 keepalived 和 LVS、Nginx 分别进行集成，敬请关注。</p>
+
+<p><link rel="stylesheet" href="https://csdnimg.cn/release/phoenix/template/css/markdown_views-ea0013b516.css"></p>
 
                         
                       </div>
@@ -307,10 +412,10 @@ ps：如果没有设置 expire 的 key, 不满足先决条件 (prerequisites); �
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/6/1</span>
+                    <span class="date">2018/6/28</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Cache.html'>Cache</a></span>
+          					    <span class="posted-in"><a href='Network.html'>Network</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -377,6 +482,8 @@ ps：如果没有设置 expire 的 key, 不满足先决条件 (prerequisites); �
 
       	<p class="cat-list">
         
+            <a href="Team.html"><strong>Team</strong></a>
+        
             <a href="Infra.html"><strong>Infra</strong></a>
         
             <a href="Coding.html"><strong>Coding</strong></a>
@@ -400,31 +507,31 @@ ps：如果没有设置 expire 的 key, 不满足先决条件 (prerequisites); �
 	      
 		      
 			      <li class="post">
-			        <a href="15277861393795.html">深入浅出Netty - EventLoop, EventLoopGroup</a>
+			        <a href="15301813999205.html">架构设计：负载均衡层设计方案（9）——负载均衡层总结下篇</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15277856731195.html">Functor and monad examples in plain Java</a>
+			        <a href="15301813109409.html">架构设计：负载均衡层设计方案（8）——负载均衡层总结上篇</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15277854106004.html">我必须得告诉大家的 MySQL 优化原理</a>
+			        <a href="15301812452579.html">架构设计：负载均衡层设计方案（7）——LVS + Keepalived + Nginx安装及配置</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15277850962764.html">Leaf——美团点评分布式ID生成系统</a>
+			        <a href="15301811967181.html">架构设计：负载均衡层设计方案（6）——Nginx + Keepalived构建高可用的负载层</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15277835170976.html">蚂蚁通信框架实践</a>
+			        <a href="15301811361753.html">架构设计：负载均衡层设计方案（5）——LVS单节点安装</a>
 			      </li>
 		     
 		  

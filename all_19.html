@@ -76,6 +76,8 @@
     <li><label>Categories</label></li>
 
         
+            <li><a href="Team.html">Team</a></li>
+        
             <li><a href="Infra.html">Infra</a></li>
         
             <li><a href="Coding.html">Coding</a></li>
@@ -105,235 +107,284 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15274361469556.html">
+                <a class="clearlink" href="15290802805331.html">
                 
-                  <h1>Install NGINX with PHP7-FPM on Mac OS X with Homebrew</h1>
+                  <h1>MySQL Innodb 如何找出阻塞事务源头 SQL</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://gist.github.com/dtomasi/ab76d14338db82ec24a1fc137caff75b">原文地址</a></p>
+<p>来源：潇湘隐者<br/>
+<a href="http://www.cnblogs.com/kerrycode/p/8948335.html">www.cnblogs.com/kerrycode/p/8948335.html</a></p>
 </blockquote>
 
-<h2 id="toc_0">Install Commandline Tools</h2>
+<p><strong>在MySQL数据库中出现了阻塞问题，如何快速查找定位问题根源？</strong>在实验开始前，我们先梳理一下有什么工具或命令查看MySQL的阻塞，另外，我们也要一一对比其优劣，因为有些命令可能在实际环境下可能并不适用。</p>
 
-<p><code>xcode-select --install</code></p>
+<ol>
+<li>show engine innodb status</li>
+<li>Innotop工具 </li>
+<li>INNODB_TRX 等系统表</li>
+</ol>
 
-<h2 id="toc_1">Install Homebrew</h2>
+<p>下面我们理论联系实际，通过实验来测试总结一下这个问题。首先构造测试环境，数据库测试环境为（ 5.7.21 MySQL Community Server 和5.6.20-enterprise-commercial，这两个测试环境我都测试验证过）</p>
 
-<p><code>ruby -e &quot;$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/master/install)&quot;</code></p>
-
-<h4 id="toc_2">Check Installation</h4>
-
-<p><code>brew doctor</code></p>
-
-<h4 id="toc_3">Install brew services</h4>
-
-<p><code>brew tap homebrew/services</code></p>
-
-<h4 id="toc_4">Install bash completion (Optional)</h4>
-
-<p><code>brew install bash-completion</code></p>
-
-<h4 id="toc_5">Update Brew and Packages if allready installed</h4>
-
-<p><code>brew update &amp;&amp; brew upgrade</code></p>
-
-<h4 id="toc_6">Setup Environment</h4>
-
-<p><code>sudo nano ~/.bash_profile</code></p>
-
-<p>Add following lines</p>
-
-<pre><code>  ##
-  # Homebrew
-  ##
-  export PATH=&quot;/usr/local/bin:$PATH&quot;
-  export PATH=&quot;/usr/local/sbin:$PATH&quot;
-  
-  ##
-  # Homebrew bash completion
-  ##
-  if [ -f $(brew --prefix)/etc/bash_completion ]; then
-    source $(brew --prefix)/etc/bash_completion
-  fi
+<pre><code>&gt; mysql&gt; use MyDB;
+Reading table information for completion of table and column names
+You can turn off this feature to get a quicker startup with -A
+ 
+Database changed
+mysql&gt; create table test_blocking(id int primary key, name varchar(12));
+Query OK, 0 rows affected (0.05 sec)
+ 
+mysql&gt; insert into test_blocking
+ -&gt; select 1, &#39;kerry&#39; from dual;
+Query OK, 1 row affected (0.00 sec)
+Records: 1 Duplicates: 0 Warnings: 0
+ 
+mysql&gt; insert into test_blocking
+ -&gt; select 2, &#39;jimmy&#39; from dual;
+Query OK, 1 row affected (0.00 sec)
+Records: 1 Duplicates: 0 Warnings: 0
+ 
+mysql&gt; insert into test_blocking
+ -&gt; select 3, &#39;kkk&#39; from dual;
+Query OK, 1 row affected (0.00 sec)
+Records: 1 Duplicates: 0 Warnings: 0
 </code></pre>
 
-<h2 id="toc_7">DNSMasq</h2>
+<p>准备好测试环境数据后，那么我们接下来开始实验，为了实验效果，我们先将参数innodb_lock_wait_timeout设置为100。</p>
 
-<p>DNSMasq is used to resolve all domains that end with .dev to 127.0.0.1. So you don´t need to touch hosts-File anymore.</p>
-
-<h4 id="toc_8">Install</h4>
-
-<pre><code>brew install dnsmasq
+<pre><code>&gt; mysql&gt; show variables like &#39;innodb_lock_wait_timeout&#39;;
++--------------------------+-------+
+| Variable_name | Value |
++--------------------------+-------+
+| innodb_lock_wait_timeout | 50 |
++--------------------------+-------+
+1 row in set (0.00 sec)
+ 
+mysql&gt; set global innodb_lock_wait_timeout=100 ;
+Query OK, 0 rows affected (0.00 sec)
+ 
+ 
+mysql&gt; select connection_id() from dual;
++-----------------+
+| connection_id() |
++-----------------+
+| 8 |
++-----------------+
+1 row in set (0.00 sec)
+ 
+mysql&gt; set session autocommit=0;
+Query OK, 0 rows affected (0.00 sec)
+ 
+mysql&gt; select * from test_blocking where id=1 for update;
++----+-------+
+| id | name |
++----+-------+
+| 1 | kerry |
++----+-------+
+1 row in set (0.00 sec)
 </code></pre>
 
-<h4 id="toc_9">Configure</h4>
+<p>然后在第二个连接会话中执行更新脚本，构造被阻塞的案例</p>
 
-<pre><code>curl -L https://gist.githubusercontent.com/dtomasi/ab76d14338db82ec24a1fc137caff75b/raw/550c84393c4c1eef8a3e68bb720df561b5d3f175/dnsmasq.conf -o /usr/local/etc/dnsmasq.conf
-
-sudo curl -L https://gist.githubusercontent.com/dtomasi/ab76d14338db82ec24a1fc137caff75b/raw/550c84393c4c1eef8a3e68bb720df561b5d3f175/dev -o /etc/resolver/dev
+<pre><code>&gt; mysql&gt; select connection_id() from dual;
++-----------------+
+| connection_id() |
++-----------------+
+| 9 |
++-----------------+
+1 row in set (0.00 sec)
+ 
+mysql&gt; update test_blocking set name=&#39;kk&#39; where id=1;
 </code></pre>
 
-<h4 id="toc_10">Start, Stop and Restart</h4>
+<p>在第三个连接会话执行下面命令，查看TRANSACTIONS相关信息： </p>
 
-<pre><code># Start
-sudo brew services start dnsmasq
-
-# Stop
-sudo brew services stop dnsmasq
-
-# Restart
-sudo brew services restart dnsmasq
+<pre><code>&gt; mysql&gt; show engine innodb statusG;
 </code></pre>
 
-<h4 id="toc_11">Test</h4>
+<p><img src="media/15290802805331/15290814361997.jpg" alt=""/></p>
 
-<pre><code>dig testing.a.domain.that.should.point.to.localhost.dev @127.0.0.1
+<p>使用show engine innodb status命令后，可以查看其输出的TRANSACTIONS部分信息，如上截图所示，找到类似TRX HAS BEEN WATING …部分的信息，</p>
+
+<p>通过那部分信息，我们可以看到update test_blocking set name=’kk’ where id=1这个SQL语句被阻塞了14秒，一直在等待获取X Lock。</p>
+
+<pre><code>&gt; TRANSACTIONS
+ 
+------------
+ 
+Trx id counter 148281 #下一个事务ID
+ 
+Purge done for trx&#39;s n:o &lt; 148273 undo n:o &lt; 0 state: running but idle
+ 
+History list length 552
+ 
+LIST OF TRANSACTIONS FOR EACH SESSION:
+ 
+---TRANSACTION 0, not started
+ 
+MySQL thread id 15, OS thread handle 0x4cc64940, query id 261 localhost root cleaning up
+ 
+---TRANSACTION 0, not started
+ 
+MySQL thread id 14, OS thread handle 0x4cbe2940, query id 278 localhost root init
+ 
+show engine innodb status
+ 
+---TRANSACTION 148280, ACTIVE 24 sec
+ 
+2 lock struct(s), heap size 360, 1 row lock(s)
+ 
+MySQL thread id 8, OS thread handle 0x4cba1940, query id 276 localhost root cleaning up
+ 
+---TRANSACTION 148279, ACTIVE 313 sec starting index read
+ 
+mysql tables in use 1, locked 1
+ 
+LOCK WAIT 2 lock struct(s), heap size 360, 1 row lock(s)
+ 
+MySQL thread id 9, OS thread handle 0x4cc23940, query id 277 localhost root updating #线程ID为9， 操作系统线程句柄为0x4cc23940， 查询ID为277，账号为root的UPDATE操作
+ 
+update test_blocking set name=&#39;kk&#39; where id=1 #具体SQL语句
+ 
+------- TRX HAS BEEN WAITING 14 SEC FOR THIS LOCK TO BE GRANTED: #TRX等待授予锁已经有14秒了
+ 
+RECORD LOCKS space id 337 page no 3 n bits 72 index `PRIMARY` of table `MyDB`.`test_blocking` trx id 148279 lock_mode X locks rec but not gap waiting
 </code></pre>
 
-<h2 id="toc_12">PHP-FPM</h2>
+<h1 id="toc_0">在space id=337（test_blocking表的表空间），page no=3的页上，表test_blocking上的主键索引在等待X锁</h1>
 
-<h4 id="toc_13">Install php70</h4>
-
-<pre><code>  brew tap homebrew/dupes &amp;&amp; \
-  brew tap homebrew/php &amp;&amp; \
-  brew install --without-apache --with-fpm --with-mysql php70
+<pre><code>Record lock, heap no 2 PHYSICAL RECORD: n_fields 4; compact format; info bits 0
+ 
+ 0: len 4; hex 80000001; asc ;; #第一个字段是主键，制度按长为4，值为1
+ 
+ 1: len 6; hex 000000024322; asc C&quot;;; #该字段为6个字节的事务id，这个id表示最近一次被更新的事务id（对应十进制为148258）
+ 
+ 2: len 7; hex 9a000001f20110; asc ;; #该字段为7个字节的回滚指针，用于mvcc
+ 
+ 3: len 5; hex 6b65727279; asc kerry;; #该字段表示的是此记录的第二个字段，长度为5，值为kerry（如果表有多个字段，那么此处后面还有记录）
 </code></pre>
 
-<h4 id="toc_14">Configure</h4>
+<p><img src="media/15290802805331/15290814738831.jpg" alt=""/></p>
 
-<p><code>sudo nano /usr/local/etc/php/7.0/php-fpm.d/www.conf</code></p>
-
-<pre><code>  user = YOUR_USERNAME
-  group = YOUR_GROUP || staff
+<pre><code>&gt; mysql&gt; select * from information_schema.INNODB_SYS_DATAFILES where space=337;
++-------+--------------------------+
+| SPACE | PATH |
++-------+--------------------------+
+| 337 | ./MyDB/test_blocking.ibd |
++-------+--------------------------+
+1 row in set (0.00 sec)
+ 
+mysql&gt;
 </code></pre>
 
-<h4 id="toc_15">Testing</h4>
+<p><img src="media/15290802805331/15290814799530.jpg" alt=""/></p>
 
-<p>start php-fpm</p>
+<p>但是这种方式也有一些弊端，例如生产环境很复杂，尤其是有大量事务的情况下。诸多信息根本无法清晰判断知道谁阻塞了谁；其次一点也不直观； 另外，这个也无法定位blocker 的SQL语句。这种方式只能作为辅助分析用途，通过查看取锁的详细信息，帮助进一步诊断问题。 </p>
 
-<p><code>sudo brew services start php70</code></p>
+<h2 id="toc_1">*<strong><em>2: Innotop工具</em></strong>*</h2>
 
-<p>show running processes</p>
+<p>如下所示，Innotop工具很多情况下也不能定位到阻塞的语句（Blocking Query）， 也仅仅能获取一些锁相关信息<br/>
+<img src="media/15290802805331/15290814903714.jpg" alt=""/><br/>
+<img src="media/15290802805331/15290814996755.jpg" alt=""/><br/>
+<img src="media/15290802805331/15290815034760.jpg" alt=""/></p>
 
-<p><code>lsof -Pni4 | grep LISTEN | grep php</code></p>
+<h2 id="toc_2">*<strong><em>3：通过查询information_schema数据库下与事务相关的几个系统表</em></strong>*</h2>
 
-<h2 id="toc_16">NGINX</h2>
+<p>还是构造之前的测试案例，在第一个会话中使用SELECT FOR UPDATE锁定其中一行记录</p>
 
-<h4 id="toc_17">Install NGINX</h4>
-
-<pre><code>brew tap homebrew/nginx &amp;&amp; \
-brew install nginx
+<pre><code>&gt; mysql&gt; use MyDB;
+Database changed
+mysql&gt; set session autocommit=0;
+Query OK, 0 rows affected (0.00 sec)
+mysql&gt; select connection_id() from dual;
++-----------------+
+| connection_id() |
++-----------------+
+| 17 |
++-----------------+
+1 row in set (0.00 sec)
+ 
+mysql&gt; select * from test_blocking where id=1 for update;
++----+-------+
+| id | name |
++----+-------+
+| 1 | kerry |
++----+-------+
+1 row in set (0.00 sec)
+ 
+mysql&gt;
 </code></pre>
 
-<h4 id="toc_18">Test Installation</h4>
+<p>然后在第二个连接会话中执行更新脚本，构造被阻塞的案例</p>
 
-<pre><code>  ## Start Nginx
-  sudo brew services start nginx
-  
-  ## Check if Nginx is running on default port
-  curl -IL http://127.0.0.1:8080
+<pre><code>&gt; mysql&gt; use MyDB;
+Database changed
+mysql&gt; select connection_id() from dual;
++-----------------+
+| connection_id() |
++-----------------+
+| 19 |
++-----------------+
+1 row in set (0.00 sec)
+ 
+mysql&gt; update test_blocking set name=&#39;kk&#39; where id=1;
 </code></pre>
 
-<p>Output should look like this</p>
+<p>此时阻我们在第三个连接会话查找谁被阻塞了</p>
 
-<pre><code>HTTP/1.1 200 OK
-Server: nginx/1.10.0
-Date: Sat, 07 May 2016 07:36:32 GMT
-Content-Type: text/html
-Content-Length: 612
-Last-Modified: Tue, 26 Apr 2016 13:31:24 GMT
-Connection: keep-alive
-ETag: &quot;571f6dac-264&quot;
-Accept-Ranges: bytes
+<pre><code>&gt; SELECT b.trx_mysql_thread_id AS &#39;blocked_thread_id&#39;
+ ,b.trx_query AS &#39;blocked_sql_text&#39;
+ ,c.trx_mysql_thread_id AS &#39;blocker_thread_id&#39;
+ ,c.trx_query AS &#39;blocker_sql_text&#39;
+ ,( Unix_timestamp() - Unix_timestamp(c.trx_started) ) 
+ AS &#39;blocked_time&#39;
+FROM information_schema.innodb_lock_waits a 
+ INNER JOIN information_schema.innodb_trx b 
+ ON a.requesting_trx_id = b.trx_id 
+ INNER JOIN information_schema.innodb_trx c 
+ ON a.blocking_trx_id = c.trx_id 
+WHERE ( Unix_timestamp() - Unix_timestamp(c.trx_started) ) &gt; 4; 
+ 
+SELECT a.sql_text, 
+ c.id, 
+ d.trx_started 
+FROM performance_schema.events_statements_current a 
+ join performance_schema.threads b 
+ ON a.thread_id = b.thread_id 
+ join information_schema.processlist c 
+ ON b.processlist_id = c.id 
+ join information_schema.innodb_trx d 
+ ON c.id = d.trx_mysql_thread_id 
+where c.id=17
+ORDER BY d.trx_startedG;
 </code></pre>
 
-<h4 id="toc_19">Stop Nginx</h4>
+<p>如下截图所示，第一个SQL语句能够查到线程19 被线程 17阻塞了， 被阻塞的SQL语句为“update test_blocking set name=’kk’ where id=1;”, 能够查到被阻塞了多长时间，但是无法查到源头SQL语句。此时就需要第二个SQL语句登场，找到源头语句。</p>
 
-<p><code>sudo brew services stop nginx</code></p>
+<p><img src="media/15290802805331/15290815196795.jpg" alt=""/></p>
 
-<h4 id="toc_20">Configure</h4>
+<p>但是不要太天真的认为第二个SQL语句能够获取所有场景下的阻塞源头SQL语句，实际业务场景，会话可能在执行一个存储过程或复杂的业务，有可能它执行完阻塞源头SQL后，继续在执行其它SQL语句，此时，你抓取的是这个连接会话最后执行的SQL语句，如下所示，我简单构造了一个例子。就能构造这样的一个场景。这个我曾经写过一篇博客“_为什么数据库有时候不能定位阻塞（Blocker）源头的SQL语句_”，分析SQL Server和ORACLE 定位查找阻塞源头SQL语句，现在看来真是大道同源，殊途同归。</p>
 
-<p>Create missing directories</p>
-
-<pre><code>  mkdir -p /usr/local/etc/nginx/sites-available &amp;&amp; \
-  mkdir -p /usr/local/etc/nginx/sites-enabled &amp;&amp; \
-  mkdir -p /usr/local/etc/nginx/conf.d &amp;&amp; \
-  mkdir -p /usr/local/etc/nginx/ssl
+<pre><code>&gt; mysql&gt; select * from test_blocking where id=1 for update;
++----+-------+
+| id | name |
++----+-------+
+| 1 | kerry |
++----+-------+
+1 row in set (0.00 sec)
+ 
+mysql&gt; delete from student where stu_id=1001;
+Query OK, 1 row affected (0.00 sec)
+ 
+mysql&gt;
 </code></pre>
 
-<p>Configure nginx.conf</p>
+<p><img src="media/15290802805331/15290815269311.jpg" alt=""/></p>
 
-<pre><code># Remove default
-rm /usr/local/etc/nginx/nginx.conf
-# Copy mine
-curl -L https://gist.githubusercontent.com/dtomasi/ab76d14338db82ec24a1fc137caff75b/raw/c7c99476e6d8bd5b23e814c5593861adb9b54765/nginx.conf -o /usr/local/etc/nginx/nginx.conf
-</code></pre>
-
-<p>Start and Test Nginx</p>
-
-<pre><code>  ## Start Nginx
-  sudo brew services start nginx
-  
-  ## Check if Nginx is running on default port
-  curl -IL http://localhost
-
-  ## Output should look like this
-  HTTP/1.1 200 OK
-  Server: nginx/1.10.0
-  Date: Sat, 07 May 2016 08:35:57 GMT
-  Content-Type: text/html
-  Content-Length: 612
-  Last-Modified: Tue, 26 Apr 2016 13:31:24 GMT
-  Connection: keep-alive
-  ETag: &quot;571f6dac-264&quot;
-  Accept-Ranges: bytes
-</code></pre>
-
-<h2 id="toc_21">Setup SSL</h2>
-
-<p>Create a folder for our SSL certificates and private keys:</p>
-
-<p><code>mkdir -p /usr/local/etc/nginx/ssl</code></p>
-
-<p>Generate 4096 bit RSA keys and the self-sign the certificates in one command:</p>
-
-<p><code>openssl req -new -newkey rsa:4096 -days 365 -nodes -x509 -subj &quot;/C=US/ST=State/L=Town/O=Office/CN=localhost&quot; -keyout /usr/local/etc/nginx/ssl/localhost.key -out /usr/local/etc/nginx/ssl/localhost.crt</code></p>
-
-<h2 id="toc_22">Setup example virtual hosts</h2>
-
-<p>These are working presets. But you need to edit Document-Root</p>
-
-<pre><code>curl -L https://gist.githubusercontent.com/dtomasi/ab76d14338db82ec24a1fc137caff75b/raw/c7c99476e6d8bd5b23e814c5593861adb9b54765/default -o /usr/local/etc/nginx/sites-available/default &amp;&amp; \
-curl -L https://gist.githubusercontent.com/dtomasi/ab76d14338db82ec24a1fc137caff75b/raw/c7c99476e6d8bd5b23e814c5593861adb9b54765/default-ssl -o /usr/local/etc/nginx/sites-available/default-ssl
-</code></pre>
-
-<p>Activate Virtual Hosts</p>
-
-<pre><code>ln -sfv /usr/local/etc/nginx/sites-available/default /usr/local/etc/nginx/sites-enabled/default
-ln -sfv /usr/local/etc/nginx/sites-available/default-ssl /usr/local/etc/nginx/sites-enabled/default-ssl
-</code></pre>
-
-<p>Create info.php for testing</p>
-
-<p><code>echo &quot;&lt;?php phpinfo();&quot; &gt; /path/to/your/document/root</code></p>
-
-<p>Test</p>
-
-<pre><code>sudo brew services restart nginx
-
-curl -IL http://localhost/info.php
-
-# Output should look like this
-HTTP/1.1 200 OK
-Server: nginx/1.10.0
-Date: Sat, 07 May 2016 08:40:36 GMT
-Content-Type: text/html; charset=UTF-8
-Connection: keep-alive
-X-Powered-By: PHP/7.0.6
-</code></pre>
+<p>总结： 最简单、方便的还是上面两个SQL查询定位blocker的SQL语句，但是需要注意：有时候它也查不到真正阻塞的源头SQL语句。所以还需结合应用程序代码与上下文环境进行整体分析、判断！</p>
 
                         
                       </div>
@@ -342,10 +393,10 @@ X-Powered-By: PHP/7.0.6
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/5/27</span>
+                    <span class="date">2018/6/16</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Network.html'>Network</a></span>
+          					    <span class="posted-in"><a href='Database.html'>Database</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -412,6 +463,8 @@ X-Powered-By: PHP/7.0.6
 
       	<p class="cat-list">
         
+            <a href="Team.html"><strong>Team</strong></a>
+        
             <a href="Infra.html"><strong>Infra</strong></a>
         
             <a href="Coding.html"><strong>Coding</strong></a>
@@ -435,31 +488,31 @@ X-Powered-By: PHP/7.0.6
 	      
 		      
 			      <li class="post">
-			        <a href="15277861393795.html">深入浅出Netty - EventLoop, EventLoopGroup</a>
+			        <a href="15301813999205.html">架构设计：负载均衡层设计方案（9）——负载均衡层总结下篇</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15277856731195.html">Functor and monad examples in plain Java</a>
+			        <a href="15301813109409.html">架构设计：负载均衡层设计方案（8）——负载均衡层总结上篇</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15277854106004.html">我必须得告诉大家的 MySQL 优化原理</a>
+			        <a href="15301812452579.html">架构设计：负载均衡层设计方案（7）——LVS + Keepalived + Nginx安装及配置</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15277850962764.html">Leaf——美团点评分布式ID生成系统</a>
+			        <a href="15301811967181.html">架构设计：负载均衡层设计方案（6）——Nginx + Keepalived构建高可用的负载层</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15277835170976.html">蚂蚁通信框架实践</a>
+			        <a href="15301811361753.html">架构设计：负载均衡层设计方案（5）——LVS单节点安装</a>
 			      </li>
 		     
 		  
