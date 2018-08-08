@@ -76,8 +76,6 @@
     <li><label>Categories</label></li>
 
         
-            <li><a href="Team.html">Team</a></li>
-        
             <li><a href="Infra.html">Infra</a></li>
         
             <li><a href="Coding.html">Coding</a></li>
@@ -107,200 +105,443 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15277832551515.html">
+                <a class="clearlink" href="15290784953983.html">
                 
-                  <h1>【原创】分布式之redis复习精讲</h1>
+                  <h1>swoole 协程初体验</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p>原文地址 <a href="http://www.cnblogs.com/rjzheng/p/9096228.html">http://www.cnblogs.com/rjzheng/p/9096228.html</a></p>
+<p><a href="https://www.jianshu.com/p/745b0b3ffae7">https://www.jianshu.com/p/745b0b3ffae7</a><br/>
+2018-5-30 14:31:38</p>
 </blockquote>
 
-<h2 id="toc_0">引言</h2>
+<p>折腾 swoole 协程有一段时间了, 总结一篇入门贴, 希望对新手有帮助.</p>
 
-<h3 id="toc_1">为什么写这篇文章?</h3>
-
-<p>博主的<a href="http://www.cnblogs.com/rjzheng/p/8994962.html">《分布式之消息队列复习精讲》</a>得到了大家的好评，内心诚惶诚恐，想着再出一篇关于复习精讲的文章。但是还是要说明一下，复习精讲的文章偏面试准备，真正在开发过程中，还是脚踏实地，一步一个脚印，不要投机取巧。<br/>
-考虑到绝大部分写业务的程序员，在实际开发中使用 redis 的时候，只会 setvalue 和 getvalue 两个操作，对 redis 整体缺乏一个认知。又恰逢博主某个同事下周要去培训 redis，所以博主斗胆以 redis 为题材，对 redis 常见问题做一个总结，希望能够弥补大家的知识盲点。</p>
-
-<h3 id="toc_2">复习要点?</h3>
-
-<p>本文围绕以下几点进行阐述<br/>
-1、为什么使用 redis<br/>
-2、使用 redis 有什么缺点<br/>
-3、单线程的 redis 为什么这么快<br/>
-4、redis 的数据类型，以及每种数据类型的使用场景<br/>
-5、redis 的过期策略以及内存淘汰机制<br/>
-6、redis 和数据库双写一致性问题<br/>
-7、如何应对缓存穿透和缓存雪崩问题<br/>
-8、如何解决 redis 的并发竞争问题</p>
-
-<h2 id="toc_3">正文</h2>
-
-<h3 id="toc_4">1、为什么使用 redis</h3>
-
-<p><strong>分析</strong>: 博主觉得在项目中使用 redis，主要是从两个角度去考虑: <strong>性能</strong>和<strong>并发</strong>。当然，redis 还具备可以做分布式锁等其他功能，但是如果只是为了分布式锁这些其他功能，完全还有其他中间件 (如 zookpeer 等) 代替，并不是非要使用 redis。因此，这个问题主要从性能和并发两个角度去答。<br/>
-<strong>回答</strong>: 如下所示，分为两点<br/>
-<strong>（一）性能</strong><br/>
-如下图所示，我们在碰到需要执行耗时特别久，且结果不频繁变动的 SQL，就特别适合将运行结果放入缓存。这样，后面的请求就去缓存中读取，使得请求能够<strong>迅速响应</strong>。<br/>
-<img src="https://images.cnblogs.com/cnblogs_com/rjzheng/1202350/o_redis1.png" alt=""/><br/>
-<strong>题外话：</strong>忽然想聊一下这个<strong>迅速响应</strong>的标准。其实根据交互效果的不同，这个响应时间没有固定标准。不过曾经有人这么告诉我:&quot; 在理想状态下，我们的页面跳转需要在<strong>瞬间</strong>解决，对于页内操作则需要在<strong>刹那</strong>间解决。另外，超过<strong>一弹指</strong>的耗时操作要有进度提示，并且可以随时中止或取消，这样才能给用户最好的体验。&quot;<br/>
-那么<strong>瞬间、刹那、一弹指</strong>具体是多少时间呢？<br/>
-根据《摩诃僧祗律》记载</p>
-
-<pre><code>一刹那者为一念，二十念为一瞬，二十瞬为一弹指，二十弹指为一罗预，二十罗预为一须臾，一日一夜有三十须臾。
-</code></pre>
-
-<p>那么，经过周密的计算，一<strong>瞬间</strong>为 0.36 秒, 一<strong>刹那</strong>有 0.018 秒. 一<strong>弹指</strong>长达 7.2 秒。<br/>
-<strong>（二）并发</strong><br/>
-如下图所示，在大并发的情况下，所有的请求直接访问数据库，数据库会出现连接异常。这个时候，就需要使用 redis 做一个缓冲操作，让请求先访问到 redis，而不是直接访问数据库。<br/>
-<img src="https://images.cnblogs.com/cnblogs_com/rjzheng/1202350/o_redis2.png" alt=""/></p>
-
-<h3 id="toc_5">2、使用 redis 有什么缺点</h3>
-
-<p><strong>分析</strong>: 大家用 redis 这么久，这个问题是必须要了解的，基本上使用 redis 都会碰到一些问题，常见的也就几个。<br/>
-<strong>回答</strong>: 主要是四个问题<br/>
-(一) 缓存和数据库双写一致性问题<br/>
-(二) 缓存雪崩问题<br/>
-(三) 缓存击穿问题<br/>
-(四) 缓存的并发竞争问题<br/>
-这四个问题，我个人是觉得在项目中，比较常遇见的，具体解决方案，后文给出。</p>
-
-<h3 id="toc_6">3、单线程的 redis 为什么这么快</h3>
-
-<p><strong>分析</strong>: 这个问题其实是对 redis 内部机制的一个考察。其实根据博主的面试经验，很多人其实都不知道 redis 是单线程工作模型。所以，这个问题还是应该要复习一下的。<br/>
-<strong>回答</strong>: 主要是以下三点<br/>
-(一) 纯内存操作<br/>
-(二) 单线程操作，避免了频繁的上下文切换<br/>
-(三) 采用了非阻塞 <strong>I/O 多路复用机制</strong></p>
-
-<p><strong>题外话：</strong>我们现在要仔细的说一说 I/O 多路复用机制，因为这个说法实在是太通俗了，通俗到一般人都不懂是什么意思。博主打一个比方：小曲在 S 城开了一家快递店，负责同城快送服务。小曲因为资金限制，雇佣了<strong>一批</strong>快递员，然后小曲发现资金不够了，只够买<strong>一辆</strong>车送快递。<br/>
-<strong>经营方式一</strong><br/>
-客户每送来一份快递，小曲就让一个快递员盯着，然后快递员开车去送快递。慢慢的小曲就发现了这种经营方式存在下述问题</p>
+<p>内容概览:</p>
 
 <ul>
-<li>  几十个快递员基本上时间都花在了抢车上了，大部分快递员都处在闲置状态，谁抢到了车，谁就能去送快递</li>
-<li>  随着快递的增多，快递员也越来越多，小曲发现快递店里越来越挤，没办法雇佣新的快递员了</li>
-<li>  快递员之间的协调很花时间</li>
+<li>  协程的执行顺序: 初窥 swoole 中协程的调度</li>
+<li>  协程为什么快: 减少 IO 阻塞带来的性能损耗</li>
+<li>  swoole 协程和 go 协程对比: 单进程 vs 多线程</li>
 </ul>
 
-<p>综合上述缺点，小曲痛定思痛，提出了下面的经营方式<br/>
-<strong>经营方式二</strong><br/>
-小曲只雇佣一个快递员。然后呢，客户送来的快递，小曲按<strong>送达地点</strong>标注好，然后<strong>依次</strong>放在一个地方。最后，那个快递员<strong>依次</strong>的去取快递，一次拿一个，然后开着车去送快递，送好了就回来拿下一个快递。</p>
+<h2 id="toc_0">协程的执行顺序</h2>
 
-<p><strong>对比</strong><br/>
-上述两种经营方式对比，是不是明显觉得第二种，效率更高，更好呢。在上述比喻中:</p>
+<p>先来看看基础的例子:</p>
 
-<ul>
-<li>  每个快递员 ------------------&gt; 每个线程</li>
-<li>  每个快递 --------------------&gt; 每个 socket(I/O 流)</li>
-<li>  快递的送达地点 --------------&gt;socket 的不同状态</li>
-<li>  客户送快递请求 --------------&gt; 来自客户端的请求</li>
-<li>  小曲的经营方式 --------------&gt; 服务端运行的代码</li>
-<li>  一辆车 ----------------------&gt;CPU 的核数</li>
-</ul>
+<pre><code class="language-go">go(function () {
+    echo &quot;hello go1 \n&quot;;
+});
 
-<p>于是我们有如下结论<br/>
-1、经营方式一就是传统的并发模型，每个 I/O 流 (快递) 都有一个新的线程 (快递员) 管理。<br/>
-2、经营方式二就是 I/O 多路复用。只有单个线程 (一个快递员)，通过跟踪每个 I/O 流的状态 (每个快递的送达地点)，来管理多个 I/O 流。</p>
+echo &quot;hello main \n&quot;;
 
-<p>下面类比到真实的 redis 线程模型，如图所示<br/>
-<img src="https://images.cnblogs.com/cnblogs_com/rjzheng/1202350/o_redis3.png" alt=""/><br/>
-参照上图，简单来说，就是。我们的 redis-client 在操作的时候，会产生具有不同事件类型的 socket。在服务端，有一段 I/0 多路复用程序，将其置入队列之中。然后，文件事件分派器，依次去队列中取，转发到不同的事件处理器中。<br/>
-需要说明的是，这个 I/O 多路复用机制，redis 还提供了 select、epoll、evport、kqueue 等多路复用函数库，大家可以自行去了解。</p>
+go(function () {
+    echo &quot;hello go2 \n&quot;;
+});
 
-<h3 id="toc_7">4、redis 的数据类型，以及每种数据类型的使用场景</h3>
-
-<p><strong>分析</strong>：是不是觉得这个问题很基础，其实我也这么觉得。然而根据面试经验发现，至少百分八十的人答不上这个问题。建议，在项目中用到后，再类比记忆，体会更深，不要硬记。基本上，一个合格的程序员，五种类型都会用到。<br/>
-<strong>回答</strong>：一共五种<br/>
-(一)String<br/>
-这个其实没啥好说的，最常规的 set/get 操作，value 可以是 String 也可以是数字。一般做<strong>一些复杂的计数功能的缓存。</strong><br/>
-(二)hash<br/>
-这里 value 存放的是结构化的对象，比较方便的就是操作其中的某个字段。博主在做<strong>单点登录</strong>的时候，就是用这种数据结构存储用户信息，以 cookieId 作为 key，设置 30 分钟为缓存过期时间，能很好的模拟出类似 session 的效果。<br/>
-(三)list<br/>
-使用 List 的数据结构，可以<strong>做简单的消息队列的功能</strong>。另外还有一个就是，可以利用 lrange 命令，<strong>做基于 redis 的分页功能</strong>，性能极佳，用户体验好。<br/>
-(四)set<br/>
-因为 set 堆放的是一堆不重复值的集合。所以可以做<strong>全局去重的功能</strong>。为什么不用 JVM 自带的 Set 进行去重？因为我们的系统一般都是集群部署，使用 JVM 自带的 Set，比较麻烦，难道为了一个做一个全局去重，再起一个公共服务，太麻烦了。<br/>
-另外，就是利用交集、并集、差集等操作，可以<strong>计算共同喜好，全部的喜好，自己独有的喜好等功能</strong>。<br/>
-(五)sorted set<br/>
-sorted set 多了一个权重参数 score, 集合中的元素能够按 score 进行排列。可以做<strong>排行榜应用，取 TOP N 操作</strong>。另外，参照另一篇<a href="https://www.cnblogs.com/rjzheng/p/8972725.html">《分布式之延时任务方案解析》</a>，该文指出了 sorted set 可以用来做<strong>延时任务</strong>。最后一个应用就是可以做<strong>范围查找</strong>。</p>
-
-<h3 id="toc_8">5、redis 的过期策略以及内存淘汰机制</h3>
-
-<p><strong>分析</strong>: 这个问题其实相当重要，到底 redis 有没用到家，这个问题就可以看出来。比如你 redis 只能存 5G 数据，可是你写了 10G，那会删 5G 的数据。怎么删的，这个问题思考过么？还有，你的数据已经设置了过期时间，但是时间到了，内存占用率还是比较高，有思考过原因么?<br/>
-<strong>回答</strong>:<br/>
-redis 采用的是定期删除 + 惰性删除策略。<br/>
-<strong>为什么不用定时删除策略?</strong><br/>
-定时删除, 用一个定时器来负责监视 key, 过期则自动删除。虽然内存及时释放，但是十分消耗 CPU 资源。在大并发请求下，CPU 要将时间应用在处理请求，而不是删除 key, 因此没有采用这一策略.<br/>
-<strong>定期删除 + 惰性删除是如何工作的呢?</strong><br/>
-定期删除，redis 默认每个 100ms 检查，是否有过期的 key, 有过期 key 则删除。需要说明的是，redis 不是每个 100ms 将所有的 key 检查一次，而是随机抽取进行检查 (如果每隔 100ms, 全部 key 进行检查，redis 岂不是卡死)。因此，如果只采用定期删除策略，会导致很多 key 到时间没有删除。<br/>
-于是，惰性删除派上用场。也就是说在你获取某个 key 的时候，redis 会检查一下，这个 key 如果设置了过期时间那么是否过期了？如果过期了此时就会删除。<br/>
-<strong>采用定期删除 + 惰性删除就没其他问题了么?</strong><br/>
-不是的，如果定期删除没删除 key。然后你也没即时去请求 key，也就是说惰性删除也没生效。这样，redis 的内存会越来越高。那么就应该采用<strong>内存淘汰机制</strong>。<br/>
-在 redis.conf 中有一行配置</p>
-
-<pre><code># maxmemory-policy volatile-lru
 </code></pre>
 
-<p>该配置就是配内存淘汰策略的 (什么，你没配过？好好反省一下自己)<br/>
-1）noeviction：当内存不足以容纳新写入数据时，新写入操作会报错。<strong>应该没人用吧。</strong><br/>
-2）allkeys-lru：当内存不足以容纳新写入数据时，在键空间中，移除最近最少使用的 key。<strong>推荐使用，目前项目在用这种。</strong><br/>
-3）allkeys-random：当内存不足以容纳新写入数据时，在键空间中，随机移除某个 key。<strong>应该也没人用吧，你不删最少使用 Key, 去随机删。</strong><br/>
-4）volatile-lru：当内存不足以容纳新写入数据时，在设置了过期时间的键空间中，移除最近最少使用的 key。<strong>这种情况一般是把 redis 既当缓存，又做持久化存储的时候才用。不推荐</strong><br/>
-5）volatile-random：当内存不足以容纳新写入数据时，在设置了过期时间的键空间中，随机移除某个 key。<strong>依然不推荐</strong><br/>
-6）volatile-ttl：当内存不足以容纳新写入数据时，在设置了过期时间的键空间中，有更早过期时间的 key 优先移除。<strong>不推荐</strong><br/>
-ps：如果没有设置 expire 的 key, 不满足先决条件 (prerequisites); 那么 volatile-lru, volatile-random 和 volatile-ttl 策略的行为, 和 noeviction(不删除) 基本上一致。</p>
+<p><code>go()</code> 是 <code>\Co::create()</code> 的缩写, 用来创建一个协程, 接受 callback 作为参数, callback 中的代码, 会在这个新建的协程中执行.</p>
 
-<h3 id="toc_9">6、redis 和数据库双写一致性问题</h3>
+<p><strong>备注</strong>: <code>\Swoole\Coroutine</code> 可以简写为 <code>\Co</code></p>
 
-<p><strong>分析</strong>: 一致性问题是分布式常见问题，还可以再分为最终一致性和强一致性。数据库和缓存双写，就必然会存在不一致的问题。答这个问题，先明白一个前提。就是<strong>如果对数据有强一致性要求，不能放缓存。</strong>我们所做的一切，只能保证最终一致性。另外，我们所做的方案其实从根本上来说，只能说<strong>降低不一致发生的概率</strong>，无法完全避免。因此，有强一致性要求的数据，不能放缓存。<br/>
-<strong>回答</strong>:<a href="https://www.cnblogs.com/rjzheng/p/9041659.html">《分布式之数据库和缓存双写一致性方案解析》</a>给出了详细的分析，在这里简单的说一说。首先，采取正确更新策略，先更新数据库，再删缓存。其次，因为可能存在删除缓存失败的问题，提供一个补偿措施即可，例如利用消息队列。</p>
+<p>上面的代码执行结果:</p>
 
-<h3 id="toc_10">7、如何应对缓存穿透和缓存雪崩问题</h3>
-
-<p><strong>分析</strong>: 这两个问题，说句实在话，一般中小型传统软件企业，很难碰到这个问题。如果有大并发的项目，流量有几百万左右。这两个问题一定要深刻考虑。<br/>
-<strong>回答</strong>: 如下所示<br/>
-<strong>缓存穿透</strong>，即黑客故意去请求缓存中不存在的数据，导致所有的请求都怼到数据库上，从而数据库连接异常。<br/>
-<strong>解决方案</strong>:<br/>
-(一) 利用互斥锁，缓存失效的时候，先去获得锁，得到锁了，再去请求数据库。没得到锁，则休眠一段时间重试<br/>
-(二) 采用异步更新策略，无论 key 是否取到值，都直接返回。value 值中维护一个缓存失效时间，缓存如果过期，异步起一个线程去读数据库，更新缓存。需要做<strong>缓存预热</strong> (项目启动前，先加载缓存) 操作。<br/>
-(三) 提供一个能迅速判断请求是否有效的拦截机制，比如，利用布隆过滤器，内部维护一系列合法有效的 key。迅速判断出，请求所携带的 Key 是否合法有效。如果不合法，则直接返回。<br/>
-<strong>缓存雪崩</strong>，即缓存同一时间大面积的失效，这个时候又来了一波请求，结果请求都怼到数据库上，从而导致数据库连接异常。<br/>
-<strong>解决方案</strong>:<br/>
-(一) 给缓存的失效时间，加上一个随机值，避免集体失效。<br/>
-(二) 使用互斥锁，但是该方案吞吐量明显下降了。<br/>
-(三) 双缓存。我们有两个缓存，缓存 A 和缓存 B。缓存 A 的失效时间为 20 分钟，缓存 B 不设失效时间。自己做缓存预热操作。然后细分以下几个小点</p>
-
-<ul>
-<li>  I 从缓存 A 读数据库，有则直接返回</li>
-<li>  II A 没有数据，直接从 B 读数据，直接返回，并且异步启动一个更新线程。</li>
-<li>  III 更新线程同时更新缓存 A 和缓存 B。</li>
-</ul>
-
-<h3 id="toc_11">8、如何解决 redis 的并发竞争 key 问题</h3>
-
-<p><strong>分析</strong>: 这个问题大致就是，同时有多个子系统去 set 一个 key。这个时候要注意什么呢？大家思考过么。需要说明一下，博主提前百度了一下，发现答案基本都是推荐用 redis 事务机制。博主<strong>不推荐使用 redis 的事务机制。</strong>因为我们的生产环境，基本都是 redis 集群环境，做了数据分片操作。你一个事务中有涉及到多个 key 操作的时候，这多个 key 不一定都存储在同一个 redis-server 上。因此，<strong>redis 的事务机制，十分鸡肋。</strong><br/>
-<strong>回答:</strong> 如下所示<br/>
-(1) 如果对这个 key 操作，<strong>不要求顺序</strong><br/>
-这种情况下，准备一个分布式锁，大家去抢锁，抢到锁就做 set 操作即可，比较简单。<br/>
-(2) 如果对这个 key 操作，<strong>要求顺序</strong><br/>
-假设有一个 key1, 系统 A 需要将 key1 设置为 valueA, 系统 B 需要将 key1 设置为 valueB, 系统 C 需要将 key1 设置为 valueC.<br/>
-期望按照 key1 的 value 值按照 valueA--&gt;valueB--&gt;valueC 的顺序变化。这种时候我们在数据写入数据库的时候，需要保存一个时间戳。假设时间戳如下</p>
-
-<pre><code>系统A key 1 {valueA  3:00}
-系统B key 1 {valueB  3:05}
-系统C key 1 {valueC  3:10}
+<pre><code class="language-sh">root@b98940b00a9b /v/w/c/p/swoole# php co.php
+hello go1
+hello main
+hello go2
 </code></pre>
 
-<p>那么，假设这会系统 B 先抢到锁，将 key1 设置为 {valueB 3:05}。接下来系统 A 抢到锁，发现自己的 valueA 的时间戳早于缓存中的时间戳，那就不做 set 操作了。以此类推。</p>
+<p>执行结果和我们平时写代码的顺序, 好像没啥区别. 实际执行过程:</p>
 
-<p>其他方法，比如利用队列，将 set 方法变成串行访问也可以。总之，灵活变通。</p>
+<ul>
+<li>  运行此段代码, <strong>系统启动一个新进程</strong></li>
+<li>  遇到 <code>go()</code>, 当前进程中生成一个协程, 协程中输出 <code>heelo go1</code>, 协程退出</li>
+<li>  进程继续向下执行代码, 输出 <code>hello main</code></li>
+<li>  再生成一个协程, 协程中输出 <code>heelo go2</code>, 协程退出</li>
+</ul>
 
-<h2 id="toc_12">总结</h2>
+<p><strong>运行此段代码, 系统启动一个新进程</strong>. 如果不理解这句话, 你可以使用如下代码:</p>
 
-<p>本文对 redis 的常见问题做了一个总结。大部分是博主自己在工作中遇到，以及以前面试别人的时候，爱问的一些问题。另外，<strong>不推荐大家临时抱佛脚</strong>，真正碰到一些有经验的工程师，其实几下就能把你问懵。最后，希望大家有所收获吧。</p>
+<pre><code class="language-php">// co.php
+&lt;?php
+
+sleep(100);
+
+</code></pre>
+
+<p>执行并使用 <code>ps aux</code> 查看系统中的进程:</p>
+
+<pre><code class="language-sh">root@b98940b00a9b /v/w/c/p/swoole# php co.php &amp;
+⏎
+root@b98940b00a9b /v/w/c/p/swoole# ps aux
+PID   USER     TIME   COMMAND
+    1 root       0:00 php -a
+   10 root       0:00 sh
+   19 root       0:01 fish
+  749 root       0:00 php co.php
+  760 root       0:00 ps aux
+⏎
+
+</code></pre>
+
+<p>我们来稍微改一改, 体验协程的调度:</p>
+
+<pre><code class="language-go">use Co;
+
+go(function () {
+    Co::sleep(1); // 只新增了一行代码
+    echo &quot;hello go1 \n&quot;;
+});
+
+echo &quot;hello main \n&quot;;
+
+go(function () {
+    echo &quot;hello go2 \n&quot;;
+});
+
+</code></pre>
+
+<p><code>\Co::sleep()</code> 函数功能和 <code>sleep()</code> 差不多, 但是它模拟的是 <strong>IO 等待</strong> (IO 后面会细讲). 执行的结果如下:</p>
+
+<pre><code>root@b98940b00a9b /v/w/c/p/swoole# php co.php
+hello main
+hello go2
+hello go1
+
+</code></pre>
+
+<p>怎么不是顺序执行的呢? 实际执行过程:</p>
+
+<ul>
+<li>  运行此段代码, 系统启动一个新进程</li>
+<li>  遇到 <code>go()</code>, 当前进程中生成一个协程</li>
+<li>  协程中遇到 <strong>IO 阻塞</strong> (这里是 <code>Co::sleep()</code> 模拟出的 <strong>IO 等待</strong>), <strong>协程让出控制, 进入协程调度队列</strong></li>
+<li>  进程继续向下执行, 输出 <code>hello main</code></li>
+<li>  执行下一个协程, 输出 <code>hello go2</code></li>
+<li>  之前的协程准备就绪, 继续执行, 输出 <code>hello go1</code></li>
+</ul>
+
+<p>到这里, 已经可以看到 swoole 中 <strong>协程与进程的关系</strong>, 以及 <strong>协程的调度</strong>, 我们再改一改刚才的程序:</p>
+
+<pre><code class="language-go">go(function () {
+    Co::sleep(1);
+    echo &quot;hello go1 \n&quot;;
+});
+
+echo &quot;hello main \n&quot;;
+
+go(function () {
+    Co::sleep(1);
+    echo &quot;hello go2 \n&quot;;
+});
+
+</code></pre>
+
+<p>我想你已经知道输出是什么样子了:</p>
+
+<pre><code class="language-sh">root@b98940b00a9b /v/w/c/p/swoole# php co.php
+hello main
+hello go1
+hello go2
+⏎
+
+</code></pre>
+
+<h2 id="toc_1">协程快在哪? 减少 IO 阻塞导致的性能损失</h2>
+
+<p>大家可能听到使用协程的最多的理由, 可能就是 <strong>协程快</strong>. 那看起来和平时写得差不多的代码, 为什么就要快一些呢? 一个常见的理由是, <strong>可以创建很多个协程来执行任务, 所以快</strong>. 这种说法是对的, 不过还停留在表面.</p>
+
+<p>首先, 一般的计算机任务分为 2 种:</p>
+
+<ul>
+<li>  CPU 密集型, 比如加减乘除等科学计算</li>
+<li>  IO 密集型, 比如网络请求, 文件读写等</li>
+</ul>
+
+<p>其次, 高性能相关的 2 个概念:</p>
+
+<ul>
+<li>  并行: 同一个时刻, 同一个 CPU 只能执行同一个任务, 要同时执行多个任务, 就需要有多个 CPU 才行</li>
+<li>  并发: 由于 CPU 切换任务非常快, 快到人类可以感知的极限, 就会有很多任务 <strong>同时执行</strong> 的错觉</li>
+</ul>
+
+<p>了解了这些, 我们再来看协程, 协程适合的是 <strong>IO 密集型</strong> 应用, 因为协程在 <strong>IO 阻塞</strong> 时会自动调度, 减少 IO 阻塞导致的时间损失.</p>
+
+<p>我们可以对比下面三段代码:</p>
+
+<ul>
+<li>  普通版: 执行 4 个任务</li>
+</ul>
+
+<pre><code class="language-php">$n = 4;
+for ($i = 0; $i &lt; $n; $i++) {
+    sleep(1);
+    echo microtime(true) . &quot;: hello $i \n&quot;;
+};
+echo &quot;hello main \n&quot;;
+
+</code></pre>
+
+<pre><code class="language-sh">root@b98940b00a9b /v/w/c/p/swoole# time php co.php
+1528965075.4608: hello 0
+1528965076.461: hello 1
+1528965077.4613: hello 2
+1528965078.4616: hello 3
+hello main
+real    0m 4.02s
+user    0m 0.01s
+sys     0m 0.00s
+⏎
+
+</code></pre>
+
+<ul>
+<li>  单个协程版:</li>
+</ul>
+
+<pre><code class="language-php">$n = 4;
+go(function () use ($n) {
+    for ($i = 0; $i &lt; $n; $i++) {
+        Co::sleep(1);
+        echo microtime(true) . &quot;: hello $i \n&quot;;
+    };
+});
+echo &quot;hello main \n&quot;;
+
+</code></pre>
+
+<pre><code>root@b98940b00a9b /v/w/c/p/swoole# time php co.php
+hello main
+1528965150.4834: hello 0
+1528965151.4846: hello 1
+1528965152.4859: hello 2
+1528965153.4872: hello 3
+real    0m 4.03s
+user    0m 0.00s
+sys     0m 0.02s
+⏎
+
+</code></pre>
+
+<ul>
+<li>  多协程版: <strong>见证奇迹的时刻</strong></li>
+</ul>
+
+<pre><code class="language-php">$n = 4;
+for ($i = 0; $i &lt; $n; $i++) {
+    go(function () use ($i) {
+        Co::sleep(1);
+        echo microtime(true) . &quot;: hello $i \n&quot;;
+    });
+};
+echo &quot;hello main \n&quot;;
+
+</code></pre>
+
+<pre><code class="language-sh">root@b98940b00a9b /v/w/c/p/swoole# time php co.php
+hello main
+1528965245.5491: hello 0
+1528965245.5498: hello 3
+1528965245.5502: hello 2
+1528965245.5506: hello 1
+real    0m 1.02s
+user    0m 0.01s
+sys     0m 0.00s
+⏎
+
+</code></pre>
+
+<p>为什么时间有这么大的差异呢:</p>
+
+<ul>
+<li>  普通写法, 会遇到 <strong>IO 阻塞</strong> 导致的性能损失</li>
+<li>  单协程: 尽管 IO 阻塞 引发了协程调度, 但当前只有一个协程, 调度之后还是执行当前协程</li>
+<li>  多协程: 真正发挥出了协程的优势, 遇到 IO 阻塞 时发生调度, IO 就绪时恢复运行</li>
+</ul>
+
+<p>我们将多协程版稍微修改一下:</p>
+
+<ul>
+<li>  多协程版 2: CPU 密集型</li>
+</ul>
+
+<pre><code class="language-php">$n = 4;
+for ($i = 0; $i &lt; $n; $i++) {
+    go(function () use ($i) {
+        // Co::sleep(1);
+        sleep(1);
+        echo microtime(true) . &quot;: hello $i \n&quot;;
+    });
+};
+echo &quot;hello main \n&quot;;
+
+</code></pre>
+
+<pre><code class="language-sh">root@b98940b00a9b /v/w/c/p/swoole# time php co.php
+1528965743.4327: hello 0
+1528965744.4331: hello 1
+1528965745.4337: hello 2
+1528965746.4342: hello 3
+hello main
+real    0m 4.02s
+user    0m 0.01s
+sys     0m 0.00s
+⏎
+
+</code></pre>
+
+<p>只是将 <code>Co::sleep()</code> 改成了 <code>sleep()</code>, 时间又和普通版差不多了. 因为:</p>
+
+<ul>
+<li>  <code>sleep()</code> 可以看做是 CPU 密集型任务, 不会引起协程的调度</li>
+<li>  <code>Co::sleep()</code> 模拟的是 IO 密集型任务, 会引发协程的调度</li>
+</ul>
+
+<p><strong>这也是为什么, 协程适合 IO 密集型 的应用.</strong></p>
+
+<p>再来一组对比的例子: 使用 redis</p>
+
+<pre><code class="language-php">// 同步版, redis使用时会有 IO 阻塞
+$cnt = 2000;
+for ($i = 0; $i &lt; $cnt; $i++) {
+    $redis = new \Redis();
+    $redis-&gt;connect(&#39;redis&#39;);
+    $redis-&gt;auth(&#39;123&#39;);
+    $key = $redis-&gt;get(&#39;key&#39;);
+}
+
+// 单协程版: 只有一个协程, 并没有使用到协程调度减少 IO 阻塞
+go(function () use ($cnt) {
+    for ($i = 0; $i &lt; $cnt; $i++) {
+        $redis = new Co\Redis();
+        $redis-&gt;connect(&#39;redis&#39;, 6379);
+        $redis-&gt;auth(&#39;123&#39;);
+        $redis-&gt;get(&#39;key&#39;);
+    }
+});
+
+// 多协程版, 真正使用到协程调度带来的 IO 阻塞时的调度
+for ($i = 0; $i &lt; $cnt; $i++) {
+    go(function () {
+        $redis = new Co\Redis();
+        $redis-&gt;connect(&#39;redis&#39;, 6379);
+        $redis-&gt;auth(&#39;123&#39;);
+        $redis-&gt;get(&#39;key&#39;);
+    });
+}
+
+</code></pre>
+
+<p>性能对比:</p>
+
+<pre><code class="language-sh"># 多协程版
+root@0124f915c976 /v/w/c/p/swoole# time php co.php
+real    0m 0.54s
+user    0m 0.04s
+sys     0m 0.23s
+⏎
+
+# 同步版
+root@0124f915c976 /v/w/c/p/swoole# time php co.php
+real    0m 1.48s
+user    0m 0.17s
+sys     0m 0.57s
+⏎
+
+</code></pre>
+
+<h2 id="toc_2">swoole 协程和 go 协程对比: 单进程 vs 多线程</h2>
+
+<p>接触过 go 协程的 coder, 初始接触 swoole 的协程会有点 <strong>懵</strong>, 比如对比下面的代码:</p>
+
+<pre><code class="language-go">package main
+
+import (
+    &quot;fmt&quot;
+    &quot;time&quot;
+)
+
+func main() {
+    go func() {
+        fmt.Println(&quot;hello go&quot;)
+    }()
+
+    fmt.Println(&quot;hello main&quot;)
+
+    time.Sleep(time.Second)
+}
+
+</code></pre>
+
+<pre><code class="language-sh">&gt; 14:11 src $ go run test.go
+hello main
+hello go
+
+</code></pre>
+
+<p>刚写 go 协程的 coder, 在写这个代码的时候会被告知不要忘了 <code>time.Sleep(time.Second)</code>, 否则看不到输出 <code>hello go</code>, 其次, <code>hello go</code> 与 <code>hello main</code> 的顺序也和 swoole 中的协程不一样.</p>
+
+<p>原因就在于 swoole 和 go 中, <strong>实现协程调度的模型不同</strong>.</p>
+
+<p>上面 go 代码的执行过程:</p>
+
+<ul>
+<li>  运行 go 代码, 系统启动一个新进程</li>
+<li>  查找 <code>package main</code>, 然后执行其中的 <code>func mian()</code></li>
+<li>  <strong>遇到协程, 交给协程调度器执行</strong></li>
+<li>  继续向下执行, 输出 <code>hello main</code></li>
+<li>  如果不添加 <code>time.Sleep(time.Second)</code>, main 函数执行完, 程序结束, 进程退出, 导致调度中的协程也终止</li>
+</ul>
+
+<p>go 中的协程, 使用的 MPG 模型:</p>
+
+<ul>
+<li>  M 指的是 Machine, 一个 M 直接关联了一个内核线程</li>
+<li>  P 指的是 processor, 代表了 M 所需的上下文环境, 也是处理用户级代码逻辑的处理器</li>
+<li>  G 指的是 Goroutine, 其实本质上也是一种轻量级的线程</li>
+</ul>
+
+<p><img src="https://upload-images.jianshu.io/upload_images/567399-d400f4b192f3dc48.png" alt=""/></p>
+
+<p>而 swoole 中的协程调度使用 <strong>单进程模型</strong>, 所有协程都是在当前进程中进行调度, 单进程的好处也很明显 -- <strong>简单 / 不用加锁 / 性能也高</strong>.</p>
+
+<p>无论是 go 的 MPG 模型, 还是 swoole 的 单进程模型, 都是对 CSP 理论 的实现.</p>
+
+<blockquote>
+<p>CSP 通信方式, 在 1985 年时的论文就已经有了, 做理论研究的人, 如果没有能提前几年, 十几年甚至几十年的大胆假设, 可能很难提高了.</p>
+</blockquote>
+
+<h2 id="toc_3">写在最后</h2>
+
+<p>今天从 <code>go()</code> 出发, 得以一瞥协程世界, 协程的世界里还有很多很有意思的东西, 需要我们去发现. 比如:</p>
+
+<ul>
+<li>  我们普通版的代码是当前进程里执行的, 只是单个进程, 可我们现在可能有了很多协程, 会不会有什么奇遇呢?</li>
+</ul>
+
+<p>还有一个细节: swoole 中有 <code>Co::sleep()</code> 和 <code>sleep()</code> 2 个方法的, 而 go 中只有 <code>time.Sleep()</code> 一个方法?</p>
+
+<p>这是 swoole 协程需要经历的一个阶段 (毕竟 go 快 10 年了), 还不够 <strong>智能的判断 IO 阻塞</strong>, 所以上面也使用了相应的协程版 redis <code>co\Redis()</code> -- 你得使用配套协程版, 才能达到协程调度的效果.</p>
+
+<p>如果对协程的发展阶段感兴趣, 可以阅读下面这篇文章:</p>
+
+<ul>
+<li>  <a href="https://my.oschina.net/yyzybb/blog/1817226">Why c++ coroutine？Why libgo？</a>: 关于协程全景式的概述的, 推荐花时间读一读</li>
+</ul>
+
+<p>想解锁 swoole 协程的更多姿势:</p>
+
+<ul>
+<li>  <a href="https://segmentfault.com/a/1190000013239349">Swoole 2.1 正式版发布，协程 + 通道带来全新的 PHP 编程模式</a></li>
+<li>  <a href="https://segmentfault.com/a/1190000015291606">Swoole 4.0 正式版，面向生产环境的 PHP 协程引擎</a></li>
+<li>  <a href="https://github.com/ThinkDevelopers/PHPConChina/blob/master/PHPCON2018/Swoole4-%E5%85%A8%E6%96%B0%E7%9A%84PHP%E7%BC%96%E7%A8%8B%E6%A8%A1%E5%BC%8F_%E9%9F%A9%E5%A4%A9%E5%B3%B0_PHPCON2018.pdf">Swoole4 - 全新的 PHP 编程模式_韩天峰_PHPCON2018</a></li>
+</ul>
+
+<p>最后, <a href="https://gitee.com/daydaygo/coding/blob/master/php/swoole/co.php">本期示例代码可以从我的开源项目中获取, 请享用</a></p>
 
                         
                       </div>
@@ -309,10 +550,10 @@ ps：如果没有设置 expire 的 key, 不满足先决条件 (prerequisites); �
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/6/1</span>
+                    <span class="date">2018/6/16</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Cache.html'>Cache</a></span>
+          					    <span class="posted-in"><a href='Cocurrency.html'>Cocurrency</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -379,8 +620,6 @@ ps：如果没有设置 expire 的 key, 不满足先决条件 (prerequisites); �
 
       	<p class="cat-list">
         
-            <a href="Team.html"><strong>Team</strong></a>
-        
             <a href="Infra.html"><strong>Infra</strong></a>
         
             <a href="Coding.html"><strong>Coding</strong></a>
@@ -404,31 +643,31 @@ ps：如果没有设置 expire 的 key, 不满足先决条件 (prerequisites); �
 	      
 		      
 			      <li class="post">
-			        <a href="15301813999205.html">架构设计：负载均衡层设计方案（9）——负载均衡层总结下篇</a>
+			        <a href="15337171704262.html">Introduction to Testing with Spock and Groovy</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301813109409.html">架构设计：负载均衡层设计方案（8）——负载均衡层总结上篇</a>
+			        <a href="15336595358049.html">10 Excellent Ways to Secure Your Spring Boot Application</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301812452579.html">架构设计：负载均衡层设计方案（7）——LVS + Keepalived + Nginx安装及配置</a>
+			        <a href="15336592302916.html">First MicroProfile.io application using Java Module System</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301811967181.html">架构设计：负载均衡层设计方案（6）——Nginx + Keepalived构建高可用的负载层</a>
+			        <a href="15332186142588.html">Jenkins 的 Pipeline 脚本在美团餐饮 SaaS 中的实践</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301811361753.html">架构设计：负载均衡层设计方案（5）——LVS单节点安装</a>
+			        <a href="15331749691571.html">基于ZooKeeper的分布式锁和队列</a>
 			      </li>
 		     
 		  

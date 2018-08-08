@@ -76,8 +76,6 @@
     <li><label>Categories</label></li>
 
         
-            <li><a href="Team.html">Team</a></li>
-        
             <li><a href="Infra.html">Infra</a></li>
         
             <li><a href="Coding.html">Coding</a></li>
@@ -107,190 +105,201 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15281296238206.html">
+                <a class="clearlink" href="15293292942972.html">
                 
-                  <h1>SOFABoot 类隔离原理剖析</h1>
+                  <h1>深入理解 RPC 之协议篇</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
-                        	<blockquote>
-<p>林小树 <a href="https://zhuanlan.zhihu.com/p/37665305">https://zhuanlan.zhihu.com/p/37665305</a></p>
-</blockquote>
+                        	<ul>
+<li>  Protocol 在 RPC 中的层次关系</li>
+<li>  Dubbo 中的协议</li>
+<li>  Motan 中的协议</li>
+<li>  总结</li>
+</ul>
 
-<p><strong>原创声明</strong>：本文系作者原创，谢绝个人、媒体、公众号或网站未经授权转载，违者追究其法律责任。</p>
+<p>协议（Protocol）是个很广的概念，RPC 被称为远程过程调用协议，HTTP 和 TCP 也是大家熟悉的协议，也有人经常拿 RPC 和 RESTFUL 做对比，后者也可以被理解为一种协议… 我个人偏向于把 “协议” 理解为不同厂家不同用户之间的“约定”，而在 RPC 中，协议的含义也有多层。</p>
+
+<h2 id="toc_0">Protocol 在 RPC 中的层次关系</h2>
+
+<p>翻看 dubbo 和 motan 两个国内知名度数一数二的 RPC 框架（或者叫服务治理框架可能更合适）的文档，他们都有专门的一章介绍自身对多种协议的支持。RPC 框架是一个分层结构，从我的这个《深入理解 RPC》系列就可以看出，是按照分层来介绍 RPC 的原理的，前面已经介绍过了传输层，序列化层，动态代理层，他们各自负责 RPC 调用生命周期中的一环，而协议层则是凌驾于它们所有层之上的一层。简单描述下各个层之间的关系：</p>
 
 <blockquote>
-<p>SOFABoot 是蚂蚁金服中间件团队开源的基于 Spring Boot 的一个开发框架，其在 Spring Boot 基础能力之上，增加了类隔离能力，以更好地解决随着工程应用变得臃肿庞大后带来的包冲突问题。类隔离能力天生带来模块化能力，同样给协作开发带来便利。<br/>
-SOFABoot 的类隔离能力借助单独的组件 SOFAArk 实现，遵循 Spring Boot 依赖即服务的思想，只要工程中引入了 SOFAArk 组件依赖，类隔离能力即生效。<br/>
-在上一篇文章 <a href="https://zhuanlan.zhihu.com/p/36909393">《在 Spring Boot 中集成 SOFABoot 类隔离能力》</a>中，我们详细介绍了 SOFABoot 类隔离能力的使用背景及其使用方式。本文将介绍 SOFABoot 类隔离组件 SOFAArk 的实现原理。</p>
+<p>protocol 层主要用于配置 refer（发现服务） 和 exporter（暴露服务） 的实现方式，transport 层定义了传输的方式，codec 层诠释了具体传输过程中报文解析的方式，serialize 层负责将对象转换成字节，以用于传输，proxy 层负责将这些细节屏蔽。</p>
+
+<p>它们的包含关系如下：protocol &gt; transport &gt; codec &gt; serialize</p>
 </blockquote>
 
-<h2 id="toc_0"><strong>理解 SOFAArk 三要素</strong></h2>
+<p>motan 的 Protocol 接口可以佐证这一点：</p>
 
-<p>SOFAArk 类隔离框架定义了三个概念，Ark Container，Ark Plugin，Ark Biz。</p>
-
-<p>在介绍这三个主角之前，我们先来介绍另一个管家：<strong>Ark 包</strong>。我们都知道一个标准的 Spring Boot 应用可以借助 Spring 官方提供的打包插件：</p>
-
-<pre><code>&lt;plugin&gt;
-    &lt;groupId&gt;org.springframework.boot&lt;/groupId&gt;
-    &lt;artifactId&gt;spring-boot-maven-plugin&lt;/artifactId&gt;
-&lt;/plugin&gt;
-
+<pre><code class="language-java">public interface Protocol {
+    &lt;T&gt; Exporter&lt;T&gt; export(Provider&lt;T&gt; provider, URL url);
+    &lt;T&gt; Referer&lt;T&gt; refer(Class&lt;T&gt; clz, URL url, URL serviceUrl);
+    void destroy();
+}
 </code></pre>
 
-<p>将应用打包成一个可执行 FatJar。相对应的，Ark 包则是 SOFABoot 官方提供的打包插件：</p>
+<p>我们都知道 RPC 框架支持多种协议，由于协议处于框架层次的较高位置，任何一种协议的替换，都可能会导致服务发现和服务注册的方式，传输的方式，以及序列化的方式，而不同的协议也给不同的业务场景带来了更多的选择，下面就来看看一些常用协议。</p>
 
-<pre><code>&lt;plugin&gt;
-    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
-    &lt;artifactId&gt;sofa-ark-maven-plugin&lt;/artifactId&gt;
-&lt;/plugin&gt;
+<h2 id="toc_1">Dubbo 中的协议</h2>
 
-</code></pre>
+<h3 id="toc_2">dubbo://</h3>
 
-<p>将应用打包成一个具有类隔离能力的可执行 FatJar，称之为 Ark 包。下图是粗略地对比两者的目录结构差别：</p>
+<p>Dubbo 缺省协议采用单一长连接和 NIO 异步通讯，适合于小数据量高并发的服务调用，以及服务消费者机器数远大于服务提供者机器数的情况。</p>
 
-<p><img src="https://pic3.zhimg.com/v2-096b7865cea9b432d6dee8990d2b2dc1_b.jpg" alt=""/><img src="https://pic3.zhimg.com/v2-096b7865cea9b432d6dee8990d2b2dc1_r.jpg" alt=""/></p>
+<p>反之，Dubbo 缺省协议不适合传送大数据量的服务，比如传文件，传视频等，除非请求量很低。</p>
 
-<p>可以看到 Ark 包作为应用部署包的分发格式，它包含有 Ark Container，Ark Plugin 和 Ark Biz 三种格式模块。这里我们不对 Ark 包或者其他格式模块的目录结构作分析，感兴趣的同学可以点开文末附上的相关链接。我们重点介绍这三个角色的功能。</p>
+<p>适用场景：常规远程服务方法调用</p>
 
-<ul>
-<li>  Ark Container: Ark 容器，是组件 SOFAArk 的核心，运行 Ark 包时，Ark 容器会最先启动，负责应用运行时的管理，主要包括构建 Ark Plugin 和 Ark Biz 的类导入导出关系表、启动并初始化 Ark Plugin 和 Ark Biz、管理 Ark Plugin 服务的发布和引用等等。</li>
-<li>  Ark Plugin: SOFAArk 定义的一种模块格式，由若干个 Jar 包组成的一个 FatJar，开发人员可以借助官方提供的 maven 打包插件将若干 Jar 包打包成一个 Ark Plugin 供应用依赖。运行时，由独立的类加载器加载，因此有隔离需求的 Jar 包建议打包成 Ark Plugin 供应用依赖。</li>
-<li>  Ark Biz: SOFAArk 定义的一种模块格式，是应用及其依赖的所有三方包组成的一个 FatJar，需要注意的是，Ark Biz 不会包含应用依赖的 Ark Plugin。运行时，Ark Biz 由独立的类加载器加载，借助类导入导出关系表，Ark Biz 可以使用 Ark Plugin 的导出类和资源。</li>
-</ul>
+<h3 id="toc_3">rmi://</h3>
 
-<h2 id="toc_1"><strong>SOFAArk 运行时隔离</strong></h2>
+<p>RMI 协议采用 JDK 标准的 <code>java.rmi.*</code> 实现，采用阻塞式短连接和 JDK 标准序列化方式。</p>
 
-<p>根据上一节的描述可以知道 SOFABoot 类隔离关键是理解 SOFAArk 定义的三个概念，Ark Container，Ark Plugin 和 Ark Biz。下图表示的是应用启动后，运行时 Ark Container，Ark Plugin，Ark Biz 的逻辑分层图：</p>
+<p>适用场景：常规远程服务方法调用，与原生 RMI 服务互操作</p>
 
-<p><img src="https://pic3.zhimg.com/v2-27569011d5bddb7723b45797dc66758e_b.jpg" alt=""/><img src="https://pic3.zhimg.com/v2-27569011d5bddb7723b45797dc66758e_r.jpg" alt=""/></p>
+<h3 id="toc_4">hessian://</h3>
 
-<p>我们将先以 Ark Plugin 入手来介绍 SOFABoot 类隔离的实现原理。</p>
+<p>Hessian 协议用于集成 Hessian 的服务，Hessian 底层采用 Http 通讯，采用 Servlet 暴露服务，Dubbo 缺省内嵌 Jetty 作为服务器实现。</p>
 
-<h2 id="toc_2"><strong>Ark Plugin 隔离</strong></h2>
-
-<p>开发者借助 SOFABoot 官方提供的插件：</p>
-
-<pre><code>&lt;plugin&gt;
-    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
-    &lt;artifactId&gt;sofa-ark-plugin-maven-plugin&lt;/artifactId&gt;
-&lt;/plugin&gt;
-
-</code></pre>
-
-<p>可以将 Java 模块打包成一个 Ark Plugin，这里我们不讨论该打包插件的配置参数和使用方式，感兴趣的同学可以点开文末附上的相关链接以及学习 SOFABoot 类隔离能力使用篇。只需要知道，Ark Plugin 主要包含元信息有：插件启动器、导出类、导入类、导出资源、导入资源、优先级等，这些元信息保存在 Ark Plugin 中的 META-INF/MANIFEST.MF 中，一份典型的 MANIFEST.MF 文件样式如下：</p>
-
-<pre><code>Manifest-Version: 1.0
-groupId: com.alipay.sofa
-artifactId: sample-ark-plugin
-version: 0.3.0-SNAPSHOT
-priority: 1000
-pluginName: sample-ark-plugin
-activator: com.alipay.sofa.ark.sample.activator.SamplePluginActivator
-import-packages: 
-import-classes: 
-import-resources: 
-export-packages: com.alipay.sofa.ark.sample.common.*,com.alipay.sofa.ark.sample
-export-classes: com.alipay.sofa.ark.sample.facade.SamplePluginService
-export-resources: Sample_Resource_Exported
-
-</code></pre>
-
-<p>在上面我们提到，运行 Ark 包时，类隔离容器 Ark Container 会最先启动，然后 Ark Container 会接管整个应用的启动过程。针对 Ark Plugin 处理逻辑如下：</p>
+<p>Dubbo 的 Hessian 协议可以和原生 Hessian 服务互操作，即：</p>
 
 <ul>
-<li>  首先解析 Ark 包中引入的所有 Ark Plugin，读取插件元信息，构建类 / 资源导入导出关系索引表。</li>
-<li>  提前生成所有插件类加载器，每个 Ark Plugin 都使用独立的类加载器，管理插件类加载逻辑，借助第一步生成的类导入导出关系表，突破 Java 原生的双亲委派模型，可以委托其他插件加载所需类，构建一个类 OSGi 的网状类加载模型。</li>
-<li>  根据插件优先级，依次调用插件启动器。在插件启动器中，插件开发者可以向容器注册服务以方便其他插件引用，也可以引用其他插件发布的服务，及插件启动所需的初始化操作。</li>
+<li><p>提供者用 Dubbo 的 Hessian 协议暴露服务，消费者直接用标准 Hessian 接口调用</p></li>
+<li><p>或者提供方用标准 Hessian 暴露服务，消费方用 Dubbo 的 Hessian 协议调用。</p></li>
 </ul>
 
-<p>需要明确一点，为了让类加载模型足够简单，Ark 容器在启动任何插件前，会把所有的插件类加载器提前构建完毕。Ark Plugin 可以相互委托加载，插件优先级只是影响插件的启动顺序，而且也不强制要求每个 Ark Plugin 都要有启动器。</p>
+<p>Hessian 在之前介绍过，当时仅仅是用它来作为序列化工具，但其本身其实就是一个协议，可以用来做远程通信。</p>
 
-<p>启动完所有插件后，Ark Container 则开始负责启动 Ark Biz 模块。</p>
+<p>适用场景：页面传输，文件传输，或与原生 hessian 服务互操作</p>
 
-<h2 id="toc_3"><strong>Ark Biz 隔离</strong></h2>
+<h3 id="toc_5">http://</h3>
 
-<p>Ark Container 在完成 Ark Plugin 的隔离和启动后，则开始准备 Ark Biz 的隔离和启动。</p>
+<p>基于 HTTP 表单的远程调用协议，采用 Spring 的 HttpInvoker 实现</p>
 
-<p>在上文中提到，应用打成 Ark 包后，Ark 包会包含 Ark Plugin 模块和 Ark Biz 模块。实际上 Ark Biz 其实就是应用及其所有的三方依赖打成的 FatJar 包，Ark Biz 不会包含应用引入的 Ark Plugin。开发者借助 SOFABoot 官方提供的插件：</p>
+<p>适用场景：需同时给应用程序和浏览器 JS 使用的服务。</p>
 
-<pre><code>&lt;plugin&gt;
-    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
-    &lt;artifactId&gt;sofa-ark-maven-plugin&lt;/artifactId&gt;
-&lt;/plugin&gt;
+<h3 id="toc_6">webserivice://</h3>
 
-</code></pre>
+<p>基于 WebService 的远程调用协议，基于 Apache CXF 的 <code>frontend-simple</code> 和 <code>transports-http</code> 实现。</p>
 
-<p>可以将 Java（Spring Boot） 应用打包成一个 Ark Biz，这里我们不讨论该打包插件的配置参数和使用方式，感兴趣的同学可以点开文末附上的相关链接以及学习 SOFABoot 类隔离能力使用篇。只需要知道，Ark Biz 主要包含元信息有：应用启动入口、禁止导入类、禁止导入资源等。这些元信息保存在 Ark Biz 中的 META-INF/MANIFEST.MF 中，一份典型的 MANIFEST.MF 文件样式如下：</p>
-
-<pre><code>Manifest-Version: 1.0
-Archiver-Version: Plexus Archiver
-Created-By: Apache Maven 3.2.5
-Build-Jdk: 1.8.0_101
-Built-By: qilong.zql
-Ark-Biz-Name: sofa-ark-sample-springboot-ark
-deny-import-resources:
-deny-import-packages:
-deny-import-classes:
-Main-Class: com.alipay.sofa.ark.sample.springbootdemo.SpringbootDemoApplication
-
-</code></pre>
-
-<p>Ark Biz 和 Ark Plugin 有很大的不同，最明显的则是 Ark Biz 单向依赖 Ark Plugin，即 Ark Biz 只能单向委托 Ark Plugin 加载类和资源，反之则不可以。实际上在运行时，Ark Biz 是运行在 Ark Plugin 之上，Ark Container 也是先启动所有 Ark Plugin 然后启动 Ark Biz。默认情况下，Ark Plugin 导出的所有类和资源都能被 Ark Biz 委托加载到，为了方便应用开发者能够自主控制类加载逻辑，允许在打包插件中配置禁止导入类和禁止导入资源，如此，对于配置的类和资源， Ark Biz 能够优先加载内部包含的类，而不会委托给 Ark Plugin 加载。Ark Container 针对 Ark Biz 处理逻辑如下：</p>
+<p>可以和原生 WebService 服务互操作，即：</p>
 
 <ul>
-<li>  首先解析 Ark 包中 Ark Biz 模块，读取元信息，构建类 / 资源导入导出关系索引表。</li>
-<li>  生成 Ark Biz 类加载器，管理 Ark Biz 类加载逻辑，借助第一步生成的类导入导出关系表，突破 Java 原生的双亲委派模型，可以委托 Ark Plugin 加载所需类和资源。</li>
-<li>  调用应用启动入口，启动应用。</li>
+<li><p>提供者用 Dubbo 的 WebService 协议暴露服务，消费者直接用标准 WebService 接口调用，</p></li>
+<li><p>或者提供方用标准 WebService 暴露服务，消费方用 Dubbo 的 WebService 协议调用</p></li>
 </ul>
 
-<p>如此，Ark 包即完成整个启动过程。</p>
+<p>适用场景：系统集成，跨语言调用</p>
 
-<h2 id="toc_4"><strong>和 OSGi 对比</strong></h2>
+<h3 id="toc_7">thrift://</h3>
 
-<p>作为开源界早负盛名的动态模块系统，基于 OSGi 规范的 Equinox、Felix 等同样具备类隔离能力，然而他们更多强调的是一种编程模型，面向模块化开发，有一整套模块生命周期的管理，定义模块通信机制以及复杂的类加载模型。作为专注于解决依赖冲突的隔离框架，SOFAArk 专注于类隔离，简化了类加载模型，因此显得更加轻量。</p>
+<p>当前 dubbo 支持的 thrift 协议是对 thrift 原生协议的扩展，在原生协议的基础上添加了一些额外的头信息，比如 service name，magic number 等。</p>
 
-<p>其次在 OSGi 规范中，所有的模块定义成 Bundle 形式，作为应用开发者，他需要了解 OSGi 背后的工作原理，对开发者要求比较高。在 SOFAArk 中，定义了两层模块类型，Ark Plugin 和 Ark Biz，应用开发者只需要添加隔离的 Ark Plugin 依赖，对本身的开发没有任何影响，基本没有开发门槛。</p>
+<h3 id="toc_8">memcached://</h3>
 
-<h2 id="toc_5"><strong>正在做的事</strong></h2>
+<p>基于 memcached 实现的 RPC 协议</p>
 
-<p>全文读下来，你可能会产生这样的一个疑惑：如果在应用中引入其他应用打包的 Ark Biz 会如何呢？</p>
+<h3 id="toc_9">redis://</h3>
 
-<p>目前 SOFAArk 是可以启动多个 Ark Biz 的，比较遗憾的是，现在 Ark Biz 之间没法做到服务通信。如果你之前读完过上一篇 SOFABoot 类隔离使用篇及这篇原理篇，你也许会发现，虽然 SOFAArk 是一个纯粹的类隔离框架，但是基于 SOFAArk 之上，可以开发各具功能特色的 Ark Plugin，补充框架能力，供应用开发者按需依赖使用，比如已经推出的 SOFARPC Ark Plugin。回到上面的问题，为了解决多个 Ark Biz 合并部署的问题，我们正在开发一个新的 Ark Plugin，Jarslink2.0。</p>
+<p>基于 Redis 实现的 RPC 协议。</p>
 
-<p>在蚂蚁内部，多个应用合并部署在同一个 JVM 之上，是一件常见的事情。这样带来的主要优势如下：</p>
+<blockquote>
+<p>dubbo 支持的众多协议详见 <a href="http://dubbo.io/books/dubbo-user-book/references/protocol/dubbo.html">http://dubbo.io/books/dubbo-user-book/references/protocol/dubbo.html</a></p>
+</blockquote>
+
+<p>dubbo 的一个分支 dangdangdotcom/dubbox 扩展了 REST 协议</p>
+
+<h3 id="toc_10">rest://</h3>
+
+<p>JAX-RS 是标准的 Java REST API，得到了业界的广泛支持和应用，其著名的开源实现就有很多，包括 Oracle 的 Jersey，RedHat 的 RestEasy，Apache 的 CXF 和 Wink，以及 restlet 等等。另外，所有支持 JavaEE 6.0 以上规范的商用 JavaEE 应用服务器都对 JAX-RS 提供了支持。因此，JAX-RS 是一种已经非常成熟的解决方案，并且采用它没有任何所谓 vendor lock-in 的问题。</p>
+
+<p>JAX-RS 在网上的资料非常丰富，例如下面的入门教程：</p>
 
 <ul>
-<li>  无关应用合并部署：有些应用在独立部署时，相互之间没有服务依赖，而且这些应用承担业务体量都偏小，单独占有一台物理机部署比较浪费资源。这些应用合并部署，能够节省成本。</li>
-<li>  相关应用合并部署：多个应用之间存在服务依赖，独立部署时，各应用之间使用 RPC 调用，虽然使用了分布式架构，稳定性高，但依然存在网络抖动导致的延时性问题。这些应用合并部署，RPC 调用转为 JVM 内部调用，缩减调用开销。</li>
+<li><p>Oracle 官方的 tutorial：<a href="http://docs.oracle.com/javaee/7/tutorial/doc/jaxrs.htm">http://docs.oracle.com/javaee/7/tutorial/doc/jaxrs.htm</a></p></li>
+<li><p>IBM developerWorks 中国站文章：<a href="http://www.ibm.com/developerworks/cn/java/j-lo-jaxrs/">http://www.ibm.com/developerworks/cn/java/j-lo-jaxrs/</a></p></li>
 </ul>
 
-<p>当然，作为蚂蚁内部非常重要的一项技术创新，合并部署在特定的业务背景下有着更为重要的意义，也远不止上面提到的两点优势，比如故障的隔离等等。</p>
+<p>更多的资料请自行 google 或者百度一下。就学习 JAX-RS 来说，一般主要掌握其各种 annotation 的用法即可。</p>
 
-<p>说回到 Jarslink2.0，这个 SOFABoot 官方开发的 Ark Plugin，主要是为了解决多个 Ark Biz 运行时管理问题。我们知道，每个 Java(Spring Boot) 应用，都可以通过我们的 maven 插件打包成 Ark Biz 供其他应用依赖。目前 SOFAArk 框架只能做到隔离 Ark Biz，作为框架能力的补充，Jarslink2.0 插件专门管理多个 Ark Biz 的运行时。这里默认每个 Ark Biz 都是一个 SOAFBoot/Spring Boot 工程，Jarslink2.0 提供的能力如下：</p>
+<blockquote>
+<p>注意：dubbo 是基于 JAX-RS 2.0 版本的，有时候需要注意一下资料或 REST 实现所涉及的版本。</p>
+</blockquote>
 
-<ul>
-<li>  动态安装、卸载 Ark Biz。</li>
-<li>  Ark Biz 之间使用注解和 xml 两种形式发布和引用 jvm 服务，解决多 Ark Biz 服务依赖问题。</li>
-<li>  Ark Biz 如果使用了 SOFARPC 能力，可以自动完成 RPC 转 JVM 内部调用。</li>
-</ul>
+<p>适用场景：跨语言调用</p>
 
-<p>在这里特别感谢方腾飞， 蚂蚁内部花名 @清英 ，也是我们熟知的并发编程网 (<a href="https://link.zhihu.com/?target=http%3A//ifeve.com/">http://ifeve.com/</a>)创始人。清英在蚂蚁内部开发的 Jarslink1.0 在网商银行已经落地使用很长一段时间，Jarslink2.0 是在 Jarslink1.0 基础之上，结合 SOFABoot 类隔离框架，提供了更加通用的应用 (模块) 隔离和通信的实现方案，敬请期待！</p>
+<p>千米网也给 dubbo 贡献了一个扩展协议：<a href="https://github.com/dubbo/dubbo-rpc-jsonrpc">https://github.com/dubbo/dubbo-rpc-jsonrpc</a></p>
 
-<h2 id="toc_6">欢迎微博关注 @SOFAStack 与我们互动，相关传送门：</h2>
+<h3 id="toc_11">jsonrpc://</h3>
 
-<ul>
-<li>  Ark 包目录结构及其打包插件的使用
-<a href="https://link.zhihu.com/?target=https%3A//alipay.github.io/sofastack.github.io/docs/ark-jar.html">https://alipay.github.io/sofastack.github.io/docs/ark-jar.html</a></li>
-<li>  Ark Plugin 目录结构及其打包插件的使用
-<a href="https://link.zhihu.com/?target=https%3A//alipay.github.io/sofastack.github.io/docs/ark-plugin.html">https://alipay.github.io/sofastack.github.io/docs/ark-plugin.html</a></li>
-<li>  Ark Biz 目录结构及其打包插件的使用
-<a href="https://link.zhihu.com/?target=https%3A//alipay.github.io/sofastack.github.io/docs/ark-biz.html">https://alipay.github.io/sofastack.github.io/docs/ark-biz.html</a></li>
-<li>  Ark Plugin 的工程示例
-<a href="https://link.zhihu.com/?target=https%3A//github.com/alipay/sofa-ark/tree/master/sofa-ark-samples/sample-ark-plugin">https://github.com/alipay/sofa-ark/tree/master/sofa-ark-samples/sample-ark-plugin</a></li>
-<li>  Spring Boot <a href="https://link.zhihu.com/?target=https%3A//github.com/alipay/sofa-ark/tree/master/sofa-ark-samples/sample-springboot-ark">https://github.com/alipay/sofa-ark/tree/master/sofa-ark-samples/sample-springboot-ark</a></li>
-</ul>
+<h4 id="toc_12">Why HTTP</h4>
+
+<p>在互联网快速迭代的大潮下，越来越多的公司选择 nodejs、django、rails 这样的快速脚本框架来开发 web 端应用 而后端的服务用 Java 又是最合适的，这就产生了大量的跨语言的调用需求。<br/>
+而 http、json 是天然合适作为跨语言的标准，各种语言都有成熟的类库<br/>
+虽然 Dubbo 的异步长连接协议效率很高，但是在脚本语言中，这点效率的损失并不重要。</p>
+
+<h4 id="toc_13">Why Not RESTful</h4>
+
+<p>Dubbox 在 RESTful 接口上已经做出了尝试，但是 REST 架构和 dubbo 原有的 RPC 架构是有区别的，<br/>
+区别在于 REST 架构需要有资源 (Resources) 的定义， 需要用到 HTTP 协议的基本操作 GET、POST、PUT、DELETE 对资源进行操作。<br/>
+Dubbox 需要重新定义接口的属性，这对原有的 Dubbo 接口迁移是一个较大的负担。<br/>
+相比之下，RESTful 更合适互联网系统之间的调用，而 RPC 更合适一个系统内的调用，<br/>
+所以我们使用了和 Dubbo 理念较为一致的 JsonRPC</p>
+
+<p>JSON-RPC 2.0 规范 和 JAX-RS 一样，也是一个规范，JAVA 对其的支持可参考 jsonrpc4j</p>
+
+<p>适用场景：跨语言调用</p>
+
+<h2 id="toc_14">Motan 中的协议</h2>
+
+<h3 id="toc_15">motan://</h3>
+
+<p>motan 协议之于 motan，地位等同于 dubbo 协议之于 dubbo，两者都是各自默认的且都是自定义的协议。内部使用 netty 进行通信（旧版本使用 netty3 ，最新版本支持 netty4），默认使用 hessian 作为序列化器。</p>
+
+<p>适用场景：常规远程服务方法调用</p>
+
+<h3 id="toc_16">injvm://</h3>
+
+<p>顾名思义，如果 Provider 和 Consumer 位于同一个 jvm，motan 提供了 injvm 协议。这个协议是 jvm 内部调用，不经过本地网络，一般在服务化拆分时，作为过渡方案使用，可以通过开关机制在本地和远程调用之间进行切换，等过渡完成后再去除本地实现的引用。</p>
+
+<h3 id="toc_17">grpc:// 和 yar://</h3>
+
+<p>这两个协议的诞生缘起于一定的历史遗留问题，moton 是新浪微博开源的，而其内部有很多 PHP 应用，为解决跨语言问题，这两个协议进而出现了。</p>
+
+<p>适用场景：较为局限的跨语言调用</p>
+
+<h3 id="toc_18">restful://</h3>
+
+<p>motan 在 0.3.1 (2017-07-11) 版本发布了 restful 协议的支持（和 dubbo 的 rest 协议本质一样），dubbo 默认使用 jetty 作为 http server，而 motan 使用则是 netty 。主要实现的是 java 对 restful 指定的规范，即 javax.ws.rs 包下的类。</p>
+
+<p>适用场景：跨语言调用</p>
+
+<h3 id="toc_19">motan2://</h3>
+
+<p>motan 1.0.0 (2017-10-31) 版本发布了 motan2 协议，用于对跨语言的支持，不同于 restful，jsonrpc 这样的通用协议，motan2 把请求的一些元数据作为单独的部分传输，更适合不同语言解析。</p>
+
+<p>适用场景：跨语言调用</p>
+
+<blockquote>
+<p>Motan is a cross-language remote procedure call(RPC) framework for rapid development of high performance distributed services.</p>
+
+<p>Motan-go is golang implementation.</p>
+
+<p>Motan-PHP is PHP client can interactive with Motan server directly or through Motan-go agent.</p>
+
+<p>Motan-openresty is a Lua(Luajit) implementation based on Openresty</p>
+</blockquote>
+
+<p>从 motan 的 changeLog 以及 github 首页的介绍来看，其致力于打造成一个跨语言的服务治理框架，这倒是比较亦可赛艇的事。</p>
+
+<h3 id="toc_20">面向未来的协议</h3>
+
+<p>motan 已经支持 motan2://，计划支持 mcq://，kafka:// … 支持更多的协议，以应对复杂的业务场景。对这个感兴趣的朋友，可以参见这篇文章：<a href="http://mp.weixin.qq.com/s?__biz=MzU0MTMyMDg1NQ==&amp;mid=2247483710&amp;idx=1&amp;sn=5daea9c54b9835b660dac5b0ce02f462&amp;scene=21#wechat_redirect">http://mp.weixin.qq.com/s/XZVCHZZzCX8wwgNKZtsmcA</a></p>
+
+<h2 id="toc_21">总结</h2>
+
+<p>如果仅仅是将 dubbo，motan 作为一个 RPC 框架使用，那大多人会选择其默认的协议（dubbo 协议，motan 协议），而如果是有历史遗留原因，如需要对接异构系统，就需要替换成其他协议了。大多数互联网公司选择自研 RPC 框架，或者改造自己的协议，都是为了适配自身业务的特殊性，协议层的选择非常重要。</p>
 
                         
                       </div>
@@ -299,10 +308,10 @@ Main-Class: com.alipay.sofa.ark.sample.springbootdemo.SpringbootDemoApplication
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/6/5</span>
+                    <span class="date">2018/6/18</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Microservice.html'>Microservice</a></span>
+          					    <span class="posted-in"><a href='RPC.html'>RPC</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -369,8 +378,6 @@ Main-Class: com.alipay.sofa.ark.sample.springbootdemo.SpringbootDemoApplication
 
       	<p class="cat-list">
         
-            <a href="Team.html"><strong>Team</strong></a>
-        
             <a href="Infra.html"><strong>Infra</strong></a>
         
             <a href="Coding.html"><strong>Coding</strong></a>
@@ -394,31 +401,31 @@ Main-Class: com.alipay.sofa.ark.sample.springbootdemo.SpringbootDemoApplication
 	      
 		      
 			      <li class="post">
-			        <a href="15301813999205.html">架构设计：负载均衡层设计方案（9）——负载均衡层总结下篇</a>
+			        <a href="15337171704262.html">Introduction to Testing with Spock and Groovy</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301813109409.html">架构设计：负载均衡层设计方案（8）——负载均衡层总结上篇</a>
+			        <a href="15336595358049.html">10 Excellent Ways to Secure Your Spring Boot Application</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301812452579.html">架构设计：负载均衡层设计方案（7）——LVS + Keepalived + Nginx安装及配置</a>
+			        <a href="15336592302916.html">First MicroProfile.io application using Java Module System</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301811967181.html">架构设计：负载均衡层设计方案（6）——Nginx + Keepalived构建高可用的负载层</a>
+			        <a href="15332186142588.html">Jenkins 的 Pipeline 脚本在美团餐饮 SaaS 中的实践</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301811361753.html">架构设计：负载均衡层设计方案（5）——LVS单节点安装</a>
+			        <a href="15331749691571.html">基于ZooKeeper的分布式锁和队列</a>
 			      </li>
 		     
 		  

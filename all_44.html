@@ -76,8 +76,6 @@
     <li><label>Categories</label></li>
 
         
-            <li><a href="Team.html">Team</a></li>
-        
             <li><a href="Infra.html">Infra</a></li>
         
             <li><a href="Coding.html">Coding</a></li>
@@ -107,253 +105,133 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15281297267376.html">
+                <a class="clearlink" href="15295434052821.html">
                 
-                  <h1>中国式微服务技术栈2.0</h1>
+                  <h1>Open Sourcing Zuul 2</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://mp.weixin.qq.com/s?__biz=MzAxODcyNjEzNQ==&amp;mid=2247485289&amp;idx=1&amp;sn=6fcf05e5c1ac3a1222ebcc68f2e2babb&amp;chksm=9bd0aaf1aca723e75b432416e5b01b07f7abe451b10bfd2fb79f07b3ded6b592b01c5bef0536&amp;mpshare=1&amp;scene=23&amp;srcid=0604LzRCRt5hNyReii402454%23rd">原文地址</a></p>
+<p><a href="https://medium.com/netflix-techblog/open-sourcing-zuul-2-82ea476cb2b3">https://medium.com/netflix-techblog/open-sourcing-zuul-2-82ea476cb2b3</a></p>
 </blockquote>
 
-<pre><code>**本文转载自公众号： 波波微课**
-</code></pre>
+<p>We are excited to announce the open sourcing of <a href="https://github.com/netflix/zuul/">Zuul 2</a>, Netflix’s cloud gateway. We use Zuul 2 at Netflix as the front door for all requests coming into Netflix’s cloud infrastructure. Zuul 2 significantly improves the architecture and features that allow our gateway to handle, route, and protect Netflix’s cloud systems, and helps provide our 125 million members the best experience possible. The Cloud Gateway team at Netflix runs and operates more than 80 clusters of Zuul 2, sending traffic to about 100 (and growing) backend service clusters which amounts to more than 1 million requests per second. Nearly all of this traffic is from customer devices and browsers that enable the discovery and playback experience you are likely familiar with.</p>
 
-<h3 id="toc_0"><strong>| 前言</strong></h3>
+<p>This post will overview Zuul 2, provide details on some of the interesting features we are releasing today, and discuss some of the other projects that we’re building with Zuul 2.</p>
 
-<p>近年，Spring Cloud 俨然已经成为微服务开发的主流技术栈，在国内开发者社区非常火爆。</p>
+<h3 id="toc_0">How Zuul 2 Works</h3>
 
-<p>我近年一直在一线互联网公司（携程，拍拍贷等）开展微服务架构实践，根据我个人的实践经验和我平时对 Spring Cloud 的调研，<strong>我认为 Spring Cloud 技术栈中的有些组件离生产级开发尚有一定距离。</strong>比方说 Spring Cloud Config 和 Spring Cloud Sleuth 都是 Pivotal 自研产品，尚未得到大规模企业级生产应用，很多企业级特性缺失（具体见我后文描述）。<strong>另外 Spring Cloud 体系还缺失一些关键的微服务基础组件</strong>，比如 Metrics 监控，健康检查和告警等。</p>
+<p>For context, here’s a high-level diagram of Zuul 2’s architecture:</p>
 
-<p>所以在参考 Spring Cloud 微服务技术栈的基础上，结合自身的实战落地经验，也结合国内外一线互联网公司（例如 Netflix，点评，携程，Zalando 等）的开源实践，<strong>我综合提出更贴近国内技术文化特色的轻量级的微服务参考技术栈。</strong>希望这个参考技术栈对一线的架构师（或者是初创公司）有一个好的指导，能够少走弯路，快速落地微服务架构。</p>
+<p><img src="https://cdn-images-1.medium.com/max/1600/0*ycjEWsSKCaPemEg3." alt=""/></p>
 
-<p><strong>这个参考技术栈和总体架构如下图所示：</strong></p>
+<p>The Netty handlers on the front and back of the filters are mainly responsible for handling the network protocol, web server, connection management and proxying work. With those inner workings abstracted away, the filters do all of the heavy lifting. The inbound filters run before proxying the request and can be used for authentication, routing, or decorating the request. The endpoint filters can either be used to return a static response or proxy the request to the backend service (or origin as we call it). The outbound filters run after a response has been returned and can be used for things like gzipping, metrics, or adding/removing custom headers.</p>
 
-<p><img src="https://mmbiz.qpic.cn/mmbiz_png/ELH62gpbFmEiaMAQXMDZXsnKBnBIHSmoicbPmTVTTgPPQZqrRMN0ODMyHFA089ejVSjtjUERC9Pc7YC6R5SXO3Gg/640?wx_fmt=png" alt=""/></p>
+<p>Zuul’s functionality depends almost entirely on the logic that you add in each filter. That means you can deploy it in multiple contexts and have it solve different problems based on the configurations and filters it is running.</p>
 
-<p><strong>1、中国式微服务技术栈 2.0</strong></p>
+<p>We use Zuul at the entrypoint of all external traffic into Netflix’s cloud services and we’ve started using it for routing internal traffic, as well. We deploy the same core but with a substantially reduced amount of functionality (i.e. fewer filters). This allows us to leverage load balancing, self service routing, and resiliency features for internal traffic.</p>
 
-<p>主要包含 11 大核心组件，分别是：</p>
+<h3 id="toc_1">Open Source</h3>
+
+<p>The Zuul code that’s running today is the most stable and resilient version of Zuul yet. The various phases of evolving and refactoring the codebase have paid dividends and we couldn’t be happier to share it with you.</p>
+
+<p>Today we are releasing many <a href="https://github.com/Netflix/zuul/wiki/Core-Features">core features</a>. Here are the ones we’re most excited about:</p>
+
+<h4 id="toc_2">Server Protocols</h4>
 
 <ul>
-<li>  <strong>核心支撑组件:</strong></li>
+<li>  <strong>HTTP/2</strong> — full server support for inbound HTTP/2 connections</li>
+<li>  <strong>Mutual TLS</strong> — allow for running Zuul in more secure scenarios</li>
 </ul>
 
-<blockquote>
-<ol>
-<li><p>服务网关 Zuul</p></li>
-<li><p>服务注册发现 Eureka+Ribbon</p></li>
-<li><p>服务配置中心 Apollo</p></li>
-<li><p>认证授权中心 Spring Security OAuth2</p></li>
-<li><p>服务框架 Spring MVC/Boot</p></li>
-</ol>
-</blockquote>
+<h4 id="toc_3">Resiliency Features</h4>
 
 <ul>
-<li>  <strong>监控反馈组件:</strong></li>
+<li>  <strong>Adaptive Retries</strong> — the core retry logic that we use at Netflix to increase our resiliency and availability</li>
+<li>  <strong>Origin Concurrency Protection </strong>— configurable concurrency limits to protect your origins from getting overloaded and protect other origins behind Zuul from each other</li>
 </ul>
 
-<blockquote>
-<ol>
-<li><p>数据总线 Kafka</p></li>
-<li><p>日志监控 ELK</p></li>
-<li><p>调用链监控 CAT</p></li>
-<li><p>Metrics 监控 KairosDB</p></li>
-<li><p>健康检查和告警 ZMon</p></li>
-<li><p>限流熔断和流聚合 Hystrix/Turbine</p></li>
-</ol>
-</blockquote>
-
-<h3 id="toc_1"><strong>2、核心支撑组件</strong></h3>
-
-<h4 id="toc_2"><strong>2.1 服务网关 Zuul</strong></h4>
-
-<p>2013 年左右，InfoQ 曾经对前 Netflix 架构总监 Adrian Cockcroft 有过一次专访 [附录 1]，其中有问 Adrian：“Netflix 开源这么多项目，你认为哪一个是最不可或缺的 (MOST Indispensable)”，Adrian 回答说：“在 NetflixOSS 开源项目中，有一个容易被忽略，<strong>但是 Netflix 最强大的基础服务之一，它就是 Zuul 网关服务。</strong>Zuul 网关主要用于智能路由，同时也支持认证，区域和内容感知路由，将多个底层服务聚合成统一的对外 API。<strong>Zuul 网关的一大亮点是动态可编程，配置可以秒级生效。</strong>”</p>
-
-<p>从 Adrian 的回答中，我们可以感受到 Zuul 网关对微服务基础架构的重要性。</p>
-
-<p><img src="https://mmbiz.qpic.cn/mmbiz_png/ELH62gpbFmEiaMAQXMDZXsnKBnBIHSmoic9QRZlOMzKbs8taoAIImGibiaASZHcoKKAmWItDXDibWNbIloQzNmn9UmQ/640?wx_fmt=png" alt=""/></p>
-
-<blockquote>
-<p><strong>Zuul 在英文中是一种怪兽，星际争霸中虫族里头也有 Zuul，Netflix 为网关起名 Zuul，寓意看门神兽。</strong></p>
-</blockquote>
-
-<p>Zuul 网关在 Netflix 经过生产级验证，在纳入 Spring Cloud 体系之后，在社区中也有众多成功的应用。<strong>Zuul 网关在携程（日流量超 50 亿），拍拍贷等公司也有成功的落地实践，是微服务基础架构中网关一块的首选。</strong>其它开源产品像 Kong 或者 Nginx 等也可以改造支持网关功能，但是较复杂门槛高一点。</p>
-
-<p>Zuul 网关虽然不完全支持异步，但是同步模型反而使它简单轻量，易于编程和扩展，当然同步模型需要做好限流熔断（和限流熔断组件 Hystrix 配合），否则可能造成资源耗尽甚至雪崩效应（cascading failure）。</p>
-
-<h4 id="toc_3"><strong>2.2 服务注册发现 Eureka + Ribbon</strong></h4>
-
-<p>针对微服务注册发现场景，社区里头的开源产品当中，经过生产级大流量验证的，目前只有 Netflix Eureka 一个，它也已经纳入 Spring Cloud 体系，在社区中有众多成功应用，例如携程 Apollo 配置中心也是使用 Eureka 做软负载。</p>
-
-<p>其它产品如 Zookeeper/Etcd/Consul 等，都是比较通用的产品，还需要进一步封装定制才可生产级使用。Eureka 支持跨数据中心高可用，但它是 AP 最终一致系统，不是强一致性系统。</p>
-
-<p><img src="https://mmbiz.qpic.cn/mmbiz_jpg/ELH62gpbFmEiaMAQXMDZXsnKBnBIHSmoicLDBD2F4YibW3PlcdZHHg2rUEDXcveHDnvBWRlYFDNsiaROPzA8RCxQyQ/640?wx_fmt=jpeg" alt=""/></p>
-
-<blockquote>
-<p><strong>Eureka 是阿基米德洗澡时发现浮力原理时发出的惊叹声，在微服务中寓意发现。</strong></p>
-</blockquote>
-
-<p>Ribbon 是可以和 Eureka 配套对接的客户端软负载库，在 Eureka 的配合下能够支持多种灵活的动态路由和负载均衡策略。内部微服务直连可以直接走 Ribbon 客户端软负载，网关上也可以部署 Ribbon，这时网关相当于一个具有路由和软负载能力的超级客户端。</p>
-
-<p><img src="https://mmbiz.qpic.cn/mmbiz_png/ELH62gpbFmEiaMAQXMDZXsnKBnBIHSmoic6IgSJ8WqbPvwRF4lz374cWXKfLBuwS9hDaLxmKPlLsQs7SibY67iaB5w/640?wx_fmt=png" alt=""/></p>
-
-<p><strong>Ribbon 是蝴蝶结的意思</strong></p>
-
-<h4 id="toc_4"><strong>2.3 服务配置中心 Apollo</strong></h4>
-
-<p>Spring Cloud 体系里头有个 Spring Cloud Config 产品，但是功能远远达不到生产级，只能小规模场景下用，中大规模企业级场景不建议采用。携程框架研发部开源的 Apollo 是一款在携程和其它众多互联网公司生产落地下来的产品，开源两年多，目前在 github 上有超过 4k 星，非常成功，文档齐全也是它的一大亮点，推荐作为企业级的配置中心产品。</p>
-
-<p>Apollo 支持完善的管理界面，支持多环境，配置变更实时生效，权限和配置审计等多种生产级功能。Apollo 既可以用于连接字符串等常规配置场景，也可用于发布开关（Feature Flag）和业务配置等高级场景。在《2018 波波的微服务基础架构和实践》课程中，第二个模块就配置中心相关主题，会深度剖析携程 Apollo 的架构和实践，预计 6 月份推出，欢迎大家关注学习。</p>
-
-<p><img src="https://mmbiz.qpic.cn/mmbiz_png/ELH62gpbFmEiaMAQXMDZXsnKBnBIHSmoicBOKmp5b1zvdZrVCC07ByrONHZC3kyMSgUUk2ldicyJ3zDkyUDKSKTXw/640?wx_fmt=png" alt=""/></p>
-
-<p><strong>阿波罗是希腊神话中太阳神的意思</strong></p>
-
-<h4 id="toc_5"><strong>2.4 认证授权中心 Spring Security OAuth2</strong></h4>
-
-<p>目前开源社区还没有特别成熟的微服务安全认证中心产品，之前我工作过的一些中大型互联网公司，比如携程，唯品会等，在这一块基本都是定制自研的，但是对一般企业来说，定制自研还是有门槛的。OAuth2 是一种基于令牌 Token 的授权框架，已经得到众多大厂（Google, Facebook, Twitter, Microsoft 等）的支持，可以认为是事实上的微服务安全协议标准，适用于开放平台联合登录，现代微服务安全（包括单页浏览器 App / 无线原生 App / 服务器端 WebApp 接入微服务，以及微服务之间调用等场景），和企业内部应用认证授权 (IAM/SSO) 等多种场景。</p>
-
-<p><strong>Spring Security OAuth2 是 Spring Security 基础上的一个扩展，支持四种主要的 OAuth2 Flows，基本可以作为微服务认证授权中心的推荐产品。</strong></p>
-
-<p>但是 Spring Security OAuth2 还只是一个框架，不是一个端到端的开箱即用的产品，企业级应用仍需在其上进行定制，例如提供 Web 端管理界面，对接企业内部的用户认证登录系统，使用 Cache 缓存令牌，和微服务网关对接等，才能作为生产级使用。</p>
-
-<p>在波波在极客时间的《微服务架构实践 160 讲》课程中，第一个模块就是微服务安全架构和实践相关主题，会深度剖析 OAuth2 原理和 Spring Security OAuth2 实践，欢迎大家关注学习。</p>
-
-<p><img src="https://mmbiz.qpic.cn/mmbiz_png/ELH62gpbFmEiaMAQXMDZXsnKBnBIHSmoicibVv1XWS1ZNpPPbYDZ1VO79ibF7Pp3m3LictMhQaibd4rpOequpa81ojibQ/640?wx_fmt=png" alt=""/></p>
-
-<blockquote>
-<p><strong>Spring Security OAuth2 是 Spring Security 框架的一个扩展</strong></p>
-</blockquote>
-
-<h4 id="toc_6"><strong>2.5 服务框架 Spring Boot</strong></h4>
-
-<p>Spring 可以说是史上最成功的 Web App/API 开发框架之一，它融入了 Java 社区中多年来沉淀下来的最佳实践，虽然有将近 15 年历史，但目前的社区活跃度仍呈上升趋势。Spring Boot 在 Spring 的基础上进一步打包封装，提供更贴心的 Starter 工程，自启动能力，自动依赖管理，基于代码的配置等特性进一步降低接入门槛。</p>
-
-<p><strong>另外 Spring Boot 也提供 actuator 这样的生产级监控特性，支持 DevOps 研发模式，它是微服务开发框架的推荐首选。</strong></p>
-
-<p>REST 契约规范 Swagger 和 Spring 有比较好的集成，使得 Spring 也支持契约驱动开发 (Contract Driven Development) 模型。对于一些中大规模的企业，如果业务复杂团队较多，考虑到互操作性和集成成本，建议采用契约驱动开发模型，也就是开发时先定义 Swagger 契约，然后再通过契约生成服务端接口和客户端，再实现服务端业务逻辑，这种开发模型能够标准化接口，降低系统间集成成本，对于多团队协同并行开发非常重要。</p>
-
-<p><img src="https://mmbiz.qpic.cn/mmbiz_jpg/ELH62gpbFmEiaMAQXMDZXsnKBnBIHSmoicGr1MJKH6BY4pD4YLIMtltvNjicQFaGOxf72JibviafL1ZMTmH6bG3kJXg/640?wx_fmt=jpeg" alt=""/></p>
-
-<p><strong>Spring Boot Logo</strong></p>
-
-<h3 id="toc_7"><strong>三、监控反馈组件</strong></h3>
-
-<h4 id="toc_8"><strong>3.1 数据总线 Kafka</strong></h4>
-
-<p>最初由 Linkedin 研发并在其内部大规模成功应用，然后在 Apache 上开源的 Kafka，是业内数据总线 (Databus) 一块的标配，几乎每一家互联网公司都可以看到 Kafka 的身影。</p>
-
-<p>Kafka 堪称开源项目的一个经典成功案例，其创始人团队从 Linkedin 离职后还专门成立了一家叫 confluent 的企业软件服务公司，围绕 Kafka 周边提供配套和增值服务。在监控一块，日志和 Metrics 等数据可以通过 Kafka 做收集、存储和转发，相当于中间增加了一个大容量缓冲，能够应对海量日志数据的场景。除了日志监控数据收集，Kafka 在业务大数据分析，IoT 等场景都有广泛应用。如果对 Kafka 进行适当定制增强，还可以用于传统消息中间件场景。</p>
-
-<p><strong>Kafka 的特性是大容量，高吞吐，高可用，数据可重复消费，可水平扩展，支持消费者组等。</strong>Kafka 尤其适用于不严格要求实时和不丢数据的大数据日志场景。</p>
-
-<p><img src="https://mmbiz.qpic.cn/mmbiz_jpg/ELH62gpbFmEiaMAQXMDZXsnKBnBIHSmoicloUck4UgqvIibtKibAibHDZTiaaMsibZI17KibKQKOCOdTrbmsV6Hc72AdqQ/640?wx_fmt=jpeg" alt=""/></p>
-
-<blockquote>
-<p><strong>Kafka 创始人三人组，离开 Linkedin 后，创立了基于 Kafka 的创业公司 Confluent</strong></p>
-</blockquote>
-
-<h4 id="toc_9"><strong>3.2 日志监控 ELK</strong></h4>
-
-<p>ELK（ElasticSearch/Logstash/Kibana）是日志监控一块的标配技术栈，几乎每一家互联网公司都可以看到 ELK 的身影，据称携程是国内 ELK 的最大用户，每日增量日志数据量达到 80~90TB。ELK 已经非常成熟，基本上是开箱即用，后续主要的工作在运维、治理和调优。</p>
-
-<p>ELK 一般和 Kafka 配套使用，因为日志分词操作还是比较耗时的，Kafka 主要作为前置缓冲，起到流量消峰作用，抵消日志流量高峰和消费（分词建索引）的不匹配问题。一旦反向索引建立，日志检索是非常快的，所以日志检索快和灵活是 ElasticSearch 的最大亮点。另外 ELK 还有大容量，高吞吐，高可用，可水平扩容等企业级特性。</p>
-
-<p>创业公司起步期，考虑到资源时间限制，调用链监控和 Metrics 监控可以不是第一优先级，但是 ELK 是必须搭一套的，应用日志数据一定要收集并建立索引，基本能够覆盖大部分 Trouble Shooting 场景（业务，性能，程序 bug 等）。另外用好 ELK 的关键是治理，需要制定一些规则（比如只收集 Warn 级别以上日志），对应用的日志数据量做好监控，否则开发人员会滥用，什么垃圾数据都往 ELK 里头丢，造成大量空间被浪费，严重的还可能造成性能可用性问题。</p>
-
-<p><strong><img src="https://mmbiz.qpic.cn/mmbiz_png/ELH62gpbFmEiaMAQXMDZXsnKBnBIHSmoicA2q0KA8JBsYHvHylV5FZCCSnia7LStmiawVXNIzV29BYxwztwTkhrUibg/640?wx_fmt=png" alt=""/></strong></p>
-
-<p><strong>ELK + Kafka 参考部署架构</strong></p>
-
-<h4 id="toc_10"><strong>3.3 调用链监控 CAT</strong></h4>
-
-<p>Spring Cloud 支持基于 Zipkin 的调用链监控，我个人基于实践经验认为 Zipkin 还不能算一款企业级调用链监控产品，充其量只能算是一个半成品，很多重要的企业级特性缺失。Zipkin 最早是由 Twitter 在消化 Google Dapper 论文的基础上研发，在 Twitter 内部有较成功应用，但是在开源出来的时候把不少重要的统计报表功能给阉割了（因为依赖于一些比较重的大数据分析平台），只是开源了一个半成品，能简单查询和呈现可视化调用链，但是细粒度的调用性能数据报表没有开源。</p>
-
-<p>Google 大致在 2007 年左右开始研发称为 Dapper 的调用链监控系统，但在远远早于这个时间（大致在 2002 左右），eBay 就已经有了自己的调用链监控系统 CAL(Centralized Application Logging)，Google 和 eBay 的设计思路大致相同，但是也有一些差别。CAL 在 eBay 有大规模成功应用，被称为是 eBay 的四大神器之一（另外三个是 DAL，Messaging 和 SOA）。</p>
-
-<p>开源调用链监控系统 CAT 的作者吴其敏（我曾经和他同事，习惯叫他老吴），曾经在 eBay 工作近十年，期间深入消化吸收了 CAL 的设计。2011 年后老吴离开 eBay 去了点评，用三年时间在点评再造了一款调用链监控产品 CAT（Centralized Application Tracking），CAT 具有 CAL 的基因和影子，同时也融入了老吴在点评的探索实践和创新。</p>
-
-<p>CAT 是一款更完整的企业级调用链监控产品，甚至已经接近一个 APM（Application Performance Management）产品的范畴，它不仅支持调用链的查询和可视化，还支持细粒度的调用性能数据统计报表。这块是 CAT 和市面上其它开源调用链监控产品最本质的差异点，实际上开发人员大部分时间用 CAT 是看性能统计报表（主要是 CAT 的 Transaction 和 Problem 报表），这些报表相当于给了开发人员一把尺子，可以自助测量并持续改进应用性能。另外 CAT 还支持应用报错大盘，自助告警等功能，也是企业级监控非常实用的功能。</p>
-
-<p>CAT 在点评，携程，陆金所，拍拍贷等公司有成功落地案例，因为是国产调用链监控产品，界面展示和功能等更契合国内文化，更易于在国内公司落地。个人推荐 CAT 作为微服务调用链监控的首选。至于社区里头有人提到 CAT 的侵入性问题，我觉得是要一分为二看，有利有弊，有耦合性但是性能更好，一般企业中基础架构团队会使用 CAT 统一为基础组件埋点，开发人员一般不用自己埋点；另外企业用了一款调用链监控产品以后，一般是不会换的，开发人员用习惯就好了，侵入不是大问题。</p>
-
-<p><strong><img src="https://mmbiz.qpic.cn/mmbiz_png/ELH62gpbFmEiaMAQXMDZXsnKBnBIHSmoicJ25ibaqKnZ5PC8wJ9f84GbuA0MHZW8BGYxAy86piaf9ibRbicZMibNptnuA/640?wx_fmt=png" alt=""/></strong></p>
-
-<p><strong>CAT 的 Transaction 报表</strong></p>
-
-<h4 id="toc_11"><strong>3.4 Metrics 监控 KairosDB</strong></h4>
-
-<p>除了日志和调用链，Metrics 也是应用监控的重要关注点。互联网应用提倡度量驱动开发（Metrics Driven Development），也就是说开发人员不仅要关注功能实现，做好单元测试（TDD），还要做好业务层（例如注册，登录和下单数等）和应用层（例如调用数，调用延迟等）的监控埋点，<strong>这个也是 DevOps（开发即运维）理念的体现，DevOps 要求开发人员必须关注运维需求，监控埋点是一种生产级运维需求。</strong></p>
-
-<p>Metrics 监控产品底层依赖于时间序列数据库（TSDB），最近比较热的开源产品有 Prometheus 和 InfluxDB，社区用户数量和反馈都不错，可以采纳。但是这些产品分布式能力比较弱，定制扩展门槛比较高，一般建议刚起步量不大的公司采用。如果企业业务和团队规模发展到一定阶段，建议考虑支持分布式能力的时间序列监控产品，例如 KairosDB 或者 OpenTSDB，我本人对这两款产品都有一些实践经验，KariosDB 基于 Cassandra，相对更轻量一点，建议中大规模公司采用，如果你们公司已经采用 Hadoop/HBase，则 OpenTSDB 也是不错选择。</p>
-
-<p>KairosDB 一般也和 Kafka 配套使用，Kafka 作为前置缓冲。另外注意使用 KariosDB 打点的话 tag 的值不能太离散，否则会有查询性能问题，这个和 KariosDB 底层存储结构有关系。Grafana 是 Metrics 展示标配，可以和 KariosDB 无缝集成。</p>
-
-<p><img src="https://mmbiz.qpic.cn/mmbiz_png/ELH62gpbFmEiaMAQXMDZXsnKBnBIHSmoiciaLnAS0p6mAg3UQIjPPDWDd2hgXgDF4iclZVe6fqRW397zKj9asZHMMA/640?wx_fmt=png" alt=""/></p>
-
-<blockquote>
-<p><strong>Grafana 是 Metrics 展示标配，和主流时间序列数据库都可以集成</strong></p>
-</blockquote>
-
-<h4 id="toc_12"><strong>3.5 健康检查和告警 ZMon</strong></h4>
-
-<p>除了上述监控手段，我们仍需要健康检查和告警系统作为配套的监控手段。</p>
-
-<p><strong>ZMon 是德国电商公司 Zalando 开源的一款健康检查和告警平台，具备强大灵活的监控告警能力。</strong>ZMon 本质上可以认为是一套分布式监控任务调度平台，它提供众多的 Check 脚本（也可以自己再定制扩展），能够对各种硬件资源或者目标服务（例如 HTTP 端口，Spring 的 Actuator 端点，KariosDB 中的 Metrics，ELK 中的错误日志等等）进行定期的健康检查和告警，它的告警逻辑和策略采用 Python 脚本实现，开发人员可以实现自助式告警。ZMon 同时适用于系统，应用，业务，甚至端用户体验层的监控和告警。</p>
-
-<p><img src="https://mmbiz.qpic.cn/mmbiz_png/ELH62gpbFmEiaMAQXMDZXsnKBnBIHSmoicnJxckZsGHmFmwDflNhmgnib8xJaUxuzNicEmypcZLibYJMsicJmIGfAASQ/640?wx_fmt=png" alt=""/></p>
-
-<blockquote>
-<p><strong>ZMon 分布式监控告警系统架构，底层基于 KairosDB 时间序列数据库</strong></p>
-</blockquote>
-
-<h4 id="toc_13"><strong>3.6 限流熔断和流聚合 Hystrix+Turbine</strong></h4>
-
-<p>2010 年左右，Netflix 也饱受分布式微服务系统中雪崩效应（Cascading Failure）的困扰，于是专门启动了一个叫做弹性工程的项目来解决这个问题，Hystrix 就是弹性工程最终落地下来的一个产品。Hystrix 在 Netflix 微服务系统中大规模推广应用后，雪崩效应问题基本得到解决，整个体统更具弹性。之后 Netflix 把 Hystrix 开源贡献给了社区，短期获得社区的大量正面反馈。</p>
-
-<p>目前 Hystrix 在 github 上有超过 1.3 万颗星，据说支持奥巴马总统选举的系统也曾使用 Hystrix 进行限流熔断保护 [参考附录 2]，可见限流熔断是分布式系统稳定性的强需求，Netflix 很好的抓住了这个需求并给出了经过生产级验证的解决方案。Hystrix 已经被纳入 Spring Cloud 体系，它是 Java 社区中限流熔断组件的首选（目前还看不到第二个更好的产品）。</p>
-
-<p>Turbine 是和 Hystrix 配套的一个流聚合服务，能够对 Hystrix 监控数据流进行聚合，聚合以后可以在 Hystrix Dashboard 上看到集群的流量和性能情况。</p>
-
-<p><img src="https://mmbiz.qpic.cn/mmbiz_png/ELH62gpbFmEiaMAQXMDZXsnKBnBIHSmoicoJGO08jGFGU2SU76A10GTugNfQK1G5oxHZ3edoUibnTYyxWeRqpNyDw/640?wx_fmt=png" alt=""/></p>
-
-<blockquote>
-<p><strong>Hystrix 在英文中是豪猪兽的意思，豪猪兽通过身上的刺保护自己，Netflix 为限流熔断组件起名 Hystrix，寓意 Hystrix 能够保护微服务调用。</strong></p>
-</blockquote>
-
-<h3 id="toc_14"><strong>4、结论</strong></h3>
+<h4 id="toc_4">Operational Features</h4>
 
 <ul>
-<li><p><strong>技术栈没有好坏之分，只有适合一说。</strong></p>
-
-<p>本文推荐的技术栈主要基于我个人的实践和总结，但是未必适合所有场景，毕竟每个企业的上下文各不相同。作为架构师你可以参考我推荐的技术栈，但不可拘泥照搬，你必须在深入理解分布系统原理的基础上，再结合企业实际场景灵活应用。</p></li>
-<li><p><strong>本文推荐的技术栈主要面向微服务基础架构，也是波波在极客时间上的《微服务架构实践 160 讲》课程要深度剖析的主题。</strong></p>
-
-<p>在整个互联网基础技术平台体系中，还有消息，任务，数据访问层，发布系统，容器云平台，分布式事务，分布式一致性，测试，CI/CD 等其它重要主题，这些是波波在 2019 第三季和 2020 第四季在极客时间上要陆续推出的内容，请大家持续关注。</p></li>
-<li><p>2018 年波波在极客时间上的课程《微服务架构实践 160 讲》约有 8 个模块化课程组成，每个模块专注剖析微服务基础架构的一个核心组件，技术人员可以在碎片化时间自由学习，快速掌握微服务核心组件的问题域、架构原理和开发运维实践。对开发人员和架构师的个人能力提升和职业发展收益主要包括：</p></li>
+<li>  <strong>Request Passport </strong>— track all the lifecycle events for each request, which is invaluable for debugging async requests</li>
+<li>  <strong>Status Categories</strong> — an enumeration of possible success and failure states for requests that are more granular than HTTP status codes</li>
+<li>  <strong>Request Attempts</strong> — track proxy attempts and status of each, particularly useful for debugging retries and routing</li>
 </ul>
 
-<blockquote>
-<ol>
-<li><p>对主流微服务技术栈的组件及其架构有较全面深入的理解，</p></li>
-<li><p>对微服务基础架构有体系化认识，</p></li>
-<li><p>能够根据企业场景设计和搭建微服务基础架构，</p></li>
-<li><p>中高级程序员可以向架构师行列迈进，</p></li>
-<li><p>现有架构师可以充实和拓展基础架构知识和技能体系。</p></li>
-</ol>
-</blockquote>
-
-<h3 id="toc_15"><strong>5、附录</strong></h3>
+<p>We are also working on some features that will be <a href="https://github.com/Netflix/zuul/wiki/Coming-Soon">coming soon</a>, including:</p>
 
 <ul>
-<li><p>Interview: Adrian Cockcroft on High Availability, Best Practices, and Lessons Learned in the Cloud<br/>
-<a href="https://www.infoq.com/articles/cockcroft-high-availability">https://www.infoq.com/articles/cockcroft-high-availability</a></p></li>
-<li><p>Netflix 云端开源工具 Hystrix：曾助奥巴马竞选<br/>
-<a href="http://it.sohu.com/20121129/n358943361.shtml">http://it.sohu.com/20121129/n358943361.shtml</a></p></li>
+<li>  <strong>Websocket/SSE </strong>— support for side-channel push notifications</li>
+<li>  <strong>Throttling and rate-limiting</strong> — protection from malicious client connections and requests, helping defend against volumetric attacks</li>
+<li>  <strong>Brownout filters</strong> — for disabling certain CPU-intensive features when Zuul is overloaded</li>
+<li>  <strong>Configurable routing</strong> — file-based routing configuration, instead of having to create routing filters in Zuul</li>
 </ul>
+
+<p>We would love to hear from you and see all the new and interesting applications of Zuul. For instructions on getting started, please visit our <a href="https://github.com/Netflix/zuul/wiki/Getting-Started-2.0">wiki page</a>.</p>
+
+<h3 id="toc_5">Leveraging Zuul 2 at Netflix</h3>
+
+<p>Internally, there are several major features that we’ve been working on but have not open sourced yet. Each one deserves its own blog post, but let’s go over them briefly.</p>
+
+<h3 id="toc_6">Self Service Routing</h3>
+
+<p>The most widely-used feature by our partners is self service routing. We provide an application and API for users to create routing rules based on any criteria in the request URL, path, query params, or headers. We then publish these routing rules to all the Zuul instances.</p>
+
+<p>The main use case is for routing traffic to a specific test or staging cluster. However, there are many use cases for real production traffic. For example:</p>
+
+<ul>
+<li>  Services needing to shard their traffic create routing rules that map certain paths or prefixes to separate origins</li>
+<li>  Developers onboard new services by creating a route that maps a new hostname to their new origin</li>
+<li>  Developers run load tests by routing a percentage of existing traffic to a small cluster and ensuring applications will degrade gracefully under load</li>
+<li>  Teams refactoring applications migrate to a new origin slowly by creating rules mapping traffic gradually, one path at a time</li>
+<li>  Teams test changes (canary testing) by sending a small percentage of traffic to an instrumented cluster running the new build</li>
+<li>  If teams need to test changes requiring multiple consecutive requests on their new build, they run sticky canary tests that route the same users to their new build for brief periods of time</li>
+<li>  Security teams create rules that reject “bad” requests based on path or header rules across all Zuul clusters</li>
+</ul>
+
+<p>As you can see we use self service routing extensively and are increasing the customizability and scope of routes to allow for even more use cases.</p>
+
+<h3 id="toc_7">Load Balancing for Resiliency</h3>
+
+<p>Another major feature we’ve worked on is making load balancing to origins more intelligent. We are able to route around failures, slowness, GC issues, and various other things that crop up often when running large amounts of nodes. The goal of this work is to increase resiliency, availability, and quality of service for all Netflix services.</p>
+
+<p>We have several cases that we handle:</p>
+
+<h4 id="toc_8">Cold Instances</h4>
+
+<p>When new origin instances start up, we send them a reduced amount of traffic for some time, until they’re warmed up. This was an issue we observed for applications with large codebases and huge metaspace usage. It takes a significant amount of time for these apps to JIT their code and be ready to handle a large amount of traffic.</p>
+
+<p>We also generally bias the traffic to older instances and if we happen to hit a cold instance that throttles, we can always retry on a warm one. This gives us an order of magnitude improvement in availability.</p>
+
+<h4 id="toc_9">High Error Rates</h4>
+
+<p>Errors happen all the time and for varying reasons, whether it’s because of a bug in the code, a bad instance, or an invalid configuration property being set. Fortunately, as a proxy, we can detect errors reliably — either we get a 5xx error or there are connectivity problems to the service.</p>
+
+<p>We track error rates for each origin and if the error rate is high enough, it implies the entire service is in trouble. We throttle retries from devices and disable internal retries to allow the service to recover. Moreover, we also track successive failures per instance and blacklist the bad ones for a period of time.</p>
+
+<h4 id="toc_10">Overloaded Instances</h4>
+
+<p>With the above approaches we send less traffic to servers in a cluster that are throttling or refusing connections, and lessened the impact by retrying those failed requests on other servers.</p>
+
+<p>We’re now rolling out an additional approach where we aim to avoid overloading servers in the first place. This is achieved by allowing origins to signal to Zuul their current utilization, which Zuul then uses as a factor in its load-balancing choices — leading to reduced error rates, retries, and latency.</p>
+
+<p>The origins add a header to all responses stating their utilization as a percentage, along with a target utilization they would like to have across the cluster. Calculating the percentage is completely up to each application and engineers can use whatever metric suits them best. This allows for a general solution as opposed to us trying to come up with a one-size-fits-all approach.</p>
+
+<p>With this functionality in place, we assign a score (combination of instance utilization and other factors like the ones above) to each instance and do a choice-of-two load balancing selection.</p>
+
+<h3 id="toc_11">Anomaly Detection and Contextual Alerting</h3>
+
+<p>As we grew from just a handful of origins to a new world where anyone can quickly spin up a container cluster and put it behind Zuul, we found there was a need to automatically detect and pinpoint origin failures.</p>
+
+<p>With the help of <a href="https://medium.com/netflix-techblog/stream-processing-with-mantis-78af913f51a6">Mantis real time event streaming</a>, we built an anomaly detector that aggregates error rates per service and notifies us in real time when services are in trouble. It takes all of the anomalies in a given time window and creates a timeline of all the origins in trouble. We then create a contextual alert email with the timeline of events and services affected. This allows an operator to quickly correlate these events and orient themselves to debug a specific app or feature, and ultimately find the root cause.</p>
+
+<p>In fact, it was so useful that we expanded it to send notifications to the origin teams themselves. We’ve also added more internal applications, other than Zuul, and can build a much more extensive timeline of events. This has been a huge help during production incidents and helps operators quickly detect and fix problems before they cascade into massive outages.</p>
+
+<p>We hope to open source as many of the above features as we can. Keep watching the tech blog for more depth on them in the future. If you want to help us solve these kinds of problem, please check out our <a href="https://jobs.netflix.com/teams/engineering?team=Product%20Engineering&amp;organization=Engineering">jobs site</a>.</p>
+
+<p>— Arthur Gonigberg (@agonigberg), Mikey Cohen (@moldfarm ), Michael Smith (@kerumai ), Gaya Varadarajan ( @gaya3varadhu ), Sudheer Vinukonda ( @apachesudheerv ), Susheel Aroskar (@susheelaroskar )</p>
 
                         
                       </div>
@@ -362,7 +240,7 @@
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/6/5</span>
+                    <span class="date">2018/6/21</span>
                     <span>posted in&nbsp;</span> 
           				  
           					    <span class="posted-in"><a href='Microservice.html'>Microservice</a></span>
@@ -432,8 +310,6 @@
 
       	<p class="cat-list">
         
-            <a href="Team.html"><strong>Team</strong></a>
-        
             <a href="Infra.html"><strong>Infra</strong></a>
         
             <a href="Coding.html"><strong>Coding</strong></a>
@@ -457,31 +333,31 @@
 	      
 		      
 			      <li class="post">
-			        <a href="15301813999205.html">架构设计：负载均衡层设计方案（9）——负载均衡层总结下篇</a>
+			        <a href="15337171704262.html">Introduction to Testing with Spock and Groovy</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301813109409.html">架构设计：负载均衡层设计方案（8）——负载均衡层总结上篇</a>
+			        <a href="15336595358049.html">10 Excellent Ways to Secure Your Spring Boot Application</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301812452579.html">架构设计：负载均衡层设计方案（7）——LVS + Keepalived + Nginx安装及配置</a>
+			        <a href="15336592302916.html">First MicroProfile.io application using Java Module System</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301811967181.html">架构设计：负载均衡层设计方案（6）——Nginx + Keepalived构建高可用的负载层</a>
+			        <a href="15332186142588.html">Jenkins 的 Pipeline 脚本在美团餐饮 SaaS 中的实践</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301811361753.html">架构设计：负载均衡层设计方案（5）——LVS单节点安装</a>
+			        <a href="15331749691571.html">基于ZooKeeper的分布式锁和队列</a>
 			      </li>
 		     
 		  

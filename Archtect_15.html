@@ -76,8 +76,6 @@
     <li><label>Categories</label></li>
 
         
-            <li><a href="Team.html">Team</a></li>
-        
             <li><a href="Infra.html">Infra</a></li>
         
             <li><a href="Coding.html">Coding</a></li>
@@ -107,190 +105,112 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15281296238206.html">
+                <a class="clearlink" href="15293273764686.html">
                 
-                  <h1>SOFABoot 类隔离原理剖析</h1>
+                  <h1>对高并发流量控制的一点思考</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p>林小树 <a href="https://zhuanlan.zhihu.com/p/37665305">https://zhuanlan.zhihu.com/p/37665305</a></p>
+<p><a href="http://blog.51cto.com/zhangfengzhe">zfz_linux_boy</a> 2018-01-30<br/>
+<a href="http://blog.51cto.com/zhangfengzhe/2066683">http://blog.51cto.com/zhangfengzhe/2066683</a></p>
 </blockquote>
 
-<p><strong>原创声明</strong>：本文系作者原创，谢绝个人、媒体、公众号或网站未经授权转载，违者追究其法律责任。</p>
+<h2 id="toc_0">前言</h2>
+
+<p>在实际项目中，曾经遭遇过线上 5W+QPS 的峰值，也在压测状态下经历过 10W+QPS 的大流量请求，本篇博客的话题主要就是自己对高并发流量控制的一点思考。</p>
+
+<h2 id="toc_1">应对大流量的一些思路</h2>
 
 <blockquote>
-<p>SOFABoot 是蚂蚁金服中间件团队开源的基于 Spring Boot 的一个开发框架，其在 Spring Boot 基础能力之上，增加了类隔离能力，以更好地解决随着工程应用变得臃肿庞大后带来的包冲突问题。类隔离能力天生带来模块化能力，同样给协作开发带来便利。<br/>
-SOFABoot 的类隔离能力借助单独的组件 SOFAArk 实现，遵循 Spring Boot 依赖即服务的思想，只要工程中引入了 SOFAArk 组件依赖，类隔离能力即生效。<br/>
-在上一篇文章 <a href="https://zhuanlan.zhihu.com/p/36909393">《在 Spring Boot 中集成 SOFABoot 类隔离能力》</a>中，我们详细介绍了 SOFABoot 类隔离能力的使用背景及其使用方式。本文将介绍 SOFABoot 类隔离组件 SOFAArk 的实现原理。</p>
+<p>首先，我们来说一下什么是大流量？</p>
+
+<p>大流量，我们很可能会冒出：TPS（每秒事务量），QPS（每秒请求量），1W+，5W+，10W+，100W+...。其实并没有一个绝对的数字，如果这个量造成了系统的压力，影响了系统的性能，那么这个量就可以称之为大流量了。</p>
+
+<p>其次，应对大流量的一些常见手段是什么？</p>
+
+<p>缓存：说白了，就是让数据尽早进入缓存，离程序近一点，不要大量频繁的访问 DB。</p>
+
+<p>降级：如果不是核心链路，那么就把这个服务降级掉。打个比喻，现在的 APP 都讲究千人千面，拿到数据后，做个性化排序展示，如果在大流量下，这个排序就可以降级掉！</p>
+
+<p>限流：大家都知道，北京地铁早高峰，地铁站都会做一件事情，就是限流了！想法很直接，就是想在一定时间内把请求限制在一定范围内，保证系统不被冲垮，同时尽可能提升系统的吞吐量。</p>
+
+<p>注意到，有些时候，缓存和降级是解决不了问题的，比如，电商的双十一，用户的购买，下单等行为，是涉及到大量写操作，而且是核心链路，无法降级的，这个时候，限流就比较重要了。</p>
+
+<p>那么接下来，我们重点说一下，限流。</p>
 </blockquote>
 
-<h2 id="toc_0"><strong>理解 SOFAArk 三要素</strong></h2>
+<h2 id="toc_2">限流的常用方式</h2>
 
-<p>SOFAArk 类隔离框架定义了三个概念，Ark Container，Ark Plugin，Ark Biz。</p>
+<blockquote>
+<p>限流的常用处理手段有：计数器、滑动窗口、漏桶、令牌。</p>
+</blockquote>
 
-<p>在介绍这三个主角之前，我们先来介绍另一个管家：<strong>Ark 包</strong>。我们都知道一个标准的 Spring Boot 应用可以借助 Spring 官方提供的打包插件：</p>
+<p><strong>计数器</strong> </p>
 
-<pre><code>&lt;plugin&gt;
-    &lt;groupId&gt;org.springframework.boot&lt;/groupId&gt;
-    &lt;artifactId&gt;spring-boot-maven-plugin&lt;/artifactId&gt;
-&lt;/plugin&gt;
+<blockquote>
+<p>计数器是一种比较简单的限流算法，用途比较广泛，在接口层面，很多地方使用这种方式限流。在一段时间内，进行计数，与阀值进行比较，到了时间临界点，将计数器清 0。</p>
+</blockquote>
 
-</code></pre>
+<p><img src="http://i2.51cto.com/images/blog/201801/30/26433210356cfa9d26407d07d0819b14.png?x-oss-process=image/watermark,size_16,text_QDUxQ1RP5Y2a5a6i,color_FFFFFF,t_100,g_se,x_10,y_10,shadow_90,type_ZmFuZ3poZW5naGVpdGk=" alt=""/></p>
 
-<p>将应用打包成一个可执行 FatJar。相对应的，Ark 包则是 SOFABoot 官方提供的打包插件：</p>
+<p><img src="http://i2.51cto.com/images/blog/201801/30/36bd0e076d23e7bcd10ac0b1ac498bb7.png?x-oss-process=image/watermark,size_16,text_QDUxQ1RP5Y2a5a6i,color_FFFFFF,t_100,g_se,x_10,y_10,shadow_90,type_ZmFuZ3poZW5naGVpdGk=" alt=""/></p>
 
-<pre><code>&lt;plugin&gt;
-    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
-    &lt;artifactId&gt;sofa-ark-maven-plugin&lt;/artifactId&gt;
-&lt;/plugin&gt;
+<blockquote>
+<p>这里需要注意的是，存在一个时间临界点的问题。举个栗子，在 12:01:00 到 12:01:58 这段时间内没有用户请求，然后在 12:01:59 这一瞬时发出 100 个请求，OK，然后在 12:02:00 这一瞬时又发出了 100 个请求。这里你应该能感受到，在这个临界点可能会承受恶意用户的大量请求，甚至超出系统预期的承受。</p>
+</blockquote>
 
-</code></pre>
+<p><strong>滑动窗口</strong> </p>
 
-<p>将应用打包成一个具有类隔离能力的可执行 FatJar，称之为 Ark 包。下图是粗略地对比两者的目录结构差别：</p>
+<blockquote>
+<p>由于计数器存在临界点缺陷，后来出现了滑动窗口算法来解决。</p>
 
-<p><img src="https://pic3.zhimg.com/v2-096b7865cea9b432d6dee8990d2b2dc1_b.jpg" alt=""/><img src="https://pic3.zhimg.com/v2-096b7865cea9b432d6dee8990d2b2dc1_r.jpg" alt=""/></p>
+<p><img src="http://i2.51cto.com/images/blog/201801/30/292f2358a31662de2846a122e25bb005.png?x-oss-process=image/watermark,size_16,text_QDUxQ1RP5Y2a5a6i,color_FFFFFF,t_100,g_se,x_10,y_10,shadow_90,type_ZmFuZ3poZW5naGVpdGk=" alt=""/></p>
 
-<p>可以看到 Ark 包作为应用部署包的分发格式，它包含有 Ark Container，Ark Plugin 和 Ark Biz 三种格式模块。这里我们不对 Ark 包或者其他格式模块的目录结构作分析，感兴趣的同学可以点开文末附上的相关链接。我们重点介绍这三个角色的功能。</p>
+<p>滑动窗口的意思是说把固定时间片，进行划分，并且随着时间的流逝，进行移动，这样就巧妙的避开了计数器的临界点问题。也就是说这些固定数量的可以移动的格子，将会进行计数判断阀值，因此格子的数量影响着滑动窗口算法的精度。</p>
+</blockquote>
 
-<ul>
-<li>  Ark Container: Ark 容器，是组件 SOFAArk 的核心，运行 Ark 包时，Ark 容器会最先启动，负责应用运行时的管理，主要包括构建 Ark Plugin 和 Ark Biz 的类导入导出关系表、启动并初始化 Ark Plugin 和 Ark Biz、管理 Ark Plugin 服务的发布和引用等等。</li>
-<li>  Ark Plugin: SOFAArk 定义的一种模块格式，由若干个 Jar 包组成的一个 FatJar，开发人员可以借助官方提供的 maven 打包插件将若干 Jar 包打包成一个 Ark Plugin 供应用依赖。运行时，由独立的类加载器加载，因此有隔离需求的 Jar 包建议打包成 Ark Plugin 供应用依赖。</li>
-<li>  Ark Biz: SOFAArk 定义的一种模块格式，是应用及其依赖的所有三方包组成的一个 FatJar，需要注意的是，Ark Biz 不会包含应用依赖的 Ark Plugin。运行时，Ark Biz 由独立的类加载器加载，借助类导入导出关系表，Ark Biz 可以使用 Ark Plugin 的导出类和资源。</li>
-</ul>
+<p><strong>漏桶</strong> </p>
 
-<h2 id="toc_1"><strong>SOFAArk 运行时隔离</strong></h2>
+<blockquote>
+<p>虽然滑动窗口有效避免了时间临界点的问题，但是依然有时间片的概念，而漏桶算法在这方面比滑动窗口而言，更加先进。</p>
 
-<p>根据上一节的描述可以知道 SOFABoot 类隔离关键是理解 SOFAArk 定义的三个概念，Ark Container，Ark Plugin 和 Ark Biz。下图表示的是应用启动后，运行时 Ark Container，Ark Plugin，Ark Biz 的逻辑分层图：</p>
+<p>有一个固定的桶，进水的速率是不确定的，但是出水的速率是恒定的，当水满的时候是会溢出的。</p>
+</blockquote>
 
-<p><img src="https://pic3.zhimg.com/v2-27569011d5bddb7723b45797dc66758e_b.jpg" alt=""/><img src="https://pic3.zhimg.com/v2-27569011d5bddb7723b45797dc66758e_r.jpg" alt=""/></p>
+<p><img src="http://i2.51cto.com/images/blog/201801/30/0bdc37469876669d8ff3813da367705d.png?x-oss-process=image/watermark,size_16,text_QDUxQ1RP5Y2a5a6i,color_FFFFFF,t_100,g_se,x_10,y_10,shadow_90,type_ZmFuZ3poZW5naGVpdGk=" alt=""/></p>
 
-<p>我们将先以 Ark Plugin 入手来介绍 SOFABoot 类隔离的实现原理。</p>
+<p><img src="http://i2.51cto.com/images/blog/201801/30/244ab47205fd764fd74e34f4f0da1cb8.png?x-oss-process=image/watermark,size_16,text_QDUxQ1RP5Y2a5a6i,color_FFFFFF,t_100,g_se,x_10,y_10,shadow_90,type_ZmFuZ3poZW5naGVpdGk=" alt=""/></p>
 
-<h2 id="toc_2"><strong>Ark Plugin 隔离</strong></h2>
+<p><strong>令牌桶</strong> </p>
 
-<p>开发者借助 SOFABoot 官方提供的插件：</p>
+<blockquote>
+<p>注意到，漏桶的出水速度是恒定的，那么意味着如果瞬时大流量的话，将有大部分请求被丢弃掉（也就是所谓的溢出）。为了解决这个问题，令牌桶进行了算法改进。</p>
 
-<pre><code>&lt;plugin&gt;
-    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
-    &lt;artifactId&gt;sofa-ark-plugin-maven-plugin&lt;/artifactId&gt;
-&lt;/plugin&gt;
+<p><img src="http://i2.51cto.com/images/blog/201801/30/35a6b4a0842d6ac0e5f5b14b7c64189d.png?x-oss-process=image/watermark,size_16,text_QDUxQ1RP5Y2a5a6i,color_FFFFFF,t_100,g_se,x_10,y_10,shadow_90,type_ZmFuZ3poZW5naGVpdGk=" alt=""/></p>
 
-</code></pre>
+<p>生成令牌的速度是恒定的，而请求去拿令牌是没有速度限制的。这意味，面对瞬时大流量，该算法可以在短时间内请求拿到大量令牌，而且拿令牌的过程并不是消耗很大的事情。（有一点生产令牌，消费令牌的意味）</p>
 
-<p>可以将 Java 模块打包成一个 Ark Plugin，这里我们不讨论该打包插件的配置参数和使用方式，感兴趣的同学可以点开文末附上的相关链接以及学习 SOFABoot 类隔离能力使用篇。只需要知道，Ark Plugin 主要包含元信息有：插件启动器、导出类、导入类、导出资源、导入资源、优先级等，这些元信息保存在 Ark Plugin 中的 META-INF/MANIFEST.MF 中，一份典型的 MANIFEST.MF 文件样式如下：</p>
+<p>不论是对于令牌桶拿不到令牌被拒绝，还是漏桶的水满了溢出，都是为了保证大部分流量的正常使用，而牺牲掉了少部分流量，这是合理的，如果因为极少部分流量需要保证的话，那么就可能导致系统达到极限而挂掉，得不偿失。</p>
+</blockquote>
 
-<pre><code>Manifest-Version: 1.0
-groupId: com.alipay.sofa
-artifactId: sample-ark-plugin
-version: 0.3.0-SNAPSHOT
-priority: 1000
-pluginName: sample-ark-plugin
-activator: com.alipay.sofa.ark.sample.activator.SamplePluginActivator
-import-packages: 
-import-classes: 
-import-resources: 
-export-packages: com.alipay.sofa.ark.sample.common.*,com.alipay.sofa.ark.sample
-export-classes: com.alipay.sofa.ark.sample.facade.SamplePluginService
-export-resources: Sample_Resource_Exported
+<p><img src="http://i2.51cto.com/images/blog/201801/30/6b63bf4412c0d412095131091144e357.png?x-oss-process=image/watermark,size_16,text_QDUxQ1RP5Y2a5a6i,color_FFFFFF,t_100,g_se,x_10,y_10,shadow_90,type_ZmFuZ3poZW5naGVpdGk=" alt=""/></p>
 
-</code></pre>
+<h2 id="toc_3">限流神器：Guava RateLimiter</h2>
 
-<p>在上面我们提到，运行 Ark 包时，类隔离容器 Ark Container 会最先启动，然后 Ark Container 会接管整个应用的启动过程。针对 Ark Plugin 处理逻辑如下：</p>
+<blockquote>
+<p>Guava 不仅仅在集合、缓存、异步回调等方面功能强大，而且还给我们封装好了限流的 API！</p>
 
-<ul>
-<li>  首先解析 Ark 包中引入的所有 Ark Plugin，读取插件元信息，构建类 / 资源导入导出关系索引表。</li>
-<li>  提前生成所有插件类加载器，每个 Ark Plugin 都使用独立的类加载器，管理插件类加载逻辑，借助第一步生成的类导入导出关系表，突破 Java 原生的双亲委派模型，可以委托其他插件加载所需类，构建一个类 OSGi 的网状类加载模型。</li>
-<li>  根据插件优先级，依次调用插件启动器。在插件启动器中，插件开发者可以向容器注册服务以方便其他插件引用，也可以引用其他插件发布的服务，及插件启动所需的初始化操作。</li>
-</ul>
+<p>Guava RateLimiter 基于令牌桶算法，我们只需要告诉 RateLimiter 系统限制的 QPS 是多少，那么 RateLimiter 将以这个速度往桶里面放入令牌，然后请求的时候，通过 tryAcquire() 方法向 RateLimiter 获取许可（令牌）。</p>
+</blockquote>
 
-<p>需要明确一点，为了让类加载模型足够简单，Ark 容器在启动任何插件前，会把所有的插件类加载器提前构建完毕。Ark Plugin 可以相互委托加载，插件优先级只是影响插件的启动顺序，而且也不强制要求每个 Ark Plugin 都要有启动器。</p>
+<p><img src="http://i2.51cto.com/images/blog/201801/30/57203303c36a7c5fb5a0974ba98116d7.png?x-oss-process=image/watermark,size_16,text_QDUxQ1RP5Y2a5a6i,color_FFFFFF,t_100,g_se,x_10,y_10,shadow_90,type_ZmFuZ3poZW5naGVpdGk=" alt=""/></p>
 
-<p>启动完所有插件后，Ark Container 则开始负责启动 Ark Biz 模块。</p>
+<h2 id="toc_4">分布式场景下的限流</h2>
 
-<h2 id="toc_3"><strong>Ark Biz 隔离</strong></h2>
-
-<p>Ark Container 在完成 Ark Plugin 的隔离和启动后，则开始准备 Ark Biz 的隔离和启动。</p>
-
-<p>在上文中提到，应用打成 Ark 包后，Ark 包会包含 Ark Plugin 模块和 Ark Biz 模块。实际上 Ark Biz 其实就是应用及其所有的三方依赖打成的 FatJar 包，Ark Biz 不会包含应用引入的 Ark Plugin。开发者借助 SOFABoot 官方提供的插件：</p>
-
-<pre><code>&lt;plugin&gt;
-    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
-    &lt;artifactId&gt;sofa-ark-maven-plugin&lt;/artifactId&gt;
-&lt;/plugin&gt;
-
-</code></pre>
-
-<p>可以将 Java（Spring Boot） 应用打包成一个 Ark Biz，这里我们不讨论该打包插件的配置参数和使用方式，感兴趣的同学可以点开文末附上的相关链接以及学习 SOFABoot 类隔离能力使用篇。只需要知道，Ark Biz 主要包含元信息有：应用启动入口、禁止导入类、禁止导入资源等。这些元信息保存在 Ark Biz 中的 META-INF/MANIFEST.MF 中，一份典型的 MANIFEST.MF 文件样式如下：</p>
-
-<pre><code>Manifest-Version: 1.0
-Archiver-Version: Plexus Archiver
-Created-By: Apache Maven 3.2.5
-Build-Jdk: 1.8.0_101
-Built-By: qilong.zql
-Ark-Biz-Name: sofa-ark-sample-springboot-ark
-deny-import-resources:
-deny-import-packages:
-deny-import-classes:
-Main-Class: com.alipay.sofa.ark.sample.springbootdemo.SpringbootDemoApplication
-
-</code></pre>
-
-<p>Ark Biz 和 Ark Plugin 有很大的不同，最明显的则是 Ark Biz 单向依赖 Ark Plugin，即 Ark Biz 只能单向委托 Ark Plugin 加载类和资源，反之则不可以。实际上在运行时，Ark Biz 是运行在 Ark Plugin 之上，Ark Container 也是先启动所有 Ark Plugin 然后启动 Ark Biz。默认情况下，Ark Plugin 导出的所有类和资源都能被 Ark Biz 委托加载到，为了方便应用开发者能够自主控制类加载逻辑，允许在打包插件中配置禁止导入类和禁止导入资源，如此，对于配置的类和资源， Ark Biz 能够优先加载内部包含的类，而不会委托给 Ark Plugin 加载。Ark Container 针对 Ark Biz 处理逻辑如下：</p>
-
-<ul>
-<li>  首先解析 Ark 包中 Ark Biz 模块，读取元信息，构建类 / 资源导入导出关系索引表。</li>
-<li>  生成 Ark Biz 类加载器，管理 Ark Biz 类加载逻辑，借助第一步生成的类导入导出关系表，突破 Java 原生的双亲委派模型，可以委托 Ark Plugin 加载所需类和资源。</li>
-<li>  调用应用启动入口，启动应用。</li>
-</ul>
-
-<p>如此，Ark 包即完成整个启动过程。</p>
-
-<h2 id="toc_4"><strong>和 OSGi 对比</strong></h2>
-
-<p>作为开源界早负盛名的动态模块系统，基于 OSGi 规范的 Equinox、Felix 等同样具备类隔离能力，然而他们更多强调的是一种编程模型，面向模块化开发，有一整套模块生命周期的管理，定义模块通信机制以及复杂的类加载模型。作为专注于解决依赖冲突的隔离框架，SOFAArk 专注于类隔离，简化了类加载模型，因此显得更加轻量。</p>
-
-<p>其次在 OSGi 规范中，所有的模块定义成 Bundle 形式，作为应用开发者，他需要了解 OSGi 背后的工作原理，对开发者要求比较高。在 SOFAArk 中，定义了两层模块类型，Ark Plugin 和 Ark Biz，应用开发者只需要添加隔离的 Ark Plugin 依赖，对本身的开发没有任何影响，基本没有开发门槛。</p>
-
-<h2 id="toc_5"><strong>正在做的事</strong></h2>
-
-<p>全文读下来，你可能会产生这样的一个疑惑：如果在应用中引入其他应用打包的 Ark Biz 会如何呢？</p>
-
-<p>目前 SOFAArk 是可以启动多个 Ark Biz 的，比较遗憾的是，现在 Ark Biz 之间没法做到服务通信。如果你之前读完过上一篇 SOFABoot 类隔离使用篇及这篇原理篇，你也许会发现，虽然 SOFAArk 是一个纯粹的类隔离框架，但是基于 SOFAArk 之上，可以开发各具功能特色的 Ark Plugin，补充框架能力，供应用开发者按需依赖使用，比如已经推出的 SOFARPC Ark Plugin。回到上面的问题，为了解决多个 Ark Biz 合并部署的问题，我们正在开发一个新的 Ark Plugin，Jarslink2.0。</p>
-
-<p>在蚂蚁内部，多个应用合并部署在同一个 JVM 之上，是一件常见的事情。这样带来的主要优势如下：</p>
-
-<ul>
-<li>  无关应用合并部署：有些应用在独立部署时，相互之间没有服务依赖，而且这些应用承担业务体量都偏小，单独占有一台物理机部署比较浪费资源。这些应用合并部署，能够节省成本。</li>
-<li>  相关应用合并部署：多个应用之间存在服务依赖，独立部署时，各应用之间使用 RPC 调用，虽然使用了分布式架构，稳定性高，但依然存在网络抖动导致的延时性问题。这些应用合并部署，RPC 调用转为 JVM 内部调用，缩减调用开销。</li>
-</ul>
-
-<p>当然，作为蚂蚁内部非常重要的一项技术创新，合并部署在特定的业务背景下有着更为重要的意义，也远不止上面提到的两点优势，比如故障的隔离等等。</p>
-
-<p>说回到 Jarslink2.0，这个 SOFABoot 官方开发的 Ark Plugin，主要是为了解决多个 Ark Biz 运行时管理问题。我们知道，每个 Java(Spring Boot) 应用，都可以通过我们的 maven 插件打包成 Ark Biz 供其他应用依赖。目前 SOFAArk 框架只能做到隔离 Ark Biz，作为框架能力的补充，Jarslink2.0 插件专门管理多个 Ark Biz 的运行时。这里默认每个 Ark Biz 都是一个 SOAFBoot/Spring Boot 工程，Jarslink2.0 提供的能力如下：</p>
-
-<ul>
-<li>  动态安装、卸载 Ark Biz。</li>
-<li>  Ark Biz 之间使用注解和 xml 两种形式发布和引用 jvm 服务，解决多 Ark Biz 服务依赖问题。</li>
-<li>  Ark Biz 如果使用了 SOFARPC 能力，可以自动完成 RPC 转 JVM 内部调用。</li>
-</ul>
-
-<p>在这里特别感谢方腾飞， 蚂蚁内部花名 @清英 ，也是我们熟知的并发编程网 (<a href="https://link.zhihu.com/?target=http%3A//ifeve.com/">http://ifeve.com/</a>)创始人。清英在蚂蚁内部开发的 Jarslink1.0 在网商银行已经落地使用很长一段时间，Jarslink2.0 是在 Jarslink1.0 基础之上，结合 SOFABoot 类隔离框架，提供了更加通用的应用 (模块) 隔离和通信的实现方案，敬请期待！</p>
-
-<h2 id="toc_6">欢迎微博关注 @SOFAStack 与我们互动，相关传送门：</h2>
-
-<ul>
-<li>  Ark 包目录结构及其打包插件的使用
-<a href="https://link.zhihu.com/?target=https%3A//alipay.github.io/sofastack.github.io/docs/ark-jar.html">https://alipay.github.io/sofastack.github.io/docs/ark-jar.html</a></li>
-<li>  Ark Plugin 目录结构及其打包插件的使用
-<a href="https://link.zhihu.com/?target=https%3A//alipay.github.io/sofastack.github.io/docs/ark-plugin.html">https://alipay.github.io/sofastack.github.io/docs/ark-plugin.html</a></li>
-<li>  Ark Biz 目录结构及其打包插件的使用
-<a href="https://link.zhihu.com/?target=https%3A//alipay.github.io/sofastack.github.io/docs/ark-biz.html">https://alipay.github.io/sofastack.github.io/docs/ark-biz.html</a></li>
-<li>  Ark Plugin 的工程示例
-<a href="https://link.zhihu.com/?target=https%3A//github.com/alipay/sofa-ark/tree/master/sofa-ark-samples/sample-ark-plugin">https://github.com/alipay/sofa-ark/tree/master/sofa-ark-samples/sample-ark-plugin</a></li>
-<li>  Spring Boot <a href="https://link.zhihu.com/?target=https%3A//github.com/alipay/sofa-ark/tree/master/sofa-ark-samples/sample-springboot-ark">https://github.com/alipay/sofa-ark/tree/master/sofa-ark-samples/sample-springboot-ark</a></li>
-</ul>
+<p><strong>上面所说的限流的一些方式，都是针对单机而言的，其实大部分的场景，单机的限流已经足够了。分布式下限流的手段常常需要多种技术相结合，比如 Nginx+Lua，Redis+Lua 等去做。本文主要讨论的是单机的限流，这里就不在详细介绍分布式场景下的限流了。</strong> <br/>
+<strong>一句话，让系统的流量，先到队列中排队、限流，不要让流量直接打到系统上。</strong></p>
 
                         
                       </div>
@@ -299,10 +219,10 @@ Main-Class: com.alipay.sofa.ark.sample.springbootdemo.SpringbootDemoApplication
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/6/5</span>
+                    <span class="date">2018/6/18</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Microservice.html'>Microservice</a></span>
+          					    <span class="posted-in"><a href='Cocurrency.html'>Cocurrency</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -369,8 +289,6 @@ Main-Class: com.alipay.sofa.ark.sample.springbootdemo.SpringbootDemoApplication
 
       	<p class="cat-list">
         
-            <a href="Team.html"><strong>Team</strong></a>
-        
             <a href="Infra.html"><strong>Infra</strong></a>
         
             <a href="Coding.html"><strong>Coding</strong></a>
@@ -394,31 +312,31 @@ Main-Class: com.alipay.sofa.ark.sample.springbootdemo.SpringbootDemoApplication
 	      
 		      
 			      <li class="post">
-			        <a href="15301813999205.html">架构设计：负载均衡层设计方案（9）——负载均衡层总结下篇</a>
+			        <a href="15337171704262.html">Introduction to Testing with Spock and Groovy</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301813109409.html">架构设计：负载均衡层设计方案（8）——负载均衡层总结上篇</a>
+			        <a href="15336595358049.html">10 Excellent Ways to Secure Your Spring Boot Application</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301812452579.html">架构设计：负载均衡层设计方案（7）——LVS + Keepalived + Nginx安装及配置</a>
+			        <a href="15336592302916.html">First MicroProfile.io application using Java Module System</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301811967181.html">架构设计：负载均衡层设计方案（6）——Nginx + Keepalived构建高可用的负载层</a>
+			        <a href="15332186142588.html">Jenkins 的 Pipeline 脚本在美团餐饮 SaaS 中的实践</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301811361753.html">架构设计：负载均衡层设计方案（5）——LVS单节点安装</a>
+			        <a href="15331749691571.html">基于ZooKeeper的分布式锁和队列</a>
 			      </li>
 		     
 		  

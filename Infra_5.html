@@ -76,8 +76,6 @@
     <li><label>Categories</label></li>
 
         
-            <li><a href="Team.html">Team</a></li>
-        
             <li><a href="Infra.html">Infra</a></li>
         
             <li><a href="Coding.html">Coding</a></li>
@@ -107,224 +105,88 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15301810578621.html">
+                <a class="clearlink" href="15319631527349.html">
                 
-                  <h1>架构设计：负载均衡层设计方案（4）——LVS原理</h1>
+                  <h1>高可用Redis服务架构分析与搭建</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://blog.csdn.net/yinwenjie/article/details/46845997">https://blog.csdn.net/yinwenjie/article/details/46845997</a></p>
+<p><a href="https://www.cnblogs.com/xuning/p/8464625.html">https://www.cnblogs.com/xuning/p/8464625.html</a></p>
 </blockquote>
 
-<p>之前我们花了两篇文章的篇幅，详细讲解了 Nginx 的原理、安装和特性组件。请参看《负载均衡层设计方案（2）——Nginx 安装》（<a href="http://blog.csdn.net/yinwenjie/article/details/46620711">http://blog.csdn.net/yinwenjie/article/details/46620711</a>）和《架构设计：负载均衡层设计方案（3）——Nginx 进阶》（<a href="http://blog.csdn.net/yinwenjie/article/details/46742661">http://blog.csdn.net/yinwenjie/article/details/46742661</a>）两篇文章。虽然不包括 Nginx 的所有知识（也不可能全部包括），但是足够读者将 Nginx 应用到实际的生产中，并进行重要特性的优化，后面有时间我们还会重新回到 Nginx 的讲解上。从本篇文章开始，我们将开始介绍 LVS 技术，包括基本概念、简单使用和进阶使用。</p>
+<p>基于内存的 Redis 应该是目前各种 web 开发业务中最为常用的 key-value 数据库了，我们经常在业务中用其存储用户登陆态（Session 存储），加速一些热数据的查询（相比较 mysql 而言，速度有数量级的提升），做简单的消息队列（LPUSH 和 BRPOP）、订阅发布（PUB/SUB）系统等等。规模比较大的互联网公司，一般都会有专门的团队，将 Redis 存储以基础服务的形式提供给各个业务调用。</p>
 
-<h1 id="toc_0"><a></a>1、LVS 介绍</h1>
+<p>不过任何一个基础服务的提供方，都会被调用方问起的一个问题是：你的服务是否具有高可用性？最好不要因为你的服务经常出问题，导致我这边的业务跟着遭殃。最近我所在的项目中也自己搭了一套小型的 “高可用”Redis 服务，在此做一下自己的总结和思考。</p>
 
-<p>请自行 Google 或者百度。</p>
+<p>首先我们要定义一下对于 Redis 服务来说怎样才算是高可用，即在各种出现异常的情况下，依然可以正常提供服务。或者宽松一些，出现异常的情况下，只经过很短暂的时间即可恢复正常服务。所谓异常，应该至少包含了以下几种可能性：</p>
 
-<h1 id="toc_1"><a></a>2、网络协议基础知识</h1>
+<p>【异常 1】某个节点服务器的某个进程突然 down 掉（例如某开发手残，把一台服务器的 redis-server 进程 kill 了）</p>
 
-<p>根据官方文档 LVS 支持三种负载工作方式：NAT 方式、TUN 方式和 DR 方式。为了说明这三种方式的工作原理，我们首先需要了解一下基础的 IP/TCP 报文（注意，IP 报文和 TCP 报文是两种不同的报文格式），以及链路层对 IP 数据的封装方式。然后我们采用看图说话的方式，以图文结合的方式为您介绍这三种工作方式中对报文或重写或封装的过程。</p>
+<p>【异常 2】某台节点服务器 down 掉，相当于这个节点上所有进程都停了（例如某运维手残，把一个服务器的电源拔了；例如一些老旧机器出现硬件故障）</p>
 
-<p>为了说清楚我们将要讲解的基础知识，就要提到 OSI7 层网络模型。</p>
+<p>【异常 3】任意两个节点服务器之间的通信中断了（例如某临时工手残，把用于两个机房通信的光缆挖断了）</p>
 
-<p><img src="https://img-blog.csdn.net/20150716191755069" alt=""/></p>
+<p>其实以上任意一种异常都是小概率事件，而做到高可用性的基本指导思想就是：多个小概率事件同时发生的概率可以忽略不计。只要我们设计的系统可以容忍短时间内的单点故障，即可实现高可用性。</p>
 
-<p>章文嵩博士及其团队是我的偶像，LVS 体系之所以高效是因为其直接对链路层报文、IP 报文、TCP 报文进行了修改或封装。所以要真正理解 LVS 的三种工作方式，就不能像网络上的抄袭贴一样转几句不知所以的文字就完了，必须对链路层报文、网络层报文、传输层报文有所了解。下面我们就进行概述。</p>
+<p>对于搭建高可用 Redis 服务，网上已有了很多方案，例如 Keepalived，Codis，Twemproxy，Redis Sentinel。其中 Codis 和 Twemproxy 主要是用于大规模的 Redis 集群中，也是在 Redis 官方发布 Redis Sentinel 之前 twitter 和豌豆荚提供的开源解决方案。我的业务中数据量并不大，所以搞集群服务反而是浪费机器了。最终在 Keepalived 和 Redis Sentinel 之间做了个选择，选择了官方的解决方案 Redis Sentinel。</p>
 
-<p>为了保证这个系列的博文不发生偏差，我们只讲解其中需要用到的属性和含义，如果读者对网络的核心原理有兴趣，可以读读《TCP/IP 详解，卷 1：协议》这本书。</p>
+<p>Redis Sentinel 可以理解为一个监控 Redis Server 服务是否正常的进程，并且一旦检测到不正常，可以自动地将备份（slave）Redis Server 启用，使得外部用户对 Redis 服务内部出现的异常无感知。我们按照由简至繁的步骤，搭建一个最小型的高可用的 Redis 服务。</p>
 
-<h2 id="toc_2"><a></a>2.1、链路层报文</h2>
+<p><strong>方案 1：单机版 Redis Server，无 Sentinel</strong></p>
 
-<p>链路层的数据格式有一个共同特点，都包括目标 MAC 地址和源 MAC 地址。下面这个图主要说明了我们最常用的 Ethernet 帧（以太帧）的报文格式：</p>
+<p><img src="https://images2018.cnblogs.com/blog/566097/201802/566097-20180224104757825-317365999.png" alt=""/></p>
 
-<p><img src="https://img-blog.csdn.net/20150716193001867" alt=""/></p>
+<p>一般情况下，我们搭的个人网站，或者平时做开发时，会起一个单实例的 Redis Server。调用方直接连接 Redis 服务即可，甚至 Client 和 Redis 本身就处于同一台服务器上。这种搭配仅适合个人学习娱乐，毕竟这种配置总会有单点故障的问题无法解决。一旦 Redis 服务进程挂了，或者服务器 1 停机了，那么服务就不可用了。并且如果没有配置 Redis 数据持久化的话，Redis 内部已经存储的数据也会丢失。</p>
 
-<ul>
-<li><p>目标 MAC 地址 / 源 MAC 地址：00:00:00:00:00:00——FF:FF:FF:FF:FF:FF 这个范围是全球 MAC 地址的可用范围。一张物理网卡肯定有一个唯一的 MAC 地址。实际上网络层常用的 IP 协议，就是基于 MAC 地址的。一个子网范围内某个 IP 对应的 MAC 地址是通过 ARP 查询协议从 NAT 设备（可能是路由器、交换机或者网络代理设备）上查询得到的。</p></li>
-<li><p>上层协议类型：链路层的报文是为了承载网络层的协议而存在的，所以链路层的数据格式中需要有一个属性说明这个链路层所承载的上层协议是什么类型。</p>
+<p><strong>方案 2：主从同步 Redis Server，单实例 Sentinel</strong></p>
 
-<ul>
-<li>  IPv4: 0x0800</li>
-<li>  ARP:0x0806</li>
-<li>  PPPoE:0x8864</li>
-<li>  IPV6: 0x86DD</li>
-</ul></li>
-<li><p>封装的上层数据：最多可以有 1500 个字节。</p></li>
-</ul>
+<p><img src="https://images2018.cnblogs.com/blog/566097/201802/566097-20180224104938975-2014456086.png" alt=""/></p>
 
-<p>请记住这个链路层的数据格式，因为讲到 LVS-DR 方式的时候，主要就是对链路层的数据格式进行修改，而不会对 IP 数据报文和 TCP 数据报文进行修改。</p>
+<p>为了实现高可用，解决方案 1 中所述的单点故障问题，我们必须增加一个备份服务，即在两台服务器上分别各启动一个 Redis Server 进程，一般情况下由 master 提供服务，slave 只负责同步和备份。与此同时，在额外启动一个 Sentinel 进程，监控两个 Redis Server 实例的可用性，以便在 master 挂掉的时候，及时把 slave 提升到 master 的角色继续提供服务，这样就实现了 Redis Server 的高可用。这基于一个高可用服务设计的依据，即单点故障本身就是个小概率事件，而多个单点同时故障（即 master 和 slave 同时挂掉），可以认为是（基本）不可能发生的事件。</p>
 
-<h2 id="toc_3"><a></a>2.2、网络层 IP 报文</h2>
+<p>对于 Redis 服务的调用方来说，现在要连接的是 Redis Sentinel 服务，而不是 Redis Server 了。常见的调用过程是，client 先连接 Redis Sentinel 并询问目前 Redis Server 中哪个服务是 master，哪些是 slave，然后再去连接相应的 Redis Server 进行操作。当然目前的第三方库一般都已经实现了这一调用过程，不再需要我们手动去实现（例如 Nodejs 的 ioredis，PHP 的 predis，Golang 的 go-redis/redis，JAVA 的 jedis 等）。</p>
 
-<ul>
-<li><p>TCP 协议和 IP 协议是两种不同的协议。对应的，也就是两种不同的描述格式。</p></li>
-<li><p>IP 协议是网络层协议，顾名思义，就是用来描述整个网络构成情况的；TCP 协议是通讯层协议，是用来表示两个或多个网络上的点如何进行通信和当前通信状态的。</p></li>
-<li><p>这两种协议有很多共同特点，例如这两种协议都分为 “头部” 和“数据部”；针对 IP 协议来说，TCP 协议的描述就存放在其“数据部”。</p></li>
-</ul>
+<p>然而，我们实现了 Redis Server 服务的主从切换之后，又引入了一个新的问题，即 Redis Sentinel 本身也是个单点服务，一旦 Sentinel 进程挂了，那么客户端就没办法链接 Sentinel 了。所以说，方案 2 的配置并无法实现高可用性。</p>
 
-<p>我们首先来看看 IP 协议是怎么描述的：</p>
+<p><strong>方案 3：主从同步 Redis Server，双实例 Sentinel</strong></p>
 
-<p><img src="https://img-blog.csdn.net/20150712092543018" alt=""/></p>
+<p><img src="https://images2018.cnblogs.com/blog/566097/201802/566097-20180224105121774-2039349597.png" alt=""/></p>
 
-<p>好吧，图我是直接从百度百科直接粘过来的，因为要我来画，结构也是这样 <sup>_<sup>。其中有几个重要的我们后面要使用的属性，要给大家说一下：</sup></sup></p>
+<p>为了解决方案 2 的问题，我们把 Redis Sentinel 进程也额外启动一份，两个 Sentinel 进程同时为客户端提供服务发现的功能。对于客户端来说，它可以连接任何一个 Redis Sentinel 服务，来获取当前 Redis Server 实例的基本信息。通常情况下，我们会在 Client 端配置多个 Redis Sentinel 的链接地址，Client 一旦发现某个地址连接不上，会去试图连接其他的 Sentinel 实例，这当然也不需要我们手动实现，各个开发语言中比较热门的 redis 连接库都帮我们实现了这个功能。我们预期是：即使其中一个 Redis Sentinel 挂掉了，还有另外一个 Sentinel 可以提供服务。</p>
 
-<ul>
-<li><p>header.version：IP 协议的版本号，你猜对了就是 IPV4 还是 IPV6。4 表示 IPV4 版本，6 表示 IPV6。你要问我什么是 IPV4，还是 IPV6：192.168.220.141，这就是 IPV4 的格式；FE80:0000:0000:0000:AAAA:0000:00C2:0002，这就是 IPV6 的格式。</p></li>
-<li><p>header.Total Length：总长度，这个总长度是 IP 头和 IP 数据两个区域的总长度。主要还是用于生成头验证码和为了操作系统处理方便。</p></li>
-<li><p>header.IP Flags：这个位置有 3 位 000，但实际只有后两位才有值 010，这个就是 “D” 位 = 1，这个时候表示由于要传输的整个数据不大，所以这个 IP 数据报的数据部分已经描述了整个数据描述，不需要进行 IP 数据报的分片；”D”为 = 0，表示要传输的整个数据比较大，所以 IP 数据报进行了拆分，这个时候就要用到最后一位了：最后一位 “M” 中“1”表示还有后续分片；0 表示这个数据报就是 IP 分片的最后一个数据片了。</p></li>
-<li><p>header.Protocol：IP 协议是网络层协议，在网络层以上是传输层协议。TCP、UDP、ICMP 和 IGMP 是传输层协议。这个位置的 8 位说明 IP 协议数据部分携带的是哪种上层协议。</p></li>
-<li><p>header.Source Address：这个当然就是 IP 数据报的来源地址咯。</p></li>
-<li><p>header. Destination Address：这个当然就是 IP 数据报的目标地址咯。</p></li>
-<li><p>header.checksum：首部校验值。这个值校验 IP 数据报首部的传输完整性（注意校验不包括 IP 数据报的数据部分）。这就意味着 NAT 设备重写这个数据报的来源或者目标 IP 后，校验值要重新进行计算。Source Address、Destination Address、Checksum 是各种 NAT 设备主要的改写属性。而且很多时候 NAT 设备只改写这三个值就可以实现 IP 数据报的转发（当然 TCP 报文中的端口也会被改写，以便在端口映射的情况下进行端口转换）。</p></li>
-</ul>
+<p>然而，愿景是美好的，现实却是很残酷的。如此架构下，依然无法实现 Redis 服务的高可用。方案 3 示意图中，红线部分是两台服务器之间的通信，而我们所设想的异常场景（【异常 2】）是，某台服务器整体 down 机，不妨假设服务器 1 停机，此时，只剩下服务器 2 上面的 Redis Sentinel 和 slave Redis Server 进程。这时，Sentinel 其实是不会将仅剩的 slave 切换成 master 继续服务的，也就导致 Redis 服务不可用，因为 Redis 的设定是只有当超过 50% 的 Sentinel 进程可以连通并投票选取新的 master 时，才会真正发生主从切换。本例中两个 Sentinel 只有一个可以连通，等于 50% 并不在可以主从切换的场景中。</p>
 
-<h2 id="toc_4"><a></a>2.3、传输层 TCP 报文</h2>
+<p>你可能会问，为什么 Redis 要有这个 50% 的设定？假设我们允许小于等于 50% 的 Sentinel 连通的场景下也可以进行主从切换。试想一下【异常 3】，即服务器 1 和服务器 2 之间的网络中断，但是服务器本身是可以运行的。如下图所示：</p>
 
-<p>上文已经说过，TCP 的报文信息是装在到 IP 报文的数据部分的，当成网络上进行传输的数据从 Srouce Address 传到 Destination Address 中。下面是 TCP 报文的信息：</p>
+<p><img src="https://images2018.cnblogs.com/blog/566097/201802/566097-20180224105223591-314651630.png" alt=""/></p>
 
-<p><img src="https://img-blog.csdn.net/20150712093802321" alt=""/></p>
+<p>实际上对于服务器 2 来说，服务器 1 直接 down 掉和服务器 1 网络连不通是一样的效果，反正都是突然就无法进行任何通信了。假设网络中断时我们允许服务器 2 的 Sentinel 把 slave 切换为 master，结果就是你现在拥有了两个可以对外提供服务的 Redis Server。Client 做任何的增删改操作，有可能落在服务器 1 的 Redis 上，也有可能落在服务器 2 的 Redis 上（取决于 Client 到底连通的是哪个 Sentinel），造成数据混乱。即使后面服务器 1 和服务器 2 之间的网络又恢复了，那我们也无法把数据统一了（两份不一样的数据，到底该信任谁呢？），数据一致性完全被破坏。</p>
 
-<ul>
-<li><p>头. 源端口号：TCP 信息来源的端口号。</p></li>
-<li><p>头. 目的端口号：TCP 信息数据的目标端口。</p></li>
-<li><p>头. 状态位（URG/ACK/PSH/RST/SYN/FIN）：如果您已经看到我之前写的《标准 Web 系统的架构分层》（<a href="http://blog.csdn.net/yinwenjie/article/details/46480485">http://blog.csdn.net/yinwenjie/article/details/46480485</a>）这边文章的第 3.2 小节，那么您对 ACK、SYN、FIN 这三个标记肯定不陌生，因为 TCP 的三次握手和连接中断就要用到这三个标记，需要注意 SYN SEQ 和 ACK SEQ 就是 TCP 数据报的确认号；另外解释一下 PSH 和 RST 两个状态标记。应用层的 TCP 数据报有一个缓存区，也就是说多个正确的 TCP 数据报会首先放到这个缓存区，达到一定条件后，再推送给上层的应用层协议，例如 http。PSH 为 1 的时候，表示不需要再等到后续的 TCP 数据报文了，直接将目前接收方缓存中的 tcp 数据报进行数据段组合后推送给上层协议，并且清空缓存区；RST 表示复位，您可以理解成放弃当前缓存区的所有未发送给上层协议的 TCP 数据报文，一般这种情况都是 TCP 报文传输出现了问题。</p></li>
-<li><p>头. TCP 校验和：TCP 报文的校验和比起 IP 头校验要稍微复杂点。TCP 校验的输入包括三部分：TCP 伪首部、TCP 首部长度和 TCP 数据部长度。TCP 伪首部是一个虚拟概念，它包括承载 TCP 数据报文的 IP 报文的一部分，和 TCP 首部的一部分数据（源 IP、目标 IP、IP 报文中的 protocoly、以及 TCP 报文的报文头长度和 TCP 报文的数据长度）。</p></li>
-</ul>
+<p><strong>方案 4：主从同步 Redis Server，三实例 Sentinel</strong></p>
 
-<p>从上面的描述可以看出，一旦 IP 报文中的源 IP 和目标 IP 发生改变了，TCP 报文校验信息就会改变。</p>
+<p><img src="https://images2018.cnblogs.com/blog/566097/201802/566097-20180224105313568-148145342.png" alt=""/></p>
 
-<h2 id="toc_5"><a></a>3、LVS 的三种工作方式</h2>
+<p>鉴于方案 3 并没有办法做到高可用，我们最终的版本就是上图所示的方案 4 了。实际上这就是我们最终搭建的架构。我们引入了服务器 3，并且在 3 上面又搭建起一个 Redis Sentinel 进程，现在由三个 Sentinel 进程来管理两个 Redis Server 实例。这种场景下，不管是单一进程故障、还是单个机器故障、还是某两个机器网络通信故障，都可以继续对外提供 Redis 服务。</p>
 
-<h2 id="toc_6"><a></a>3.1、LVS-NAT 工作方式</h2>
+<p>实际上，如果你的机器比较空闲，当然也可以把服务器 3 上面也开启一个 Redis Server，形成 1 master + 2 slave 的架构，每个数据都有两个备份，可用性会提升一些。当然也并不是 slave 越多越好，毕竟主从同步也是需要时间成本的。</p>
 
-<p>NAT 方式是一种由 LVS Master 服务节点收到数据报，然后转给下层的 Real Server 节点，当 Real Server 处理完成后回发给 LVS Master 节点然后又由 LVS Master 节点转发出去的工作方式。LVS 的管理程序 IPVSADMIN 负责绑定转发规则，并完成 IP 数据报文和 TCP 数据报文中属性的重写。请用几分钟时间仔细看看下图（为了简单，图里面只画了一个 Real Server。如果看不清楚，可点击右键 “查看原图”）：</p>
+<p>在方案 4 中，一旦服务器 1 和其他服务器的通信完全中断，那么服务器 2 和 3 会将 slave 切换为 master。对于客户端来说，在这么一瞬间会有 2 个 master 提供服务，并且一旦网络恢复了，那么所有在中断期间落在服务器 1 上的新数据都会丢失。如果想要部分解决这个问题，可以配置 Redis Server 进程，让其在检测到自己网络有问题的时候，立即停止服务，避免在网络故障期间还有新数据进来（可以参考 Redis 的 min-slaves-to-write 和 min-slaves-max-lag 这两个配置项）。</p>
 
-<p><img src="https://img-blog.csdn.net/20150716170216002" alt=""/></p>
+<p>至此，我们就用 3 台机器搭建了一个高可用的 Redis 服务。其实网上还有更加节省机器的办法，就是把一个 Sentinel 进程放在 Client 机器上，而不是服务提供方的机器上。只不过在公司里面，一般服务的提供方和调用方并不来自同一个团队。两个团队共同操作同一个机器，很容易因为沟通问题导致一些误操作，所以出于这种人为因素的考虑，我们还是采用了方案 4 的架构。并且由于服务器 3 上面只跑了一个 Sentinel 进程，对服务器资源消耗并不多，还可以用服务器 3 来跑一些其他的服务。</p>
 
-<ul>
-<li><p>1、在正式的机房环境中，一般有两种方式为一个机器分配外网地址：在核心交换机上直接绑定外网地址到主机网卡的，这样使用 ifconfig 命令看到的 IP 地址为外网地址；在核心交换机上使用映射规则，将一个外网地址映射到内网地址，这样使用 ifconfig 命令看到的 IP 地址为内网地址。上图中我们采用的是后一种映射规则。如果使用前一种外网 IP 的分配规则，也不会影响 LVS NAT 的工作方式，因为这个 IP 被限制在 LVS NAT 工作以外。只不过 eth1 的 IP 从 192.168.100.10 换成 100.64.92.199 而已。</p></li>
-<li><p>2、我们用中文描述一下转换规则：<strong>凡是发送到 “192.168.100.10:80” 的数据报，目标地址全部改写为“192.168.220.121:8080”</strong>，所以来自于 100.64.92.199:80 的报文被改写了。被改写的属性包括：IP.header.destinationIP、IP.header.checksum、TCP.header.sourcePort、TCP.header.targetPort、TCP.header.checksum。注意 IP 报文的 Source IP 不会发生变化，还是 “互联网某个 IP”。</p></li>
-<li><p>3、这个包最终被送到了 192.168.220.121 的 8080 端口进行处理，并由下层的 Real Server 生成了返回的数据报（至于这个 Real Server 是不是 “真正的 Real Server”，LVS 不会关心）。你要问它是怎么被发送过去的，请参考 ARP 查询协议。</p></li>
-<li><p>4、注意：因为 LVS 服务器和 Real Server（可能有多个），组成了一个封闭的局域网。除了 LVS 节点以外，这个子网的任何节点都是无法访问外网的。所以要求 192.168.220.121 这个 Real Server 直接把数据报给 “互联网某个 IP” 这个外网地址，显然是不行的，因为在局域网中根本就找不到这个 IP。Real Server 只能将数据报返给网关，再由网关去寻找这个外网地址。整个服务器中只有 LVS 节点能够找到这个外网地址，<strong>这就是为什么在 LVS-NAT 工作模式下，所有的 Real Server 节点必须设置自己的 Gateway 为 LVS 节点的原因</strong>。</p></li>
-<li><p>5、收到来源于 “192.168.220.121:8080” 的数据报文后，IPVS 又要进行数据报文的重写了。重写规则是：<strong>凡是来源于 “192.168.220.121:8080” 的数据报，源地址全部改写为“192.168.100.10:80”</strong>。于是数据报文的 Source IP、Source Port 被改写成 “192.168.100.10:80”。<strong>在外层的核心交换机（或者是机房以外的请求方）看来，LVS 接受了数据报，并进行了处理，返回了结果。它并不知道 LVS 节点的下层还有什么。</strong></p></li>
-</ul>
+<p><strong>易用性：像使用单机版 Redis 一样使用 Redis Sentinel</strong></p>
 
-<p>LVS-NAT 的优点在于：</p>
+<p>作为服务的提供方，我们总是会讲到用户体验问题。在上述方案当中始终有一个让 Client 端用的不是那么舒服的地方。对于单机版 Redis，Client 端直接连接 Redis Server，我们只需要给一个 ip 和 port，Client 就可以使用我们的服务了。而改造成 Sentinel 模式之后，Client 不得不采用一些支持 Sentinel 模式的外部依赖包，并且还要修改自己的 Redis 连接配置，这对于 “矫情” 的用户来讲显然是不能接收的。有没有办法还是像在使用单机版的 Redis 那样，只给 Client 一个固定的 ip 和 port 就可以提供服务呢？</p>
 
-<ul>
-<li><p>配置管理简单。LVS-NAT 的工作方式是 LVS 三种工作模式中最容易理解、最容易配置、最容易管理的工作模式。</p></li>
-<li><p>节省外网 IP 资源，一般机房分配给使用者的 IP 数量是有限的，特别是您购买的机架的数量不多时。LVS-NAT 工作方式将您的系统架构封装在局域网中，只需要 LVS 有一个外网地址或外网地址映射就可以实现访问了。</p></li>
-<li><p>系统架构相对封闭。在内网环境下我们对防火墙的设置要求不会很高，也相对容易进行物理服务器的运维。您可以设置来源于外网的请求需要进行防火墙过滤，而对内网请求开放访问。</p></li>
-<li><p>另外改写后转给 Real Server 的数据报文，Real Server 并不会关心它的真实性，只要 TCP 校验和 IP 校验都能通过，Real Server 就可以进行处理。所以 LVS-NAT 工作模式下 Real Server 可以是任何操作系统，只要它支持 TCP/IP 协议即可。</p></li>
-<li><p>当然作为 Linux 系统忠实拥护者，我并不建议使用 Window 服务器。但如果您的 Real Server 是. Net 系统，又有业务场景需要用到 LVS，那么 LVS-NAT 可能是一个不错的选择。</p></li>
-</ul>
+<p><img src="https://images2018.cnblogs.com/blog/566097/201802/566097-20180224105513939-1484357459.png" alt=""/></p>
 
-<p>LVS-NAT 的缺点是由于这种转发模式本身所造成的：</p>
+<p>答案当然是肯定的。这可能就要引入虚拟 IP（Virtual IP，VIP），如上图所示。我们可以把虚拟 IP 指向 Redis Server master 所在的服务器，在发生 Redis 主从切换的时候，会触发一个回调脚本，回调脚本中将 VIP 切换至 slave 所在的服务器。这样对于 Client 端来说，他仿佛在使用的依然是一个单机版的高可用 Redis 服务。</p>
 
-<ul>
-<li>  转发点就是瓶颈点。您可以想象 100 台 Real Server 将处理结果全部转到一个 LVS 进行发送是一个怎么样的场景。事实上，LVS-NAT 的极限负载是达不到 100 台 Real Server 的。</li>
-</ul>
+<p><strong>结语</strong></p>
 
-<h2 id="toc_7"><a></a>3.2、LVS-DR 工作方式</h2>
-
-<p>LVS 的 DR 工作模式，是目前生产环境中最常用的一种工作模式，网上的资料也是最多的，有的文章对 DR 工作模式的讲解还是比较透彻的。这里我们通过图文的方式再向您介绍一下 DR 的工作模式（同样，如果看不清楚，请右键 “查看原图”）：</p>
-
-<p><img src="https://img-blog.csdn.net/20150716210428765" alt=""/></p>
-
-<p>上图反映了 DR 模式的整个工作过程，同样为了简单起见，这里的 Real Server 也只画了一个。如果是多个 Real Server 的话，LVS 会通过调度算法来决定发往哪台 Real Server。LVS-DR 工作模式的几个关键点在于：</p>
-
-<ul>
-<li><p>被 Real Server 处理后形成的响应报文，不再回发到 LVS 节点，而是直接路由给中心交换机然后发送出去。省去了 LVS-NAT 方式中的 LVS 回发过程。</p></li>
-<li><p>LVS 节点只会改写链路层的报文封装，对网络层和传输层报文是不进行改写的。</p></li>
-<li><p>有网帖说 DR 工作模式，不能跨子网，也就是说 LVS 节点和各个 Real Server 节点必须处于同一个网段中。这是为什么呢？事实又真的是这样吗？很多网络帖子没有回答这个问题，这篇文章马上回答一下（实际上章文嵩先生已经回答过这个问题）。</p></li>
-<li><p>使用 DR 模式时，需要 Real Server 设置 LVS 上的 VIP 为自己的一个回环 IP，不然包会被丢弃。这又是为什么呢？很多网贴同样没有回答这个问题，好吧，我们马上回答一下。</p></li>
-</ul>
-
-<p>先来说一说上图的工作原理：</p>
-
-<ul>
-<li><p>1、同样的，我们为了演示整个生产环境中，从机房中心交换机收到一个数据报文后开始讲解。中心交换机同样采取的 IP 映射方式。但是与 LVS-NAT 方式不一样，Real Server 在机房的中心交换机上也需要绑定一个外网映射。这样保证 Real Server 回发的响应报文能够被发送到外网。</p></li>
-<li><p>2、LVS 节点接收到请求报文后，会改写报文的数据链路层格式。将 Target Mac 改写成 Real Server 的 Mac，<strong>但是网络层和传输层报文不会改写</strong>，然后重新回发给交换机。这里就涉及一个问题，现在 <strong>target Mac 和 Destination IP 的对应关系的错误的，这个数据报文到了交换机后，由于这种错位的关系，是不能进行三层交换的，只能进行二层交换（一旦进行 IP 交换，数据报文的验证就会出错，被丢弃）。所以 LVS-DR 方式要求 Real Server 和 LVS 节点必须在同一个局域网内，或者这样说更确切：LVS 节点需要找到一个二层链路，将改写了 Mac 地址的报文发送给 Real Server，而不能进行三层交换的校验</strong>。这样来看，实际上 LVS 节点和 Real Server 界面不一定要在同一个子网，您用一个独立网卡独立组网，传送报文也是可行的。</p></li>
-<li><p>3、通过二层交换，数据被发送到 Real Server 节点。那么 Real Server 节点怎么来判断这个包的正确性呢？首先当然是传输层 TCP/IP 报文校验没有问题，LVS-NAT 没有改写 TCP/IP，当然校验就没有问题（除非报文本身就存在问题）；然后是链路层的 MAC 地址能够被识别，这时就是回环 IP 的功劳了。对于 Real Server 节点来说，192.168.100.10 这个 VIP 就是自己的回环 IP，绑定的 MAC 也就是被 LVS 替换后的 target mac。<strong>那么 Real Server 会认为这个包是在本机运行的某一个应用程序通过回环 IP 发给自己的，所以这个包不能被丢弃，必须处理</strong>。</p></li>
-<li><p>4、被处理后的生成的响应报文，被直接发送给网管。这个就没有太多的解释的了，只要保证 Real server 的默认路由设置成到核心交换机的 192.168.100.1 就 OK 了。另外，需要说明的是，<strong>由于 LVS-DR 模式并没有更改原有的 IP 报文和 TCP 报文，所以 LVS-DR 模式本身是不支持端口映射的</strong>，实际上在日常使用实践中，我们一般使用 Nginx 做端口映射，因为: 灵. 活.。</p></li>
-</ul>
-
-<p>LVS-DR 工作模式的优点在于：</p>
-
-<ul>
-<li><p>解决了 LVS-NAT 工作模式中的转发瓶颈问题，能够支撑规模更大的负载均衡场景。</p></li>
-<li><p>比较耗费网外 IP 资源，机房的外网 IP 资源都是有限的，如果在正式生产环境中确实存在这个问题，可以采用 LVS-NAT 和 LVS-DR 混合使用的方式来缓解。</p></li>
-</ul>
-
-<p>LVS-DR 当然也有缺点：</p>
-
-<ul>
-<li><p>配置工作较 LVS-NAT 方式稍微麻烦一点，您至少需要了解 LVS-DR 模式的基本工作方式才能更好的指导自己进行 LVS-DR 模式的配置和运行过程中问题的解决。</p></li>
-<li><p>由于 LVS-DR 模式的报文改写规则，导致 LVS 节点和 Real Server 节点必须在一个网段，因为二层交换是没法跨子网的。但是这个问题针对大多数系统架构方案来说，实际上并没有本质限制。</p></li>
-</ul>
-
-<h2 id="toc_8"><a></a>3.3、LVS-TUN 工作方式</h2>
-
-<p>很多网络上的文章都为读者介绍 DR 和 TUN 的工作方式类似，要么就是直接讲解 DR 模式和 TUN 模式的安装配置方式，然后总结两种模式类似。那为什么有了 DR 模式后还需要 TUN 模式呢？为什么 ipvsadmin 针对两种模式的配置参数不一样呢？</p>
-
-<p>实际上 LVS-DR 模式和 LVS-TUN 模式的工作原理完全不一样，工作场景完全不一样。DR 基于数据报文重写，TUN 模式基于 IP 隧道，后者是对数据报文的重新封装。下面我们就来讲解一下 LVS-TUN 模式的工作原理。</p>
-
-<p>首先要介绍一个概念 IPIP 隧道。将一个完整的 IP 报文封装成另一个新的 IP 报文的数据部分，并通过路由器传送到指定的地点。在这个过程中路由器并不在意被封装的原始协议的内容。到达目的地点后，由目的地方依靠自己的计算能力和对 IPIP 隧道协议的支持，打开封装协议，取得原始协议。如下图：</p>
-
-<p><img src="https://img-blog.csdn.net/20150717135916686" alt=""/></p>
-
-<p>可以说隧道协议就是为了解决跨子网传输准备的，在生产环境中由于业务需要、技术需要或者安全需要，可能使用交换机进行 VLAN 隔离（即形成若干个虚拟的独立的局域网），我们可能需要 LVS 节点在局域网 A，而需要进行负载的多台 Mysql 读服务器可能在局域网 B 中。这个时候，我们就要配置 LVS 的隧道方式。LVS-TUN 模式如下图所示（注意，目标节点要能够解开隧道协议，好消息是 Linux 支持 IPIP 隧道协议）：</p>
-
-<p><img src="https://img-blog.csdn.net/20150717160306570" alt=""/></p>
-
-<p>上图中的线优点多，您只需要关注关心 “有箭头” 的虚线就可以了。</p>
-
-<ul>
-<li><p>1、一旦 LVS 节点发现来目标为 192.168.100.10VIP 的请求，就会使用 IPIP 隧道协议对这个请求报文进行封装。而不是像 LVS-DR 模式重写数据报文的 MAC 信息。如果配置了多个 Real Server，那么 LVS 会使用设置的调度算法确定一个 Real Server（这里为了简单，就只画了一个 Real Server 节点）。</p></li>
-<li><p>2、重新封装后的 IPIP 隧道协议报文会重新被回发到路由器，路由器（或三层交换机）会根据设置的 LVAN 映射情况，找到目标服务器，并将这个 IPIP 隧道报文发送过去。</p></li>
-<li><p>3、Real Server 收到这个 IPIP 隧道报文后，会将这个报文进行解包。这里注意一下，一般情况下 IPIP 隧道报文会进行分片，就如同 IP 报文分片一样，只是为了讲解方便，我们假定这个报文不需要分片。解压后得到的数据报文就是原来发送给 VIP 的请求报文。</p></li>
-<li><p>4、Real Server 设置的回环 IP，让 Real Server 认为原始的请求报文是从自己本地的某个应用程序发出的，完成原始报文的校验后，它会对这个报文进行处理。剩下的过程就和 LVS-DR 相同了，这里就不再进行复述了。</p></li>
-</ul>
-
-<p>可以说 LVS-TUN 方式基本上具有 LVS-DR 的优点。在此基础上又支持跨子网间穿透。这样的敷在方案能够给我们架构师足够的系统设计场景。</p>
-
-<h1 id="toc_9"><a></a>4、LVS 调度方式</h1>
-
-<p>在本文第 3 节中，为了集中介绍 LVS 的三种工作模式，我们在三幅图中都为 LVS 画了一个 Real Server。但实际应用中，一般都是多个 Real Server。<strong>LVS 使用多种调度算法来决定 “当前的数据报文” 由哪个 Real Server 进行处理</strong>。在我的上篇文章《架构设计：负载均衡层设计方案（2）——Nginx 安装》（<a href="http://blog.csdn.net/yinwenjie/article/details/46620711">http://blog.csdn.net/yinwenjie/article/details/46620711</a>）中，已经花了较多的篇幅介绍了 Nginx 中的调度方式，并明确说明了这些调度方式是<strong>万变不离其宗的</strong>。</p>
-
-<p>文章中包括了 Hash 算法，并且说明了任何属性都可以做 Hash，包括 IP、用户名等；还介绍了轮询和加权轮询，加权轮询也可以依据各种属性作为权值，例如节点的 CPU 使用情况、内存使用情况、或者管理员自己设置的一个固定权值。LVS 的调度也是这样的。</p>
-
-<ul>
-<li><p>利用一致性 Hash 算法完成调度</p>
-
-<ul>
-<li>  目标地址 Hash（DH）：调度算法根据请求的目标 IP 地址，作为散列键（Hash Key）从静态分配的散列表找出对应的服务器，若该服务器是可用的且未超载，将请求发送到该服务器，否则返回空。</li>
-<li>  原地址 Hash（SH）：根据请求的源 IP 地址，作为散列键（Hash Key）从静态分配的散列表找出对应的服务器，若该服务器是可用的且未超载，将请求发送到该服务器，否则返回空。</li>
-</ul></li>
-<li><p>轮询调度</p>
-
-<ul>
-<li><p>最简轮询（RR）：调度算法将外部请求按顺序轮流分配到集群中的真实服务器上，它均等地对待每一台服务器，而不管服务器上实际的连接数和系统负载。</p></li>
-<li><p>最少连接轮询（LC）：请注意 “最少连接轮询” 和“最少连接加权轮询”两种调度算法的区别。调度器通过 “最少连接” 调度算法动态地将网络请求调度到已建立的链接数最少的服务器上。注意请求肯定会被分配到这台目前连接数最少的 Real Server 上面，不会考虑几率问题</p></li>
-</ul></li>
-<li><p>加权轮询调度：</p>
-
-<ul>
-<li>  性能加权轮询（WRR）：调度算法根据真实服务器的不同处理能力来调度访问请求。这样可以保证处理能力强的服务器能处理更多的访问流量。调度器可以自动问询真实服务器的负载情况，并动态地调整其权值。</li>
-<li>  最少连接数的加权轮询（WLC）：具有较高权值的服务器将承受较大比例的活动连接负载。调度器可以自动问询真实服务器的负载情况，并动态地调整其权值。注意，是按照一个比例，有较高的分配几率，而不是 LC 一样 “肯定分配”。</li>
-</ul></li>
-</ul>
-
-<p>在 LVS 官方中文资料中，提到了更为完整的调度算法。可以进行参考（<a href="http://zh.linuxvirtualserver.org/node/2903">http://zh.linuxvirtualserver.org/node/2903</a>）。<strong>但一定记住各种调度算法肯定是逃不开哈希一致性、轮询、加权轮询这大思路的</strong>。</p>
-
-<h1 id="toc_10"><a></a>5、后文介绍</h1>
-
-<p>这篇文章我们的重点是说明 LVS 的工作原理，并详细介绍了 LVS 三种工作模式的工作过程、优缺点、应用场景。只要您理解了原理，那么下一篇介绍的 LVS 的安装和配置就是小菜一碟。我们在下一篇文章中，将介绍 LVS 三种工作模式的安装和配置方式，之后我们介绍 LVS + Keepalived 的安装和配置方式。有了这个知识基础，我们将回到 Nginx，介绍 LVS + Keepalived + Nginx 的安装和配置方式。</p>
-
-<p><link rel="stylesheet" href="https://csdnimg.cn/release/phoenix/template/css/markdown_views-ea0013b516.css"></p>
+<p>搭建任何一个服务，做到 “能用” 其实是非常简单的，就像我们运行一个单机版的 Redis。不过一旦要做到“高可用”，事情就会变得复杂起来。业务中使用了额外的两台服务器，3 个 Sentinel 进程 + 1 个 Slave 进程，只是为了保证在那小概率的事故中依然做到服务可用。在实际业务中我们还启用了 supervisor 做进程监控，一旦进程意外退出，会自动尝试重新启动。</p>
 
                         
                       </div>
@@ -333,10 +195,10 @@
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/6/28</span>
+                    <span class="date">2018/7/19</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Network.html'>Network</a></span>
+          					    <span class="posted-in"><a href='Cache.html'>Cache</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -403,8 +265,6 @@
 
       	<p class="cat-list">
         
-            <a href="Team.html"><strong>Team</strong></a>
-        
             <a href="Infra.html"><strong>Infra</strong></a>
         
             <a href="Coding.html"><strong>Coding</strong></a>
@@ -428,31 +288,31 @@
 	      
 		      
 			      <li class="post">
-			        <a href="15301813999205.html">架构设计：负载均衡层设计方案（9）——负载均衡层总结下篇</a>
+			        <a href="15337171704262.html">Introduction to Testing with Spock and Groovy</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301813109409.html">架构设计：负载均衡层设计方案（8）——负载均衡层总结上篇</a>
+			        <a href="15336595358049.html">10 Excellent Ways to Secure Your Spring Boot Application</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301812452579.html">架构设计：负载均衡层设计方案（7）——LVS + Keepalived + Nginx安装及配置</a>
+			        <a href="15336592302916.html">First MicroProfile.io application using Java Module System</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301811967181.html">架构设计：负载均衡层设计方案（6）——Nginx + Keepalived构建高可用的负载层</a>
+			        <a href="15332186142588.html">Jenkins 的 Pipeline 脚本在美团餐饮 SaaS 中的实践</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301811361753.html">架构设计：负载均衡层设计方案（5）——LVS单节点安装</a>
+			        <a href="15331749691571.html">基于ZooKeeper的分布式锁和队列</a>
 			      </li>
 		     
 		  

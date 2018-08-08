@@ -76,8 +76,6 @@
     <li><label>Categories</label></li>
 
         
-            <li><a href="Team.html">Team</a></li>
-        
             <li><a href="Infra.html">Infra</a></li>
         
             <li><a href="Coding.html">Coding</a></li>
@@ -107,133 +105,441 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15295434052821.html">
+                <a class="clearlink" href="15327406535943.html">
                 
-                  <h1>Open Sourcing Zuul 2</h1>
+                  <h1>理解OAuth 2.0</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
-                        	<blockquote>
-<p><a href="https://medium.com/netflix-techblog/open-sourcing-zuul-2-82ea476cb2b3">https://medium.com/netflix-techblog/open-sourcing-zuul-2-82ea476cb2b3</a></p>
+                        	<p><a href="http://en.wikipedia.org/wiki/OAuth">OAuth</a> 是一个关于授权（authorization）的开放网络标准，在全世界得到广泛应用，目前的版本是 2.0 版。</p>
+
+<p>本文对 OAuth 2.0 的设计思路和运行流程，做一个简明通俗的解释，主要参考材料为 <a href="http://www.rfcreader.com/#rfc6749">RFC 6749</a>。</p>
+
+<p><img src="http://www.ruanyifeng.com/blogimg/asset/2014/bg2014051201.png" alt=""/></p>
+
+<h2 id="toc_0">一、应用场景</h2>
+
+<p>为了理解 OAuth 的适用场合，让我举一个假设的例子。</p>
+
+<p>有一个 &quot;云冲印&quot; 的网站，可以将用户储存在 Google 的照片，冲印出来。用户为了使用该服务，必须让 &quot;云冲印&quot; 读取自己储存在 Google 上的照片。</p>
+
+<p><img src="http://www.ruanyifeng.com/blogimg/asset/2014/bg2014051202.png" alt=""/></p>
+
+<p>问题是只有得到用户的授权，Google 才会同意 &quot;云冲印&quot; 读取这些照片。那么，&quot;云冲印&quot; 怎样获得用户的授权呢？</p>
+
+<p>传统方法是，用户将自己的 Google 用户名和密码，告诉 &quot;云冲印&quot;，后者就可以读取用户的照片了。这样的做法有以下几个严重的缺点。</p>
+
+<blockquote>
+<p>（1）&quot;云冲印&quot; 为了后续的服务，会保存用户的密码，这样很不安全。</p>
+
+<p>（2）Google 不得不部署密码登录，而我们知道，单纯的密码登录并不安全。</p>
+
+<p>（3）&quot;云冲印&quot; 拥有了获取用户储存在 Google 所有资料的权力，用户没法限制 &quot;云冲印&quot; 获得授权的范围和有效期。</p>
+
+<p>（4）用户只有修改密码，才能收回赋予 &quot;云冲印&quot; 的权力。但是这样做，会使得其他所有获得用户授权的第三方应用程序全部失效。</p>
+
+<p>（5）只要有一个第三方应用程序被破解，就会导致用户密码泄漏，以及所有被密码保护的数据泄漏。</p>
 </blockquote>
 
-<p>We are excited to announce the open sourcing of <a href="https://github.com/netflix/zuul/">Zuul 2</a>, Netflix’s cloud gateway. We use Zuul 2 at Netflix as the front door for all requests coming into Netflix’s cloud infrastructure. Zuul 2 significantly improves the architecture and features that allow our gateway to handle, route, and protect Netflix’s cloud systems, and helps provide our 125 million members the best experience possible. The Cloud Gateway team at Netflix runs and operates more than 80 clusters of Zuul 2, sending traffic to about 100 (and growing) backend service clusters which amounts to more than 1 million requests per second. Nearly all of this traffic is from customer devices and browsers that enable the discovery and playback experience you are likely familiar with.</p>
+<p>OAuth 就是为了解决上面这些问题而诞生的。</p>
 
-<p>This post will overview Zuul 2, provide details on some of the interesting features we are releasing today, and discuss some of the other projects that we’re building with Zuul 2.</p>
+<h2 id="toc_1">二、名词定义</h2>
 
-<h3 id="toc_0">How Zuul 2 Works</h3>
+<p>在详细讲解 OAuth 2.0 之前，需要了解几个专用名词。它们对读懂后面的讲解，尤其是几张图，至关重要。</p>
 
-<p>For context, here’s a high-level diagram of Zuul 2’s architecture:</p>
+<blockquote>
+<p>（1） <strong>Third-party application</strong>：第三方应用程序，本文中又称 &quot;客户端&quot;（client），即上一节例子中的 &quot;云冲印&quot;。</p>
 
-<p><img src="https://cdn-images-1.medium.com/max/1600/0*ycjEWsSKCaPemEg3." alt=""/></p>
+<p>（2）<strong>HTTP service</strong>：HTTP 服务提供商，本文中简称 &quot;服务提供商&quot;，即上一节例子中的 Google。</p>
 
-<p>The Netty handlers on the front and back of the filters are mainly responsible for handling the network protocol, web server, connection management and proxying work. With those inner workings abstracted away, the filters do all of the heavy lifting. The inbound filters run before proxying the request and can be used for authentication, routing, or decorating the request. The endpoint filters can either be used to return a static response or proxy the request to the backend service (or origin as we call it). The outbound filters run after a response has been returned and can be used for things like gzipping, metrics, or adding/removing custom headers.</p>
+<p>（3）<strong>Resource Owner</strong>：资源所有者，本文中又称 &quot;用户&quot;（user）。</p>
 
-<p>Zuul’s functionality depends almost entirely on the logic that you add in each filter. That means you can deploy it in multiple contexts and have it solve different problems based on the configurations and filters it is running.</p>
+<p>（4）<strong>User Agent</strong>：用户代理，本文中就是指浏览器。</p>
 
-<p>We use Zuul at the entrypoint of all external traffic into Netflix’s cloud services and we’ve started using it for routing internal traffic, as well. We deploy the same core but with a substantially reduced amount of functionality (i.e. fewer filters). This allows us to leverage load balancing, self service routing, and resiliency features for internal traffic.</p>
+<p>（5）<strong>Authorization server</strong>：认证服务器，即服务提供商专门用来处理认证的服务器。</p>
 
-<h3 id="toc_1">Open Source</h3>
+<p>（6）<strong>Resource server</strong>：资源服务器，即服务提供商存放用户生成的资源的服务器。它与认证服务器，可以是同一台服务器，也可以是不同的服务器。</p>
+</blockquote>
 
-<p>The Zuul code that’s running today is the most stable and resilient version of Zuul yet. The various phases of evolving and refactoring the codebase have paid dividends and we couldn’t be happier to share it with you.</p>
+<p>知道了上面这些名词，就不难理解，OAuth 的作用就是让 &quot;客户端&quot; 安全可控地获取 &quot;用户&quot; 的授权，与 &quot;服务商提供商&quot; 进行互动。</p>
 
-<p>Today we are releasing many <a href="https://github.com/Netflix/zuul/wiki/Core-Features">core features</a>. Here are the ones we’re most excited about:</p>
+<h2 id="toc_2">三、OAuth 的思路</h2>
 
-<h4 id="toc_2">Server Protocols</h4>
+<p>OAuth 在 &quot;客户端&quot; 与 &quot;服务提供商&quot; 之间，设置了一个授权层（authorization layer）。&quot;客户端&quot; 不能直接登录 &quot;服务提供商&quot;，只能登录授权层，以此将用户与客户端区分开来。&quot;客户端&quot; 登录授权层所用的令牌（token），与用户的密码不同。用户可以在登录的时候，指定授权层令牌的权限范围和有效期。</p>
 
-<ul>
-<li>  <strong>HTTP/2</strong> — full server support for inbound HTTP/2 connections</li>
-<li>  <strong>Mutual TLS</strong> — allow for running Zuul in more secure scenarios</li>
-</ul>
+<p>&quot;客户端&quot; 登录授权层以后，&quot;服务提供商&quot; 根据令牌的权限范围和有效期，向 &quot;客户端&quot; 开放用户储存的资料。</p>
 
-<h4 id="toc_3">Resiliency Features</h4>
+<h2 id="toc_3">四、运行流程</h2>
 
-<ul>
-<li>  <strong>Adaptive Retries</strong> — the core retry logic that we use at Netflix to increase our resiliency and availability</li>
-<li>  <strong>Origin Concurrency Protection </strong>— configurable concurrency limits to protect your origins from getting overloaded and protect other origins behind Zuul from each other</li>
-</ul>
+<p>OAuth 2.0 的运行流程如下图，摘自 RFC 6749。</p>
 
-<h4 id="toc_4">Operational Features</h4>
+<p><img src="http://www.ruanyifeng.com/blogimg/asset/2014/bg2014051203.png" alt=""/></p>
 
-<ul>
-<li>  <strong>Request Passport </strong>— track all the lifecycle events for each request, which is invaluable for debugging async requests</li>
-<li>  <strong>Status Categories</strong> — an enumeration of possible success and failure states for requests that are more granular than HTTP status codes</li>
-<li>  <strong>Request Attempts</strong> — track proxy attempts and status of each, particularly useful for debugging retries and routing</li>
-</ul>
+<blockquote>
+<p>（A）用户打开客户端以后，客户端要求用户给予授权。</p>
 
-<p>We are also working on some features that will be <a href="https://github.com/Netflix/zuul/wiki/Coming-Soon">coming soon</a>, including:</p>
+<p>（B）用户同意给予客户端授权。</p>
 
-<ul>
-<li>  <strong>Websocket/SSE </strong>— support for side-channel push notifications</li>
-<li>  <strong>Throttling and rate-limiting</strong> — protection from malicious client connections and requests, helping defend against volumetric attacks</li>
-<li>  <strong>Brownout filters</strong> — for disabling certain CPU-intensive features when Zuul is overloaded</li>
-<li>  <strong>Configurable routing</strong> — file-based routing configuration, instead of having to create routing filters in Zuul</li>
-</ul>
+<p>（C）客户端使用上一步获得的授权，向认证服务器申请令牌。</p>
 
-<p>We would love to hear from you and see all the new and interesting applications of Zuul. For instructions on getting started, please visit our <a href="https://github.com/Netflix/zuul/wiki/Getting-Started-2.0">wiki page</a>.</p>
+<p>（D）认证服务器对客户端进行认证以后，确认无误，同意发放令牌。</p>
 
-<h3 id="toc_5">Leveraging Zuul 2 at Netflix</h3>
+<p>（E）客户端使用令牌，向资源服务器申请获取资源。</p>
 
-<p>Internally, there are several major features that we’ve been working on but have not open sourced yet. Each one deserves its own blog post, but let’s go over them briefly.</p>
+<p>（F）资源服务器确认令牌无误，同意向客户端开放资源。</p>
+</blockquote>
 
-<h3 id="toc_6">Self Service Routing</h3>
+<p>不难看出来，上面六个步骤之中，B 是关键，即用户怎样才能给于客户端授权。有了这个授权以后，客户端就可以获取令牌，进而凭令牌获取资源。</p>
 
-<p>The most widely-used feature by our partners is self service routing. We provide an application and API for users to create routing rules based on any criteria in the request URL, path, query params, or headers. We then publish these routing rules to all the Zuul instances.</p>
+<p>下面一一讲解客户端获取授权的四种模式。</p>
 
-<p>The main use case is for routing traffic to a specific test or staging cluster. However, there are many use cases for real production traffic. For example:</p>
+<h2 id="toc_4">五、客户端的授权模式</h2>
+
+<p>客户端必须得到用户的授权（authorization grant），才能获得令牌（access token）。OAuth 2.0 定义了四种授权方式。</p>
 
 <ul>
-<li>  Services needing to shard their traffic create routing rules that map certain paths or prefixes to separate origins</li>
-<li>  Developers onboard new services by creating a route that maps a new hostname to their new origin</li>
-<li>  Developers run load tests by routing a percentage of existing traffic to a small cluster and ensuring applications will degrade gracefully under load</li>
-<li>  Teams refactoring applications migrate to a new origin slowly by creating rules mapping traffic gradually, one path at a time</li>
-<li>  Teams test changes (canary testing) by sending a small percentage of traffic to an instrumented cluster running the new build</li>
-<li>  If teams need to test changes requiring multiple consecutive requests on their new build, they run sticky canary tests that route the same users to their new build for brief periods of time</li>
-<li>  Security teams create rules that reject “bad” requests based on path or header rules across all Zuul clusters</li>
+<li>  授权码模式（authorization code）</li>
+<li>  简化模式（implicit）</li>
+<li>  密码模式（resource owner password credentials）</li>
+<li>  客户端模式（client credentials）</li>
 </ul>
 
-<p>As you can see we use self service routing extensively and are increasing the customizability and scope of routes to allow for even more use cases.</p>
+<h2 id="toc_5">六、授权码模式</h2>
 
-<h3 id="toc_7">Load Balancing for Resiliency</h3>
+<p>授权码模式（authorization code）是功能最完整、流程最严密的授权模式。它的特点就是通过客户端的后台服务器，与 &quot;服务提供商&quot; 的认证服务器进行互动。</p>
 
-<p>Another major feature we’ve worked on is making load balancing to origins more intelligent. We are able to route around failures, slowness, GC issues, and various other things that crop up often when running large amounts of nodes. The goal of this work is to increase resiliency, availability, and quality of service for all Netflix services.</p>
+<p><img src="http://www.ruanyifeng.com/blogimg/asset/2014/bg2014051204.png" alt=""/></p>
 
-<p>We have several cases that we handle:</p>
+<p>它的步骤如下：</p>
 
-<h4 id="toc_8">Cold Instances</h4>
+<blockquote>
+<p>（A）用户访问客户端，后者将前者导向认证服务器。</p>
 
-<p>When new origin instances start up, we send them a reduced amount of traffic for some time, until they’re warmed up. This was an issue we observed for applications with large codebases and huge metaspace usage. It takes a significant amount of time for these apps to JIT their code and be ready to handle a large amount of traffic.</p>
+<p>（B）用户选择是否给予客户端授权。</p>
 
-<p>We also generally bias the traffic to older instances and if we happen to hit a cold instance that throttles, we can always retry on a warm one. This gives us an order of magnitude improvement in availability.</p>
+<p>（C）假设用户给予授权，认证服务器将用户导向客户端事先指定的 &quot;重定向 URI&quot;（redirection URI），同时附上一个授权码。</p>
 
-<h4 id="toc_9">High Error Rates</h4>
+<p>（D）客户端收到授权码，附上早先的 &quot;重定向 URI&quot;，向认证服务器申请令牌。这一步是在客户端的后台的服务器上完成的，对用户不可见。</p>
 
-<p>Errors happen all the time and for varying reasons, whether it’s because of a bug in the code, a bad instance, or an invalid configuration property being set. Fortunately, as a proxy, we can detect errors reliably — either we get a 5xx error or there are connectivity problems to the service.</p>
+<p>（E）认证服务器核对了授权码和重定向 URI，确认无误后，向客户端发送访问令牌（access token）和更新令牌（refresh token）。</p>
+</blockquote>
 
-<p>We track error rates for each origin and if the error rate is high enough, it implies the entire service is in trouble. We throttle retries from devices and disable internal retries to allow the service to recover. Moreover, we also track successive failures per instance and blacklist the bad ones for a period of time.</p>
+<p>下面是上面这些步骤所需要的参数。</p>
 
-<h4 id="toc_10">Overloaded Instances</h4>
+<p>A 步骤中，客户端申请认证的 URI，包含以下参数：</p>
 
-<p>With the above approaches we send less traffic to servers in a cluster that are throttling or refusing connections, and lessened the impact by retrying those failed requests on other servers.</p>
+<ul>
+<li>  response_type：表示授权类型，必选项，此处的值固定为 &quot;code&quot;</li>
+<li>  client_id：表示客户端的 ID，必选项</li>
+<li>  redirect_uri：表示重定向 URI，可选项</li>
+<li>  scope：表示申请的权限范围，可选项</li>
+<li>  state：表示客户端的当前状态，可以指定任意值，认证服务器会原封不动地返回这个值。</li>
+</ul>
 
-<p>We’re now rolling out an additional approach where we aim to avoid overloading servers in the first place. This is achieved by allowing origins to signal to Zuul their current utilization, which Zuul then uses as a factor in its load-balancing choices — leading to reduced error rates, retries, and latency.</p>
+<p>下面是一个例子。</p>
 
-<p>The origins add a header to all responses stating their utilization as a percentage, along with a target utilization they would like to have across the cluster. Calculating the percentage is completely up to each application and engineers can use whatever metric suits them best. This allows for a general solution as opposed to us trying to come up with a one-size-fits-all approach.</p>
+<blockquote>
+<pre><code>
+GET /authorize?response_type=code&amp;client_id=s6BhdRkqt3&amp;state=xyz
+        &amp;redirect_uri=https%3A%2F%2Fclient%2Eexample%2Ecom%2Fcb HTTP/1.1
+Host: server.example.com
 
-<p>With this functionality in place, we assign a score (combination of instance utilization and other factors like the ones above) to each instance and do a choice-of-two load balancing selection.</p>
+</code></pre>
+</blockquote>
 
-<h3 id="toc_11">Anomaly Detection and Contextual Alerting</h3>
+<p>C 步骤中，服务器回应客户端的 URI，包含以下参数：</p>
 
-<p>As we grew from just a handful of origins to a new world where anyone can quickly spin up a container cluster and put it behind Zuul, we found there was a need to automatically detect and pinpoint origin failures.</p>
+<ul>
+<li>  code：表示授权码，必选项。该码的有效期应该很短，通常设为 10 分钟，客户端只能使用该码一次，否则会被授权服务器拒绝。该码与客户端 ID 和重定向 URI，是一一对应关系。</li>
+<li>  state：如果客户端的请求中包含这个参数，认证服务器的回应也必须一模一样包含这个参数。</li>
+</ul>
 
-<p>With the help of <a href="https://medium.com/netflix-techblog/stream-processing-with-mantis-78af913f51a6">Mantis real time event streaming</a>, we built an anomaly detector that aggregates error rates per service and notifies us in real time when services are in trouble. It takes all of the anomalies in a given time window and creates a timeline of all the origins in trouble. We then create a contextual alert email with the timeline of events and services affected. This allows an operator to quickly correlate these events and orient themselves to debug a specific app or feature, and ultimately find the root cause.</p>
+<p>下面是一个例子。</p>
 
-<p>In fact, it was so useful that we expanded it to send notifications to the origin teams themselves. We’ve also added more internal applications, other than Zuul, and can build a much more extensive timeline of events. This has been a huge help during production incidents and helps operators quickly detect and fix problems before they cascade into massive outages.</p>
+<blockquote>
+<pre><code>
+HTTP/1.1 302 Found
+Location: https://client.example.com/cb?code=SplxlOBeZQQYbYS6WxSbIA
+          &amp;state=xyz
 
-<p>We hope to open source as many of the above features as we can. Keep watching the tech blog for more depth on them in the future. If you want to help us solve these kinds of problem, please check out our <a href="https://jobs.netflix.com/teams/engineering?team=Product%20Engineering&amp;organization=Engineering">jobs site</a>.</p>
+</code></pre>
+</blockquote>
 
-<p>— Arthur Gonigberg (@agonigberg), Mikey Cohen (@moldfarm ), Michael Smith (@kerumai ), Gaya Varadarajan ( @gaya3varadhu ), Sudheer Vinukonda ( @apachesudheerv ), Susheel Aroskar (@susheelaroskar )</p>
+<p>D 步骤中，客户端向认证服务器申请令牌的 HTTP 请求，包含以下参数：</p>
+
+<ul>
+<li>  grant_type：表示使用的授权模式，必选项，此处的值固定为 &quot;authorization_code&quot;。</li>
+<li>  code：表示上一步获得的授权码，必选项。</li>
+<li>  redirect_uri：表示重定向 URI，必选项，且必须与 A 步骤中的该参数值保持一致。</li>
+<li>  client_id：表示客户端 ID，必选项。</li>
+</ul>
+
+<p>下面是一个例子。</p>
+
+<blockquote>
+<pre><code>
+POST /token HTTP/1.1
+Host: server.example.com
+Authorization: Basic czZCaGRSa3F0MzpnWDFmQmF0M2JW
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=authorization_code&amp;code=SplxlOBeZQQYbYS6WxSbIA
+&amp;redirect_uri=https%3A%2F%2Fclient%2Eexample%2Ecom%2Fcb
+
+</code></pre>
+</blockquote>
+
+<p>E 步骤中，认证服务器发送的 HTTP 回复，包含以下参数：</p>
+
+<ul>
+<li>  access_token：表示访问令牌，必选项。</li>
+<li>  token_type：表示令牌类型，该值大小写不敏感，必选项，可以是 bearer 类型或 mac 类型。</li>
+<li>  expires_in：表示过期时间，单位为秒。如果省略该参数，必须其他方式设置过期时间。</li>
+<li>  refresh_token：表示更新令牌，用来获取下一次的访问令牌，可选项。</li>
+<li>  scope：表示权限范围，如果与客户端申请的范围一致，此项可省略。</li>
+</ul>
+
+<p>下面是一个例子。</p>
+
+<blockquote>
+<pre><code>
+     HTTP/1.1 200 OK
+     Content-Type: application/json;charset=UTF-8
+     Cache-Control: no-store
+     Pragma: no-cache
+
+     {
+       &quot;access_token&quot;:&quot;2YotnFZFEjr1zCsicMWpAA&quot;,
+       &quot;token_type&quot;:&quot;example&quot;,
+       &quot;expires_in&quot;:3600,
+       &quot;refresh_token&quot;:&quot;tGzv3JOkF0XG5Qx2TlKWIA&quot;,
+       &quot;example_parameter&quot;:&quot;example_value&quot;
+     }
+
+</code></pre>
+</blockquote>
+
+<p>从上面代码可以看到，相关参数使用 JSON 格式发送（Content-Type: application/json）。此外，HTTP 头信息中明确指定不得缓存。</p>
+
+<h2 id="toc_6">七、简化模式</h2>
+
+<p>简化模式（implicit grant type）不通过第三方应用程序的服务器，直接在浏览器中向认证服务器申请令牌，跳过了 &quot;授权码&quot; 这个步骤，因此得名。所有步骤在浏览器中完成，令牌对访问者是可见的，且客户端不需要认证。</p>
+
+<p><img src="http://www.ruanyifeng.com/blogimg/asset/2014/bg2014051205.png" alt=""/></p>
+
+<p>它的步骤如下：</p>
+
+<blockquote>
+<p>（A）客户端将用户导向认证服务器。</p>
+
+<p>（B）用户决定是否给于客户端授权。</p>
+
+<p>（C）假设用户给予授权，认证服务器将用户导向客户端指定的 &quot;重定向 URI&quot;，并在 URI 的 Hash 部分包含了访问令牌。</p>
+
+<p>（D）浏览器向资源服务器发出请求，其中不包括上一步收到的 Hash 值。</p>
+
+<p>（E）资源服务器返回一个网页，其中包含的代码可以获取 Hash 值中的令牌。</p>
+
+<p>（F）浏览器执行上一步获得的脚本，提取出令牌。</p>
+
+<p>（G）浏览器将令牌发给客户端。</p>
+</blockquote>
+
+<p>下面是上面这些步骤所需要的参数。</p>
+
+<p>A 步骤中，客户端发出的 HTTP 请求，包含以下参数：</p>
+
+<ul>
+<li>  response_type：表示授权类型，此处的值固定为 &quot;token&quot;，必选项。</li>
+<li>  client_id：表示客户端的 ID，必选项。</li>
+<li>  redirect_uri：表示重定向的 URI，可选项。</li>
+<li>  scope：表示权限范围，可选项。</li>
+<li>  state：表示客户端的当前状态，可以指定任意值，认证服务器会原封不动地返回这个值。</li>
+</ul>
+
+<p>下面是一个例子。</p>
+
+<blockquote>
+<pre><code>
+    GET /authorize?response_type=token&amp;client_id=s6BhdRkqt3&amp;state=xyz
+        &amp;redirect_uri=https%3A%2F%2Fclient%2Eexample%2Ecom%2Fcb HTTP/1.1
+    Host: server.example.com
+
+</code></pre>
+</blockquote>
+
+<p>C 步骤中，认证服务器回应客户端的 URI，包含以下参数：</p>
+
+<ul>
+<li>  access_token：表示访问令牌，必选项。</li>
+<li>  token_type：表示令牌类型，该值大小写不敏感，必选项。</li>
+<li>  expires_in：表示过期时间，单位为秒。如果省略该参数，必须其他方式设置过期时间。</li>
+<li>  scope：表示权限范围，如果与客户端申请的范围一致，此项可省略。</li>
+<li>  state：如果客户端的请求中包含这个参数，认证服务器的回应也必须一模一样包含这个参数。</li>
+</ul>
+
+<p>下面是一个例子。</p>
+
+<blockquote>
+<pre><code>
+     HTTP/1.1 302 Found
+     Location: http://example.com/cb#access_token=2YotnFZFEjr1zCsicMWpAA
+               &amp;state=xyz&amp;token_type=example&amp;expires_in=3600
+
+</code></pre>
+</blockquote>
+
+<p>在上面的例子中，认证服务器用 HTTP 头信息的 Location 栏，指定浏览器重定向的网址。注意，在这个网址的 Hash 部分包含了令牌。</p>
+
+<p>根据上面的 D 步骤，下一步浏览器会访问 Location 指定的网址，但是 Hash 部分不会发送。接下来的 E 步骤，服务提供商的资源服务器发送过来的代码，会提取出 Hash 中的令牌。</p>
+
+<h2 id="toc_7">八、密码模式</h2>
+
+<p>密码模式（Resource Owner Password Credentials Grant）中，用户向客户端提供自己的用户名和密码。客户端使用这些信息，向 &quot;服务商提供商&quot; 索要授权。</p>
+
+<p>在这种模式中，用户必须把自己的密码给客户端，但是客户端不得储存密码。这通常用在用户对客户端高度信任的情况下，比如客户端是操作系统的一部分，或者由一个著名公司出品。而认证服务器只有在其他授权模式无法执行的情况下，才能考虑使用这种模式。</p>
+
+<p><img src="http://www.ruanyifeng.com/blogimg/asset/2014/bg2014051206.png" alt=""/></p>
+
+<p>它的步骤如下：</p>
+
+<blockquote>
+<p>（A）用户向客户端提供用户名和密码。</p>
+
+<p>（B）客户端将用户名和密码发给认证服务器，向后者请求令牌。</p>
+
+<p>（C）认证服务器确认无误后，向客户端提供访问令牌。</p>
+</blockquote>
+
+<p>B 步骤中，客户端发出的 HTTP 请求，包含以下参数：</p>
+
+<ul>
+<li>  grant_type：表示授权类型，此处的值固定为 &quot;password&quot;，必选项。</li>
+<li>  username：表示用户名，必选项。</li>
+<li>  password：表示用户的密码，必选项。</li>
+<li>  scope：表示权限范围，可选项。</li>
+</ul>
+
+<p>下面是一个例子。</p>
+
+<blockquote>
+<pre><code>
+     POST /token HTTP/1.1
+     Host: server.example.com
+     Authorization: Basic czZCaGRSa3F0MzpnWDFmQmF0M2JW
+     Content-Type: application/x-www-form-urlencoded
+
+     grant_type=password&amp;username=johndoe&amp;password=A3ddj3w
+
+</code></pre>
+</blockquote>
+
+<p>C 步骤中，认证服务器向客户端发送访问令牌，下面是一个例子。</p>
+
+<blockquote>
+<pre><code>
+     HTTP/1.1 200 OK
+     Content-Type: application/json;charset=UTF-8
+     Cache-Control: no-store
+     Pragma: no-cache
+
+     {
+       &quot;access_token&quot;:&quot;2YotnFZFEjr1zCsicMWpAA&quot;,
+       &quot;token_type&quot;:&quot;example&quot;,
+       &quot;expires_in&quot;:3600,
+       &quot;refresh_token&quot;:&quot;tGzv3JOkF0XG5Qx2TlKWIA&quot;,
+       &quot;example_parameter&quot;:&quot;example_value&quot;
+     }
+
+</code></pre>
+</blockquote>
+
+<p>上面代码中，各个参数的含义参见《授权码模式》一节。</p>
+
+<p>整个过程中，客户端不得保存用户的密码。</p>
+
+<h2 id="toc_8">九、客户端模式</h2>
+
+<p>客户端模式（Client Credentials Grant）指客户端以自己的名义，而不是以用户的名义，向 &quot;服务提供商&quot; 进行认证。严格地说，客户端模式并不属于 OAuth 框架所要解决的问题。在这种模式中，用户直接向客户端注册，客户端以自己的名义要求 &quot;服务提供商&quot; 提供服务，其实不存在授权问题。</p>
+
+<p><img src="http://www.ruanyifeng.com/blogimg/asset/2014/bg2014051207.png" alt=""/></p>
+
+<p>它的步骤如下：</p>
+
+<blockquote>
+<p>（A）客户端向认证服务器进行身份认证，并要求一个访问令牌。</p>
+
+<p>（B）认证服务器确认无误后，向客户端提供访问令牌。</p>
+</blockquote>
+
+<p>A 步骤中，客户端发出的 HTTP 请求，包含以下参数：</p>
+
+<ul>
+<li>  grant_type：表示授权类型，此处的值固定为 &quot;client_credentials&quot;，必选项。</li>
+<li>  scope：表示权限范围，可选项。</li>
+</ul>
+
+<blockquote>
+<pre><code>
+     POST /token HTTP/1.1
+     Host: server.example.com
+     Authorization: Basic czZCaGRSa3F0MzpnWDFmQmF0M2JW
+     Content-Type: application/x-www-form-urlencoded
+
+     grant_type=client_credentials
+
+</code></pre>
+</blockquote>
+
+<p>认证服务器必须以某种方式，验证客户端身份。</p>
+
+<p>B 步骤中，认证服务器向客户端发送访问令牌，下面是一个例子。</p>
+
+<blockquote>
+<pre><code>
+     HTTP/1.1 200 OK
+     Content-Type: application/json;charset=UTF-8
+     Cache-Control: no-store
+     Pragma: no-cache
+
+     {
+       &quot;access_token&quot;:&quot;2YotnFZFEjr1zCsicMWpAA&quot;,
+       &quot;token_type&quot;:&quot;example&quot;,
+       &quot;expires_in&quot;:3600,
+       &quot;example_parameter&quot;:&quot;example_value&quot;
+     }
+
+</code></pre>
+</blockquote>
+
+<p>上面代码中，各个参数的含义参见《授权码模式》一节。</p>
+
+<h2 id="toc_9">十、更新令牌</h2>
+
+<p>如果用户访问的时候，客户端的 &quot;访问令牌&quot; 已经过期，则需要使用 &quot;更新令牌&quot; 申请一个新的访问令牌。</p>
+
+<p>客户端发出更新令牌的 HTTP 请求，包含以下参数：</p>
+
+<ul>
+<li>  grant_type：表示使用的授权模式，此处的值固定为 &quot;refresh_token&quot;，必选项。</li>
+<li>  refresh_token：表示早前收到的更新令牌，必选项。</li>
+<li>  scope：表示申请的授权范围，不可以超出上一次申请的范围，如果省略该参数，则表示与上一次一致。</li>
+</ul>
+
+<p>下面是一个例子。</p>
+
+<blockquote>
+<pre><code>
+     POST /token HTTP/1.1
+     Host: server.example.com
+     Authorization: Basic czZCaGRSa3F0MzpnWDFmQmF0M2JW
+     Content-Type: application/x-www-form-urlencoded
+
+     grant_type=refresh_token&amp;refresh_token=tGzv3JOkF0XG5Qx2TlKWIA
+
+</code></pre>
+</blockquote>
 
                         
                       </div>
@@ -242,10 +548,10 @@
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/6/21</span>
+                    <span class="date">2018/7/28</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Microservice.html'>Microservice</a></span>
+          					    <span class="posted-in"><a href='Authc&Authz.html'>Authc&Authz</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -312,8 +618,6 @@
 
       	<p class="cat-list">
         
-            <a href="Team.html"><strong>Team</strong></a>
-        
             <a href="Infra.html"><strong>Infra</strong></a>
         
             <a href="Coding.html"><strong>Coding</strong></a>
@@ -337,31 +641,31 @@
 	      
 		      
 			      <li class="post">
-			        <a href="15301813999205.html">架构设计：负载均衡层设计方案（9）——负载均衡层总结下篇</a>
+			        <a href="15337171704262.html">Introduction to Testing with Spock and Groovy</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301813109409.html">架构设计：负载均衡层设计方案（8）——负载均衡层总结上篇</a>
+			        <a href="15336595358049.html">10 Excellent Ways to Secure Your Spring Boot Application</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301812452579.html">架构设计：负载均衡层设计方案（7）——LVS + Keepalived + Nginx安装及配置</a>
+			        <a href="15336592302916.html">First MicroProfile.io application using Java Module System</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301811967181.html">架构设计：负载均衡层设计方案（6）——Nginx + Keepalived构建高可用的负载层</a>
+			        <a href="15332186142588.html">Jenkins 的 Pipeline 脚本在美团餐饮 SaaS 中的实践</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301811361753.html">架构设计：负载均衡层设计方案（5）——LVS单节点安装</a>
+			        <a href="15331749691571.html">基于ZooKeeper的分布式锁和队列</a>
 			      </li>
 		     
 		  

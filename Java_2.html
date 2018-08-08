@@ -76,8 +76,6 @@
     <li><label>Categories</label></li>
 
         
-            <li><a href="Team.html">Team</a></li>
-        
             <li><a href="Infra.html">Infra</a></li>
         
             <li><a href="Coding.html">Coding</a></li>
@@ -107,224 +105,525 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15277833297034.html">
+                <a class="clearlink" href="15327632423477.html">
                 
-                  <h1>揭秘JDBC超时机制</h1>
+                  <h1>A Guide to Java 9 Modularity</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://mp.weixin.qq.com/s?__biz=MzAxNjM2MTk0Ng==&amp;mid=2247484354&amp;idx=1&amp;sn=6179c839cb309b03421f39b5b65a2374&amp;chksm=9bf4b377ac833a61acd0563fd3a010a18ba7dfd749a4dac933097e153ba99aa322828510e55c&amp;mpshare=1&amp;scene=23&amp;srcid=0531q9DrnbcTctSQuYmLHhtJ%23rd">原文地址</a></p>
+<p><a href="http://www.baeldung.com/java-9-modularity">http://www.baeldung.com/java-9-modularity</a></p>
 </blockquote>
 
-<p>恰当的JDBC超时设置能够有效地减少服务失效的时间。本文将对数据库的各种超时设置及其设置方法做介绍。</p>
+<h2 id="toc_0"><strong>1. Overview</strong></h2>
 
-<h3 id="toc_0">真实案例：应用服务器在遭到DDos攻击后无法响应</h3>
+<p>Java 9 introduces a new level of abstraction above packages, formally known as the Java Platform Module System (JPMS), or “Modules” for short.</p>
 
-<p>在遭到DDos攻击后，整个服务都垮掉了。由于第四层交换机不堪重负，网络变得无法连接，从而导致业务系统也无法正常运转。安全组很快屏蔽了所有的DDos攻击，并恢复了网络，但业务系统却还是无法工作。 通过分析系统的thread dump发现，业务系统停在了JDBC API的调用上。20分钟后，系统仍处于WAITING状态，无法响应。30分钟后，系统抛出异常，服务恢复正常。</p>
+<p>In this tutorial, we’ll go through the new system and discuss its various aspects.</p>
 
-<blockquote>
-<p>为什么我们明明将query timeout设置成了3秒，系统却持续了30分钟的WAITING状态？为什么30分钟后系统又恢复正常了？</p>
-</blockquote>
+<p>We’ll also build a simple project to demonstrate all concepts we’ll be learning in this guide.</p>
 
-<p>当你对理解了JDBC的超时设置后，就能找到问题的答案。</p>
+<h2 id="toc_1"><strong>2. What’s a Module?</strong></h2>
 
-<h3 id="toc_1">为什么我们要了解JDBC</h3>
+<p>First of all, we need to understand what a module is before we can understand how to use them.</p>
 
-<p>当遇到性能问题或系统出错时，业务系统和数据库通常是我们最关心的两个部分。在公司里，这两个部分是交由两个不同的部门来负责的，因此各个部门都会集中精力地在自身领域内寻找问题，这样的话，在业务系统和数据库之间的部分就会成为一个盲区。对于Java应用而言，这个盲区就是DBCP数据库连接池和JDBC，本文将集中介绍JDBC。</p>
+<p><strong>A Module is a group of closely related packages and resources along with a new module descriptor file.</strong></p>
 
-<h3 id="toc_2">什么是JDBC</h3>
+<p>In other words, it’s a “package of Java Packages” abstraction that allows us to make our code even more reusable.</p>
 
-<p>JDBC是Java应用中用来连接关系型数据库的标准API。Sun公司一共定义了4种类型的JDBC，我们主要使用的是第4种，该类型的Driver完全由Java代码实现，通过使用socket与数据库进行通信。</p>
+<h3 id="toc_2"><strong>2.1. Packages</strong></h3>
 
-<p><img src="data:image/gif;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQImWNgYGBgAAAABQABh6FO1AAAAABJRU5ErkJggg==" alt=""/></p>
+<p>The packages inside a module are identical to the Java packages we’ve been using since the inception of Java.</p>
 
-<p>图1 JDBC Type 4.</p>
+<p>When we create a module, <strong>we organize the code internally in packages just like we previously did with any other project.</strong></p>
 
-<p>第4种类型的JDBC通过socket对字节流进行处理，因此也会有一些基本网络操作，类似于<code>HttpClient</code>这种用于网络操作的代码库。当在网络操作中遇到问题的时候，将会消耗大量的cpu资源，并且失去响应超时。如果你之前用过HttpClient，那么你一定遇到过未设置timeout造成的错误。同样，第4种类型的JDBC，若没有合理地设置socket timeout，也会有相同的错误——连接被阻塞。</p>
+<p>Aside from organizing our code, packages are used to determine what code is publicly accessible outside of the module. We’ll spend more time talking about this later in the article.</p>
 
-<p>接下来，就让我们来学习一下如何正确地设置socket timeout，以及需要考虑的问题。</p>
+<h3 id="toc_3"><strong>2.2. Resources</strong></h3>
 
-<p>应用与数据库间的timeout层级 </p>
+<p><strong>Each module is responsible for its resources, like media or configuration files.</strong></p>
 
-<p><img src="data:image/gif;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQImWNgYGBgAAAABQABh6FO1AAAAABJRU5ErkJggg==" alt=""/></p>
+<p>Previously we’d put all resources into the root level of our project and manually manage which resources belonged to different parts of the application.</p>
 
-<p>图2 Timeout Class.</p>
+<p>With modules, we can ship required images and XML files with the module that needs it, making our projects much easier to manage.</p>
 
-<p>上图展示了简化后应用与数据库间的timeout层级。（译者注：WAS/BLOC是作者公司的具体应用名称，无需深究） 高级别的timeout依赖于低级别的timeout，只有当低级别的timeout无误时，高级别的timeout才能确保正常。例如，当socket timeout出现问题时，高级别的statement timeout和transaction timeout都将失效。</p>
+<h3 id="toc_4"><strong>2.3. Module Descriptor</strong></h3>
 
-<p>我们收到的很多评论中提到：</p>
-
-<blockquote>
-<p>即使设置了statement timeout，当网络出错时，应用也无法从错误中恢复。</p>
-</blockquote>
-
-<p><strong>statement timeout无法处理网络连接失败时的超时，它能做的仅仅是限制statement的操作时间</strong>。网络连接失败时的timeout必须交由JDBC来处理。</p>
-
-<p>JDBC的socket timeout会受到操作系统socket timeout设置的影响，这就解释了为什么在之前的案例中，JDBC连接会在网络出错后阻塞30分钟，然后又奇迹般恢复，即使我们并没有对JDBC的socket timeout进行设置。</p>
-
-<p>DBCP连接池位于图2的左侧，你会发现timeout层级与DBCP是相互独立的。DBCP负责的是数据库连接的创建和管理，并不干涉timeout的处理。当连接在DBCP中创建，或是DBCP发送校验query检查连接有效性的时候，socket timeout将会影响这些过程，但并不直接对应用造成影响。</p>
-
-<p>当在应用中调用DBCP的<code>getConnection()</code>方法时，你可以设置获取数据库连接的超时时间，但是这和JDBC的timeout毫不相关。</p>
-
-<p><img src="data:image/gif;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQImWNgYGBgAAAABQABh6FO1AAAAABJRU5ErkJggg==" alt=""/></p>
-
-<p>图3 Timeout for Each Levels.</p>
-
-<h3 id="toc_3">什么是Transaction Timeout？</h3>
-
-<p><strong>transaction timeout</strong>一般存在于框架（Spring, EJB）或应用级。</p>
-
-<p>transaction timeout或许是个相对陌生的概念，简单地说，transaction timeout就是“<code>Statement Timeout * N（需要执行的statement数量） + @（垃圾回收等其他时间）</code>”。transaction timeout用来限制执行statement的总时长。</p>
-
-<p>例如，假设执行一个statement需要0.1秒，那么执行少量statement不会有什么问题，但若是要执行100,000个statement则需要10,000秒（约7个小时）。这时，transaction timeout就派上用场了。EJB CMT (Container Managed Transaction)就是一种典型的实现，它提供了多种方法供开发者选择。但我们并不使用EJB，Spring的transaction timeout设置会更常用一些。在Spring中，你可以使用下面展示的XML或是在源码中使用<code>@Transactional</code>注解来进行设置。</p>
-
-<pre><code>&lt;tx:attributes&gt;  
-        &lt;tx:method name=“…” timeout=“3″/&gt;  
-&lt;/tx:attributes&gt;
-</code></pre>
-
-<p>Spring提供的transaction timeout配置非常简单，它会记录每个事务的开始时间和消耗时间，当特定的事件发生时就会对消耗时间做校验，当超出timeout值时将抛出异常。</p>
-
-<p>Spring中，数据库连接被保存在ThreadLocal里，这被称为<code>事务同步（Transaction Synchronization）</code>，与此同时，事务的开始时间和消耗时间也被保存下来。当使用这种代理连接创建statement时，就会校验事务的消耗时间。</p>
-
-<p>EJB CMT的实现方式与之类似，其结构本身也十分简单。 当你选用的容器或框架并不支持transaction timeout这一特性，你可以考虑自己来实现。transaction timeout并没有标准的API。Lucy框架的1.5和1.6版本都不支持transaction timeout，但是你可以通过使用Spring的Transaction Manager来达到与之同样的效果。 假设某个事务中包含5个statement，每个statement的执行时间是200ms，其他业务逻辑的执行时间是100ms，那么transaction timeout至少应该设置为1,100ms（200 * 5 + 100）。</p>
-
-<p>什么是Statement Timeout？</p>
-
-<p>statement timeout用来限制statement的执行时长，timeout的值通过调用JDBC的java.sql.Statement.setQueryTimeout(int timeout) API进行设置。不过现在开发者已经很少直接在代码中设置，而多是通过框架来进行设置。 以iBatis为例，statement timeout的默认值可以通过sql-map-config.xml中的defaultStatementTimeout 属性进行设置。同时，你还可以设置sqlmap中select，insert，update标签的timeout属性，从而对不同sql语句的超时时间进行独立的配置。 如果你使用的是Lucy1.5或1.6版本，通过设置queryTimeout属性可以在datasource层面对statement timeout进行设置。 statement timeout的具体值需要依据应用本身的特性而定，并没有可供推荐的配置。</p>
-
-<p>JDBC的statement timeout处理过程<br/>
-不同的关系型数据库，以及不同的JDBC驱动，其statement timeout处理过程会有所不同。其中，Oracle和MS SQLServer的处理相类似，MySQL和CUBRID类似。</p>
-
-<p><strong>Oracle JDBC Statement的QueryTimeout处理过程</strong></p>
-
-<ol>
-<li><p>通过调用Connection的createStatement()方法创建statement</p></li>
-<li><p>调用Statement的executeQuery()方法</p></li>
-<li><p>statement通过自身connection将query发送给Oracle数据库</p></li>
-<li><p>statement在OracleTimeoutPollingThread（每个classloader一个）上进行注册</p></li>
-<li><p>达到超时时间</p></li>
-<li><p>OracleTimeoutPollingThread调用OracleStatement的cancel()方法</p></li>
-<li><p>通过connection向正在执行的query发送cancel消息</p></li>
-</ol>
-
-<p><img src="data:image/gif;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQImWNgYGBgAAAABQABh6FO1AAAAABJRU5ErkJggg==" alt=""/></p>
-
-<p>图4 Query Timeout Execution Process for Oracle JDBC Statement.</p>
-
-<p><strong>JTDS (MS SQLServer) Statement的QueryTimeout处理过程</strong></p>
-
-<ol>
-<li><p>通过调用Connection的createStatement()方法创建statement</p></li>
-<li><p>调用Statement的executeQuery()方法</p></li>
-<li><p>statement通过自身connection将query发送给MS SqlServer数据库</p></li>
-<li><p>statement在TimerThread上进行注册</p></li>
-<li><p>达到超时时间</p></li>
-<li><p>TimerThread调用JtdsStatement实例中的<code>TsdCore.cancel()</code>方法</p></li>
-<li><p>通过ConnectionJDBC向正在执行的query发送cancel消息</p></li>
-</ol>
-
-<p><img src="data:image/gif;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQImWNgYGBgAAAABQABh6FO1AAAAABJRU5ErkJggg==" alt=""/></p>
-
-<p>图5 QueryTimeout Execution Process for JTDS (MS SQLServer) Statement.</p>
-
-<p><strong>MySQL JDBC Statement的QueryTimeout处理过程（5.0.8）</strong></p>
-
-<ol>
-<li><p>通过调用<code>Connection.createStatement()</code>方法创建statement</p></li>
-<li><p>调用<code>Statement.executeQuery()</code>方法</p></li>
-<li><p>statement通过自身connection将query发送给MySQL数据库</p></li>
-<li><p>statement创建一个新的timeout-execution线程用于超时处理</p></li>
-<li><p>5.1版本后改为每个connection分配一个timeout-execution线程</p></li>
-<li><p>向timeout-execution线程进行注册</p></li>
-<li><p>达到超时时间</p></li>
-<li><p>timeout-execution线程创建一个和statement配置相同的connection</p></li>
-<li><p>使用新创建的connection向超时query发送cancel query（<code>KILL QUERY</code> “connectionId”）</p></li>
-</ol>
-
-<p><img src="data:image/gif;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQImWNgYGBgAAAABQABh6FO1AAAAABJRU5ErkJggg==" alt=""/></p>
-
-<p>图6 QueryTimeout Execution Process for MySQL JDBC Statement (5.0.8).</p>
-
-<p><strong>CUBRID JDBC Statement的QueryTimeout处理过程</strong></p>
-
-<ol>
-<li><p>通过调用Connection的createStatement()方法创建statement</p></li>
-<li><p>调用Statement的executeQuery()方法</p></li>
-<li><p>statement通过自身connection将query发送给CUBRID数据库</p></li>
-<li><p>statement创建一个新的timeout-execution线程用于超时处理</p></li>
-<li><p>5.1版本后改为每个connection分配一个timeout-execution线程 6. 向timeout-execution线程进行注册</p></li>
-<li><p>达到超时时间</p></li>
-<li><p>TimerThread调用JtdsStatement实例中的TsdCore.cancel()方法</p></li>
-<li><p>timeout-execution线程创建一个和statement配置相同的connection</p></li>
-<li><p>使用新创建的connection向超时query发送cancel消息</p></li>
-</ol>
-
-<p><img src="data:image/gif;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQImWNgYGBgAAAABQABh6FO1AAAAABJRU5ErkJggg==" alt=""/></p>
-
-<p>图7 QueryTimeout Execution Process for CUBRID JDBC Statement.</p>
-
-<p>什么是JDBC的socket timeout？</p>
-
-<p>第4种类型的JDBC使用socket与数据库连接，数据库并不对应用与数据库间的连接超时进行处理。 JDBC的socket timeout在数据库被突然停掉或是发生网络错误（由于设备故障等原因）时十分重要。由于TCP/IP的结构原因，socket没有办法探测到网络错误，因此应用也无法主动发现数据库连接断开。如果没有设置socket timeout的话，应用在数据库返回结果前会无期限地等下去，这种连接被称为dead connection。 为了避免dead connections，socket必须要有超时配置。socket timeout可以通过JDBC设置，socket timeout能够避免应用在发生网络错误时产生无休止等待的情况，缩短服务失效的时间。</p>
-
-<p>不推荐使用socket timeout来限制statement的执行时长，因此socket timeout的值必须要高于statement timeout，否则，socket timeout将会先生效，这样statement timeout就变得毫无意义，也无法生效。</p>
-
-<p>下面展示了socket timeout的两个设置项，不同的JDBC驱动其配置方式会有所不同。</p>
+<p>When we create a module, we include a descriptor file that defines several aspects of our new module:</p>
 
 <ul>
-<li><p>socket连接时的timeout：通过Socket.connect(SocketAddress endpoint, int timeout)设置</p></li>
-<li><p>socket读写时的timeout：通过Socket.setSoTimeout(int timeout)设置</p></li>
+<li>  <strong>Name</strong> – the name of our module</li>
+<li>  <strong>Dependencies</strong> – a list of other modules that this module depends on</li>
+<li>  <strong>Public Packages</strong> – a list of all packages we want accessible from outside the module</li>
+<li>  <strong>Services Offered</strong> – we can provide service implementations that can be consumed by other modules</li>
+<li>  <strong>Services Consumed</strong> – allows the current module to be a consumer of a service</li>
+<li>  <strong>Reflection Permissions</strong> – explicitly allows other classes to use reflection to access the private members of a package</li>
 </ul>
 
-<p>通过查看CUBRID，MySQL，MS SQL Server (JTDS)和Oracle的JDBC驱动源码，我们发现所有的驱动内部都是使用上面的2个API来设置socket timeout的。</p>
+<p>The module naming rules are similar to how we name packages (dots are allowed, dashes are not). It’s very common to do either project-style (my.module) or Reverse-DNS (_com.baeldung.mymodule_) style names. We’ll use project-style in this guide.</p>
 
-<p>下面是不同驱动的socket timeout配置方式。</p>
+<p><strong>We need to list all packages we want to be public because by default all packages are module private.</strong></p>
 
-<p><img src="data:image/gif;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQImWNgYGBgAAAABQABh6FO1AAAAABJRU5ErkJggg==" alt=""/></p>
+<p>The same is true for reflection. By default, we cannot use reflection on classes we import from another module.</p>
+
+<p>Later in the article, we’ll look at examples of how to use the module descriptor file.</p>
+
+<h3 id="toc_5"><strong>2.4. Module Types</strong></h3>
+
+<p>There are four types of modules in the new module system:</p>
 
 <ul>
-<li><p><code>connectTimeout</code>和<code>socketTimeout</code>的默认值为0时，timeout不生效。</p></li>
-<li><p>除了调用DBCP的API以外，还可以通过properties属性进行配置。</p></li>
+<li>  <strong>System Modules</strong>– These are the modules listed when we run the _list-modules_ command above. They include the Java SE and JDK modules.</li>
+<li>  <strong>Application Modules</strong> – These modules are what we usually want to build when we decide to use Modules. They are named and defined in the compiled _module-info.class_ file included in the assembled JAR.</li>
+<li>  <strong>Automatic Modules</strong> – We can include unofficial modules by adding existing JAR files to the module path. The name of the module will be derived from the name of the JAR. Automatic modules will have full read access to every other module loaded by the path.</li>
+<li>  <strong>Unnamed Module</strong> – When a class or JAR is loaded onto the classpath, but not the module path, it’s automatically added to the unnamed module. It’s a catch-all module to maintain backward compatibility with previously-written Java code.</li>
 </ul>
 
-<p>通过properties属性进行配置时，需要传入key为“connectionProperties”的键值对，value的格式为“[propertyName=property;]*”。下面是iBatis中的properties配置。<br/>
-Xml代码</p>
+<h3 id="toc_6"><strong>2.5. Distribution</strong></h3>
 
-<pre><code>&lt;transactionManager type=“JDBC”&gt;  
-  &lt;dataSource type=“com.nhncorp.lucy.db.DbcpDSFactory”&gt;  
-     ….  
-     &lt;property name=“connectionProperties” value=“oracle.net.CONNECT_TIMEOUT=6000;oracle.jdbc.ReadTimeout=6000″/&gt;   
-  &lt;/dataSource&gt;  
-&lt;/transactionManager&gt;
+<p>Modules can be distributed one of two ways: as a JAR file or as an “exploded” compiled project. This, of course, is the same as any other Java project so it should come as no surprise.</p>
+
+<p>We can create multi-module projects comprised of a “main application” and several library modules.</p>
+
+<p><strong>We have to be careful though because we can only have one module per JAR file.</strong></p>
+
+<p>When we set up our build file, we need to make sure to bundle each module in our project as a separate jar.</p>
+
+<h2 id="toc_7"><strong>3. Default Modules</strong></h2>
+
+<p>When we install Java 9, we can see that the JDK now has a new structure.</p>
+
+<p>They have taken all the original packages and moved them into the new module system.</p>
+
+<p>We can see what these modules are by typing into the command line:</p>
+
+<pre><code class="language-sh">java --list-modules
 </code></pre>
 
-<p>操作系统的socket timeout配置</p>
+<p>These modules are split into four major groups: _java, javafx, jdk, _and _Oracle_.</p>
 
-<p>如果不设置socket timeout或connect timeout，应用多数情况下是无法发现网络错误的。因此，当网络错误发生后，在连接重新连接成功或成功接收到数据之前，应用会无限制地等下去。但是，通过本文开篇处的实际案例我们发现，30分钟后应用的连接问题奇迹般的解决了，这是因为操作系统同样能够对socket timeout进行配置。公司的Linux服务器将socket timeout设置为了30分钟，从而会在操作系统的层面对网络连接做校验，因此即使JDBC的socket timeout设置为0，由网络错误造成的数据库连接问题的持续时间也不会超过30分钟。</p>
+<p><u>java</u> modules are the implementation classes for the core SE Language Specification.</p>
 
-<p>通常，应用会在调用Socket.read()时由于网络问题被阻塞住，而很少在调用Socket.write()时进入waiting状态，这取决于网络构成和错误类型。当Socket.write()被调用时，数据被写入到操作系统内核的缓冲区，控制权立即回到应用手上。因此，一旦数据被写入内核缓冲区，Socket.write()调用就必然会成功。但是，如果系统内核缓冲区由于某种网络错误而满了的话，Socket.write()也会进入waiting状态。这种情况下，操作系统会尝试重新发包，当达到重试的时间限制时，将产生系统错误。在我们公司，重新发包的超时时间被设置为15分钟。</p>
+<p><u>javafx</u> modules are the FX UI libraries.</p>
 
-<p>至此，我已经对JDBC的内部操作做了讲解，希望能够让大家学会如何正确的配置超时时间，从而减少错误的发生。<br/>
-最后，我将列出一些常见的问题。</p>
+<p><strong>Anything needed by the JDK itself is kept in the _jdk_ modules.</strong></p>
 
-<h3 id="toc_4">FAQ</h3>
+<p>And finally, <strong>anything that is Oracle-specific is in the _oracle_ modules.</strong></p>
 
-<blockquote>
-<p><strong>Q1. 我已经使用Statement.setQueryTimeout()方法设置了查询超时，但在网络出错时并没有产生作用。</strong><br/>
-➔ 查询超时仅在socket timeout生效的前提下才有效，它并不能用来解决外部的网络错误，要解决这种问题，必须设置JDBC的socket timeout。</p>
+<h2 id="toc_8"><strong>4. Module Declarations</strong></h2>
 
-<p><strong>Q2.  transaction timeout，statement timeout和socket timeout和DBCP的配置有什么关系？</strong> <br/>
-➔ 当通过DBCP获取数据库连接时，除了DBCP获取连接时的waitTimeout配置以外，其他配置对JDBC没有什么影响。</p>
+<p><strong>To set up a module, we need to put a special file at the root of our packages named _module-info.java_.</strong></p>
 
-<p><strong>Q3. 如果设置了JDBC的socket timeout，那DBCP连接池中处于IDLE状态的连接是否也会在达到超时时间后被关闭？</strong><br/>
-➔ 不会。socket的设置只会在产生数据读写时生效，而不会对DBCP中的IDLE连接产生影响。当DBCP中发生新连接创建，老的IDLE连接被移除，或是连接有效性校验的时候，socket设置会对其产生一定的影响，但除非发生网络问题，否则影响很小。</p>
+<p>This file is known as the module descriptor and contains all of the data needed to build and use our new module.</p>
 
-<p><strong>Q4. socket timeout应该设置为多少？ </strong><br/>
-➔ 就像我在正文中提的那样，socket timeout必须高于statement timeout，但并没有什么推荐值。在发生网络错误的时候，socket timeout将会生效，但是再小心的配置也无法避免网络错误的发生，只是在网络错误发生后缩短服务失效的时间（如果网络恢复正常的话）。</p>
-</blockquote>
+<p>We construct the module with a declaration whose body is either empty or made up of module directives:</p>
+
+<pre><code class="language-java">module myModuleName {
+    // all directives are optional
+}
+</code></pre>
+
+<p>We start the module declaration with the <u>module</u> keyword, and we follow that with the name of the module.</p>
+
+<p>The module will work with this declaration, but we’ll commonly need more information.</p>
+
+<p>That is where the module directives come in.</p>
+
+<h3 id="toc_9"><strong>4.1. Requires</strong></h3>
+
+<p>Our first directive is _requires_. This module directive allows us to declare module dependencies:</p>
+
+<pre><code class="language-java">module my.module {
+    requires module.name;
+}
+</code></pre>
+
+<p>Now, _my.module_ has <strong>both a runtime and a compile-time dependency</strong> on <u>module.name</u>.</p>
+
+<p>And all public types exported from a dependency are accessible by our module when we use this directive.</p>
+
+<h3 id="toc_10"><strong>4.2. Requires Static</strong></h3>
+
+<p>Sometimes we write code that references another module, but that users of our library will never want to use.</p>
+
+<p>For instance, we might write a utility function that pretty-prints our internal state when another logging module is present. But, not every consumer of our library will want this functionality, and they don’t want to include an extra logging library.</p>
+
+<p>In these cases, we want to use an optional dependency. By using the _requires static_ directive, we create a compile-time-only dependency:</p>
+
+<pre><code class="language-java">module my.module {
+    requires static module.name;
+}
+</code></pre>
+
+<h3 id="toc_11"><strong>4.3. Requires Transitive</strong></h3>
+
+<p>We commonly work with libraries to make our lives easier.</p>
+
+<p>But, we need to make sure that any module that brings in our code will also bring in these extra ‘transitive’ dependencies or they won’t work.</p>
+
+<p>Luckily, we can use the _requires transitive_ directive to force any downstream consumers also to read our required dependencies:</p>
+
+<pre><code class="language-java">module my.module {
+    requires transitive module.name;
+}
+</code></pre>
+
+<p>Now, when a developer <u>requires my.module</u>, they won’t also have also to say _requires module.name_ for our module to still work.</p>
+
+<h3 id="toc_12"><strong>4.4. Exports</strong></h3>
+
+<p><strong>By default, a module doesn’t expose any of its API to other modules.</strong> This _strong encapsulation_ was one of the key motivators for creating the module system in the first place.</p>
+
+<p>Our code is significantly more secure, but now we need to explicitly open our API up to the world if we want it to be usable.</p>
+
+<p><strong>We use the _exports_ directive to expose all public members of the named package:</strong></p>
+
+<pre><code class="language-java">module my.module {
+    exports com.my.package.name;
+}
+</code></pre>
+
+<p>Now, when someone does _requires my.module_, they will have access to the public types in our _com.my.package.name_ package, but not any other package.</p>
+
+<h3 id="toc_13"><strong>4.5. Exports … To</strong></h3>
+
+<p><strong>We can use _exports…to_ to open up our public classes to the world.</strong></p>
+
+<p>But, what if we don’t want the entire world to access our API?</p>
+
+<p><strong>We can restrict which modules have access to our APIs using the _exports…to_ directive.</strong></p>
+
+<p>Similar to the _exports_ directive, we declare a package as exported. But, we also list which modules we are allowing to import this package as a <u>requires</u>. Let’s see what this looks like:</p>
+
+<pre><code class="language-java">module my.module {
+    export com.my.package.name to com.specific.package;
+}
+</code></pre>
+
+<h3 id="toc_14"><strong>4.6. Uses</strong></h3>
+
+<p>A _service_ is an implementation of a specific interface or abstract class that can be _consumed_ by other classes.</p>
+
+<p><strong>We designate the services our module consumes with the _uses_ directive.</strong></p>
+
+<p>Note that <strong>the class name we _use_ is either the interface or abstract class of the service, not the implementation class</strong>:</p>
+
+<pre><code class="language-java">module my.module {
+    uses class.name;
+}
+</code></pre>
+
+<p>We should note here that there’s a difference between a _requires_ directive and the _uses_ directive.</p>
+
+<p>We might <u>require</u> a module that provides a service we want to consume, but that service implements an interface from one of its transitive dependencies.</p>
+
+<p>Instead of forcing our module to require _all_ transitive dependencies just in case, we use the _uses_ directive to add the required interface to the module path.</p>
+
+<h3 id="toc_15"><strong>4.7. Provides … With</strong></h3>
+
+<p><strong>A module can also be a _service provider_ that other modules can consume.</strong></p>
+
+<p>The first part of the directive is the _provides_ keyword. Here is where we put the interface or abstract class name.</p>
+
+<p>Next, we have the _with_ directive where we provide the implementation class name that either <u>implements</u> the interface or _extends_ the abstract class.</p>
+
+<p>Here’s what it looks like put together:</p>
+
+<pre><code class="language-java">module my.module {
+    provides MyInterface with MyInterfaceImpl;
+}
+</code></pre>
+
+<h3 id="toc_16"><strong>4.8. Open</strong></h3>
+
+<p>We mentioned earlier that encapsulation was a driving motivator for the design of this module system.</p>
+
+<p>Before Java 9, it was possible to use reflection to examine every type and member in a package, even the _private_ ones. Nothing was truly encapsulated, which can open up all kinds of problems for developers of the libraries.</p>
+
+<p>Because Java 9 enforces _strong encapsulation_, <strong>we now have to explicitly grant permission for other modules to reflect on our classes.</strong></p>
+
+<p>If we want to continue to allow full reflection as older versions of Java did, we can simply _open_ the entire module up:</p>
+
+<pre><code class="language-java">open module my.module {
+}
+</code></pre>
+
+<h3 id="toc_17"><strong>4.9. Opens</strong></h3>
+
+<p>If we need to allow reflection of private types, but we don’t want all of our code exposed, <strong>we can use the _opens_ directive to expose specific packages.</strong></p>
+
+<p>But remember, this will open the package up to the entire world, so make sure that is what you want:</p>
+
+<pre><code class="language-java">module my.module {
+  opens com.my.package;
+}
+</code></pre>
+
+<h3 id="toc_18"><strong>4.10. Opens … To</strong></h3>
+
+<p>Okay, so reflection is great sometimes, but we still want as much security as we can get from _encapsulation_. <strong>We can selectively open our packages to a pre-approved list of modules, in this case, using the _opens…to_ directive</strong>:</p>
+
+<pre><code class="language-java">module my.module {
+    opens com.my.package to moduleOne, moduleTwo, etc.;
+}
+</code></pre>
+
+<h2 id="toc_19"><strong>5. Command Line Options</strong></h2>
+
+<p>By now, support for Java 9 modules has been added to Maven and Gradle, so you won’t need to do a lot of manual building of your projects. However, it’s still valuable to know _how_ to use the module system from the command line.</p>
+
+<p>We’ll be using the command line for our full example down below to help solidify how the entire system works in our minds.</p>
+
+<ul>
+<li>  <u><strong>module-path</strong></u> <strong>–</strong>We use the _–module-path_ option to specify the module path. This is a list of one or more directories that contain your modules.</li>
+<li>  <u><strong>add-reads</strong></u> – Instead of relying on the module declaration file, we can use the command line equivalent of the _requires_ directive; _–add-reads_.</li>
+<li>  <u><strong>add-exports</strong></u> <strong>–</strong>Command line replacement for the <u>exports</u> directive.</li>
+<li>  <u><strong>add-opens</strong></u> <u>–</u>Replace the _open_ clause in the module declaration file.</li>
+<li>  <u><strong>add-modules</strong></u> <u>–</u>Adds the list of modules into the default set of modules</li>
+<li>  <u><strong>list-modules</strong></u> <u>–</u>Prints a list of all modules and their version strings</li>
+<li>  <u><strong>patch-module</strong></u> – Add or override classes in a modules</li>
+<li>  <u><strong>illegal-access=permit|warn|deny</strong></u> – Either relax strong encapsulation by showing a single global warning, shows every warning, or fails with errors. The default is _permit_.</li>
+</ul>
+
+<h2 id="toc_20"><strong>6. Visibility</strong></h2>
+
+<p>We should spend a little time talking about the visibility of our code.</p>
+
+<p><strong>A lot of libraries depend on reflection to work their magic</strong> (JUnit and Spring come to mind).</p>
+
+<p>By default in Java 9, we will _only_ have access to public classes, methods, and fields in our exported packages. Even if we use reflection to get access to non-public members and call _setAccessible(true), _we won’t be able to access these members.</p>
+
+<p>We can use the _open_, _opens_, and _opens…to_ options to grant runtime-only access for reflection. Note, <strong>this is runtime-only!</strong></p>
+
+<p>We won’t be able to compile against private types, and we should never need to anyway.</p>
+
+<p>If we must have access to a module for reflection, and we’re not the owner of that module (i.e., we can’t use the _opens…to_ directive), then it’s possible to use the command line _–add-opens_ option to allow own modules reflection access to the locked down module at runtime.</p>
+
+<p>The only caveat here’s that you need to have access to the command line arguments that are used to run a module for this to work.</p>
+
+<h2 id="toc_21"><strong>7. Putting It All Together</strong></h2>
+
+<p>Now that we know what a module is and how to use them let’s go ahead and build a simple project to demonstrate all the concepts we just learned.</p>
+
+<p>To keep things simple, we won’t be using Maven or Gradle. Instead, we’ll rely on the command line tools to build our modules.</p>
+
+<h3 id="toc_22"><strong>7.1. Setting Up Our Project</strong></h3>
+
+<p>First, we need to set up our project structure. We’ll create several directories to organize our files.</p>
+
+<p>Start by creating the project folder:</p>
+
+<pre><code class="language-sh">mkdir module-project
+cd module-project
+</code></pre>
+
+<p>This is the base of our whole project, so add files in here such as Maven or Gradle build files, other source directories, and resources.</p>
+
+<p>We also put a directory to hold all our project specific modules.</p>
+
+<p>Next, we create a module directory:</p>
+
+<pre><code class="language-sh">mkdir simple-modules
+</code></pre>
+
+<p>Here’s what our project structure will look like:</p>
+
+<pre><code class="language-txt">module-project
+|- // src if we use the default package
+|- // build files also go at this level
+|- simple-modules
+  |- hello.modules
+    |- com
+      |- baeldung
+        |- modules
+          |- hello
+  |- main.app
+    |- com
+      |- baeldung
+        |- modules
+          |- main
+</code></pre>
+
+<h3 id="toc_23"><strong>7.2. Our First Module</strong></h3>
+
+<p>Now that we have the basic structure in place, let’s add our first module.</p>
+
+<p>Under the _simple-modules _directory, create a new directory called _hello.modules_.</p>
+
+<p><strong>We can name this anything we want but follow package naming rules</strong> (i.e., periods to separate words, etc.). We can even use the name of our main package as the module name if we want, but usually, we want to stick to the same name we would use to create a JAR of this module.</p>
+
+<p>Under our new module, we can create the packages we want. In our case, we are going to create one package structure:</p>
+
+<pre><code>com.baeldung.modules.hello
+</code></pre>
+
+<p>Next, create a new class called _HelloModules.java_ in this package. We will keep the code simple:</p>
+
+<pre><code class="language-java">package com.baeldung.modules.hello;
+ 
+public class HelloModules {
+    public static void doSomething() {
+        System.out.println(&quot;Hello, Modules!&quot;);
+    }
+}
+</code></pre>
+
+<p>And finally, in the _hello.modules_ root directory, add in our module descriptor; _module-info.java_:</p>
+
+<pre><code class="language-java">module hello.modules {
+    exports com.baeldung.modules.hello;
+}
+</code></pre>
+
+<p>To keep this example simple, all we are doing is exporting all public members of the _com.baeldung.modules.hello _package.</p>
+
+<h3 id="toc_24"><strong>7.3. Our Second Module</strong></h3>
+
+<p>Our first module is great, but it doesn’t do anything.</p>
+
+<p>We can create a second module that uses it now.</p>
+
+<p>Under our _simple-modules_ directory, create another module directory called _main.app_. We are going to start with the module descriptor this time:</p>
+
+<pre><code class="language-java">module main.app {
+    requires hello.modules;
+}
+</code></pre>
+
+<p>We don’t need to expose anything to the outside world. Instead, all we need to do is depend on our first module, so we have access to the public classes it exports.</p>
+
+<p>Now we can create an application that uses it.</p>
+
+<p>Create a new package structure: _com.baeldung.modules.main_.</p>
+
+<p>Now, create a new class file called _MainApp.java._</p>
+
+<pre><code class="language-java">package com.baeldung.modules.main;
+ 
+import com.baeldung.modules.hello.HelloModules;
+ 
+public class MainApp {
+    public static void main(String[] args) {
+        HelloModules.doSomething();
+    }
+}
+</code></pre>
+
+<p>And that is all the code we need to demonstrate modules. Our next step is to build and run this code from the command line.</p>
+
+<h3 id="toc_25"><strong>7.4. Building Our Modules</strong></h3>
+
+<p>To build our project, we can create a simple bash script and place it at the root of our project.</p>
+
+<p>Create a file called _compile-simple-modules.sh_:</p>
+
+<pre><code class="language-sh">#!/usr/bin/env bash
+javac -d outDir --module-source-path simple-modules $(find simple-modules -name &quot;*.java&quot;)
+</code></pre>
+
+<p>There are two parts to this command, the _javac_ and _find_ commands.</p>
+
+<p>The _find_ command is simply outputting a list of all ._java_ files under our simple-modules directory. We can then feed that list directly into the Java compiler.</p>
+
+<p>The only thing we have to do differently than the older versions of Java is to provide a _module-source-path_ parameter to inform the compiler that it’s building modules.</p>
+
+<p>Once we run this command, we will have an _outDir_ folder with two compiled modules inside.</p>
+
+<h3 id="toc_26"><strong>7.5. Running Our Code</strong></h3>
+
+<p>And now we can finally run our code to verify modules are working correctly.</p>
+
+<p>Create another file in the root of the project: _run-simple-module-app.sh_.</p>
+
+<pre><code class="language-sh">#!/usr/bin/env bash
+java --module-path outDir -m main.app/com.baeldung.modules.main.MainApp
+</code></pre>
+
+<p>To run a module, we must provide at least the _module-path_ and the main class. If all works, you should see:</p>
+
+<pre><code class="language-sh">$ ./run-simple-module-app.sh 
+Hello, Modules!
+</code></pre>
+
+<h3 id="toc_27"><strong>7.6. Adding a Service</strong></h3>
+
+<p>Now that we have a basic understanding of how to build a module, let’s make it a little more complicated.</p>
+
+<p>We’re going to see how to use the _provides…with_ and _uses_ directives.</p>
+
+<p>Start by defining a new file in the _hello.modules_ module named _HelloInterface__.java_:</p>
+
+<pre><code class="language-java">public interface HelloInterface {
+    void sayHello();
+}
+</code></pre>
+
+<p>To make things easy, we’re going to implement this interface with our existing _HelloModules.java_ class:</p>
+
+<pre><code class="language-java">public class HelloModules implements HelloInterface {
+    public static void doSomething() {
+        System.out.println(&quot;Hello, Modules!&quot;);
+    }
+ 
+    public void sayHello() {
+        System.out.println(&quot;Hello!&quot;);
+    }
+}
+</code></pre>
+
+<p>That is all we need to do to create a _service_.</p>
+
+<p>Now, we need to tell the world that our module provides this service.</p>
+
+<p>Add the following to our _module-info.java_:</p>
+
+<pre><code>provides com.baeldung.modules.hello.HelloInterface with com.baeldung.modules.hello.HelloModules;
+</code></pre>
+
+<p>As we can see, we declare the interface and which class implements it.</p>
+
+<p>Next, we need to consume this _service_. In our _main.app_ module, let’s add the following to our _module-info.java_:</p>
+
+<pre><code class="language-java">uses com.baeldung.modules.hello.HelloInterface;
+</code></pre>
+
+<p>Finally, in our main method we can use this service like this:</p>
+
+<pre><code class="language-java">HelloModules module = new HelloModules();
+module.sayHello();
+</code></pre>
+
+<p>Compile and run:</p>
+
+<pre><code class="language-sh">$ ./run-simple-module-app.sh 
+Hello, Modules!
+Hello!
+</code></pre>
+
+<p>We use these directives to be much more explicit about how our code is to be used.</p>
+
+<p>We could put the interface into a private package while exposing the implementation in a public package.</p>
+
+<p>This makes our code much more secure with very little extra overhead.</p>
+
+<p>Go ahead and try out some of the other directives to learn more about modules and how they work.</p>
+
+<h2 id="toc_28"><strong>8. Conclusion</strong></h2>
+
+<p>In this extensive guide, we focused on and covered the basics of the new Java 9 Module system.</p>
+
+<p>We started by talking about what a module is.</p>
+
+<p>Next, we talked about how to discover which modules are included in the JDK.</p>
+
+<p>We also covered the module declaration file in detail.</p>
+
+<p>We rounded out the theory by talking about the various command line arguments we’ll need to build our modules.</p>
+
+<p>Finally, we put all our previous knowledge into practice and created a simple application built on top of the module system.</p>
+
+<p>To see this code and more, be sure to <a href="https://github.com/eugenp/tutorials/tree/master/core-java-9">check it out over on Github</a>.</p>
 
                         
                       </div>
@@ -333,7 +632,7 @@ Xml代码</p>
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/6/1</span>
+                    <span class="date">2018/7/28</span>
                     <span>posted in&nbsp;</span> 
           				  
           					    <span class="posted-in"><a href='Java.html'>Java</a></span>
@@ -403,8 +702,6 @@ Xml代码</p>
 
       	<p class="cat-list">
         
-            <a href="Team.html"><strong>Team</strong></a>
-        
             <a href="Infra.html"><strong>Infra</strong></a>
         
             <a href="Coding.html"><strong>Coding</strong></a>
@@ -428,31 +725,31 @@ Xml代码</p>
 	      
 		      
 			      <li class="post">
-			        <a href="15301813999205.html">架构设计：负载均衡层设计方案（9）——负载均衡层总结下篇</a>
+			        <a href="15337171704262.html">Introduction to Testing with Spock and Groovy</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301813109409.html">架构设计：负载均衡层设计方案（8）——负载均衡层总结上篇</a>
+			        <a href="15336595358049.html">10 Excellent Ways to Secure Your Spring Boot Application</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301812452579.html">架构设计：负载均衡层设计方案（7）——LVS + Keepalived + Nginx安装及配置</a>
+			        <a href="15336592302916.html">First MicroProfile.io application using Java Module System</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301811967181.html">架构设计：负载均衡层设计方案（6）——Nginx + Keepalived构建高可用的负载层</a>
+			        <a href="15332186142588.html">Jenkins 的 Pipeline 脚本在美团餐饮 SaaS 中的实践</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301811361753.html">架构设计：负载均衡层设计方案（5）——LVS单节点安装</a>
+			        <a href="15331749691571.html">基于ZooKeeper的分布式锁和队列</a>
 			      </li>
 		     
 		  

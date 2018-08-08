@@ -76,8 +76,6 @@
     <li><label>Categories</label></li>
 
         
-            <li><a href="Team.html">Team</a></li>
-        
             <li><a href="Infra.html">Infra</a></li>
         
             <li><a href="Coding.html">Coding</a></li>
@@ -107,354 +105,134 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15293277939094.html">
+                <a class="clearlink" href="15325712994221.html">
                 
-                  <h1>Java 并发编程：阻塞队列</h1>
+                  <h1>微服务架构—服务降级</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p>作者：海子<br/>
-原文：<a href="http://www.cnblogs.com/dolphin0520/p/3932906.html">http://www.cnblogs.com/dolphin0520/p/3932906.html</a></p>
+<p><a href="https://my.oschina.net/yu120/blog/1790398">https://my.oschina.net/yu120/blog/1790398</a></p>
 </blockquote>
 
-<p>使用非阻塞队列的时候有一个很大问题就是：它不会对当前线程产生阻塞，那么在面对类似消费者 - 生产者的模型时，就必须额外地实现同步策略以及线程间唤醒策略，这个实现起来就非常麻烦。但是有了阻塞队列就不一样了，它会对当前线程产生阻塞，比如一个线程从一个空的阻塞队列中取元素，此时线程会被阻塞直到阻塞队列中有了元素。当队列中有元素后，被阻塞的线程会自动被唤醒（不需要我们编写代码去唤醒）。这样提供了极大的方便性。</p>
+<h1 id="toc_0">1 简介</h1>
 
-<p>本文先讲述一下 java.util.concurrent 包下提供主要的几种阻塞队列，然后分析了阻塞队列和非阻塞队列的中的各个方法，接着分析了阻塞队列的实现原理，最后给出了一个实际例子和几个使用场景。</p>
+<p>        什么是服务降级？当服务器压力剧增的情况下，根据实际业务情况及流量，对一些服务和页面有策略的不处理或换种简单的方式处理，从而释放服务器资源以保证核心交易正常运作或高效运作。</p>
 
-<p>　　一. 几种主要的阻塞队列</p>
+<p>        如果还是不理解，那么可以举个栗子：假如目前有很多人想要给我付钱，但我的服务器除了正在运行支付的服务之外，还有一些其它的服务在运行，比如搜索、定时任务和详情等等。然而这些不重要的服务就占用了 JVM 的不少内存与 CPU 资源，为了能把钱都收下来（钱才是目标），我设计了一个动态开关，把这些不重要的服务直接在最外层拒掉，这样处理后的后端处理收钱的服务就有更多的资源来收钱了（收钱速度更快了），这就是一个简单的服务降级的使用场景。</p>
 
-<p>　　二. 阻塞队列中的方法 VS 非阻塞队列中的方法</p>
+<h1 id="toc_1">2 使用场景</h1>
 
-<p>　　三. 阻塞队列的实现原理</p>
+<p>        服务降级主要用于什么场景呢？当整个微服务架构整体的负载超出了预设的上限阈值或即将到来的流量预计将会超过预设的阈值时，为了保证重要或基本的服务能正常运行，我们可以将一些 <strong>不重要</strong> 或 <strong>不紧急</strong> 的服务或任务进行服务的 <strong>延迟使用</strong> 或 <strong>暂停使用</strong>。</p>
 
-<p>　　四. 示例和使用场景</p>
+<h1 id="toc_2">3 核心设计</h1>
 
-<p>若有不正之处请多多谅解，并欢迎批评指正。</p>
+<h2 id="toc_3">3.1 分布式开关</h2>
 
-<h2 id="toc_0">一. 几种主要的阻塞队列</h2>
+<p>        根据上述需求，我们可以设置一个分布式开关，用于实现服务的降级，然后集中式管理开关配置信息即可。具体方案如下：</p>
 
-<p>自从 Java 1.5 之后，在 java.util.concurrent 包下提供了若干个阻塞队列，主要有以下几个：</p>
+<p><img src="https://static.oschina.net/uploads/space/2018/0406/105147_dBiu_873167.png" alt=""/></p>
 
-<ul>
-<li><p>ArrayBlockingQueue：基于数组实现的一个阻塞队列，在创建 ArrayBlockingQueue 对象时必须制定容量大小。并且可以指定公平性与非公平性，默认情况下为非公平的，即不保证等待时间最长的队列最优先能够访问队列。</p></li>
-<li><p>LinkedBlockingQueue：基于链表实现的一个阻塞队列，在创建 LinkedBlockingQueue 对象时如果不指定容量大小，则默认大小为 Integer.MAX_VALUE。</p></li>
-<li><p>PriorityBlockingQueue：以上 2 种队列都是先进先出队列，而 PriorityBlockingQueue 却不是，它会按照元素的优先级对元素进行排序，按照优先级顺序出队，每次出队的元素都是优先级最高的元素。注意，此阻塞队列为无界阻塞队列，即容量没有上限（通过源码就可以知道，它没有容器满的信号标志），前面 2 种都是有界队列。</p></li>
-<li><p>DelayQueue：基于 PriorityQueue，一种延时阻塞队列，DelayQueue 中的元素只有当其指定的延迟时间到了，才能够从队列中获取到该元素。DelayQueue 也是一个无界队列，因此往队列中插入数据的操作（生产者）永远不会被阻塞，而只有获取数据的操作（消费者）才会被阻塞。</p></li>
-</ul>
+<p>服务降级 - 分布式开关</p>
 
-<h2 id="toc_1">二. 阻塞队列中的方法 VS 非阻塞队列中的方法</h2>
-
-<p><strong>1. 非阻塞队列中的几个主要方法：</strong></p>
+<h2 id="toc_4">3.2 自动降级</h2>
 
 <ul>
-<li><p><strong>add(E e)：</strong>将元素 e 插入到队列末尾，如果插入成功，则返回 true；如果插入失败（即队列已满），则会抛出异常；</p></li>
-<li><p><strong>remove()：</strong>移除队首元素，若移除成功，则返回 true；如果移除失败（队列为空），则会抛出异常；</p></li>
-<li><p><strong>offer(E e)：</strong>将元素 e 插入到队列末尾，如果插入成功，则返回 true；如果插入失败（即队列已满），则返回 false；</p></li>
-<li><p><strong>poll()：</strong>移除并获取队首元素，若成功，则返回队首元素；否则返回 null；</p></li>
-<li><p><strong>peek()：</strong>获取队首元素，若成功，则返回队首元素；否则返回 null</p></li>
+<li><p><strong>超时降级</strong> —— 主要配置好超时时间和超时重试次数和机制，并使用异步机制探测恢复情况</p></li>
+<li><p><strong>失败次数降级</strong> —— 主要是一些不稳定的 API，当失败调用次数达到一定阀值自动降级，同样要使用异步机制探测回复情况</p></li>
+<li><p><strong>故障降级</strong> —— 如要调用的远程服务挂掉了（网络故障、DNS 故障、HTTP 服务返回错误的状态码和 RPC 服务抛出异常），则可以直接降级</p></li>
+<li><p><strong>限流降级</strong> —— 当触发了限流超额时，可以使用暂时屏蔽的方式来进行短暂的屏蔽</p></li>
 </ul>
 
-<p>对于非阻塞队列，一般情况下建议使用 offer、poll 和 peek 三个方法，不建议使用 add 和 remove 方法。因为使用 offer、poll 和 peek 三个方法可以通过返回值判断操作成功与否，而使用 add 和 remove 方法却不能达到这样的效果。注意，非阻塞队列中的方法都没有进行同步措施。</p>
+<p>        当我们去秒杀或者抢购一些限购商品时，此时可能会因为访问量太大而导致系统崩溃，此时开发者会使用限流来进行限制访问量，当达到限流阀值，后续请求会被降级；降级后的处理方案可以是：排队页面（将用户导流到排队页面等一会重试）、无货（直接告知用户没货了）、错误页（如活动太火爆了，稍后重试）。</p>
 
-<p><strong>2. 阻塞队列中的几个主要方法：</strong></p>
+<h2 id="toc_5">3.3 配置中心</h2>
 
-<p>阻塞队列包括了非阻塞队列中的大部分方法，上面列举的 5 个方法在阻塞队列中都存在，但是要注意这 5 个方法在阻塞队列中都进行了同步措施。</p>
+<p>        微服务降级的配置信息是集中式的管理，然后通过可视化界面进行友好型的操作。配置中心和应用之间需要网络通信，因此可能会因网络闪断或网络重启等因素，导致配置推送信息丢失、重启或网络恢复后不能再接受、变更不及时等等情况，因此服务降级的配置中心需要实现以下几点特性，从而尽可能的保证配置变更即使达到：</p>
 
-<p>除此之外，阻塞队列提供了另外 4 个非常有用的方法：</p>
+<p><img src="https://static.oschina.net/uploads/space/2018/0406/105300_ygtF_873167.png" alt=""/></p>
 
-<p>　　put(E e)</p>
+<p>服务降级 - 配置中心</p>
 
-<p>　　take()</p>
+<ul>
+<li><p><strong>启动主动拉取配置</strong> —— 用于初始化配置（减少第一次定时拉取周期）</p></li>
+<li><p><strong>发布订阅配置</strong> —— 用于实现配置及时变更（可以解决 90% 左右的配置变更）</p></li>
+<li><p><strong>定时拉取配置</strong> —— 用于解决发布订阅失效或消失丢失的情况（可以解决 9% 左右的发布订阅失效的消息变更）</p></li>
+<li><p><strong>离线文件缓存配置</strong> —— 用于临时解决重启后连接不上配置中心的问题</p></li>
+<li><p><strong>可编辑式配置文档</strong> —— 用于直接编辑文档的方式来实现配置的定义</p></li>
+<li><p><strong>提供 Telnet 命令变更配置</strong> —— 用于解决配置中心失效而不能变更配置的常见</p></li>
+</ul>
 
-<p>　　offer(E e,long timeout, TimeUnit unit)</p>
+<h2 id="toc_6">3.4 处理策略</h2>
 
-<p>　　poll(long timeout, TimeUnit unit)</p>
+<p>        当触发服务降级后，新的交易再次到达时，我们该如何来处理这些请求呢？从微服务架构全局的视角来看，我们通常有以下是几种常用的降级处理方案：</p>
 
-<p>这四个方法的理解：</p>
+<ul>
+<li><p><strong>页面降级</strong> —— 可视化界面禁用点击按钮、调整静态页面</p></li>
+<li><p><strong>延迟服务</strong> —— 如定时任务延迟处理、消息入 MQ 后延迟处理</p></li>
+<li><p><strong>写降级</strong> —— 直接禁止相关写操作的服务请求</p></li>
+<li><p><strong>读降级</strong> —— 直接禁止相关度的服务请求</p></li>
+<li><p><strong>缓存降级</strong> —— 使用缓存方式来降级部分读频繁的服务接口</p></li>
+</ul>
 
-<p>　　put 方法用来向队尾存入元素，如果队列满，则等待；</p>
+<p>        针对后端代码层面的降级处理策略，则我们通常使用以下几种处理措施进行降级处理：</p>
 
-<p>　　take 方法用来从队首取元素，如果队列为空，则等待；</p>
+<ul>
+<li><p><strong>抛异常</strong></p></li>
+<li><p><strong>返回 NULL</strong></p></li>
+<li><p><strong>调用 Mock 数据</strong></p></li>
+<li><p><strong>调用 Fallback 处理逻辑</strong></p></li>
+</ul>
 
-<p>　　offer 方法用来向队尾存入元素，如果队列满，则等待一定的时间，当时间期限达到时，如果还没有插入成功，则返回 false；否则返回 true；</p>
+<h1 id="toc_7">4 高级特性</h1>
 
-<p>　　poll 方法用来从队首取元素，如果队列空，则等待一定的时间，当时间期限达到时，如果取到，则返回 null；否则返回取得的元素；</p>
+<p>        我们已经为每个服务都做好了一个降级开关，也已经在线上验证通过了，感觉完全没问题了。<br/>
+<strong>        场景一</strong>：某一天，运营搞了一次活动，突然跑过来说，现在流量已经快涨到上限了，有没有批量降级所有不重要服务的方式？开发一脸懵逼的看着，这又不是操作 DB，哪里有批量操作呀。<br/>
+<strong>        场景二</strong>：某一天，运营又搞事了，说我们等下要搞一个活动，让我们赶紧提前把不重要的服务都降级了，开发又是一脸懵逼，我怎么知道要降级哪些服务呀。<br/>
+<strong>        反思</strong>：服务降级的功能虽然是实现了，可是没有考虑实施时的体验。服务太多，不知道该降级哪些服务，单个操作降级速度太慢……</p>
 
-<h2 id="toc_2">三. 阻塞队列的实现原理</h2>
+<h2 id="toc_8">4.1 分级降级</h2>
 
-<p>前面谈到了非阻塞队列和阻塞队列中常用的方法，下面来探讨阻塞队列的实现原理，本文以 ArrayBlockingQueue 为例，其他阻塞队列实现原理可能和 ArrayBlockingQueue 有一些差别，但是大体思路应该类似，有兴趣的朋友可自行查看其他阻塞队列的实现源码。</p>
+<p>        当微服务架构发生不同程度的情况时，我们可以根据服务的对比而进行选择式舍弃（即丢车保帅的原则），从而进一步保障核心的服务的正常运作。</p>
 
-<p>首先看一下 ArrayBlockingQueue 类中的几个成员变量：</p>
+<p>        如果等线上服务即将发生故障时，才去逐个选择哪些服务该降级、哪些服务不能降级，然而线上有成百上千个服务，则肯定是来不及降级就会被拖垮。同时，在大促或秒杀等活动前才去梳理，也是会有不少的工作量，因此建议在开发期就需要架构师或核心开发人员来提前梳理好，是否能降级的初始评估值，即是否能降级的默认值。</p>
 
-<pre><code class="language-java">public class ArrayBlockingQueue&lt;E&gt; extends AbstractQueue&lt;E&gt;
-implements BlockingQueue&lt;E&gt;, java.io.Serializable {
+<p>        为了便于批量操作微服务架构中服务的降级，我们可以从全局的角度来建立服务重要程度的评估模型，如果有条件的话，建议可以使用 <strong>层次分析法（The analytic hierarchy process，简称 AHP）</strong> 的数学建模模型（或其它模型）来进行定性和定量的评估（肯定比架构师直接拍脑袋决定是否降级好很多倍，当然难度和复杂度也会高许多，即你需要一个会数学建模人才），而层次分析法的基本思路是人对一个复杂的决策问题的思维和判断过程大体上是一样的。</p>
 
-private static final long serialVersionUID = -817911632652898426L;
+<p>        以下是个人给出的最终评价模型，可作为服务降级的评价参考模型进行设计：</p>
 
-/** The queued items  */
-private final E[] items;
-/** items index for next take, poll or remove */
-private int takeIndex;
-/** items index for next put, offer, or add. */
-private int putIndex;
-/** Number of items in the queue */
-private int count;
+<p>        我们利用数学建模的方式或架构师直接拍脑袋的方式，结合服务能否降级的优先原则，并根据台风预警（都属于风暴预警）的等级进行参考设计，可将微服务架构的所有服务进行故障风暴等级划分为以下四种：</p>
 
-/*
-* Concurrency control uses the classic two-condition algorithm
-* found in any textbook.
-*/
+<p><strong>评估模型</strong>：</p>
 
-/** Main lock guarding all access */
-private final ReentrantLock lock;
-/** Condition for waiting takes */
-private final Condition notEmpty;
-/** Condition for waiting puts */
-private final Condition notFull;
-}
-</code></pre>
+<ul>
+<li><p><strong>蓝色风暴</strong> —— 表示需要小规模降级非核心服务</p></li>
+<li><p><strong>黄色风暴</strong> —— 表示需要中等规模降级非核心服务</p></li>
+<li><p><strong>橙色风暴</strong> —— 表示需要大规模降级非核心服务</p></li>
+<li><p><strong>红色风暴</strong> —— 表示必须降级所有非核心服务</p></li>
+</ul>
 
-<p>可以看出，ArrayBlockingQueue 中用来存储元素的实际上是一个数组，takeIndex 和 putIndex 分别表示队首元素和队尾元素的下标，count 表示队列中元素的个数。</p>
+<p><strong>设计说明</strong>：</p>
 
-<p>lock 是一个可重入锁，notEmpty 和 notFull 是等待条件。</p>
+<ul>
+<li><p>故障严重程度为：蓝色＜黄色＜橙色＜红色</p></li>
+<li><p>建议根据二八原则可以将服务划分为：80% 的非核心服务 + 20% 的核心服务</p></li>
+</ul>
 
-<p>下面看一下 ArrayBlockingQueue 的构造器，构造器有三个重载版本：</p>
+<p>        以上模型只是整体微服务架构的服务降级评估模型，具体大促或秒杀活动时，建议以具体主题为中心进行建立（不同主题的活动，因其依赖的服务不同，而使用不同的进行降级更为合理）。当然模型可以使用同一个，但其数据需要有所差异。最好能建立一套模型库，然后实施时只需要输入相关服务即可输出最终降级方案，即输出本次大促或秒杀时，当发生蓝色风暴时需要降级的服务清单、当发生黄色风暴时需要降级的服务清单……</p>
 
-<pre><code class="language-java">public ArrayBlockingQueue(int capacity) {
-}
-public ArrayBlockingQueue(int capacity, boolean fair) {
+<h2 id="toc_9">4.2 降级权值</h2>
 
-}
-public ArrayBlockingQueue(int capacity, boolean fair,
-                  Collection&lt;? extends E&gt; c) {
-}
-</code></pre>
+<p>        微服务架构中有服务权值的概念，主要用于负载时的权重选择，同样服务降级权值也是类似，<strong>主要用于服务降级选择时的细粒度优先级抉择</strong>。所有的服务直接使用以上简单的四级划分方式进行统一处理，显然粒度太粗，或者说出于同一级的多个服务需要降级时的 <strong>降级顺序</strong> 该如何？甚至我想要人工智能化的 <strong>自动降级</strong>，又该如何更细粒度的控制？</p>
 
-<p>第一个构造器只有一个参数用来指定容量，第二个构造器可以指定容量和公平性，第三个构造器可以指定容量、公平性以及用另外一个集合进行初始化。</p>
+<p>        基于上述的这些 AI 化的需求，我们可以为每一个服务分配一个降级权值，从而便于更加智能化的实现服务治理。而其评估的数值，同样也可以使用数学模型的方式进行 <strong>定性</strong> 与 <strong>定量</strong> 的评估出来，也可以架构师根据经验直接拍脑袋来确定。</p>
 
-<p>然后看它的两个关键方法的实现：put() 和 take()：</p>
+<h1 id="toc_10">5 总结与展望</h1>
 
-<pre><code class="language-java">public void put(E e) throws InterruptedException {
-   if (e == null) throw new NullPointerException();
-   final E[] items = this.items;
-   final ReentrantLock lock = this.lock;
-   lock.lockInterruptibly();
-   try {
-       try {
-           while (count == items.length)
-               notFull.await();
-       } catch (InterruptedException ie) {
-           notFull.signal(); // propagate to non-interrupted thread
-           throw ie;
-       }
-       insert(e);
-   } finally {
-       lock.unlock();
-   }
-}
-</code></pre>
-
-<p>从 put 方法的实现可以看出，它先获取了锁，并且获取的是可中断锁，然后判断当前元素个数是否等于数组的长度，如果相等，则调用 notFull.await() 进行等待，如果捕获到中断异常，则唤醒线程并抛出异常。</p>
-
-<p>当被其他线程唤醒时，通过 insert(e) 方法插入元素，最后解锁。</p>
-
-<p>我们看一下 insert 方法的实现：</p>
-
-<pre><code class="language-java">private void insert(E x) {
-   items[putIndex] = x;
-   putIndex = inc(putIndex);
-   ++count;
-   notEmpty.signal();
-}
-</code></pre>
-
-<p>它是一个 private 方法，插入成功后，通过 notEmpty 唤醒正在等待取元素的线程。</p>
-
-<p>下面是 take() 方法的实现：</p>
-
-<pre><code class="language-java">public E take() throws InterruptedException {
-   final ReentrantLock lock = this.lock;
-   lock.lockInterruptibly();
-   try {
-       try {
-           while (count == 0)
-               notEmpty.await();
-       } catch (InterruptedException ie) {
-           notEmpty.signal(); 
-           // propagate to non-interrupted thread
-           throw ie;
-       }
-       E x = extract();
-       return x;
-   } finally {
-       lock.unlock();
-   }
-}
-</code></pre>
-
-<p>跟 put 方法实现很类似，只不过 put 方法等待的是 notFull 信号，而 take 方法等待的是 notEmpty 信号。</p>
-
-<p>在 take 方法中，如果可以取元素，则通过 extract 方法取得元素，下面是 extract 方法的实现：</p>
-
-<pre><code class="language-java">private E extract() {
-   final E[] items = this.items;
-   E x = items[takeIndex];
-   items[takeIndex] = null;
-   takeIndex = inc(takeIndex);
-   --count;
-   notFull.signal();
-   return x;
-}
-</code></pre>
-
-<p>跟 insert 方法也很类似。</p>
-
-<p>其实从这里大家应该明白了阻塞队列的实现原理，事实它和我们用 Object.wait()、Object.notify() 和非阻塞队列实现生产者 - 消费者的思路类似，只不过它把这些工作一起集成到了阻塞队列中实现。</p>
-
-<h2 id="toc_3">四. 示例和使用场景</h2>
-
-<p>下面先使用 Object.wait() 和 Object.notify()、非阻塞队列实现生产者 - 消费者模式：</p>
-
-<pre><code class="language-java">public class Test {
-   private int queueSize = 10;
-   private PriorityQueue&lt;Integer&gt; queue = new PriorityQueue&lt;Integer&gt;(queueSize);
-
-   public static void main(String[] args)  {
-       Test test = new Test();
-       Producer producer = test.new Producer();
-       Consumer consumer = test.new Consumer();
-
-       producer.start();
-       consumer.start();
-   }
-
-   class Consumer extends Thread{
-
-       @Override
-       public void run() {
-           consume();
-       }
-
-       private void consume() {
-           while(true){
-               synchronized (queue) {
-                   while(queue.size() == 0){
-                       try {
-                           System.out.println(&quot;队列空，等待数据&quot;);
-                           queue.wait();
-                       } catch (InterruptedException e) {
-                           e.printStackTrace();
-                           queue.notify();
-                       }
-                   }
-                   queue.poll();          //每次移走队首元素
-                   queue.notify();
-                   System.out.println(&quot;从队列取走一个元素，队列剩余&quot;+
-                   queue.size()+&quot;个元素&quot;);
-               }
-           }
-       }
-   }
-
-   class Producer extends Thread{
-
-       @Override
-       public void run() {
-           produce();
-       }
-
-       private void produce() {
-           while(true){
-               synchronized (queue) {
-                   while(queue.size() == queueSize){
-                       try {
-                           System.out.println(&quot;队列满，等待有空余空间&quot;);
-                           queue.wait();
-                       } catch (InterruptedException e) {
-                           e.printStackTrace();
-                           queue.notify();
-                       }
-                   }
-                   queue.offer(1);        //每次插入一个元素
-                   queue.notify();
-                   System.out.println(&quot;向队列取中插入一个元素，队列剩余空间：&quot;+
-                   (queueSize-queue.size()));
-               }
-           }
-       }
-   }
-}
-</code></pre>
-
-<p>这个是经典的生产者 - 消费者模式，通过阻塞队列和 Object.wait() 和 Object.notify() 实现，wait() 和 notify() 主要用来实现线程间通信。</p>
-
-<p>具体的线程间通信方式（wait 和 notify 的使用）在后续问章中会讲述到。</p>
-
-<p>下面是使用阻塞队列实现的生产者 - 消费者模式：</p>
-
-<pre><code class="language-java">public class Test {
-   private int queueSize = 10;
-   private ArrayBlockingQueue&lt;Integer&gt; queue = 
-   new ArrayBlockingQueue&lt;Integer&gt;(queueSize);
-
-   public static void main(String[] args)  {
-       Test test = new Test();
-       Producer producer = test.new Producer();
-       Consumer consumer = test.new Consumer();
-
-       producer.start();
-       consumer.start();
-   }
-
-   class Consumer extends Thread{
-
-       @Override
-       public void run() {
-           consume();
-       }
-
-       private void consume() {
-           while(true){
-               try {
-                   queue.take();
-                   System.out.println(&quot;从队列取走一个元素，队列剩余&quot;+
-                   queue.size()+&quot;个元素&quot;);
-               } catch (InterruptedException e) {
-                   e.printStackTrace();
-               }
-           }
-       }
-   }
-
-   class Producer extends Thread{
-
-       @Override
-       public void run() {
-           produce();
-       }
-
-       private void produce() {
-           while(true){
-               try {
-                   queue.put(1);
-                   System.out.println(&quot;向队列取中插入一个元素，队列剩余空间：&quot;+
-                   (queueSize-queue.size()));
-               } catch (InterruptedException e) {
-                   e.printStackTrace();
-               }
-           }
-       }
-   }
-}
-</code></pre>
-
-<p>有没有发现，使用阻塞队列代码要简单得多，不需要再单独考虑同步和线程间通信的问题。</p>
-
-<p>在并发编程中，一般推荐使用阻塞队列，这样实现可以尽量地避免程序出现意外的错误。</p>
-
-<p>阻塞队列使用最经典的场景就是 socket 客户端数据的读取和解析，读取数据的线程不断将数据放入队列，然后解析线程不断从队列取数据解析。还有其他类似的场景，只要符合生产者 - 消费者模型的都可以使用阻塞队列。</p>
+<p>        以上提供了半实际与半理论的服务降级方案，使用者可以根据其公司的实际情况进行适当的选择，而完整的方案，笔者目前也没有发现有实施过的，但可以建议有长远服务治理规划的大厂进行完整方案的研究与实施，会对未来人工智能万物互联的时代有较好的治理价值存在（个人看法）。而小厂出于成本和其发挥的价值的考虑，不建议使用这么复杂的方案，但可以实现分布式开关和简单分级降级的功能特性。</p>
+
+<p>        本文主要以服务降级为核心进行更加理想的治理微服务架构，其中建议运用数学领域的适当模型来实现 <strong>定性</strong> 和 <strong>定量</strong> 的合理分析和治理微服务，为未来 <strong>人工智能治理微服务</strong>（Artificial Intelligence Governance Micro Service，简称 AIGMS）提供方案支持。</p>
 
                         
                       </div>
@@ -463,10 +241,10 @@ public ArrayBlockingQueue(int capacity, boolean fair,
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/6/18</span>
+                    <span class="date">2018/7/26</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Cocurrency.html'>Cocurrency</a></span>
+          					    <span class="posted-in"><a href='Microservice.html'>Microservice</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -533,8 +311,6 @@ public ArrayBlockingQueue(int capacity, boolean fair,
 
       	<p class="cat-list">
         
-            <a href="Team.html"><strong>Team</strong></a>
-        
             <a href="Infra.html"><strong>Infra</strong></a>
         
             <a href="Coding.html"><strong>Coding</strong></a>
@@ -558,31 +334,31 @@ public ArrayBlockingQueue(int capacity, boolean fair,
 	      
 		      
 			      <li class="post">
-			        <a href="15301813999205.html">架构设计：负载均衡层设计方案（9）——负载均衡层总结下篇</a>
+			        <a href="15337171704262.html">Introduction to Testing with Spock and Groovy</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301813109409.html">架构设计：负载均衡层设计方案（8）——负载均衡层总结上篇</a>
+			        <a href="15336595358049.html">10 Excellent Ways to Secure Your Spring Boot Application</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301812452579.html">架构设计：负载均衡层设计方案（7）——LVS + Keepalived + Nginx安装及配置</a>
+			        <a href="15336592302916.html">First MicroProfile.io application using Java Module System</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301811967181.html">架构设计：负载均衡层设计方案（6）——Nginx + Keepalived构建高可用的负载层</a>
+			        <a href="15332186142588.html">Jenkins 的 Pipeline 脚本在美团餐饮 SaaS 中的实践</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301811361753.html">架构设计：负载均衡层设计方案（5）——LVS单节点安装</a>
+			        <a href="15331749691571.html">基于ZooKeeper的分布式锁和队列</a>
 			      </li>
 		     
 		  

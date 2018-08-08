@@ -76,8 +76,6 @@
     <li><label>Categories</label></li>
 
         
-            <li><a href="Team.html">Team</a></li>
-        
             <li><a href="Infra.html">Infra</a></li>
         
             <li><a href="Coding.html">Coding</a></li>
@@ -107,452 +105,1024 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15301811361753.html">
+                <a class="clearlink" href="15331749691571.html">
                 
-                  <h1>架构设计：负载均衡层设计方案（5）——LVS单节点安装</h1>
+                  <h1>基于ZooKeeper的分布式锁和队列</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://blog.csdn.net/yinwenjie/article/details/47010569">https://blog.csdn.net/yinwenjie/article/details/47010569</a></p>
+<p><a href="http://www.cnblogs.com/luxiaoxun/p/4889764.html">http://www.cnblogs.com/luxiaoxun/p/4889764.html</a></p>
 </blockquote>
 
-<h1 id="toc_0"><a></a>1、概述</h1>
+<p>在分布式系统中，往往需要一些分布式同步原语来做一些协同工作，<a href="http://www.cnblogs.com/luxiaoxun/p/4887452.html">上一篇</a>文章介绍了 Zookeeper 的基本原理，本文介绍下基于 Zookeeper 的 Lock 和 Queue 的实现，主要代码都来自 Zookeeper 的官方 recipe。</p>
 
-<p>上篇文章《架构设计：负载均衡层设计方案（4）——LVS 原理》（<a href="http://blog.csdn.net/yinwenjie/article/details/46845997">http://blog.csdn.net/yinwenjie/article/details/46845997</a>），我们介绍了 LVS 的工作模式，和每一种模式的具体工作过程。这篇文章中，我们将介绍单一 LVS 节点的安装方式。比起上一篇文章，这一片要提到的安装和配置就是非常简单的了，只要您了解原理，实践就是从容的事情。</p>
+<h3 id="toc_0">锁（Lock）</h3>
 
-<p>您可以在您的电脑上使用 VMware 虚拟机，按照下面介绍的过程一步一步实践。我们将采用两台虚拟机，一台作为 LVS 节点，另外一台安装了 Nginx 的服务器作为 Real Server 节点。</p>
+<p>完全分布式锁是全局同步的，这意味着在任何时刻没有两个客户端会同时认为它们都拥有相同的锁，使用 Zookeeper 可以实现分布式锁，需要首先定义一个锁节点（lock root node）。</p>
 
-<h1 id="toc_1"><a></a>2、LVS-NAT 模式安装</h1>
+<p>需要获得锁的客户端按照以下步骤来获取锁：</p>
 
-<h2 id="toc_2"><a></a>2.1、准备工作——LVS Server：</h2>
+<ol>
+<li> 保证锁节点（lock root node）这个父根节点的存在，这个节点是每个要获取 lock 客户端共用的，这个节点是 PERSISTENT 的。</li>
+<li><p>第一次需要创建本客户端要获取 lock 的节点，调用 create( )，并设置 节点为 EPHEMERAL_SEQUENTIAL 类型，表示该节点为临时的和顺序的。如果获取锁的节点挂掉，则该节点自动失效，可以让其他节点获取锁。</p></li>
+<li><p>在父锁节点（lock root node）上调用 getChildren() ，不需要设置监视标志。 (为了避免 “羊群效应”).</p></li>
+<li><p>按照 Fair 竞争的原则，将步骤 3 中的子节点（要获取锁的节点）按照节点顺序的大小做排序，取出编号最小的一个节点做为 lock 的 owner，判断自己的节点 id<br/>
+是否就为 owner id，如果是则返回，lock 成功。如果不是则调用 exists( ) 监听比自己小的前一位的 id，关注它锁释放的操作（也就是 exist watch）。</p></li>
+<li><p>如果第 4 步监听 exist 的 watch 被触发，则继续按 4 中的原则判断自己是否能获取到 lock。</p></li>
+</ol>
 
-<p>LVS Server：LSV Server 有两张网卡。</p>
+<p>释放锁：需要释放锁的客户端只需要删除在第 2 步中创建的节点即可。</p>
+
+<p>注意事项：</p>
+
+<p>一个节点的删除只会导致一个客户端被唤醒，因为每个节点只被一个客户端 watch，这避免了 “羊群效应”。</p>
+
+<p>一个分布式 lock 的实现：</p>
+
+<pre><code class="language-java">package org.apache.zookeeper.recipes.lock;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.apache.zookeeper.KeeperException;
+import org.apache.zookeeper.WatchedEvent;
+import org.apache.zookeeper.Watcher;
+import static org.apache.zookeeper.CreateMode.EPHEMERAL_SEQUENTIAL;
+import org.apache.zookeeper.ZooKeeper;
+import org.apache.zookeeper.data.ACL;
+import org.apache.zookeeper.data.Stat;
+
+import java.util.List;
+import java.util.SortedSet;
+import java.util.TreeSet;
+
+/**
+ * A &lt;a href=&quot;package.html&quot;&gt;protocol to implement an exclusive
+ *  write lock or to elect a leader&lt;/a&gt;. &lt;p/&gt; You invoke {@link #lock()} to 
+ *  start the process of grabbing the lock; you may get the lock then or it may be 
+ *  some time later. &lt;p/&gt; You can register a listener so that you are invoked 
+ *  when you get the lock; otherwise you can ask if you have the lock
+ *  by calling {@link #isOwner()}
+ *
+ */
+public class WriteLock extends ProtocolSupport {
+    private static final Logger LOG = LoggerFactory.getLogger(WriteLock.class);
+
+    private final String dir;
+    private String id;
+    private ZNodeName idName;
+    private String ownerId;
+    private String lastChildId;
+    private byte[] data = {0x12, 0x34};
+    private LockListener callback;
+    private LockZooKeeperOperation zop;
+
+    /**
+     * zookeeper contructor for writelock
+     * @param zookeeper zookeeper client instance
+     * @param dir the parent path you want to use for locking
+     * @param acls the acls that you want to use for all the paths, 
+     * if null world read/write is used.
+     */
+    public WriteLock(ZooKeeper zookeeper, String dir, List&lt;ACL&gt; acl) {
+        super(zookeeper);
+        this.dir = dir;
+        if (acl != null) {
+            setAcl(acl);
+        }
+        this.zop = new LockZooKeeperOperation();
+    }
+
+    /**
+     * zookeeper contructor for writelock with callback
+     * @param zookeeper the zookeeper client instance
+     * @param dir the parent path you want to use for locking
+     * @param acl the acls that you want to use for all the paths
+     * @param callback the call back instance
+     */
+    public WriteLock(ZooKeeper zookeeper, String dir, List&lt;ACL&gt; acl, 
+            LockListener callback) {
+        this(zookeeper, dir, acl);
+        this.callback = callback;
+    }
+
+    /**
+     * return the current locklistener
+     * @return the locklistener
+     */
+    public LockListener getLockListener() {
+        return this.callback;
+    }
+
+    /**
+     * register a different call back listener
+     * @param callback the call back instance
+     */
+    public void setLockListener(LockListener callback) {
+        this.callback = callback;
+    }
+
+    /**
+     * Removes the lock or associated znode if 
+     * you no longer require the lock. this also 
+     * removes your request in the queue for locking
+     * in case you do not already hold the lock.
+     * @throws RuntimeException throws a runtime exception
+     * if it cannot connect to zookeeper.
+     */
+    public synchronized void unlock() throws RuntimeException {
+
+        if (!isClosed() &amp;&amp; id != null) {
+            // we don&#39;t need to retry this operation in the case of failure
+            // as ZK will remove ephemeral files and we don&#39;t wanna hang
+            // this process when closing if we cannot reconnect to ZK
+            try {
+                ZooKeeperOperation zopdel = new ZooKeeperOperation() {
+                    public boolean execute() throws KeeperException,
+                        InterruptedException {
+                        zookeeper.delete(id, -1);   
+                        return Boolean.TRUE;
+                    }
+                };
+                zopdel.execute();
+            } catch (InterruptedException e) {
+                LOG.warn(&quot;Caught: &quot; + e, e);
+                //set that we have been interrupted.
+               Thread.currentThread().interrupt();
+            } catch (KeeperException.NoNodeException e) {
+                // do nothing
+            } catch (KeeperException e) {
+                LOG.warn(&quot;Caught: &quot; + e, e);
+                throw (RuntimeException) new RuntimeException(e.getMessage()).
+                    initCause(e);
+            }
+            finally {
+                if (callback != null) {
+                    callback.lockReleased();
+                }
+                id = null;
+            }
+        }
+    }
+
+    /** 
+     * the watcher called on  
+     * getting watch while watching 
+     * my predecessor
+     */
+    private class LockWatcher implements Watcher {
+        public void process(WatchedEvent event) {
+            // lets either become the leader or watch the new/updated node
+            LOG.debug(&quot;Watcher fired on path: &quot; + event.getPath() + &quot; state: &quot; + 
+                    event.getState() + &quot; type &quot; + event.getType());
+            try {
+                lock();
+            } catch (Exception e) {
+                LOG.warn(&quot;Failed to acquire lock: &quot; + e, e);
+            }
+        }
+    }
+
+    /**
+     * a zoookeeper operation that is mainly responsible
+     * for all the magic required for locking.
+     */
+    private  class LockZooKeeperOperation implements ZooKeeperOperation {
+
+        /** find if we have been created earler if not create our node
+         * 
+         * @param prefix the prefix node
+         * @param zookeeper teh zookeeper client
+         * @param dir the dir paretn
+         * @throws KeeperException
+         * @throws InterruptedException
+         */
+        private void findPrefixInChildren(String prefix, ZooKeeper zookeeper, String dir) 
+            throws KeeperException, InterruptedException {
+            List&lt;String&gt; names = zookeeper.getChildren(dir, false);
+            for (String name : names) {
+                if (name.startsWith(prefix)) {
+                    id = dir + &quot;/&quot; + name;
+                    if (LOG.isDebugEnabled()) {
+                        LOG.debug(&quot;Found id created last time: &quot; + id);
+                    }
+                    break;
+                }
+            }
+            if (id == null) {
+                id = zookeeper.create(dir + &quot;/&quot; + prefix, data, 
+                        getAcl(), EPHEMERAL_SEQUENTIAL);
+
+                if (LOG.isDebugEnabled()) {
+                    LOG.debug(&quot;Created id: &quot; + id);
+                }
+            }
+
+        }
+
+        /**
+         * the command that is run and retried for actually 
+         * obtaining the lock
+         * @return if the command was successful or not
+         */
+        public boolean execute() throws KeeperException, InterruptedException {
+            do {
+                if (id == null) {
+                    long sessionId = zookeeper.getSessionId();
+                    String prefix = &quot;x-&quot; + sessionId + &quot;-&quot;;
+                    // lets try look up the current ID if we failed 
+                    // in the middle of creating the znode
+                    findPrefixInChildren(prefix, zookeeper, dir);
+                    idName = new ZNodeName(id);
+                }
+                if (id != null) {
+                    List&lt;String&gt; names = zookeeper.getChildren(dir, false);
+                    if (names.isEmpty()) {
+                        LOG.warn(&quot;No children in: &quot; + dir + &quot; when we&#39;ve just &quot; +
+                        &quot;created one! Lets recreate it...&quot;);
+                        // lets force the recreation of the id
+                        id = null;
+                    } else {
+                        // lets sort them explicitly (though they do seem to come back in order ususally :)
+                        SortedSet&lt;ZNodeName&gt; sortedNames = new TreeSet&lt;ZNodeName&gt;();
+                        for (String name : names) {
+                            sortedNames.add(new ZNodeName(dir + &quot;/&quot; + name));
+                        }
+                        ownerId = sortedNames.first().getName();
+                        SortedSet&lt;ZNodeName&gt; lessThanMe = sortedNames.headSet(idName);
+                        if (!lessThanMe.isEmpty()) {
+                            ZNodeName lastChildName = lessThanMe.last();
+                            lastChildId = lastChildName.getName();
+                            if (LOG.isDebugEnabled()) {
+                                LOG.debug(&quot;watching less than me node: &quot; + lastChildId);
+                            }
+                            Stat stat = zookeeper.exists(lastChildId, new LockWatcher());
+                            if (stat != null) {
+                                return Boolean.FALSE;
+                            } else {
+                                LOG.warn(&quot;Could not find the&quot; +
+                                        &quot; stats for less than me: &quot; + lastChildName.getName());
+                            }
+                        } else {
+                            if (isOwner()) {
+                                if (callback != null) {
+                                    callback.lockAcquired();
+                                }
+                                return Boolean.TRUE;
+                            }
+                        }
+                    }
+                }
+            }
+            while (id == null);
+            return Boolean.FALSE;
+        }
+    };
+
+    /**
+     * Attempts to acquire the exclusive write lock returning whether or not it was
+     * acquired. Note that the exclusive lock may be acquired some time later after
+     * this method has been invoked due to the current lock owner going away.
+     */
+    public synchronized boolean lock() throws KeeperException, InterruptedException {
+        if (isClosed()) {
+            return false;
+        }
+        ensurePathExists(dir);
+
+        return (Boolean) retryOperation(zop);
+    }
+
+    /**
+     * return the parent dir for lock
+     * @return the parent dir used for locks.
+     */
+    public String getDir() {
+        return dir;
+    }
+
+    /**
+     * Returns true if this node is the owner of the
+     *  lock (or the leader)
+     */
+    public boolean isOwner() {
+        return id != null &amp;&amp; ownerId != null &amp;&amp; id.equals(ownerId);
+    }
+
+    /**
+     * return the id for this lock
+     * @return the id for this lock
+     */
+    public String getId() {
+       return this.id;
+    }
+}
+</code></pre>
+
+<p>注意这里的 lock，可能会失败，会尝试多次，每次失败后会 Sleep 一段时间。</p>
+
+<p>PS：官方的代码有个小 bug，id 和 ownerId 应该都是全路径，即 id = dir + &quot;/&quot; + name; 原代码在 findPrefixInChildren 里有问题。</p>
+
+<p>用于辅助节点大小顺序排序的类：</p>
+
+<pre><code class="language-java">package org.apache.zookeeper.recipes.lock;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/**
+ * Represents an ephemeral znode name which has an ordered sequence number and
+ * can be sorted in order
+ * 
+ */
+class ZNodeName implements Comparable&lt;ZNodeName&gt; {
+    private final String name;
+    private String prefix;
+    private int sequence = -1;
+    private static final Logger LOG = LoggerFactory.getLogger(ZNodeName.class);
+
+    public ZNodeName(String name) {
+        if (name == null) {
+            throw new NullPointerException(&quot;id cannot be null&quot;);
+        }
+        this.name = name;
+        this.prefix = name;
+        int idx = name.lastIndexOf(&#39;-&#39;);
+        if (idx &gt;= 0) {
+            this.prefix = name.substring(0, idx);
+            try {
+                this.sequence = Integer.parseInt(name.substring(idx + 1));
+                // If an exception occurred we misdetected a sequence suffix,
+                // so return -1.
+            } catch (NumberFormatException e) {
+                LOG.info(&quot;Number format exception for &quot; + idx, e);
+            } catch (ArrayIndexOutOfBoundsException e) {
+                LOG.info(&quot;Array out of bounds for &quot; + idx, e);
+            }
+        }
+    }
+
+    @Override
+    public String toString() {
+        return name.toString();
+    }
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o)
+            return true;
+        if (o == null || getClass() != o.getClass())
+            return false;
+
+        ZNodeName sequence = (ZNodeName) o;
+
+        if (!name.equals(sequence.name))
+            return false;
+
+        return true;
+    }
+
+    @Override
+    public int hashCode() {
+        return name.hashCode() + 37;
+    }
+
+    public int compareTo(ZNodeName that) {
+        int s1 = this.sequence;
+        int s2 = that.sequence;
+        if (s1 == -1 &amp;&amp; s2 == -1) {
+            return this.name.compareTo(that.name);
+        }
+        if (s1 == -1) {
+            return -1;
+        } else if (s2 == -1) {
+            return 1;
+        } else {
+            return s1 - s2;
+        }
+    }
+
+    /**
+     * Returns the name of the znode
+     */
+    public String getName() {
+        return name;
+    }
+
+    /**
+     * Returns the sequence number
+     */
+    public int getZNodeName() {
+        return sequence;
+    }
+
+    /**
+     * Returns the text prefix before the sequence number
+     */
+    public String getPrefix() {
+        return prefix;
+    }
+}
+</code></pre>
+
+<p>PS：这个 ZNodeName 类是被我修改过的，官方的代码比较有问题，官方的先用了节点路径的前缀 prefix 比较，再去比较 sequence 序号是不对的，这样会导致 sessionid 小的总是能拿到锁。应该直接比较全局有序的 sequence 序号，小的先拿到锁，先到先得。</p>
+
+<p>Zookeeper 统一操作 ZooKeeperOperation 接口：</p>
+
+<pre><code class="language-java">public interface ZooKeeperOperation {
+
+    /**
+     * Performs the operation - which may be involved multiple times if the connection
+     * to ZooKeeper closes during this operation
+     *
+     * @return the result of the operation or null
+     * @throws KeeperException
+     * @throws InterruptedException
+     */
+    public boolean execute() throws KeeperException, InterruptedException;
+}
+</code></pre>
+
+<p>因为 Zookeeper 的操作会失败，这个类封装了多次尝试：</p>
+
+<pre><code class="language-java">/**
+ *
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package org.apache.zookeeper.recipes.lock;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.apache.zookeeper.CreateMode;
+import org.apache.zookeeper.KeeperException;
+import org.apache.zookeeper.ZooDefs;
+import org.apache.zookeeper.ZooKeeper;
+import org.apache.zookeeper.data.ACL;
+import org.apache.zookeeper.data.Stat;
+import org.apache.zookeeper.recipes.lock.ZooKeeperOperation;
+
+import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
+
+/**
+ * A base class for protocol implementations which provides a number of higher 
+ * level helper methods for working with ZooKeeper along with retrying synchronous
+ *  operations if the connection to ZooKeeper closes such as 
+ *  {@link #retryOperation(ZooKeeperOperation)}
+ *
+ */
+class ProtocolSupport {
+    private static final Logger LOG = LoggerFactory.getLogger(ProtocolSupport.class);
+
+    protected final ZooKeeper zookeeper;
+    private AtomicBoolean closed = new AtomicBoolean(false);
+    private long retryDelay = 500L;
+    private int retryCount = 10;
+    private List&lt;ACL&gt; acl = ZooDefs.Ids.OPEN_ACL_UNSAFE;
+
+    public ProtocolSupport(ZooKeeper zookeeper) {
+        this.zookeeper = zookeeper;
+    }
+
+    /**
+     * Closes this strategy and releases any ZooKeeper resources; but keeps the
+     *  ZooKeeper instance open
+     */
+    public void close() {
+        if (closed.compareAndSet(false, true)) {
+            doClose();
+        }
+    }
+
+    /**
+     * return zookeeper client instance
+     * @return zookeeper client instance
+     */
+    public ZooKeeper getZookeeper() {
+        return zookeeper;
+    }
+
+    /**
+     * return the acl its using
+     * @return the acl.
+     */
+    public List&lt;ACL&gt; getAcl() {
+        return acl;
+    }
+
+    /**
+     * set the acl 
+     * @param acl the acl to set to
+     */
+    public void setAcl(List&lt;ACL&gt; acl) {
+        this.acl = acl;
+    }
+
+    /**
+     * get the retry delay in milliseconds
+     * @return the retry delay
+     */
+    public long getRetryDelay() {
+        return retryDelay;
+    }
+
+    /**
+     * Sets the time waited between retry delays
+     * @param retryDelay the retry delay
+     */
+    public void setRetryDelay(long retryDelay) {
+        this.retryDelay = retryDelay;
+    }
+
+    /**
+     * Allow derived classes to perform 
+     * some custom closing operations to release resources
+     */
+    protected void doClose() {
+    }
+
+    /**
+     * Perform the given operation, retrying if the connection fails
+     * @return object. it needs to be cast to the callee&#39;s expected 
+     * return type.
+     */
+    protected Object retryOperation(ZooKeeperOperation operation) 
+        throws KeeperException, InterruptedException {
+        KeeperException exception = null;
+        for (int i = 0; i &lt; retryCount; i++) {
+            try {
+                return operation.execute();
+            } catch (KeeperException.SessionExpiredException e) {
+                LOG.warn(&quot;Session expired for: &quot; + zookeeper + &quot; so reconnecting due to: &quot; + e, e);
+                throw e;
+            } catch (KeeperException.ConnectionLossException e) {
+                if (exception == null) {
+                    exception = e;
+                }
+                LOG.debug(&quot;Attempt &quot; + i + &quot; failed with connection loss so &quot; +
+                        &quot;attempting to reconnect: &quot; + e, e);
+                retryDelay(i);
+            }
+        }
+        throw exception;
+    }
+
+    /**
+     * Ensures that the given path exists with no data, the current
+     * ACL and no flags
+     * @param path
+     */
+    protected void ensurePathExists(String path) {
+        ensureExists(path, null, acl, CreateMode.PERSISTENT);
+    }
+
+    /**
+     * Ensures that the given path exists with the given data, ACL and flags
+     * @param path
+     * @param acl
+     * @param flags
+     */
+    protected void ensureExists(final String path, final byte[] data,
+            final List&lt;ACL&gt; acl, final CreateMode flags) {
+        try {
+            retryOperation(new ZooKeeperOperation() {
+                public boolean execute() throws KeeperException, InterruptedException {
+                    Stat stat = zookeeper.exists(path, false);
+                    if (stat != null) {
+                        return true;
+                    }
+                    zookeeper.create(path, data, acl, flags);
+                    return true;
+                }
+            });
+        } catch (KeeperException e) {
+            LOG.warn(&quot;Caught: &quot; + e, e);
+        } catch (InterruptedException e) {
+            LOG.warn(&quot;Caught: &quot; + e, e);
+        }
+    }
+
+    /**
+     * Returns true if this protocol has been closed
+     * @return true if this protocol is closed
+     */
+    protected boolean isClosed() {
+        return closed.get();
+    }
+
+    /**
+     * Performs a retry delay if this is not the first attempt
+     * @param attemptCount the number of the attempts performed so far
+     */
+    protected void retryDelay(int attemptCount) {
+        if (attemptCount &gt; 0) {
+            try {
+                Thread.sleep(attemptCount * retryDelay);
+            } catch (InterruptedException e) {
+                LOG.debug(&quot;Failed to sleep: &quot; + e, e);
+            }
+        }
+    }
+}
+</code></pre>
+
+<p>这个类是本客户端获取到 lock 和释放 lock 的时候触发操作的接口：</p>
+
+<pre><code class="language-java">public interface LockListener {
+    /**
+     * call back called when the lock 
+     * is acquired
+     */
+    public void lockAcquired();
+
+    /**
+     * call back called when the lock is 
+     * released.
+     */
+    public void lockReleased();
+}
+</code></pre>
+
+<h3 id="toc_1">队列（Queue）</h3>
+
+<p>分布式队列是通用的数据结构，为了在 Zookeeper 中实现分布式队列，首先需要指定一个 Znode 节点作为队列节点（queue node）， 各个分布式客户端通过调用 create() 函数向队列中放入数据，调用 create() 时节点路径名带 &quot;qn-&quot; 结尾，并设置顺序（_sequence_）节点标志。 由于设置了节点的顺序标志，新的路径名具有以下字符串模式：&quot;_path-to-queue-node_/qn-X&quot;，X 是唯一自增号。需要从队列中获取数据 / 移除数据的客户端首先调用 getChildren() 函数，有数据则获取（获取数据后可以删除也可以不删），没有则在队列节点（queue node）上将 _watch_ 设置为 true，等待触发并处理最小序号的节点（即从序号最小的节点中取数据）。</p>
+
+<p>实现步骤基本如下：</p>
+
+<p>前提：需要一个队列 root 节点 dir</p>
+
+<p>入队：使用 create() 创建节点，将共享数据 data 放在该节点上，节点类型为 PERSISTENT_SEQUENTIAL，永久顺序性的（也可以设置为临时的，看需求）。</p>
+
+<p>出队：因为队列可能为空，2 种方式处理：一种如果为空则 wait 等待，一种返回异常。</p>
+
+<p>等待方式：这里使用了 CountDownLatch 的等待和 Watcher 的通知机制，使用了 TreeMap 的排序获取节点顺序最小的数据（FIFO）。</p>
+
+<p>抛出异常：getChildren() 获取队列数据时，如果 size==0 则抛出异常。</p>
+
+<p>一个分布式 Queue 的实现，详细代码：</p>
+
+<pre><code class="language-java">package org.apache.zookeeper.recipes.queue;
+
+import java.util.List;
+import java.util.NoSuchElementException;
+import java.util.TreeMap;
+import java.util.concurrent.CountDownLatch;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.apache.zookeeper.CreateMode;
+import org.apache.zookeeper.KeeperException;
+import org.apache.zookeeper.WatchedEvent;
+import org.apache.zookeeper.Watcher;
+import org.apache.zookeeper.ZooDefs;
+import org.apache.zookeeper.ZooKeeper;
+import org.apache.zookeeper.data.ACL;
+import org.apache.zookeeper.data.Stat;
+
+/**
+ * 
+ * A &lt;a href=&quot;package.html&quot;&gt;protocol to implement a distributed queue&lt;/a&gt;.
+ * 
+ */
+public class DistributedQueue {
+    private static final Logger LOG = LoggerFactory.getLogger(DistributedQueue.class);
+
+    private final String dir;
+
+    private ZooKeeper zookeeper;
+    private List&lt;ACL&gt; acl = ZooDefs.Ids.OPEN_ACL_UNSAFE;
+
+    private final String prefix = &quot;qn-&quot;;
+
+    public DistributedQueue(ZooKeeper zookeeper, String dir, List&lt;ACL&gt; acl){
+        this.dir = dir;
+
+        if(acl != null){
+            this.acl = acl;
+        }
+        this.zookeeper = zookeeper;
+
+        //Add root dir first if not exists
+        if (zookeeper != null) {
+            try {
+                Stat s = zookeeper.exists(dir, false);
+                if (s == null) {
+                    zookeeper.create(dir, new byte[0], acl, CreateMode.PERSISTENT);
+                }
+            } catch (KeeperException e) {
+                LOG.error(e.toString());
+            } catch (InterruptedException e) {
+                LOG.error(e.toString());
+            }
+        }
+    }
+
+    /**
+     * Returns a Map of the children, ordered by id.
+     * @param watcher optional watcher on getChildren() operation.
+     * @return map from id to child name for all children
+     */
+    private TreeMap&lt;Long,String&gt; orderedChildren(Watcher watcher) throws KeeperException, InterruptedException {
+        TreeMap&lt;Long,String&gt; orderedChildren = new TreeMap&lt;Long,String&gt;();
+
+        List&lt;String&gt; childNames = null;
+        try{
+            childNames = zookeeper.getChildren(dir, watcher);
+        }catch (KeeperException.NoNodeException e){
+            throw e;
+        }
+
+        for(String childName : childNames){
+            try{
+                //Check format
+                if(!childName.regionMatches(0, prefix, 0, prefix.length())){
+                    LOG.warn(&quot;Found child node with improper name: &quot; + childName);
+                    continue;
+                }
+                String suffix = childName.substring(prefix.length());
+                Long childId = new Long(suffix);
+                orderedChildren.put(childId,childName);
+            }catch(NumberFormatException e){
+                LOG.warn(&quot;Found child node with improper format : &quot; + childName + &quot; &quot; + e,e);
+            }
+        }
+
+        return orderedChildren;
+    }
+
+    /**
+     * Find the smallest child node.
+     * @return The name of the smallest child node.
+     */
+    private String smallestChildName() throws KeeperException, InterruptedException {
+        long minId = Long.MAX_VALUE;
+        String minName = &quot;&quot;;
+
+        List&lt;String&gt; childNames = null;
+
+        try{
+            childNames = zookeeper.getChildren(dir, false);
+        }catch(KeeperException.NoNodeException e){
+            LOG.warn(&quot;Caught: &quot; +e,e);
+            return null;
+        }
+
+        for(String childName : childNames){
+            try{
+                //Check format
+                if(!childName.regionMatches(0, prefix, 0, prefix.length())){
+                    LOG.warn(&quot;Found child node with improper name: &quot; + childName);
+                    continue;
+                }
+                String suffix = childName.substring(prefix.length());
+                long childId = Long.parseLong(suffix);
+                if(childId &lt; minId){
+                    minId = childId;
+                    minName = childName;
+                }
+            }catch(NumberFormatException e){
+                LOG.warn(&quot;Found child node with improper format : &quot; + childName + &quot; &quot; + e,e);
+            }
+        }
+
+        if(minId &lt; Long.MAX_VALUE){
+            return minName;
+        }else{
+            return null;
+        }
+    }
+
+    /**
+     * Return the head of the queue without modifying the queue.
+     * @return the data at the head of the queue.
+     * @throws NoSuchElementException
+     * @throws KeeperException
+     * @throws InterruptedException
+     */
+    public byte[] element() throws NoSuchElementException, KeeperException, InterruptedException {
+        TreeMap&lt;Long,String&gt; orderedChildren;
+
+        // element, take, and remove follow the same pattern.
+        // We want to return the child node with the smallest sequence number.
+        // Since other clients are remove()ing and take()ing nodes concurrently, 
+        // the child with the smallest sequence number in orderedChildren might be gone by the time we check.
+        // We don&#39;t call getChildren again until we have tried the rest of the nodes in sequence order.
+        while(true){
+            try{
+                orderedChildren = orderedChildren(null);
+            }catch(KeeperException.NoNodeException e){
+                throw new NoSuchElementException();
+            }
+            if(orderedChildren.size() == 0 ) throw new NoSuchElementException();
+
+            for(String headNode : orderedChildren.values()){
+                if(headNode != null){
+                    try{
+                        return zookeeper.getData(dir+&quot;/&quot;+headNode, false, null);
+                    }catch(KeeperException.NoNodeException e){
+                        //Another client removed the node first, try next
+                    }
+                }
+            }
+
+        }
+    }
+
+    /**
+     * Attempts to remove the head of the queue and return it.
+     * @return The former head of the queue
+     * @throws NoSuchElementException
+     * @throws KeeperException
+     * @throws InterruptedException
+     */
+    public byte[] remove() throws NoSuchElementException, KeeperException, InterruptedException {
+        TreeMap&lt;Long,String&gt; orderedChildren;
+        // Same as for element.  Should refactor this.
+        while(true){
+            try{
+                orderedChildren = orderedChildren(null);
+            }catch(KeeperException.NoNodeException e){
+                throw new NoSuchElementException();
+            }
+            if(orderedChildren.size() == 0) throw new NoSuchElementException();
+
+            for(String headNode : orderedChildren.values()){
+                String path = dir +&quot;/&quot;+headNode;
+                try{
+                    byte[] data = zookeeper.getData(path, false, null);
+                    zookeeper.delete(path, -1);
+                    return data;
+                }catch(KeeperException.NoNodeException e){
+                    // Another client deleted the node first.
+                }
+            }
+        }
+    }
+
+    private class LatchChildWatcher implements Watcher {
+
+        CountDownLatch latch;
+
+        public LatchChildWatcher(){
+            latch = new CountDownLatch(1);
+        }
+
+        public void process(WatchedEvent event){
+            LOG.debug(&quot;Watcher fired on path: &quot; + event.getPath() + &quot; state: &quot; + 
+                    event.getState() + &quot; type &quot; + event.getType());
+            latch.countDown();
+        }
+        public void await() throws InterruptedException {
+            latch.await();
+        }
+    }
+
+    /**
+     * Removes the head of the queue and returns it, blocks until it succeeds.
+     * @return The former head of the queue
+     * @throws NoSuchElementException
+     * @throws KeeperException
+     * @throws InterruptedException
+     */
+    public byte[] take() throws KeeperException, InterruptedException {
+        TreeMap&lt;Long,String&gt; orderedChildren;
+        // Same as for element.  Should refactor this.
+        while(true){
+            LatchChildWatcher childWatcher = new LatchChildWatcher();
+            try{
+                orderedChildren = orderedChildren(childWatcher);
+            }catch(KeeperException.NoNodeException e){
+                zookeeper.create(dir, new byte[0], acl, CreateMode.PERSISTENT);
+                continue;
+            }
+            if(orderedChildren.size() == 0){
+                childWatcher.await();
+                continue;
+            }
+
+            for(String headNode : orderedChildren.values()){
+                String path = dir +&quot;/&quot;+headNode;
+                try{
+                    byte[] data = zookeeper.getData(path, false, null);
+                    zookeeper.delete(path, -1);
+                    return data;
+                }catch(KeeperException.NoNodeException e){
+                    // Another client deleted the node first.
+                }
+            }
+        }
+    }
+
+    /**
+     * Inserts data into queue.
+     * @param data
+     * @return true if data was successfully added
+     */
+    public boolean offer(byte[] data) throws KeeperException, InterruptedException{
+        for(;;){
+            try{
+                zookeeper.create(dir+&quot;/&quot;+prefix, data, acl, CreateMode.PERSISTENT_SEQUENTIAL);
+                return true;
+            }catch(KeeperException.NoNodeException e){
+                zookeeper.create(dir, new byte[0], acl, CreateMode.PERSISTENT);
+            }
+        }
+    }
+
+    /**
+     * Returns the data at the first element of the queue, or null if the queue is empty.
+     * @return data at the first element of the queue, or null.
+     * @throws KeeperException
+     * @throws InterruptedException
+     */
+    public byte[] peek() throws KeeperException, InterruptedException{
+        try{
+            return element();
+        }catch(NoSuchElementException e){
+            return null;
+        }
+    }
+
+    /**
+     * Attempts to remove the head of the queue and return it. Returns null if the queue is empty.
+     * @return Head of the queue or null.
+     * @throws KeeperException
+     * @throws InterruptedException
+     */
+    public byte[] poll() throws KeeperException, InterruptedException {
+        try{
+            return remove();
+        }catch(NoSuchElementException e){
+            return null;
+        }
+    }
+}
+</code></pre>
+
+<p><strong>Apache Curator</strong></p>
+
+<p>Curator 是一个封装 Zookeeper 操作的库，使用这个库的好处是 Curator 帮你管理和 Zookeeper 的连接，当连接有问题时会自动重试（retry）。</p>
+
+<pre><code class="language-java">RetryPolicy retryPolicy = new ExponentialBackoffRetry(1000, 3)
+CuratorFramework client = CuratorFrameworkFactory.newClient(zookeeperConnectionString, retryPolicy);
+client.start();
+</code></pre>
+
+<p>Curator 已经封装了一些常用的 Recipes</p>
+
+<h4 id="toc_2">Distributed Lock</h4>
+
+<pre><code class="language-java">InterProcessMutex lock = new InterProcessMutex(client, lockPath);
+if ( lock.acquire(maxWait, waitUnit) ) 
+{
+    try 
+    {
+        // do some work inside of the critical section here
+    }
+    finally
+    {
+        lock.release();
+    }
+}
+</code></pre>
+
+<h4 id="toc_3">Leader Election</h4>
+
+<pre><code class="language-java">LeaderSelectorListener listener = new LeaderSelectorListenerAdapter()
+{
+    public void takeLeadership(CuratorFramework client) throws Exception
+    {
+        // this callback will get called when you are the leader
+        // do whatever leader work you need to and only exit
+        // this method when you want to relinquish leadership
+    }
+}
+
+LeaderSelector selector = new LeaderSelector(client, path, listener);
+selector.autoRequeue();  // not required, but this is behavior that you will probably expect
+selector.start();
+</code></pre>
+
+<h2 id="toc_4">参考</h2>
 
 <ul>
-<li>  eth0：192.168.100.10：这张网卡对应一个封闭的内网，不能访问外网资源，外网也不能直接通过这个 IP 访问这台主机</li>
-<li><p>eth1：192.168.220.100：这张网卡设置的 IP 可以访问外网，也可以被外网访问。eth1 的网关：192.168.220.1。</p>
-
-<pre><code>以下是设置的eth0    ip信息，
-[root@lvs1 ~]# cat /etc/sysconfig/network-scripts/ifcfg-eth0
-DEVICE=&quot;eth0&quot;
-BOOTPROTO=&quot;static&quot;
-HWADDR=&quot;00:0C:29:3E:4A:4F&quot;
-ONBOOT=&quot;yes&quot;
-TYPE=&quot;Ethernet&quot;
-IPADDR=&quot;192.168.100.10&quot;
-NETMASK=&quot;255.255.255.0&quot;
-====================================
-以下是设置的eth1  ip信息
-[root@lvs1 ~]# cat /etc/sysconfig/network-scripts/ifcfg-eth1
-DEVICE=&quot;eth1&quot;
-BOOTPROTO=&quot;static&quot;
-HWADDR=&quot;00:0C:29:3E:4A:59&quot;
-ONBOOT=&quot;yes&quot;
-TYPE=&quot;Ethernet&quot;
-IPADDR=&quot;192.168.220.100&quot;
-NETMASK=&quot;255.255.255.0&quot;
-GATEWAY=&quot;192.168.220.1&quot;
-
-</code></pre></li>
+<li><a href="http://zookeeper.apache.org/doc/trunk/recipes.html">http://zookeeper.apache.org/doc/trunk/recipes.html</a></li>
+<li><a href="http://curator.apache.org/curator-recipes/index.html">http://curator.apache.org/curator-recipes/index.html</a></li>
 </ul>
-
-<p>记得设置完成后，要重启 network 服务：</p>
-
-<pre><code>[root@lvs1 ~]# service network restart
-
-</code></pre>
-
-<p>ping ping 更健康（说明到外网的网管工作是正常的）：</p>
-
-<pre><code>[root@lvs1 ~]# ping 192.168.220.1
-PING 192.168.220.1 (192.168.220.1) 56(84) bytes of data.
-64 bytes from 192.168.220.1: icmp_seq=1 ttl=128 time=0.447 ms
-64 bytes from 192.168.220.1: icmp_seq=2 ttl=128 time=0.154 ms
-
-</code></pre>
-
-<p>另外还可以通过 route 命令检查：</p>
-
-<pre><code>[root@lvs1 ~]# route
-Kernel IP routing table
-Destination     Gateway         Genmask         Flags Metric Ref    Use Iface
-192.168.100.0   *               255.255.255.0   U     1      0        0 eth0
-192.168.220.0   *               255.255.255.0   U     1      0        0 eth1
-default         192.168.220.1   0.0.0.0         UG    0      0        0 eth1
-
-</code></pre>
-
-<p>注意，route 表中有一项 eth1 的 default 的信息，指向 192.168.220.1。说明路由配置是正确的。</p>
-
-<h2 id="toc_3"><a></a>2.2、准备工作——Real Server：</h2>
-
-<p>Real Server：Real Server 有一张网卡，在一个封闭的内网环境中。</p>
-
-<ul>
-<li><p>eth0:192.168.100.11：这样 LVS Server 和 Real Server 就组成了一个相对封闭的局域网络。注意按照我们介绍的 NAT 原理，Real Server 的 eth0 的默认网关要设置成 Lvs Server：192.168.100.10.</p></li>
-<li><p>在 Real Server 上运行了一个 Nginx 程序，在 80 端口上。这样以便在后续的过程中，测试 LVS-NAT 的工作是否正常。</p></li>
-</ul>
-
-<p>以下是设置的 Real Server eth0 的 IP 信息：</p>
-
-<pre><code>[root@vm1 ~]# cat /etc/sysconfig/network-scripts/ifcfg-eth0 
-DEVICE=&quot;eth0&quot;
-BOOTPROTO=&quot;static&quot;
-HWADDR=&quot;00:0C:29:45:04:32&quot;
-ONBOOT=&quot;yes&quot;
-TYPE=&quot;Ethernet&quot;
-IPADDR=192.168.100.11
-NETMASK=255.255.255.0
-GATEWAY=&quot;192.168.100.10&quot;
-
-</code></pre>
-
-<p>一定注意 Real Server 的网管要设置到 LVS 的 IP：192.168.100.10。接着，看看 Nginx 是不是工作正常的：</p>
-
-<p><img src="https://img-blog.csdn.net/20150725111742203" alt=""/></p>
-
-<p>当然，同样的 ping ping 更健康：</p>
-
-<pre><code>[root@vm1 ~]# ping 192.168.100.10
-PING 192.168.100.10 (192.168.100.10) 56(84) bytes of data.
-64 bytes from 192.168.100.10: icmp_seq=1 ttl=64 time=0.259 ms
-64 bytes from 192.168.100.10: icmp_seq=2 ttl=64 time=0.215 ms
-64 bytes from 192.168.100.10: icmp_seq=3 ttl=64 time=0.227 ms
-
-</code></pre>
-
-<p>另外一个检查方式，也可以通过 route 命令：</p>
-
-<pre><code>[root@vm1 ~]# route
-Kernel IP routing table
-Destination     Gateway         Genmask         Flags Metric Ref    Use Iface
-192.168.100.0   *               255.255.255.0   U     1      0        0 eth0
-default         192.168.100.10  0.0.0.0         UG    0      0        0 eth0
-
-</code></pre>
-
-<p>注意，默认的路由指向 192.168.100.10。<br/>
-<strong>完成准备工作后，我们可以开始安装和配置 LVS 了。</strong></p>
-
-<h2 id="toc_4"><a></a>2.3、开始安装和配置 LVS-NAT 模式：</h2>
-
-<p>ipvsadm 是一个 LVS 的管理程序。我们队 LVS 的配置都是通过这个管理程序进行实现的。首先我们要安装 ipvsadm：</p>
-
-<pre><code>yum -y install ipvsadm
-
-</code></pre>
-
-<p>然后开始配置。首先我们要设置 LVS 机器支持 IP 转发功能。注意默认 IP 转发功能是关闭的，重启机器后，又会关闭：</p>
-
-<pre><code>[root@lvs1 ~]# echo 1 &gt;&gt; /proc/sys/net/ipv4/ip_forward
-
-</code></pre>
-
-<p>然后我们查看一下，是否改写成功：</p>
-
-<pre><code>[root@lvs1 ~]# cat /proc/sys/net/ipv4/ip_forward 
-1
-
-</code></pre>
-
-<p>注意，如果您使用 vim 或者 vi 命令，改写文件，是不会成功的。因为这个文件存在于内存。不在硬盘上。所以只能通过 echo 这样的命令改写。</p>
-
-<p>接下来执行如下的命令：</p>
-
-<pre><code>[root@lvs1 ~]# ipvsadm -At 192.168.220.100:80 -s rr
-[root@lvs1 ~]# ipvsadm -at 192.168.220.100:80 -r 192.168.100.11 -m
-
-</code></pre>
-
-<p>我们来解释一下其中的参数：</p>
-
-<pre><code>-A --add-service 在内核的虚拟服务器表中添加一条新的虚拟服务器记录。也就是增加一台新的虚拟服务器。
--t --tcp-service service-address 说明虚拟服务器提供的是tcp 的服务。
--s --scheduler scheduler 使用的调度算法，可选项包括：rr|wrr|lc|wlc|lblc|lblcr|dh|sh|sed|nq（关于调度算法我们在上篇文章中已经详细介绍了）
--r --real-server server-address 真实的服务器[Real-Server:port]。
--m --masquerading 指定LVS 的工作模式为NAT 模式。
-
-</code></pre>
-
-<p>当然 ipvsadm 还包括很多参数，后面慢慢讲，然后再本文章的最后部分，会给出一个比较完整的参数汇总。最后我们测试一下：</p>
-
-<p><img src="https://img-blog.csdn.net/20150725115900158" alt=""/></p>
-
-<p>我们在相对于 Real Server 的外网，通过 192.168.220.100 的 LVS Server IP 访问到了 Real Server 上的 Nginx 服务。安装和配置成功。</p>
-
-<h2 id="toc_5"><a></a>2.4、关于 iptables 和重启服务的说明</h2>
-
-<p>在配置 LVA-NAT 过程中，建议关闭 LVS 和 Real Server 的防火墙服务。这样可以避免不必要的错误发生，增加一次配置成功的几率。但是正常生产环境中，LVS 的防火墙根据实际情况最好还是要打开。</p>
-
-<p><strong>请注意，刚才使用 ipvsadm 配置的信息，在 LVS 服务器重启后，就会失效。包括 ip_forward 的配置</strong>。所以，最好制作一个脚本文件，并加入到 / etc/profile 中：</p>
-
-<pre><code>vim /usr/lvsshell.sh
-
-#!/bin/bash
-echo 1 &gt; /proc/sys/net/ipv4/ip_forward 
-ipvsadm -C
-ipvsadm -At 192.168.220.100:80 -s rr
-ipvsadm -at 192.168.220.100:80 -r 192.168.100.11 -m
-
-</code></pre>
-
-<h1 id="toc_6"><a></a>3、LVS-DR 模式安装</h1>
-
-<h2 id="toc_7"><a></a>3.1、准备工作——LVS Server</h2>
-
-<p>为了让您了解 LVS 的另外设置方式，本次我们使用 VIP 的方式，而不是两张网卡的方式（当然您也可以用两张网卡的方式）。VIP 的方式是后面我们将讲到的 LVS + Keepalived 组合工作模式的常用方式。所谓 VIP 就死虚拟 IP，是指这个 IP 不会固定捆绑到某一个网卡设备，而是通过 ifconfig 命令绑定，并在 “适当时候” 这种绑定关系会随之变化：</p>
-
-<p>DIP：192.168.220.137<br/>
-VIP：192.168.220.100</p>
-
-<p>首先我们看看在没有设置 VIP 之前，LVS 主机上的 IP 信息：</p>
-
-<pre><code>[root@lvs1 ~]# ifconfig 
-eth1      Link encap:Ethernet  HWaddr 00:0C:29:3E:4A:59  
-          inet addr:192.168.220.137  Bcast:192.168.220.255  Mask:255.255.255.0
-          inet6 addr: fe80::20c:29ff:fe3e:4a59/64 Scope:Link
-          UP BROADCAST RUNNING MULTICAST  MTU:1500  Metric:1
-          RX packets:2612 errors:0 dropped:0 overruns:0 frame:0
-          TX packets:117 errors:0 dropped:0 overruns:0 carrier:0
-          collisions:0 txqueuelen:1000 
-          RX bytes:159165 (155.4 KiB)  TX bytes:8761 (8.5 KiB)
-
-lo        Link encap:Local Loopback  
-          inet addr:127.0.0.1  Mask:255.0.0.0
-          inet6 addr: ::1/128 Scope:Host
-          UP LOOPBACK RUNNING  MTU:16436  Metric:1
-          RX packets:210 errors:0 dropped:0 overruns:0 frame:0
-          TX packets:210 errors:0 dropped:0 overruns:0 carrier:0 
-          collisions:0 txqueuelen:0 
-          RX bytes:16944 (16.5 KiB)  TX bytes:16944 (16.5 KiB)
-
-</code></pre>
-
-<p>然后我们来设置 VIP 信息：</p>
-
-<pre><code>[root@lvs1 ~]# ifconfig eth1:0 192.168.220.100 broadcast 192.168.220.100 netmask 255.255.255.255 up
-[root@lvs1 ~]# route add -host 192.168.220.100 dev eth1:0
-
-</code></pre>
-
-<p>路由表会有新的路由信息：</p>
-
-<pre><code>[root@lvs1 ~]# route
-Kernel IP routing table
-Destination     Gateway         Genmask         Flags Metric Ref    Use Iface
-192.168.220.100 *               255.255.255.255 UH    0      0        0 eth1
-192.168.100.0   *               255.255.255.0   U     1      0        0 eth0
-192.168.220.0   *               255.255.255.0   U     1      0        0 eth1
-default         192.168.220.1   0.0.0.0         UG    0      0        0 eth1
-
-</code></pre>
-
-<p>这时，通过一个外网 IP，可以 ping 通这个 VIP（下面这个 DOS 系统是 VM 的母机）：</p>
-
-<pre><code>C:\Users\yinwenjie&gt;  ping 192.168.220.100
-正在 Ping 192.168.220.100 具有 32 字节的数据:
-来自 192.168.220.100 的回复: 字节=32 时间&lt;1ms TTL=64
-来自 192.168.220.100 的回复: 字节=32 时间&lt;1ms TTL=64
-
-</code></pre>
-
-<p>以上，我们完成了 LVS 主机设置 LVS-DR 工作模式的准备工作。注意：</p>
-
-<ul>
-<li>  <strong>在您设置过程中，防火前最好关闭，但在正式生产环境中，LVS 的防火强最好打开。</strong></li>
-<li>  <strong>VIP 信息在 LVS 主机重启后，会消失。所以您最好将设置 VIP 的命令做成一个脚本。</strong></li>
-</ul>
-
-<h2 id="toc_8"><a></a>3.2、准备工作——Real Server</h2>
-
-<p>RIP：192.168.220.132</p>
-
-<p>真实服务器的准备工作，需要保证真实服务器能够访问外网网关，并且保证由 LVS 改写的报文能够被 Real Server 处理（请参见我的上一篇介绍 LVS 原理的博文），这就需要做一个回环 IP。首先我们看看没有开始设置之前的 IP 信息：</p>
-
-<pre><code>[root@localhost ~]# ifconfig 
-eth0      Link encap:Ethernet  HWaddr 00:0C:29:FC:91:FC  
-          inet addr:192.168.220.132  Bcast:192.168.220.255  Mask:255.255.255.0
-          inet6 addr: fe80::20c:29ff:fefc:91fc/64 Scope:Link
-          UP BROADCAST RUNNING MULTICAST  MTU:1500  Metric:1
-          RX packets:2384 errors:0 dropped:0 overruns:0 frame:0
-          TX packets:1564 errors:0 dropped:0 overruns:0 carrier:0
-          collisions:0 txqueuelen:1000 
-          RX bytes:1551652 (1.4 MiB)  TX bytes:144642 (141.2 KiB)
-
-lo        Link encap:Local Loopback  
-          inet addr:127.0.0.1  Mask:255.0.0.0
-          inet6 addr: ::1/128 Scope:Host
-          UP LOOPBACK RUNNING  MTU:65536  Metric:1
-          RX packets:44 errors:0 dropped:0 overruns:0 frame:0
-          TX packets:44 errors:0 dropped:0 overruns:0 carrier:0
-          collisions:0 txqueuelen:0 
-          RX bytes:3361 (3.2 KiB)  TX bytes:3361 (3.2 KiB)
-
-</code></pre>
-
-<p>使用 route 命令，查看原始 route 信息：</p>
-
-<pre><code>[root@localhost ~]# route
-Kernel IP routing table
-Destination     Gateway         Genmask         Flags Metric Ref    Use Iface
-192.168.220.0   *               255.255.255.0   U     1      0        0 eth0
-default         192.168.220.1   0.0.0.0         UG    0      0        0 eth0
-
-</code></pre>
-
-<p>另外，这台 Real Server 上有一个 Nginx，以保证我们观测 LVS-DR 的运行情况。我们在外网使用 192.168.220.132 这个 IP，能够访问到 Nginx 的页面：</p>
-
-<p><img src="https://img-blog.csdn.net/20150726085859705" alt=""/></p>
-
-<p>接下来，我们开始设置 Real Server 上的回环 IP，首先关闭这台机器进行 ARP 查询的功能，否则，Real Server 会在路由器或者交换机上去查询 192.168.220.100 这个 IP 对应的 MAC 地址（注意，以下的信息都会被还原）：</p>
-
-<pre><code>echo &quot;1&quot; &gt;/proc/sys/net/ipv4/conf/lo/arp_ignore
-echo &quot;2&quot; &gt;/proc/sys/net/ipv4/conf/lo/arp_announce
-echo &quot;1&quot; &gt;/proc/sys/net/ipv4/conf/all/arp_ignore
-echo &quot;2&quot; &gt;/proc/sys/net/ipv4/conf/all/arp_announce
-
-</code></pre>
-
-<p>然后可以设置回环 IP 了：</p>
-
-<pre><code>[root@vm3 ~]# ifconfig lo:0 192.168.220.100 broadcast 192.168.220.100 netmask 255.255.255.255 up
-[root@vm3 ~]# route add -host 192.168.220.100 dev lo:0
-
-</code></pre>
-
-<p>检查新的路由信息：</p>
-
-<pre><code>[root@vm3 ~]# route 
-Kernel IP routing table
-Destination     Gateway         Genmask         Flags Metric Ref    Use Iface
-192.168.220.100 *               255.255.255.255 UH    0      0        0 lo
-192.168.220.0   *               255.255.255.0   U     1      0        0 eth0
-default         192.168.220.1   0.0.0.0         UG    0      0        0 eth0
-
-</code></pre>
-
-<p>以上设置完成。<strong>完成后，您需要通过 ping 命令，检查一下网关是否可用（最好可以瓶 ping 一下外网的某个地址，例如 163.com）。LVS-DR 模式下，Real Server 是直接向请求方返回结果，所以一定要保证网关时可用的。</strong></p>
-
-<h2 id="toc_9"><a></a>3.3、开始安装和配置 LVS-DR 模式</h2>
-
-<p>在验证了 LVS Server 和 Real Server 都准备好以后，就可以进行 LVS-DR 模式的设置了。LVS 管理软件 ipvsadm 的安装我们就不敷述了，在 LVS-NAT 的小结中有关于 LVS 管理软件安装的介绍。</p>
-
-<pre><code>[root@lvs1 ~]# echo 1 &gt; /proc/sys/net/ipv4/ip_forward
-[root@lvs1 ~]# cat /proc/sys/net/ipv4/ip_forward
-1
-[root@lvs1 ~]# ipvsadm -C
-[root@lvs1 ~]# ipvsadm -At 192.168.220.100:81 -s rr 
-[root@lvs1 ~]# ipvsadm -at 192.168.220.100:81 -r 192.168.220.132 -g
-
-</code></pre>
-
-<p>介绍一下新出现的参数：</p>
-
-<ul>
-<li>  -g –gatewaying 指定 LVS 的工作模式为直接路由模式 DR 模式（也是 LVS 默认的模式）</li>
-</ul>
-
-<p>配置完成，是不是很简单。接下来，我们就可以在外网，通过 192.168.220.100 这个 IP 访问 132 这台 Real Server 上的 Nginx 服务了：</p>
-
-<p><img src="https://img-blog.csdn.net/20150726091844324" alt=""/></p>
-
-<h1 id="toc_10"><a></a>4、LVS-TUN 模式安装</h1>
-
-<p>LVS-TUN 模式的安装我不打算再花很大的篇幅讲了，在您通过上一篇文章了解了 DR 和 TUN 的不同以后，其配置的过程都是差不多的，只不过一个可以跨越子网，一个不能。所以 LVS-TUN 模式的安装和配置请首先参考 LVS-DR 模式。</p>
-
-<h1 id="toc_11"><a></a>5、IPVSADM 参数汇总</h1>
-
-<p>-A –add-service 在内核的虚拟服务器表中添加一条新的虚拟服务器记录。也就是增加一台新的虚拟服务器。</p>
-
-<p>-E –edit-service 编辑内核虚拟服务器表中的一条虚拟服务器记录。</p>
-
-<p>-D –delete-service 删除内核虚拟服务器表中的一条虚拟服务器记录。</p>
-
-<p>-C –clear 清除内核虚拟服务器表中的所有记录。</p>
-
-<p>-R –restore 恢复虚拟服务器规则</p>
-
-<p>-S –save 保存虚拟服务器规则，输出为 - R 选项可读的格式</p>
-
-<p>-a –add-server 在内核虚拟服务器表的一条记录里添加一条新的真实服务器记录。也就是在一个虚拟服务器中增加一台新的真实服务器</p>
-
-<p>-e –edit-server 编辑一条虚拟服务器记录中的某条真实服务器记录</p>
-
-<p>-d –delete-server 删除一条虚拟服务器记录中的某条真实服务器记录</p>
-
-<p>-L –list 显示内核虚拟服务器表</p>
-
-<p>-Z –zero 虚拟服务表计数器清零（清空当前的连接数量等）</p>
-
-<p>–set tcp tcpfin udp 设置连接超时值</p>
-
-<p>–start-daemon 启动同步守护进程。他后面可以是 master 或 backup，用来说明 LVS Router 是 master 或是 backup。在这个功能上也可以采用 keepalived 的 VRRP 功能。</p>
-
-<p>–stop-daemon 停止同步守护进程</p>
-
-<p>-t –tcp-service service-address 说明虚拟服务器提供的是 tcp 的服务 [vip:port] or [real-server-ip:port]</p>
-
-<p>-u –udp-service service-address 说明虚拟服务器提供的是 udp 的服务 [vip:port] or [real-server-ip:port]</p>
-
-<p>-f –fwmark-service fwmark 说明是经过 iptables 标记过的服务类型。</p>
-
-<p>-s –scheduler scheduler 使用的调度算法，选项：rr|wrr|lc|wlc|lblc|lblcr|dh|sh|sed|nq, 默认的调度算法是： wlc.</p>
-
-<p>-p –persistent [timeout] 持久稳固的服务。这个选项的意思是来自同一个客户的多次请求，将被同一台真实的服务器处理。timeout 的默认值为 300 秒。</p>
-
-<p>-M –netmask netmask persistent granularity mask</p>
-
-<p>-r –real-server server-address 真实的服务器 [Real-Server:port]</p>
-
-<p>-g –gatewaying 指定 LVS 的工作模式为直接路由模式 DR 模式（也是 LVS 默认的模式）</p>
-
-<p>-i –ipip 指定 LVS 的工作模式为隧道模式</p>
-
-<p>-m –masquerading 指定 LVS 的工作模式为 NAT 模式</p>
-
-<p>-w –weight weight 真实服务器的权值</p>
-
-<p>–mcast-interface interface 指定组播的同步接口</p>
-
-<p>-c</p>
-
-<p>–connection 显示 LVS 目前的连接 如：ipvsadm -L -c</p>
-
-<p>–timeout 显示 tcp tcpfin udp 的 timeout 值 如：ipvsadm -L –timeout</p>
-
-<p>–daemon 显示同步守护进程状态</p>
-
-<p>–stats 显示统计信息</p>
-
-<p>–rate 显示速率信息</p>
-
-<p>–sort 对虚拟服务器和真实服务器排序输出</p>
-
-<p>–numeric -n 输出 IP 地址和端口的数字形式</p>
-
-<p>好吧，这个就是我网上抄的。</p>
-
-<h1 id="toc_12"><a></a>6、后文介绍</h1>
-
-<p><strong>LVS 的设置实际上没有什么难度，充其量是一个高级玩意儿，是解决特定问题的特定方法</strong>。您需要的基础知识涉及到 IP 协议、子网分割、IP 映射、Linux 脚本等基本知识。打通任督二脉才是您的根本。</p>
-
-<p>LVS 的设置过程中肯定会遇到实际问题，特别是您头几次配置。别慌，别怕，透过现象猜测本质，一个一个的解决问题。就我的经验总结，无非几种问题分类：</p>
-
-<ul>
-<li>  网关不通</li>
-<li>  回环 IP 设置问题</li>
-<li>  防火墙问题</li>
-<li>  VIP 设置问题</li>
-<li>  网段或者子网问题</li>
-</ul>
-
-<p>通过包括这篇博客在内的这几篇文章，您已经分别了解了 Nginx、LVS 的功能、原理、特 点和工作模式。后面一篇文章，我们将把这些负载层的技术混合在一起，介绍 Nginx + Keepalived、LVS + Keepalived、LVS + Keepalived + Nginx 的安装和配置方式。</p>
-
-<p>（本人这个月 “持之以恒” 奖已经拿到了，笑一个：哈哈哈）</p>
-
-<p>补充一下：由于工作的原因，期间可能还会推出一篇关于 Apache Camel 的文章，就算提前进入业务通信层的讨论吧。不过这个看当时的时间安排。目前情况下还是以负载均衡层的讨论为主线。</p>
 
                         
                       </div>
@@ -561,10 +1131,10 @@ default         192.168.220.1   0.0.0.0         UG    0      0        0 eth0
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/6/28</span>
+                    <span class="date">2018/8/2</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Network.html'>Network</a></span>
+          					    <span class="posted-in"><a href='Orchestrator.html'>Orchestrator</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -631,8 +1201,6 @@ default         192.168.220.1   0.0.0.0         UG    0      0        0 eth0
 
       	<p class="cat-list">
         
-            <a href="Team.html"><strong>Team</strong></a>
-        
             <a href="Infra.html"><strong>Infra</strong></a>
         
             <a href="Coding.html"><strong>Coding</strong></a>
@@ -656,31 +1224,31 @@ default         192.168.220.1   0.0.0.0         UG    0      0        0 eth0
 	      
 		      
 			      <li class="post">
-			        <a href="15301813999205.html">架构设计：负载均衡层设计方案（9）——负载均衡层总结下篇</a>
+			        <a href="15337171704262.html">Introduction to Testing with Spock and Groovy</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301813109409.html">架构设计：负载均衡层设计方案（8）——负载均衡层总结上篇</a>
+			        <a href="15336595358049.html">10 Excellent Ways to Secure Your Spring Boot Application</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301812452579.html">架构设计：负载均衡层设计方案（7）——LVS + Keepalived + Nginx安装及配置</a>
+			        <a href="15336592302916.html">First MicroProfile.io application using Java Module System</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301811967181.html">架构设计：负载均衡层设计方案（6）——Nginx + Keepalived构建高可用的负载层</a>
+			        <a href="15332186142588.html">Jenkins 的 Pipeline 脚本在美团餐饮 SaaS 中的实践</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301811361753.html">架构设计：负载均衡层设计方案（5）——LVS单节点安装</a>
+			        <a href="15331749691571.html">基于ZooKeeper的分布式锁和队列</a>
 			      </li>
 		     
 		  

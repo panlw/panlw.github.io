@@ -76,8 +76,6 @@
     <li><label>Categories</label></li>
 
         
-            <li><a href="Team.html">Team</a></li>
-        
             <li><a href="Infra.html">Infra</a></li>
         
             <li><a href="Coding.html">Coding</a></li>
@@ -107,169 +105,101 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15277821532847.html">
+                <a class="clearlink" href="15290745541526.html">
                 
-                  <h1>Aspect-Oriented Programming in Spring Boot Part 2: Spring JDK Proxies vs CGLIB vs AspectJ</h1>
+                  <h1>蚂蚁金服RPC框架结构分析</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p>Justin Wilson May 9, 2016<br/>
-<a href="https://www.credera.com/blog/technology-insights/open-source-technology-insights/aspect-oriented-programming-in-spring-boot-part-2-spring-jdk-proxies-vs-cglib-vs-aspectj/">https://www.credera.com/blog/technology-insights/open-source-technology-insights/aspect-oriented-programming-in-spring-boot-part-2-spring-jdk-proxies-vs-cglib-vs-aspectj/</a></p>
+<p><a href="https://juejin.im/post/5b0573046fb9a07aa542ad58">https://juejin.im/post/5b0573046fb9a07aa542ad58</a></p>
 </blockquote>
 
-<p>This is the second entry in a three-part series on aspect-oriented programming (AOP) with Spring Boot. This entry covers the differences between using AOP with Spring JDK proxies, CGLIB proxes, and AspectJ load-time weaving (LTW). The <a href="https://www.credera.com/blog/technology-insights/open-source-technology-insights/aspect-oriented-programming-in-spring-boot-part-1-making-your-own-hystrix-aspect/">first entry</a> covered how to write your own aspect, and the <a href="https://www.credera.com/blog/technology-insights/open-source-technology-insights/aspect-oriented-programming-in-spring-boot-part-3-setting-up-aspectj-load-time-weaving/">last entry</a> will contain detailed AspectJ LTW setup information.</p>
+<p>蚂蚁金服近期开源了研发多年的SOFA一篮子框架，其中就有一个非常核心的RPC框架，它叫SOFA-BOLT。小编今天花了近一天的时间仔细阅读研究它的源码，阅读过程中遇到了不少问题，蚂蚁金服的相关技术人员都非常耐心的及时解答了我的疑难。这里将我从中学到的知识点一并分享给大家。</p>
 
-<p><strong>How Can You Call Code Without Writing Its Invocation?</strong></p>
+<p>SOFA-BOLT基于开源的Netty框架，同时提供了服务器和客户端的实现。它的源码非常值得一读，结构简单，考虑周全，绝不是一个普通的玩具。它没有滥用设计模式，源码阅读起来比较直接，没有太多绕来绕去的复杂结构。</p>
 
-<p>The Spring framework supports two main methods of AOP—Spring proxies and AspectJ. Both methods allow code snippets called aspects to be injected or “woven” around existing code by targeting specific join points. However, even though both AOP styles can use the same code for their aspects, the way in which they weave those aspects into existing code is completely different.</p>
+<p><img src="media/15290745541526/15290751810439.jpg" alt=""/></p>
 
-<p><strong>Spring Proxies: JDK and CGLIB Styles</strong></p>
+<p>一个节点既可以同时既是RPC服务器又是客户端，作为客户端该节点需要其它节点提供服务，作为服务器它可以为其它节点提供服务。不过上面这张图并不是合理的结构，因为两个服务相互耦合了，我需要你，你也需要我，就成了鸡蛋问题。比较合理的结构一般如下图所示，它们之间不构成环。<br/>
+<img src="media/15290745541526/15290751964181.jpg" alt=""/></p>
 
-<p>Every Spring bean (heretofore referred to as just a “bean”) can be considered a managed component. Whenever you declare a bean in XML or use @Component, @Service, or @Repository on a class targeted by Spring’s annotation component scanning (which is enabled by default for Spring Boot), that class is instantiated and managed as a singleton bean by the Spring framework. (It’s technically possible to use different scoping mechanisms to avoid singletons, but those won’t be covered here; see <a href="https://www.credera.com/blog/technology-insights/java/dependency-injection-part-3-spring/">my blog series on dependency injection</a> for more information.) Spring can inject references to that bean into other beans that request it using the @Autowired annotation (or @Resource or @Inject annotations) or beans that use “ref” in their XML definition. However, Spring doesn’t actually provide a literal reference to the original bean when it’s injected—it wraps the bean in a proxy class to give Spring a chance to weave in AOP code if needed.</p>
+<h2 id="toc_0">通讯协议</h2>
 
-<p>There are two ways Spring can make proxies:</p>
+<p>通讯协议是客户端和服务器之间交流的语言，SOFA定义了自己的一套通讯协议，它的编码解码分为二层，第一层是消息体对象的二进制序列化，这部分默认由开源的Hession协议库序列化完成，第二层是负责给序列化的消息体增加一系列包装字段，形成一个完整的消息。包括请求ID、消息体的长度、协议版本号和CRC32校验位等等<br/>
+如果希望进一步优化网络性能，SOFA还提供了Snappy压缩协议，可以在现有的两层协议基础上增加第三层，能显著降低网络传输负担。压缩是时间换空间，提升网络性能的同时，它也会加重CPU计算，所以在使用时需要适当进行权衡。</p>
 
-<p>1. By default, Spring will try to use <a href="http://www.ibm.com/developerworks/java/library/j-jtp08305/index.html">JDK dynamic proxy libraries</a> to create a new instance of the injected bean’s interface which will act as a delegate to that bean. This behavior is demonstrated by the <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-proxy/src/test/java/org/jdw/blog/ProxyHystrixAspectTest.java#L36">unit tests</a> that use injected beans with interfaces in the <a href="https://github.com/jwilsoncredera/spring-aop-blog/tree/master/spring-aop-proxy">spring-aop-proxy sample project</a>.</p>
+<p><img src="media/15290745541526/15290752045597.jpg" alt=""/></p>
 
-<p><a href="https://www.credera.com/wp-content/uploads/2016/04/Picture2-4.png"><img src="https://www.credera.com/wp-content/uploads/2016/04/xPicture2-4.png.pagespeed.ic.dhHNYptsoi.webp" alt="Picture2"/></a></p>
+<h2 id="toc_1">连接池</h2>
 
-<p>2. If CGLIB is available on the classpath (which comes by default with Spring Boot) and there is no interface to implement a proxy with, CGLIB will be used to make a new object that extends the target bean’s class and acts as a delegate to that original bean. This behavior is also demonstrated by a <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-proxy/src/test/java/org/jdw/blog/ProxyHystrixAspectTest.java#L65">unit test</a> that uses an injected bean without an interface in the <a href="https://github.com/jwilsoncredera/spring-aop-blog/tree/master/spring-aop-proxy">spring-aop-proxy sample project</a>.</p>
+<p>客户端和服务器之间一般需要建立多个连接，但是也不能每个请求都建立一个连接。一般是通过维护一个连接池，限定最大连接数。客户端通过有限的连接来和服务器进行通信。</p>
 
-<p><a href="https://www.credera.com/wp-content/uploads/2016/04/Picture3-3.png"><img src="https://www.credera.com/wp-content/uploads/2016/04/xPicture3-3.png.pagespeed.ic.W2zdwkeosT.webp" alt="Picture3"/></a></p>
+<p>我们在使用Jedis客户端和Redis服务器进行通信时，也是通过连接池来获取连接的。Jedis的连接必须是线程独占的，因为它不是线程安全的。从连接池中获取连接时，其它线程就暂时拿不到这个连接了，待当前线程处理完毕后，要将连接归还给线程池，这样其它线程才可以继续使用这个连接。</p>
 
-<p>By default, Spring Boot will use JDK proxies if the bean has an interface and CGLIB proxies if the bean does not. If you try to inject a bean using its concrete class and that bean has an interface, Spring will fail to find the bean with a NoSuchBeanDefinitionException because it will fail to create a JDK proxy using the concrete class. In the first example above, that would be using this:</p>
+<p><img src="media/15290745541526/15290752153060.jpg" alt=""/></p>
 
-<p>| </p>
+<p>Redis的客户端请求和应答是顺序性的，一问一答，所以请求和应答不需要唯一ID就可以建立起关联。</p>
 
-<pre><code class="language-java">@Autowired
-private ImplForInterface bean;
+<p>Bolt不一样，它的问答是乱序的，问和答之间是必须通过请求的唯一ID来建立起关联。Bolt的客户端是线程安全的，它可以同时传递多个请求，连接对象会维护一个正在处理的RPC请求对象字典。当客户端想要发起RPC请求时，它不是从连接池中摘出一个独占连接，而是随意选择一个连接来传递自己的请求，这个连接也可以被其它线程同时使用。</p>
+
+<h2 id="toc_2">负载均衡</h2>
+
+<p>客户端提供了多种复杂均衡的实现，阿里默认使用带权重的随机算法(RandomLoadBalancer)，此外还有</p>
+
+<ol>
+<li>ConsistentHashLoaderBalancer 一致性hash，客户端和服务器之间的连接关系(谁跟谁连)比较稳定</li>
+<li>LocalPreferenceLoadBalancer 本地环回地址优先，提升本机调用性能</li>
+<li>RoundRobinLoadBalancer 循环依次来</li>
+<li>WeightedRoundRobinLoadBalancer 带权重的循环依次来</li>
+<li>RandomLoadBalancer 这个是带权重的随机，阿里的默认使用</li>
+</ol>
+
+<h2 id="toc_3">服务器线程模型</h2>
+
+<p>服务器采用传统netty多线程模型，一个acceptor线程专门用来接收连接，然后扔给io线程处理读消息并解码成请求对象，最后扔给业务线程池进行处理。<br/>
+<img src="media/15290745541526/15290752347331.jpg" alt=""/></p>
+
+<h2 id="toc_4">心跳</h2>
+
+<p>客户端和服务器之间会有定时心跳检测连接的存活，默认30s来一次。tcp的关闭是通过FIN包来通知对方的，如果因为网络问题，对方连FIN包都收不到，那么即使一边关闭了套接字，另一边可能还以为连接正常。所以心跳检测存活机制在长连接应用里非常普遍。如果客户端连续发了三次心跳都没有收到服务器的回复，那么就认为连接已经关闭。服务器也会有连接存活检测，如果一个客户端连接90s内没有任何消息进来，那么也认为该连接已经断开。服务器不会主动发送心跳消息。</p>
+
+<h2 id="toc_5">双工通信</h2>
+
+<p>RPC一般是由客户端向服务器发起一个请求，然后收到服务器的应答。Bolt的RPC是双工通信，服务器也可以向客户端主动发起请求，它们共享一个TCP连接。TCP连接本身就是双工的，所以这也不算什么奇迹。只是服务器在什么业务场景需要向客户端主动发起请求，这个蚂蚁并没有进行详细说明。<br/>
+<img src="media/15290745541526/15290752519556.jpg" alt=""/></p>
+
+<p>客户端作为主动连接方，它要负责重连和发起心跳消息。服务器作为被动方，它不需要处理重连，如果连接断开，它就直接将连接从集合中移除就行，不需要做特殊的处理，但是它会检测心跳消息，如果在一定时间内连接通道没有任何消息到来，它就会主动关闭。</p>
+
+<h2 id="toc_6">重连</h2>
+
+<p>客户端的重连策略是一个单独的模块，有两个地方会成为重连的入口。一个是正常连接断开触发channelInActive回调，另一个就是重连连接不能建立成功时需要进行重试。Bolt有一个单独的重连线程，所有需要重连的连接会被包装成一个任务塞进这个线程的任务队列，该线程不断地从队列里拿任务进行重连处理，如果重连失败会尝试再将任务重新包装进队列延后继续处理。默认是1s钟处理一个重连任务。<br/>
+<img src="media/15290745541526/15290752597075.jpg" alt=""/></p>
+
+<p>RPC连接是延迟建立的，它在第一次客户端发送RPC请求时尝试进行连接，如果连接失败，它会立即继续重连最多默认两次。如果三次尝试连接后还是没有建立成功，就向上层爆出异常。它不需要包装一个重连任务塞进ReconnectManager，因为后续客户端请求会继续触发连接。</p>
+
+<h2 id="toc_7">单向消息</h2>
+
+<p>RPC通常是一应一答，客户端可以同步等待响应，也可以提供回调接口等待结果通知。Bolt除了提供应答模式之外，还提供了oneway单向消息，这种消息服务器收到后不用回复，客户端发送请求之后就立即返回了也不需要等待结果。<br/>
+oneway消息一般用于不那么重要的日志类消息，它不能保证服务器一定能收到，所以此种业务消息应该是那种允许丢失的消息，形式上类似于UDP，它在牺牲可靠性的前提下能大幅提升消息的吞吐量。</p>
+
+<h2 id="toc_8">消息追踪</h2>
+
+<p>Bolt提供了回调接口，方便监控系统可以对请求的调用状况进行分析。监控的客户端可以通过实现该接口，注册进RPC的客户端和服务器进行打点收集日志，然后发送到日志分析系统。</p>
+
+<pre><code>`interface Tracer {
+    void startRpc(SofaRequest request);
+    void serverReceived(SofaRequest request);
+    void serverSend(SofaRequest request, SofaResponse response, Throwable throwable);
+    void clientReceived(SofaRequest request, SofaResponse response, Throwable throwable);
+    ...
+}`
 </code></pre>
 
-<p>Instead of this:</p>
+<h2 id="toc_9">总结</h2>
 
-<pre><code class="language-java">@Autowired
-private Interface bean;
-</code></pre>
-
-<p>To get around this limitation and be able to inject concrete classes that have interfaces, you have to tell Spring to always use CGLIB for all beans. This will disable Spring’s use of JDK proxies entirely, making Spring always extend concrete classes even if an interface is injected. To enable this in Spring Boot, just add the following Java property, as seen in the <a href="https://github.com/jwilsoncredera/spring-aop-blog/tree/master/spring-aop-proxy-cglib">spring-aop-proxy-cglib</a> sample project’s <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-proxy-cglib/src/main/resources/application.properties">application.properties</a> file:</p>
-
-<p>spring.aop.proxy-target-class=true</p>
-
-<p><strong>Spring Proxies: Annotations on Interfaces</strong></p>
-
-<p>Consider an aspect that’s used to weave code around annotated methods (such as the <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-common/src/main/java/org/jdw/blog/common/aspect/HystrixAspect.java">HystrixAspect</a> that targets <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-common/src/main/java/org/jdw/blog/common/annotation/HystrixWrapper.java">@HystrixWrapper</a> annotated methods from part one in this series).</p>
-
-<ul>
-<li>  When a Spring JDK proxy is used, the join point annotation should be present on both the interface’s method and the concrete class’s method for the aspect to trigger correctly.
-
-<ul>
-<li>  The <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-proxy/src/test/java/org/jdw/blog/ProxyHystrixAspectTest.java#L72">second to last test in the spring-aop-proxy test class</a> proves that both the interface and the concrete class require the join point annotation when a JDK proxy is used.</li>
-</ul></li>
-<li>  When a CGLIB proxy is used, the concrete implementation must have the annotation on its method for the aspect to trigger.
-
-<ul>
-<li>  The <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-proxy-cglib/src/test/java/org/jdw/blog/ProxyCglibHystrixAspectTest.java#L96">second to last test in the spring-aop-proxy-cglib test class</a> proves that the interface’s join point annotations are ignored when CGLIB is used.</li>
-</ul></li>
-</ul>
-
-<p>The <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-proxy/src/test/java/org/jdw/blog/ProxyHystrixAspectTest.java#L48">JDK proxy unit test that expects an <strong>InaccessablePointcutAnnotationException</strong></a> is of particular interest. It demonstrates that if you’re using a JDK proxy and the join point annotation is present on the concrete implementation of a bean and not on its interface, the aspect will still trigger but it won’t be able to find the annotation that was used to trigger it. This prevents us from finding the Hystrix command group key that should come from the wrapped method’s annotation, as shown in the bold parts of the example below. (<a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-common/src/main/java/org/jdw/blog/common/annotation/HystrixWrapper.java">This</a> is the GitHub link for the @HystrixWrapper annotation, and <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-common/src/main/java/org/jdw/blog/common/aspect/HystrixAspect.java">this</a> is the link for the HystrixAspect.)</p>
-
-<pre><code class="language-java">@Retention(RetentionPolicy.RUNTIME)
-@Target(ElementType.METHOD)
-public @interface HystrixWrapper {
-  public String commandGroupKey();
-}
-@Aspect
-@Component
-public class HystrixAspect {
-
-  @Around(&quot;within(org.jdw.blog..*) &amp;amp;&amp;amp; &quot;  &quot;@annotation(org.jdw.blog.common.annotation.HystrixWrapper)&quot;)
-  public Object around(final ProceedingJoinPoint joinPoint) {
-
-    Method method = ((MethodSignature) joinPoint.getSignature()).getMethod();
-    HystrixWrapper annotation = method.getAnnotation(HystrixWrapper.class);
-    if (annotation == null) {      // Can occur when not using CCGLIB-style &#39;subclass&#39; proxies,
-      // when using an interface that has a concrete class
-      // that has the annotation.
-      throw new InaccessablePointcutAnnotationException();    }
-
-    // Hystrix invocation code goes here, see GitHub for details. 
-    // [https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-common/src/main/java/org/jdw/blog/common/aspect/HystrixAdvice.java](https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-common/src/main/java/org/jdw/blog/common/aspect/HystrixAdvice.java)
-  }
-}
-</code></pre>
-
-<p><strong>I recommend always using CGLIB to avoid this edge case.</strong> Doing so makes all Spring proxy behavior consistent since JDK proxies will never be used, it allows the injection of concrete implementations of beans which can be useful for unit tests, and it negates the need to duplicate join point annotations on interfaces and concrete classes (which could easily get out of sync). As a reminder, to always use CGLIB, just set the “spring.aop.proxy-target-class” property to true.</p>
-
-<p>Before using CGLIB, ensure your codebase always uses pre-existing AOP annotations (such as @Transactional) on concrete classes instead of only on interfaces. Interface-only AOP annotations will be ignored when CGLIB is enabled. Changing when @Transactional aspects are triggered could lead to items not being saved to the database, or poor performance due to transactional boundary shifting.</p>
-
-<p><strong>Spring Proxies: Annotations in Concrete Classes</strong></p>
-
-<p>Both JDK- and CGLIB-style Spring proxies have one glaring weakness—AOP can only be invoked by calling a method on an injected bean. Consider a bean with these two methods (all of the classes in <a href="https://github.com/jwilsoncredera/spring-aop-blog/tree/master/spring-aop-common/src/main/java/org/jdw/blog/common/executable">this package</a> qualify):</p>
-
-<pre><code class="language-java">@HystrixWrapper(commandGroupKey = &quot;blog&quot;)
-public long hystrixWrappedGetCurrentThreadId() {
-  return getCurrentThreadId();
-}
-
-public long nestedHystrixWrappedGetCurrentThreadId() {
-  return hystrixWrappedGetCurrentThreadId();
-}
-</code></pre>
-
-<p>The second method cannot trigger the HystrixAspect when calling the first method because it invokes the first method directly without going through a Spring proxy—the bean is just calling one of its own methods. Spring doesn’t have any opportunities to inject the aspect code. This is demonstrated by every other test in both the <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-proxy/src/test/java/org/jdw/blog/ProxyHystrixAspectTest.java#L42">spring-aop-proxy test class</a> and <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-proxy-cglib/src/test/java/org/jdw/blog/ProxyCglibHystrixAspectTest.java#L41">spring-aop-proxy-cglib test class</a> (all the tests that start with “testNestedHystrixWrappedMethod”).</p>
-
-<p>However, when AspectJ is used instead of Spring proxies, the HystrixAspect <u>does</u> trigger when a bean calls its own join point annotated method. This is shown by every other test in the <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-aspectj-ltw/src/test/java/org/jdw/blog/AspectJHystrixAspectTest.java#L41">spring-aop-aspectj-ltw test class</a> (which also begin with “testNestedHystrixWrappedMethod”)—every scenario that fails to invoke the Hystrix aspect for Spring proxies succeeds for AspectJ (except for <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-aspectj-ltw/src/test/java/org/jdw/blog/AspectJHystrixAspectTest.java#L101">one specific scenario</a> which will be covered later). How can this be?</p>
-
-<p><strong>AspectJ</strong></p>
-
-<p>AspectJ extends the Java compiler to weave aspect code directly into join points. It doesn’t require Spring to run. Instead, you need to use <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-aspectj-ltw/README.md">JVM arguments</a> to enable a compiler extension along with an <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-aspectj-ltw/src/main/resources/META-INF/aop.xml">aop.xml file</a> and <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-aspectj-ltw/src/main/java/org/jdw/blog/config/AspectJConfig.java">another configuration file</a> which will be covered in part three of this series.</p>
-
-<p>This has two important ramifications. First, if you’re using AspectJ, you don’t need to inject Spring beans to invoke AOP functionality. Technically you don’t even need Spring beans for AOP at all when AspectJ is enabled—you could manually create a new object and invoke AOP code on it right away if it had join points your aspects could target.</p>
-
-<p>Second, if an object calls its own methods it can trigger AOP code, unlike AOP using Spring proxies. Here’s a visual example of how this AspectJ behavior would look if the @HystrixAspect used @Before instead of @Around to inject code in front of its join point targets instead of completely wrapping them (because it’s easier to depict):</p>
-
-<p><a href="https://www.credera.com/wp-content/uploads/2016/04/Picture5-2.png"><img src="https://www.credera.com/wp-content/uploads/2016/04/xPicture5-2.png.pagespeed.ic.PXtdJ6_MY_.webp" alt="Picture5"/></a></p>
-
-<p>The fact that beans can trigger their own AOP code means you need to be very careful when enabling AspectJ on existing Spring projects, because this can change when database transactions are started by @Transactional annotations. For example, if you had a bean with two methods and one didn’t have an @Transactional annotation and it called another one that did, then that invocation would start a database transaction with AspectJ enabled but not with default Spring proxy-based AOP.</p>
-
-<pre><code class="language-java">public void notAnnotated() {
-  annotated();
-}
-
-@Transactional
-public void annotated() {
-  // With AspectJ, a direct call from notAnnotated will enable the transaction.
-  // Without it, this method will only get a transaction if it was called from a Spring proxy.
-}
-</code></pre>
-
-<p>Luckily, there is a way around this issue—AspectJ and Spring proxies can co-exist. The <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-aspectj-ltw/src/main/resources/META-INF/aop.xml">aop.xml file</a> lets you decide which aspects will be managed by AspectJ and which packages are included or excluded from AspectJ code weaving. If you exclude classes that use @Transactional from AspectJ weaving, their behavior will default to the same Spring proxy behavior they were using before. Stay tuned for part three of this series, which covers how to configure an aop.xml file.</p>
-
-<p><strong>What About That Unit Test Where AspectJ Didn’t Work?</strong></p>
-
-<p>As noted earlier, every other test in the <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-aspectj-ltw/src/test/java/org/jdw/blog/AspectJHystrixAspectTest.java#L41">spring-aop-aspectj unit test</a> (which each begin with “testNestedHystrixWrappedMethod”) demonstrates how beans can trigger the HystrixAspect when calling their own @HystrixWrapper join point annotated methods without going through Spring beans… except for the <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-aspectj-ltw/src/test/java/org/jdw/blog/AspectJHystrixAspectTest.java#L102">last test</a>.</p>
-
-<p>That last test invokes the “nestedGetCurrentThreadId” method on a Spring CGLIB proxy of a class similar to the example below (<a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-common/src/main/java/org/jdw/blog/common/executable/NonAnnotatedImplForInterfaceWithAnnotation.java#L22">GitHub link for the original class</a>). The class’s interface annotates “getCurrentThreadId” with @HystrixWrapper, but the concrete class itself does not. Thus, when “getCurrentThreadId” is invoked by “nestedGetCurrentThreadId” within the CGLIB proxy, AspectJ looks at the concrete class instead of the interface and can’t find the @HystrixWrapper join point. Therefore, the HystrixAspect is not woven.</p>
-
-<pre><code class="language-java">@Override
-public long getCurrentThreadId () {
-  return Thread.currentThread().getId();
-}
-
-@Override
-public long nestedGetCurrentThreadId () {
-  return getCurrentThreadId();
-}
-</code></pre>
-
-<p>The takeaway from this scenario is that you should always put join point annotations on concrete classes when using AspectJ, just like you should when using Spring CGLIB proxies for AOP.</p>
-
-<p><strong>Next Steps</strong></p>
-
-<p>Stay tuned for the third and final entry in this blog series, which will cover how to configure AspectJ for Spring Boot. It contains a critical piece of JVM configuration information that isn’t widely found in other tutorials (including Spring’s own documentation), so be sure to catch the next entry by following @CrederaOpen on Twitter or connecting with us on LinkedIn.</p>
+<p>Bolt是一个成熟的比较复杂的RPC系统，这篇小文章只讲解了其中一部分，内部还有大量的实现细节有待去挖掘。</p>
 
                         
                       </div>
@@ -278,10 +208,10 @@ public long nestedGetCurrentThreadId () {
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/5/31</span>
+                    <span class="date">2018/6/15</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Java.html'>Java</a></span>
+          					    <span class="posted-in"><a href='Microservice.html'>Microservice</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -348,8 +278,6 @@ public long nestedGetCurrentThreadId () {
 
       	<p class="cat-list">
         
-            <a href="Team.html"><strong>Team</strong></a>
-        
             <a href="Infra.html"><strong>Infra</strong></a>
         
             <a href="Coding.html"><strong>Coding</strong></a>
@@ -373,31 +301,31 @@ public long nestedGetCurrentThreadId () {
 	      
 		      
 			      <li class="post">
-			        <a href="15301813999205.html">架构设计：负载均衡层设计方案（9）——负载均衡层总结下篇</a>
+			        <a href="15337171704262.html">Introduction to Testing with Spock and Groovy</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301813109409.html">架构设计：负载均衡层设计方案（8）——负载均衡层总结上篇</a>
+			        <a href="15336595358049.html">10 Excellent Ways to Secure Your Spring Boot Application</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301812452579.html">架构设计：负载均衡层设计方案（7）——LVS + Keepalived + Nginx安装及配置</a>
+			        <a href="15336592302916.html">First MicroProfile.io application using Java Module System</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301811967181.html">架构设计：负载均衡层设计方案（6）——Nginx + Keepalived构建高可用的负载层</a>
+			        <a href="15332186142588.html">Jenkins 的 Pipeline 脚本在美团餐饮 SaaS 中的实践</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301811361753.html">架构设计：负载均衡层设计方案（5）——LVS单节点安装</a>
+			        <a href="15331749691571.html">基于ZooKeeper的分布式锁和队列</a>
 			      </li>
 		     
 		  

@@ -76,8 +76,6 @@
     <li><label>Categories</label></li>
 
         
-            <li><a href="Team.html">Team</a></li>
-        
             <li><a href="Infra.html">Infra</a></li>
         
             <li><a href="Coding.html">Coding</a></li>
@@ -107,345 +105,126 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15281300875751.html">
+                <a class="clearlink" href="15299316548658.html">
                 
-                  <h1>Bash variables and command substitution</h1>
+                  <h1>hbase 的架构及设计</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="http://www.compciv.org/topics/bash/variables-and-substitution/">http://www.compciv.org/topics/bash/variables-and-substitution/</a></p>
+<p><a href="https://blog.csdn.net/liweisnake/article/details/78086262">https://blog.csdn.net/liweisnake/article/details/78086262</a></p>
 </blockquote>
 
-<p>Using variables to refer to data, including the results of a command.</p>
+<p>hbase 是强一致性的海量数据库，无论是读写性能，或是数据容量，还是一致性方面，hbase 都有非常优秀的表现。</p>
 
-<p>An essential feature of programming is the ability to use a name or a label to refer to some other quantity: such as a value, or a command. This is commonly referred to as <strong>variables</strong>.</p>
+<p>本文从架构方面探讨 hbase 的主要设计，从而在需要 hbase 的场合能够更好的设计和判断。</p>
 
-<p>Variables can be used, at the very least, to make code more readable for humans:</p>
+<p>首先，先来看看 <strong>hbase 的整体架构</strong>。除了 DFS 组件，hbase 的基本组件图实际上就是 Zookeeper，HMaster，RegionServer。</p>
 
-<pre><code>domain=&#39;http://www.whitehouse.gov&#39;
-path=&#39;/some/path&#39;
-base_url=&quot;$domain$path&quot;
-page=&#39;index.html&#39;
-# download http://www.whitehouse.gov/some/path/index.html
-# and save to &#39;downloads/index.html&#39;
-curl &quot;$base_url/$page&quot; -o &quot;downloads/$page&quot;
+<p><img src="https://img-blog.csdn.net/20171007104837576?watermark/2/text/aHR0cDovL2Jsb2cuY3Nkbi5uZXQvbGl3ZWlzbmFrZQ==/font/5a6L5L2T/fontsize/400/fill/I0JBQkFCMA==/dissolve/70/gravity/Center" alt=""/></p>
 
-</code></pre>
+<p>其中，<strong>RegionServer</strong> 作为数据的实际存取服务器，主要负责数据的最终存取，一般情况都是多台；</p>
 
-<p>However, variables really come into use in more advanced programming, when we&#39;re in a situation in which the actual values aren&#39;t known before executing a program. A variable acts as a <strong>placeholder</strong> that gets resolved upon actual execution time.</p>
+<p>RegionServer 根据不同的 row key 划分为许多 region，每个 region 按顺序存放从 startKey 到 endKey 的数据。每个 RegionServer 有下面这些组件：</p>
 
-<p>For example, imagine that <code>websites.txt</code> contains a list of website addresses. The following routine reads each line (via <code>cat</code>, which isn&#39;t best practice…but will do for now) into a <code>for</code> loop, which then downloads each URL:</p>
+<p><img src="https://img-blog.csdn.net/20171015092617159?watermark/2/text/aHR0cDovL2Jsb2cuY3Nkbi5uZXQvbGl3ZWlzbmFrZQ==/font/5a6L5L2T/fontsize/400/fill/I0JBQkFCMA==/dissolve/70/gravity/Center" alt=""/><img src="https://img-blog.csdn.net/20171007212610301?watermark/2/text/aHR0cDovL2Jsb2cuY3Nkbi5uZXQvbGl3ZWlzbmFrZQ==/font/5a6L5L2T/fontsize/400/fill/I0JBQkFCMA==/dissolve/70/gravity/Center" alt=""/></p>
 
-<pre><code>for url in $(cat websites.txt); do 
-  curl $url &gt; megapage.html
-done
+<p><strong>一个 WAL</strong>: write ahead log. 听名知其意，该文件是落库前先写的日志文件，它最主要的作用是恢复数据用，类似于 mysql 的 binlog。保存在 HDFS 中</p>
 
-</code></pre>
+<p><strong>一个 BlockCache</strong>: regionServer 的读缓存。保存使用最频繁的数据，使用 LRU 算法换出不需要的数据。</p>
 
-<h2 id="toc_0">Variables</h2>
+<p><strong>多个 Region</strong>: 每个 region 包含多个 store，每个 CF 拥有一个 store</p>
 
-<h3 id="toc_1">Basic variable usage and syntax</h3>
+<p><strong>store</strong>: 每个 store 包含多个 storeFile 和一个 memstore</p>
 
-<h4 id="toc_2">Setting a variable</h4>
+<p><strong>Memstore</strong>: region 的写缓存。保存还未写入 HFile 的数据，写入数据前会先做排序，每个 region 每个 CF 都会拥有一个 Memstore，这就是为什么 CF 不能建太多的原因。</p>
 
-<p>The following command assigns <code>Hello World</code> to the variable named <code>var_a</code>, and <code>42</code> to <code>another_var</code></p>
+<p><strong>storeFile</strong>: 真正存储 keyvalue 数据的文件，其保存的文件是排序过的。一个 storeFile 对应一个 HFile。保存在 HDFS 中</p>
 
-<pre><code>user@host:~$ var_a=&quot;Hello World&quot;
-user@host:~$ another_var=42
+<p>HFile 分为数据块，索引块，bloom 过滤器以及 trailer。</p>
 
-</code></pre>
+<p><img src="https://img-blog.csdn.net/20171015100418759?watermark/2/text/aHR0cDovL2Jsb2cuY3Nkbi5uZXQvbGl3ZWlzbmFrZQ==/font/5a6L5L2T/fontsize/400/fill/I0JBQkFCMA==/dissolve/70/gravity/Center" alt=""/></p>
 
-<p>Unlike most modern languages, Bash is pretty picky about the syntax for setting variables. In particular, no whitespace is allowed between the variable name, the equals sign, and the value.</p>
+<p><strong>Trailer</strong> 主要记录了 HFile 的基本信息，各个部分的偏移和地址信息。</p>
 
-<p>All of these examples would cause Bash to throw an error:</p>
+<p><strong>Data block</strong> 主要存储用户的 key-value 数据</p>
 
-<pre><code>var_a= &quot;Hello World&quot;
-var_a = &quot;Hello World&quot;
-var_a =&quot;Hello World&quot;
+<p><strong>Bloom filter</strong> 主要用来快速定位文件是否不在数据块。</p>
 
-</code></pre>
+<p><img src="https://img-blog.csdn.net/20171015103532031?watermark/2/text/aHR0cDovL2Jsb2cuY3Nkbi5uZXQvbGl3ZWlzbmFrZQ==/font/5a6L5L2T/fontsize/400/fill/I0JBQkFCMA==/dissolve/70/gravity/Center" alt=""/></p>
 
-<h4 id="toc_3">Referencing the value of a variable</h4>
+<p><img src="https://img-blog.csdn.net/20171015103549504?watermark/2/text/aHR0cDovL2Jsb2cuY3Nkbi5uZXQvbGl3ZWlzbmFrZQ==/font/5a6L5L2T/fontsize/400/fill/I0JBQkFCMA==/dissolve/70/gravity/Center" alt=""/></p>
 
-<p>Whenever Bash encounters a <strong>dollar-sign</strong>, immediately followed by a word, within a command or in a double-quoted string, it will attempt to replace that token with the value of the named variable. This is sometimes referred to as <strong>expanding the variable</strong>, or <a href="http://tldp.org/LDP/abs/html/parameter-substitution.html">parameter substitution</a>:</p>
+<p>比较容易混淆的是 <strong>zookeeper 和 hmaster</strong>。</p>
 
-<pre><code>user@host:~$ var_a=&quot;Hello World&quot;
-user@host:~$ another_var=42
-user@host:~$ echo $var_a
-Hello World
-user@host:~$ echo $another_var
-42
-user@host:~$ echo $var_a$another_var
-Hello World42
+<p><strong>Zookeeper</strong> 负责保持多台 Hmaster 中只有一台是活跃的；存储 Hbase 的 schema，table，CF 等元信息；存储所有的 region 入口；监控 regionServer 的状态，并将该信息通知 hmaster。可以看出来，zookeeper 几乎是负责整个集群的关键信息存取以及关键状态监控。<strong>如果 zookeeper 挂了，那么整个 hbase 集群几乎就是不可用的状态</strong>。</p>
 
-</code></pre>
+<p><img src="https://img-blog.csdn.net/20171007233209495?watermark/2/text/aHR0cDovL2Jsb2cuY3Nkbi5uZXQvbGl3ZWlzbmFrZQ==/font/5a6L5L2T/fontsize/400/fill/I0JBQkFCMA==/dissolve/70/gravity/Center" alt=""/></p>
 
-<h5 id="toc_4">Failure to dereference</h5>
+<p><strong>Hmaster</strong> 则是负责对 table 元数据的管理；对 HRegion 的负载均衡，调整 HRegion 的布局，比如分裂和合并；包括恢复数据的迁移等。Hmaster 相当于对 RegionServer 的后台管理，对于一些定制的管理行为，zookeeper 不可能帮你完成，于是乎才有了 hmaster。<strong>如果 hmaster 挂了，除了不能对 table 进行管理配置，不能扩展 region，并不会影响整体服务的可用性</strong>。</p>
 
-<p>When a dollar-sign <u>doesn&#39;t</u> precede a variable name, or a variable reference is within <strong>single-quotes</strong>, Bash will interpret the string <u>literally</u>:</p>
+<p>接下来我们来关注一些关键流程。</p>
 
-<pre><code>user@host:~$ var_a=&quot;Hello World&quot;
-user@host:~$ another_var=42
-user@host:~$ echo var_a
-var_a
-user@host:~$ echo &#39;$another_var&#39;
-$another_var
-user@host:~$ echo &quot;$var_a$another_var&quot;
-Hello World42
-user@host:~$ echo &#39;$var_a$another_var&#39;
-$var_a$another_var
+<p><strong>客户端首次读写的流程</strong>：</p>
 
-</code></pre>
+<p>1. 客户端首先从 zookeeper 中得到 META table 的位置，根据 META table 的存储位置得到具体的 RegionServer 是哪台</p>
 
-<h4 id="toc_5">Concatenating strings</h4>
+<p>2. 询问具体的 RegionServer</p>
 
-<p>Variables can be very useful for text-patterns that will be repeatedly used:</p>
+<p><strong>写流程</strong>：</p>
 
-<pre><code>user@host:~$ wh_domain=&#39;http://www.whitehouse.gov&#39;
-user@host:~$ wh_path=&#39;/briefing-room/press-briefings?page=&#39;
-user@host:~$ wh_base_url=&quot;$wh_domain$wh_path&quot;
-user@host:~$ curl -so 10.html &quot;$wh_base_url=10&quot;
-user@host:~$ curl -so 20.html &quot;$wh_base_url=20&quot;
-user@host:~$ curl -so 30.html &quot;$wh_base_url=30&quot;
+<p>1. 首先写入 WAL 日志，以防 crash。</p>
 
-</code></pre>
+<p>2. 紧接着写入 Memstore，即写缓存。由于是内存写入，速度较快。</p>
 
-<p>If your variable name <u>butts</u> up against a literal alphanumeric character, you can use this more verbose form, involving <strong>curly braces</strong>, to reference a variable&#39;s value:</p>
+<p>3. 立马返回客户端表示写入完毕。</p>
 
-<pre><code>user@host:~$ BASE_BOT=&#39;R2&#39;
-user@host:~$ echo &quot;$BASE_BOTD2&quot;
-# nothing gets printed, because $BASE_BOTD2 is interpreted 
-# as a variable named BASE_BOTD2, which has not been set
-user@host:~$ echo &quot;${BASE_BOT}D2&quot;
-R2D2
+<p>4. 当 Memstore 满时，从 Memstore 刷新到 HFile，磁盘的顺序写速度非常快，并记录下最后一次最高的 sequence 号。这样系统能知道哪些记录已经持久化，哪些没有。</p>
 
-</code></pre>
+<p><strong>读流程</strong>：</p>
 
-<h4 id="toc_6">Valid variable names</h4>
+<p>1. 首先到读缓存 BlockCache 中查找可能被缓存的数据</p>
 
-<p>Variable names can contain a sequence of alphanumeric characters and underscores. For variables created by you, the user, they should start with either an alphabetical letter or an underscore (i.e. not a number):</p>
+<p>2. 如果未找到，到写缓存查找已提交但是未落 HFile 的数据</p>
 
-<p>Valid variable names:</p>
+<p>3. 如果还未找到， 到 HFile 中继续查找数据</p>
+
+<p><img src="https://img-blog.csdn.net/20171008110233034?watermark/2/text/aHR0cDovL2Jsb2cuY3Nkbi5uZXQvbGl3ZWlzbmFrZQ==/font/5a6L5L2T/fontsize/400/fill/I0JBQkFCMA==/dissolve/70/gravity/Center" alt=""/></p>
+
+<p><strong>数据紧凑</strong>：</p>
+
+<p>数据从 memStore 刷新到 HFile 时，为了保持简单，都是每个 memStore 放一个 HFile，这会带来大量小 HFile 文件，使得查询时效率相对较低，于是，采用数据紧凑的方式将多个小文件压缩为几个大文件。其中，minor compaction 是自动将相关的小文件做一些适当的紧凑，但不彻底；而 major compaction 则是放在午夜跑的定时任务，将文件做最大化的紧凑。</p>
+
+<p><img src="https://img-blog.csdn.net/20171008114505743?watermark/2/text/aHR0cDovL2Jsb2cuY3Nkbi5uZXQvbGl3ZWlzbmFrZQ==/font/5a6L5L2T/fontsize/400/fill/I0JBQkFCMA==/dissolve/70/gravity/Center" alt=""/></p>
+
+<p><img src="https://img-blog.csdn.net/20171008114703447?watermark/2/text/aHR0cDovL2Jsb2cuY3Nkbi5uZXQvbGl3ZWlzbmFrZQ==/font/5a6L5L2T/fontsize/400/fill/I0JBQkFCMA==/dissolve/70/gravity/Center" alt=""/></p>
+
+<p><strong>数据恢复流程</strong>：</p>
+
+<p>当 RegionServer 挂了，zookeeper 很快就能检测到，于是将其下的 region 状态设置为不可用。Hmaster 随即开始恢复的流程。</p>
+
+<p>1. HFile 本身有 2 个备份，而且有专门的 HDFS 来管理其下的文件。因此对 HFile 来说并不需要恢复。</p>
+
+<p>2. Hmaster 重置 region 到新的 regionServer</p>
+
+<p>3. 之前在 MemStore 中丢失的数据，通过 WAL 分裂先将 WAL 按照 region 切分。切分的原因是 WAL 并不区分 region，而是所有 region 的 log 都写入同一个 WAL。</p>
+
+<p>4. 根据 WAL 回放并恢复数据。回放的过程实际上先进 MemStore，再 flush 到 HFile</p>
+
+<p><img src="https://img-blog.csdn.net/20171008154723461?watermark/2/text/aHR0cDovL2Jsb2cuY3Nkbi5uZXQvbGl3ZWlzbmFrZQ==/font/5a6L5L2T/fontsize/400/fill/I0JBQkFCMA==/dissolve/70/gravity/Center" alt=""/></p>
+
+<p><img src="https://img-blog.csdn.net/20171008154745990?watermark/2/text/aHR0cDovL2Jsb2cuY3Nkbi5uZXQvbGl3ZWlzbmFrZQ==/font/5a6L5L2T/fontsize/400/fill/I0JBQkFCMA==/dissolve/70/gravity/Center" alt=""/></p>
+
+<h2 id="toc_0">参考资料</h2>
 
 <ul>
-<li>  <code>hey</code></li>
-<li>  <code>x9</code></li>
-<li>  <code>GRATUITOUSLY_LONG_NAME</code></li>
-<li>  <code>_secret</code></li>
+<li><a href="https://yq.aliyun.com/articles/54410">我们为什么选择 hbase</a></li>
+<li><a href="https://mapr.com/blog/in-depth-look-hbase-architecture/">hbase 架构</a></li>
+<li><a href="http://hbasefly.com/2016/10/29/hbase-regionserver-recovering/">HBase 原理－RegionServer 宕机数据恢复</a></li>
+<li><a href="http://hbasefly.com/2016/03/25/hbase-hfile/">HBase – 存储文件 HFile 结构解析</a></li>
+<li><a href="http://blog.cloudera.com/blog/2012/06/hbase-io-hfile-input-output/">Apache HBase I/O – HFile</a></li>
 </ul>
-
-<p>When we write functions and shell scripts, in which arguments are passed in to be processed, the arguments will be passed int numerically-named variables, e.g. <code>$1</code>, <code>$2</code>, <code>$3</code></p>
-
-<p>For example:</p>
-
-<pre><code>bash my_script.sh Hello 42 World
-
-</code></pre>
-
-<p>Inside <code>my_script.sh</code>, commands will use <code>$1</code> to refer to <code>Hello</code>, <code>$2</code> to <code>42</code>, and <code>$3</code> for <code>World</code></p>
-
-<p>The variable reference, <code>$0</code>, will expand to the current script&#39;s name, e.g. <code>my_script.sh</code></p>
-
-<hr/>
-
-<h2 id="toc_7">Command substitution</h2>
-
-<p>The standard output of a command can be encapsulated, much like a value can be stored in a value, and then expanded by the shell.</p>
-
-<p>This is known as <strong>command substitution</strong>. From the <a href="http://www.gnu.org/software/bash/manual/bashref.html#Command-Substitution">Bash documentation</a>:</p>
-
-<blockquote>
-<p>Command substitution allows the output of a command to replace the command itself. Bash performs the expansion by executing command and replacing the command substitution with the standard output of the command, with any trailing newlines deleted. Embedded newlines are not deleted, but they may be removed during word splitting.</p>
-</blockquote>
-
-<p>As an example, consider the <strong>seq</strong> command, which will print a sequence of numbers starting from the first argument to the second argument:</p>
-
-<pre><code>user@host~:$ seq 1 5
-1
-2
-3
-4
-5
-
-</code></pre>
-
-<p>With command substitution, we can encapsulate the result of <code>seq 1 5</code> into a variable by enclosing the command with <code>$(</code> and <code>)</code>, and pass it as an argument to another command:</p>
-
-<pre><code>user@host~:$ echo $(seq 1 5)
-1 2 3 4 5
-# Or, to create 5 new directories:
-user@host~:$ mkdir $(seq 1 5)
-
-</code></pre>
-
-<p>As a GIF:</p>
-
-<p><img src="/files/images/cli/seq-command-expansion.gif" alt="img"/></p>
-
-<h3 id="toc_8">Variables and command expansion</h3>
-
-<p>When a command is replaced by its standard output, that output, presumably just text, can be assigned to a variable like any other value:</p>
-
-<pre><code>user@host~:$ a=$(echo &#39;hello&#39; | tr &#39;[:lower:]&#39; &#39;[:upper:]&#39;)
-user@host~:$ b=$(echo &#39;WORLD&#39; | tr &#39;[:upper:]&#39; &#39;[:lower:]&#39;)
-user@host~:$ echo &quot;$a, $b&quot;
-HELLO, world
-
-</code></pre>
-
-<h3 id="toc_9">The loss of newlines in command substitution</h3>
-
-<p>Earlier, I quoted from the Bash documentation on command expansion. Here&#39;s an emphasized version of the excerpt:</p>
-
-<blockquote>
-<p>Command substitution allows the output of a command to replace the command itself. Bash performs the expansion by executing command and replacing the command substitution with the standard output of the command, <strong>with any trailing newlines deleted. Embedded newlines are not deleted, but they may be removed during word splitting.</strong></p>
-</blockquote>
-
-<p>What does that mean? Consider <code>seq 1 5</code> being called normally, and then, via command substitution, and note the change in formatting:</p>
-
-<pre><code>user@host:~$ seq 1 5
-1
-2
-3
-4
-5
-user@host:~$ echo $(seq 1 5)
-1 2 3 4 5
-
-</code></pre>
-
-<p>Why do the newlines get removed during the command expansion? It&#39;s something we&#39;ll encounter later (and there&#39;s a section on it at the end of this tutorial) and deals with how Bash interprets space and newline characters during expansion. Anyway, it&#39;s worth noting the behavior for now, as it may be new to you if you&#39;re coming from another programming language.</p>
-
-<h3 id="toc_10">Arithmetic expansion</h3>
-
-<p>To do basic calculations, you can enclose an expression inside <code>$(( ))</code>:</p>
-
-<pre><code>user@host:~$ echo &quot;42 - 10 is...$(( 42 - 10))&quot;
-42 - 10 is...32
-
-</code></pre>
-
-<p>Check the Bash documentation for the <a href="http://www.gnu.org/software/bash/manual/bashref.html#Shell-Arithmetic">full set of arithmetic operators</a>. Math at the command-line can be a bit clunky so we won&#39;t be focusing too much on it.</p>
-
-<h4 id="toc_11">The bc utility</h4>
-
-<p>An aside: if you want to do more advanced math from the command line, use <strong>bc</strong>, which reads in from stdout and evaluates the expression:</p>
-
-<pre><code>user@host:~$ echo &quot;9.45 / 2.327&quot; | bc
-4
-user@host:~$ echo &quot;9.45 / 2.327&quot; | bc -l
-4.06102277610657498925
-
-</code></pre>
-
-<h2 id="toc_12">Word-splitting in the wild</h2>
-
-<p>This section covers more technical details of how Bash handles space characters when it does an exapansion. It&#39;s not necessary to memorize for the specific assignments in this class. However, as many of you are wont to copy and paste code directly from things you&#39;ve seen on the Internet, it might be worth knowing all the different ways you could accidentally harm yourself, due to the way Bash handles spaces and newline characters.</p>
-
-<p>Here&#39;s the Bash documentation for the <a href="http://www.gnu.org/software/bash/manual/bashref.html#Word-Splitting">concept known as &quot;word-splitting&quot;</a></p>
-
-<h3 id="toc_13">The internal field separator</h3>
-
-<p>The global variable <code>IFS</code> is what Bash uses to split a string of expanded into separate <u>words</u>…think of it as how Excel knows to split a CSV (comma-separated-values) text file into a spreadsheet: it assumes the <strong>commas</strong> separate the columns.</p>
-
-<p>Let&#39;s pretend that <code>IFS</code> has been set to something arbitrary, like a capital <code>Z</code>. When <strong>Bash</strong> expands a variable that happens to contain a <code>Z</code>, the value of that variable will be split into separate <strong>words</strong> (and the literal <code>Z</code> will disappear):</p>
-
-<pre><code>user@host:~$ IFS=Z
-user@host:~$ story=&quot;The man named Zorro rides a Zebra&quot;
-user@host:~$ echo &#39;&gt;&gt;&#39; $story &#39;&lt;&lt;&#39;
-&gt;&gt; The man named  orro rides a  ebra &lt;&lt;
-
-</code></pre>
-
-<p>By default, the <code>IFS</code> variable is set to three characters: <strong>newline</strong>, <strong>space</strong>, and the <strong>tab</strong>. If you <code>echo $IFS</code>, you won&#39;t see anything because those characters…well, how do you <u>see</u> a <strong>space</strong> character if there aren&#39;t any visible characters?</p>
-
-<p>The upshot is that you may see code snippets online in which the <code>IFS</code> variable is changed to something like <code>$&#39;\n&#39;</code> (which stands for the <strong>newline</strong> character).</p>
-
-<p>Imagine a textfile that contains a bunch of lines of text that, for example, may refer to filenames:</p>
-
-<pre><code>rough draft.txt
-draft 1.txt
-draft 2.txt
-final draft.txt
-
-</code></pre>
-
-<p>When Bash reads each line of the file, the default value of <code>IFS</code>, which includes a <strong>space character</strong>, will cause Bash to treat the file named <code>rough draft.txt</code> as two files, <code>rough</code> and <code>draft.txt</code>, because the space character is used to <strong>split</strong> words.</p>
-
-<p>With <code>IFS</code> set to just the <strong>newline</strong> character, <code>rough draft.txt</code> is treated as a single filename.</p>
-
-<p>This concept will make sense when it comes to reading text files and operating on each line. I don&#39;t expect you to fully understand this, but only to be <u>aware</u> of it, just in case you are haphazardly copy-pasting code from the Internet.</p>
-
-<h3 id="toc_14">The dangers of unquoted variables</h3>
-
-<p>In an ideal world, everyone would keep their string values short and without space/newline, or any other special characters. In that ideal world, the following unquoted variable reference would work just fine:</p>
-
-<pre><code>user@host:~$ file_to_kill=&#39;whatsup.txt&#39;
-usr@host:~$ rm $file_to_kill   # delete the file named whatsup.txt
-
-</code></pre>
-
-<p>But when people start adding special characters to filenames, such as spaces, expanding variables, <u>without the use of double quotes</u>, can be <u>dangerous</u>.</p>
-
-<p>In the following example, the programmer intends the file named <code>Junk Final.docx</code> to be deleted:</p>
-
-<pre><code>user@host:~$ file_to_kill=&#39;Junk Final.docx&#39;
-
-</code></pre>
-
-<h3 id="toc_15">Unexpected word-splitting</h3>
-
-<p>However, when referenced <u>without double-quotes</u>, Bash sees <code>file_to_kill</code> as containing two separate values, <code>Junk</code> and <code>Final.docx</code>. The subsequent <code>rm</code> command will attempt to delete <u>those two files</u>, and not <code>Junk Final.docx</code>:</p>
-
-<pre><code>user@host:~$ file_to_kill=&#39;Junk Final.docx&#39;
-user@host:~$ rm $file_to_kill
-rm: cannot remove &#39;Junk&#39;: No such file or directory
-rm: cannot remove &#39;Final.docx&#39;: No such file or directory
-
-</code></pre>
-
-<h3 id="toc_16">Unexpected special characters in filenames</h3>
-
-<p>Ah, <u>no harm done</u>, you say, because those files didn&#39;t exist in the first place. OK, but what happens when someone puts a <strong>star</strong> (i.e. <strong>asterisk</strong>) into a filename? You&#39;re aware of what happens when you do <code>grep *</code> and <code>rm *</code> – the <strong>star</strong> acts as a wildcard, grabbing <u>every</u> file.</p>
-
-<pre><code>user@host:~$ file_to_kill=&#39;Junk * Final.docx&#39;
-user@host:~$ rm $file_to_kill
-
-</code></pre>
-
-<p>So you&#39;ll see the previous errors, since <code>Junk</code> and <code>Final.docx</code> don&#39;t exist. But in between those attempted deletions, <code>rm</code> will run on <code>*</code>…so say bye-bye to every file in that directory.</p>
-
-<p>Here&#39;s the animated GIF version:</p>
-
-<p><img src="/files/images/cli/bye-bye-unquoted-filenames.gif" alt="img"/></p>
-
-<p>Notice how <code>rm &quot;$filename&quot;</code> affects <u>only</u> the file that is named, <code>* LOL BYE FILES</code>.</p>
-
-<p>So the main takeaway here is: <strong>double-quote your variable references whenever possible</strong>.</p>
-
-<h6 id="toc_17">To reiterate</h6>
-
-<p>Expanding a variable can lead to unexpected and sometimes catastrophic results if the variable contains special characters:</p>
-
-<pre><code>user@host:~$ do_something $some_variable
-
-</code></pre>
-
-<p>Expanding a variable within double-quotes can prevent such problems:</p>
-
-<pre><code>user@host:~$ do_something &quot;$some_variable&quot;
-
-</code></pre>
-
-<h4 id="toc_18">Who would do such a thing?</h4>
-
-<p>You might think, <u>Who the hell puts star characters in their filenames?</u> Well, besides people who really enjoy star-shaped symbols, malicious hackers and pranksters. And variables usually aren&#39;t just manually assigned by the result of human typing. As you&#39;ve read above, sometimes the result of commands are stored in a variable. And if such commands are processing raw data, it&#39;s not unimaginable that the raw data, quite innocently, contains special characters that are destructive to certain Bash programs.</p>
-
-<p>For the purposes of the CompCiv course, the assignments will try to stay far from untrusted sources of data. But keep in mind the dangers of just pasting in seemingly safe-looking code. Bash&#39;s syntax and behavior in handling strings is hard to fully comprehend, which is why developers use other languages for more complex applications.</p>
-
-<p>You can read more about <a href="http://tldp.org/LDP/abs/html/quotingvar.html%20at%20TLDP.org">quoting variables</a>. There&#39;s a lot of minutiae, but the main takeaway, besides general <u>safety</u>, is to have a general understanding how Bash, and any other programming environment, uses certain conventions and syntax rules to deal with the myriad ways that users want to pass around values in their programs.</p>
 
                         
                       </div>
@@ -454,10 +233,10 @@ user@host:~$ rm $file_to_kill
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/6/5</span>
+                    <span class="date">2018/6/25</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Bash.html'>Bash</a></span>
+          					    <span class="posted-in"><a href='Persistence.html'>Persistence</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -524,8 +303,6 @@ user@host:~$ rm $file_to_kill
 
       	<p class="cat-list">
         
-            <a href="Team.html"><strong>Team</strong></a>
-        
             <a href="Infra.html"><strong>Infra</strong></a>
         
             <a href="Coding.html"><strong>Coding</strong></a>
@@ -549,31 +326,31 @@ user@host:~$ rm $file_to_kill
 	      
 		      
 			      <li class="post">
-			        <a href="15301813999205.html">架构设计：负载均衡层设计方案（9）——负载均衡层总结下篇</a>
+			        <a href="15337171704262.html">Introduction to Testing with Spock and Groovy</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301813109409.html">架构设计：负载均衡层设计方案（8）——负载均衡层总结上篇</a>
+			        <a href="15336595358049.html">10 Excellent Ways to Secure Your Spring Boot Application</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301812452579.html">架构设计：负载均衡层设计方案（7）——LVS + Keepalived + Nginx安装及配置</a>
+			        <a href="15336592302916.html">First MicroProfile.io application using Java Module System</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301811967181.html">架构设计：负载均衡层设计方案（6）——Nginx + Keepalived构建高可用的负载层</a>
+			        <a href="15332186142588.html">Jenkins 的 Pipeline 脚本在美团餐饮 SaaS 中的实践</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301811361753.html">架构设计：负载均衡层设计方案（5）——LVS单节点安装</a>
+			        <a href="15331749691571.html">基于ZooKeeper的分布式锁和队列</a>
 			      </li>
 		     
 		  

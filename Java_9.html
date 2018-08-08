@@ -76,8 +76,6 @@
     <li><label>Categories</label></li>
 
         
-            <li><a href="Team.html">Team</a></li>
-        
             <li><a href="Infra.html">Infra</a></li>
         
             <li><a href="Coding.html">Coding</a></li>
@@ -107,28 +105,90 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="14836015276397.html">
+                <a class="clearlink" href="15309354381443.html">
                 
-                  <h1>[Different types of thread-safe Sets in Java](http://stackoverflow.com/questions/6720396/different-types-of-thread-safe-sets-in-java)</h1>
+                  <h1>Intersection Types: Java Generics’ most underused feature</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
-                        	<ul>
-<li><p>1) The CopyOnWriteArraySet is a quite simple implementation - it basically has a list of elements in an array, and when changing the list, it copies the array. Iterations and other accesses which are running at this time continue with the old array, avoiding necessity of synchronization between readers and writers (though writing itself needs to be synchronized). The normally fast set operations (especially contains()) are quite slow here, as the arrays will be searched in linear time.</p>
+                        	<blockquote>
+<p><a href="http://iteratrlearning.com/java/generics/2016/05/12/intersection-types-java-generics.html">http://iteratrlearning.com/java/generics/2016/05/12/intersection-types-java-generics.html</a></p>
+</blockquote>
 
-<p>Use this only for really small sets which will be read (iterated) often and changed seldom. (Swings listener-sets would be an example, but these are not really sets, and should be only used from the EDT anyway.)</p></li>
-<li><p>2) Collections.synchronizedSet will simply wrap a synchronized-block around each method of the original set. You should not access the original set directly. This means that no two methods of the set can be executed concurrently (one will block until the other finishes) - this is thread-safe, but you will not have concurrency if multiple threads are really using the set. If you use the iterator, you usually still need to synchronize externally to avoid ConcurrentModificationExceptions when modifying the set between iterator calls. The performance will be like the performance of the original set (but with some synchronization overhead, and blocking if used concurrently).</p>
+<p><u>Written on May 12, 2016</u></p>
 
-<p>Use this if you only have low concurrency, and want to be sure all changes are immediately visible to the other threads.</p></li>
-<li><p>3) ConcurrentSkipListSet is the concurrent SortedSet implementation, with most basic operations in O(log n). It allows concurrent adding/removing and reading/iteration, where iteration may or may not tell about changes since the iterator was created. The bulk operations are simply multiple single calls, and not atomically - other threads may observe only some of them.</p>
+<p>Generic types were added to java way back in 2004 and have had extensive usage by different libraries and application developers ever since. Not all generics features have had equal usage though. In this blog post we’re going to explore Intersection Types: which are both one of the lesser-known features that Java Generics offers.</p>
 
-<p>Obviously you can use this only if you have some total order on your elements. This looks like an ideal candidate for high-concurrency situations, for not-too-large sets (because of the O(log n)).</p></li>
-<li><p>4) For the ConcurrentHashMap (and the Set derived from it): Here most basic options are (on average, if you have a good and fast hashCode()) in O(1) (but might degenerate to O(n)), like for HashMap/HashSet. There is a limited concurrency for writing (the table is partitioned, and write access will be synchronized on the needed partition), while read access is fully concurrent to itself and the writing threads (but might not yet see the results of the changes currently being written). The iterator may or may not see changes since it was created, and bulk operations are not atomic. Resizing is slow (as for HashMap/HashSet), thus try to avoid this by estimating the needed size on creation (and using about 1/3 more of that, as it resizes when 3/4 full).</p>
+<p>Intersection types are a form of generic type that look a bit like <code>&lt;T extends A &amp; B&gt;</code>, where <code>T</code> is a type parameter and <code>A</code> and <code>B</code> are two types. In order to understand intersection types we first need to talk about how the extends keyword is used in generics. If you see a generic type parameter like <code>&lt;T extends Comparable&gt;</code> then it means that you are going to require our generic type (T) to only be those classes that implement the interface <code>Comparable</code>. Remember when we say “extends” in generic types that could refer to either extending a class or also implementing an interface.</p>
 
-<p>Use this when you have large sets, a good (and fast) hash function and can estimate the set size and needed concurrency before creating the map.</p></li>
-<li><p>5) Are there other concurrent map implementations one could use here?</p></li>
-</ul>
+<p>Intersection types are for situations where we want to be really greedy with our requirements! We want to say only allow classes that extend both classes in the case of our intersection types. But, why on earth would we want to do this? Let’s walk through a worked example to understand intersection types properly.</p>
+
+<h2 id="toc_0">Deserializing DataInputStream and RandomAccessFile objects</h2>
+
+<p>Let’s suppose we’ve got a <code>Person</code> class and every Person has a name and an age that are instantiated in the constructor.</p>
+
+<p><code>public Person(String name, int age)</code></p>
+
+<p>Our system is trying to de-serialise person instances from an input stream, like a storage file or a network connection. In order to do this we’ve got a read method that takes a DataInputStream. It reads out the name as a Unicode string and the age as an int. After the Person instance has been read out the DataInputStream gets closed.</p>
+
+<pre><code class="language-java">private static Person read(DataInputStream source) {
+   try(DataInputStream input = source) {
+       return new Person(input.readUTF(), input.readInt());
+   }
+   catch (IOException e) {
+       e.printStackTrace();
+       return null;
+    }
+}
+</code></pre>
+
+<p>After this code has been deployed in production for a while a new requirement appears. Software development is a job never done. The new requirement requires the code to de-serialise the data from a RandomAccessFile object. Ideally you would like to re-use the logic of the read method which accepts a source of type DataInputStream. Unfortunately, an object of type <code>RandomAccessFile</code> is not a subtype of <code>DataInputStream</code> so this won’t work.</p>
+
+<h2 id="toc_1">Dummy interfaces</h2>
+
+<p>What can you do? You can notice that both DataInputStream and RandomAccessFile implement the interfaces DataInput and Closeable. Consequently, you could refactor the method read by introducing a “dummy” interface whose only purpose is to create a type that extends both DataInput and Closeable:</p>
+
+<pre><code class="language-java">interface DataInputCloseable extends DataInput, Closeable {}
+</code></pre>
+
+<p>You can now refactor the method read to use this interface as follows:</p>
+
+<pre><code class="language-java">private static Person read(DataInputCloseable source) {
+   try(DataInputStream input = source) {
+       return new Person(input.readUTF(), input.readInt());
+   }
+   catch (IOException e) {
+       e.printStackTrace();
+       return null;
+   }
+}
+</code></pre>
+
+<p>Thanks to this refactoring, you have gained both code re-use and flexibility. You are now able to re-use the same implementation of the method read but pass DataInputStream objects and RandomAccessFile objects.</p>
+
+<h2 id="toc_2">Using intersection types</h2>
+
+<p>Nonetheless, you had to introduce a kind of “dummy” interface whose only purpose is to create a new type which extends two types (DataInput and Closeable). Not only that, but because you were depending upon classes in the core JDK libraries you couldn’t retrofit that interface to the actual implementing classes. This is a situation where intersection types can be convenient. They let you do just that without introducing an unnecessary interface or class in your code. You can refactor the method read as follows:</p>
+
+<pre><code class="language-java">private static &lt;I extends DataInput &amp; Closeable&gt; Person read(I source) {
+    try(I input = source) {
+        return new Person(input.readUTF(), input.readInt());
+    }
+    catch (IOException e) {
+       e.printStackTrace();
+       return null;
+    }
+}
+</code></pre>
+
+<p>In the code above, you introduced an intersection type <code>&lt;I extends DataInput &amp; Closeable&gt;</code> which says the type parameter <code>I</code> extends both <code>DataInput</code> and <code>Closeable</code>. You can then use this type parameter as argument to the method to indicate the input should extends both <code>DataInput</code> and <code>Closeable</code>.</p>
+
+<h2 id="toc_3">Conclusion</h2>
+
+<p>In this blog post, we showed that intersection types can be convenient in situations where you need “to extend from” two, or more, types in an existing library but you don’t have an existing interface or class to model that. In many cases this is unnecessary. Often introducing new types via an interface or class gives us an explicit name which helps the readability of your code. If the concept and name makes sense then that’s what we would recommend doing. In this case that wasn’t possible and intersection types helped save the day.</p>
+
+<p>If you are interested in improving your Java skills, check out our <a href="http://iteratrlearning.com/javabootcamp">Java Software Development Bootcamp</a></p>
 
                         
                       </div>
@@ -137,7 +197,7 @@
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2017/1/5</span>
+                    <span class="date">2018/7/7</span>
                     <span>posted in&nbsp;</span> 
           				  
           					    <span class="posted-in"><a href='Java.html'>Java</a></span>
@@ -207,8 +267,6 @@
 
       	<p class="cat-list">
         
-            <a href="Team.html"><strong>Team</strong></a>
-        
             <a href="Infra.html"><strong>Infra</strong></a>
         
             <a href="Coding.html"><strong>Coding</strong></a>
@@ -232,31 +290,31 @@
 	      
 		      
 			      <li class="post">
-			        <a href="15301813999205.html">架构设计：负载均衡层设计方案（9）——负载均衡层总结下篇</a>
+			        <a href="15337171704262.html">Introduction to Testing with Spock and Groovy</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301813109409.html">架构设计：负载均衡层设计方案（8）——负载均衡层总结上篇</a>
+			        <a href="15336595358049.html">10 Excellent Ways to Secure Your Spring Boot Application</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301812452579.html">架构设计：负载均衡层设计方案（7）——LVS + Keepalived + Nginx安装及配置</a>
+			        <a href="15336592302916.html">First MicroProfile.io application using Java Module System</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301811967181.html">架构设计：负载均衡层设计方案（6）——Nginx + Keepalived构建高可用的负载层</a>
+			        <a href="15332186142588.html">Jenkins 的 Pipeline 脚本在美团餐饮 SaaS 中的实践</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301811361753.html">架构设计：负载均衡层设计方案（5）——LVS单节点安装</a>
+			        <a href="15331749691571.html">基于ZooKeeper的分布式锁和队列</a>
 			      </li>
 		     
 		  

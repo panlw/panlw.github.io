@@ -76,8 +76,6 @@
     <li><label>Categories</label></li>
 
         
-            <li><a href="Team.html">Team</a></li>
-        
             <li><a href="Infra.html">Infra</a></li>
         
             <li><a href="Coding.html">Coding</a></li>
@@ -107,213 +105,129 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15262240665064.html">
+                <a class="clearlink" href="15309734549526.html">
                 
-                  <h1>Spring Boot で WebSocket (STOMPではなく、TextWebSocketHandler)を試してみる</h1>
+                  <h1>Stream Improvements in Java 9</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p>2017-05-10<br/>
-<a href="http://blog.enjoyxstudy.com/entry/2017/05/10/000000">http://blog.enjoyxstudy.com/entry/2017/05/10/000000</a></p>
+<p><a href="http://iteratrlearning.com/java9/2016/08/06/java9-streams.html">http://iteratrlearning.com/java9/2016/08/06/java9-streams.html</a></p>
 </blockquote>
 
-<p>こないだSTOMP over WebSocketを試してみましたが、今度はSTOMPを使わずに、<code>TextWebSocketHandler</code>を使ったWebSocketを試してみます。題材も同じくチャットです。</p>
+<p><u>Written on August 06, 2016</u></p>
 
-<ul>
-<li>  <a href="https://github.com/onozaty/sandbox-spring-boot/tree/master/spring-boot-websocket">sandbox-spring-boot/spring-boot-websocket at master · onozaty/sandbox-spring-boot · GitHub</a></li>
-</ul>
+<p>We’ve found, while teaching developers about lambdas and Streams in Java 8, that many developers really appreciate the code that comes out at the other end. It tends to read a lot more like the problem that developers are trying to solve than traditional for loops and, as a side effect, is often shorter to boot. That doesn’t mean that the Streams API is perfect or even complete. In this article we will be looking at a few small improvements that are scheduled for Java 9 that make it even better.</p>
 
-<p>ルームの情報をどのように渡そうか悩みました。コードを書き始めるまでは、WebSocketで接続する先にヘッダとかで渡せばいいかなと思っていましたが、調べてみたら渡せなかったので、やもえずURLのクエリパラメータとして渡すようにしました。</p>
+<h2 id="toc_0">ofNullable</h2>
 
-<h2 id="toc_0">コード</h2>
+<p>The <code>Stream</code> interface has a couple of factory methods called of() that allow you to create Streams from pre-specified values - one is an overload for a single value and the other takes a varargs parameter. These are incredibly useful both when you’re trying to test out Streams code and also when you want to just instantiate a Stream with a few values. Java 9 adds an <code>ofNullable()</code> factory - let’s see how you might use it and what it’s for.</p>
 
-<p>テキストでのやり取りを行うので、<code>TextWebSocketHandler</code> を利用します。<code>TextWebSocketHandler</code>の各メソッドをoverrideして必要な処理を実装するだけです。</p>
+<p>Let’s suppose we’re trying to find a location to put some configuration files in a Java application. We want to look at a couple of different properties - e.g. “app.config” and “app.home”. Let’s write this code in Java 8:</p>
 
-<p>ルームの情報は、URLのクエリとしてクライアントから送っているので、接続が確立したタイミング(<code>afterConnectionEstablished</code>)にて、ルーム毎に<code>WebSocketSession</code>を保持するようにします。 メッセージを受け取ったら、自分のルームと同じ<code>WebSocketSession</code>に対して、メッセージを送るだけです。</p>
-
-<pre><code class="language-java">package com.example;
-
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.CopyOnWriteArraySet;
-
-import org.springframework.stereotype.Component;
-import org.springframework.web.socket.CloseStatus;
-import org.springframework.web.socket.TextMessage;
-import org.springframework.web.socket.WebSocketSession;
-import org.springframework.web.socket.handler.TextWebSocketHandler;
-
-@Component
-public class ChatHandler extends TextWebSocketHandler {
-
-    private ConcurrentHashMap&lt;String, Set&lt;WebSocketSession&gt;&gt; roomSessionPool = new ConcurrentHashMap&lt;&gt;();
-
-    @Override
-    public void afterConnectionEstablished(WebSocketSession session) throws Exception {
-
-        String roomName = session.getUri().getQuery();
-
-        roomSessionPool.compute(roomName, (key, sessions) -&gt; {
-
-            if (sessions == null) {
-                sessions = new CopyOnWriteArraySet&lt;&gt;();
-            }
-            sessions.add(session);
-
-            return sessions;
-        });
-    }
-
-    @Override
-    protected void handleTextMessage(WebSocketSession session, TextMessage message) throws Exception {
-
-        String roomName = session.getUri().getQuery();
-
-        for (WebSocketSession roomSession : roomSessionPool.get(roomName)) {
-            roomSession.sendMessage(message);
-        }
-    }
-
-    @Override
-    public void afterConnectionClosed(WebSocketSession session, CloseStatus status) throws Exception {
-
-        String roomName = session.getUri().getQuery();
-
-        roomSessionPool.compute(roomName, (key, sessions) -&gt; {
-
-            sessions.remove(session);
-            if (sessions.isEmpty()) {
-                // 1件もない場合はMapからクリア
-                sessions = null;
-            }
-
-            return sessions;
-        });
-    }
-}
+<pre><code class="language-java">final String configurationDirectory =
+   Stream.of(&quot;app.config&quot;, &quot;app.home&quot;, &quot;user.home&quot;)
+         .flatMap(key -&gt; {
+             final String property = System.getProperty(key);
+             if (property == null)
+             {
+                 return Stream.empty();
+             }
+             else
+             {
+                 return Stream.of(property);
+             }
+         })
+         .findFirst()
+         .orElseThrow(IllegalStateException::new);
 </code></pre>
 
-<p>WebSocketの設定として、URLとHandlerを紐付けます。</p>
+<p>Hmm, that’s a little bit ugly right - What’s going on here? Well we’re looking up each property in our Stream and using the flatMap operation. We use flatMap here because it allows us to map an element to 0 or 1 elements in the Stream. If we can lookup the system property then we return a Stream containing only it, but if we can’t look it up then we return an empty Stream in its place. This results in no element being added into the stream.</p>
 
-<pre><code class="language-java">package com.example;
+<p>Unfortunately what we’ve ended up with is a fairly large statement style lambda expression with a null check in the middle of the code. One alternative would be to use a ternary operator</p>
 
-import org.springframework.context.annotation.Configuration;
-import org.springframework.web.socket.config.annotation.EnableWebSocket;
-import org.springframework.web.socket.config.annotation.WebSocketConfigurer;
-import org.springframework.web.socket.config.annotation.WebSocketHandlerRegistry;
-
-import lombok.AllArgsConstructor;
-
-@Configuration
-@EnableWebSocket
-@AllArgsConstructor
-public class WebSocketConfig implements WebSocketConfigurer {
-
-    private final ChatHandler chatHandler;
-
-    @Override
-    public void registerWebSocketHandlers(WebSocketHandlerRegistry registry) {
-        registry.addHandler(chatHandler, &quot;/endpoint&quot;);
-    }
-
-}
+<pre><code class="language-java">final String configurationDirectory =
+   Stream.of(&quot;app.config&quot;, &quot;app.home&quot;, &quot;user.home&quot;)
+         .flatMap(key -&gt; {
+              final String property = System.getProperty(key);
+              return property == null ? Stream.empty() : Stream.of(property);
+         })
+         .findFirst()
+         .orElseThrow(IllegalStateException::new);
 </code></pre>
 
-<p>クライアント側では、下記のようなコードになりました。</p>
+<p>Even after this refactor, however, the code reads slightly inelegantly. Java 9’s <code>ofNullable</code> would allow us to write the same pattern much more succinctly and more readably.</p>
 
-<pre><code class="language-html">&lt;!DOCTYPE html&gt;
-&lt;html lang=&quot;ja&quot;&gt;
-&lt;head&gt;
-&lt;meta charset=&quot;UTF-8&quot; /&gt;
-&lt;title&gt;チャット&lt;/title&gt;
-&lt;link rel=&quot;stylesheet&quot; href=&quot;/webjars/bootstrap/3.3.7/css/bootstrap.min.css&quot; /&gt;
-&lt;link rel=&quot;stylesheet&quot; href=&quot;/webjars/bootstrap/3.3.7/css/bootstrap-theme.min.css&quot; /&gt;
-&lt;/head&gt;
-&lt;body&gt;
-  &lt;div class=&quot;container&quot;&gt;
-    &lt;h2&gt;チャット&lt;/h2&gt;
-    &lt;div class=&quot;form-horizontal&quot;&gt;
-      &lt;div class=&quot;form-group&quot;&gt;
-        &lt;label for=&quot;roomName&quot; class=&quot;col-sm-2 control-label&quot;&gt;ルーム&lt;/label&gt;
-        &lt;div class=&quot;col-sm-2&quot;&gt;
-          &lt;input id=&quot;roomName&quot; type=&quot;text&quot; class=&quot;form-control&quot; value=&quot;example&quot; /&gt;
-        &lt;/div&gt;
-        &lt;div class=&quot;col-sm-3&quot;&gt;
-          &lt;button id=&quot;connectButton&quot; type=&quot;button&quot; class=&quot;btn btn-default&quot;&gt;接続&lt;/button&gt;
-          &lt;button id=&quot;disconnectButton&quot; class=&quot;btn btn-default&quot;&gt;切断&lt;/button&gt;
-        &lt;/div&gt;
-      &lt;/div&gt;
-      &lt;div class=&quot;form-group&quot;&gt;
-        &lt;label for=&quot;message&quot; class=&quot;col-sm-2 control-label&quot;&gt;メッセージ&lt;/label&gt;
-        &lt;div class=&quot;col-sm-4&quot;&gt;
-          &lt;input id=&quot;message&quot; type=&quot;text&quot; class=&quot;form-control&quot; /&gt;
-        &lt;/div&gt;
-        &lt;div class=&quot;col-sm-2&quot;&gt;
-          &lt;button id=&quot;sendButton&quot; type=&quot;button&quot; class=&quot;btn btn-default&quot;&gt;送信&lt;/button&gt;
-        &lt;/div&gt;
-      &lt;/div&gt;
-      &lt;div class=&quot;row&quot;&gt;
-        &lt;div class=&quot;col-sm-4 col-sm-offset-2&quot;&gt;
-          &lt;ul id=&quot;messageList&quot; class=&quot;list-unstyled&quot;&gt;
-          &lt;/ul&gt;
-        &lt;/div&gt;
-      &lt;/div&gt;
-    &lt;/div&gt;
-  &lt;/div&gt;
-  &lt;script src=&quot;/webjars/jquery/1.12.4/jquery.min.js&quot;&gt;&lt;/script&gt;
-  &lt;script src=&quot;/webjars/bootstrap/3.3.7/js/bootstrap.min.js&quot;&gt;&lt;/script&gt;
-  &lt;script&gt;
-    $(function() {
-      var endpoint = &#39;ws://&#39; + location.host + &#39;/endpoint&#39;;
-      var webSocket = null;
-
-      $(&#39;#connectButton&#39;).click(function() {
-
-        $(&quot;#messageList&quot;).empty();
-
-        webSocket = new WebSocket(endpoint + &#39;?&#39; + encodeURIComponent($(&#39;#roomName&#39;).val()));
-        webSocket.onopen = function() {
-          $(&#39;#roomName&#39;).prop(&#39;disabled&#39;, true);
-          $(&#39;#connectButton&#39;).prop(&#39;disabled&#39;, true);
-          $(&#39;#disconnectButton&#39;).prop(&#39;disabled&#39;, false);
-        };
-        webSocket.onclose = function() {
-        };
-        webSocket.onmessage = function(message) {
-          $(&#39;#messageList&#39;).prepend($(&#39;&lt;li&gt;&#39;).text(message.data));
-        };
-        webSocket.onerror = function() {
-          alert(&#39;エラーが発生しました。&#39;);
-        };
-      });
-
-      $(&#39;#disconnectButton&#39;).click(function() {
-
-        webSocket.close();
-        webSocket = null;
-
-        $(&#39;#roomName&#39;).prop(&#39;disabled&#39;, false);
-        $(&#39;#connectButton&#39;).prop(&#39;disabled&#39;, false);
-        $(&#39;#disconnectButton&#39;).prop(&#39;disabled&#39;, true);
-      });
-
-      $(&#39;#sendButton&#39;).click(function() {
-        if (!webSocket) {
-          alert(&#39;未接続です。&#39;);
-          return;
-        }
-
-        webSocket.send($(&#39;#message&#39;).val());
-      });
-    });
-  &lt;/script&gt;
-&lt;/body&gt;
-&lt;/html&gt;
+<pre><code class="language-java">final String configurationDirectory =
+   Stream.of(&quot;app.config&quot;, &quot;app.home&quot;, &quot;user.home&quot;)
+         .flatMap(key -&gt; Stream.ofNullable(System.getProperty(key)))
+         .findFirst()
+         .orElseThrow(IllegalStateException::new);
 </code></pre>
 
-<p>STOMPの時のほうが、いろいろシンプルに書けるので、ブラウザがクライアントならば、STOMPを使わない理由はないかなと思っています。</p>
+<p>It’s worth noting for the sake of completeness that this isn’t the only way to solve this problem in code, we could also have mapped over the System.getProperty() function and then filtered out the null values. That is perhaps a more natural way of writing this code for some people, but has the downside of resulting in null values getting into our Stream - something we try to steer clear of.</p>
+
+<h2 id="toc_1">takeWhile and dropWhile</h2>
+
+<p>We have an application that is processing payments being made on an ecommerce website and we’re maintaining a list of all payments in the current day that are sorted from the most expensive down to the cheapest. We have a business requirement to produce a report on every payment that is £500 or greater in value at the end of the day. A natural way of writing this code using Java 8 Streams might be:</p>
+
+<pre><code class="language-java">final List&lt;Payment&gt; expensivePayments = paymentsByValue
+   .stream()
+   .filter(transaction -&gt; transaction.getValue() &gt;= 500)
+   .collect(Collectors.toList());
+</code></pre>
+
+<p>Unfortunately the downside of this approach is that if you start processing lots and lots of transactions in a day the <code>filter</code> operation gets applied to every transaction in your input list. You know that your input list is sorted by descending value of the transaction, so once you have found a transaction that fails your predicate every transaction after that point can be filtered out. Thankfully Java 9 solves this problem with the addition of a takeWhile operation.</p>
+
+<pre><code class="language-java">final List&lt;Payment&gt; expensivePayments = paymentsByValue
+   .stream()
+   .takeWhile(transaction -&gt; transaction.getValue() &gt;= 500)
+   .collect(Collectors.toList());
+</code></pre>
+
+<p>While <code>filter</code> retains all elements in the Stream that match its predicate, <code>takeWhile</code> stops once it has found an element that fails to match. The <code>dropWhile</code> operation does the inverse: throws away the elements at the start where the predicate is false.</p>
+
+<p>One subtlety that affects <code>takeWhile()</code> and <code>dropWhile()</code> relates to infinite streams. If you have an infinite stream and apply a <code>takeWhile</code> operation that eventually returns false on an element in the stream then it gets truncated at that point. When applying the <code>dropWhile</code> operation to an infinite stream, the result can still be an infinite stream. If the the predicate always returns true then the Stream will continue to drop elements. Consider:</p>
+
+<pre><code class="language-java">IntStream.iterate(0, i -&gt; i)
+         .dropWhile(i -&gt; true)
+         .forEach(System.out::println);
+</code></pre>
+
+<p>If you run this, the program will look like it’s hanging and not terminate. This is because the <code>dropWhile</code> results in an infinite stream with no elements. If we re-wrote it as the following program, then it would terminate:</p>
+
+<pre><code class="language-java">IntStream.iterate(0, i -&gt; i)
+         .takeWhile(i -&gt; false)
+         .forEach(System.out::println);
+</code></pre>
+
+<p>Now so far we’ve talked about streams that have a defined order: an encounter order. The order of streams can be defined at its source, for example if we’re streaming from a list of values then the order in the list is the encounter order. It is also possible to have stream operations that introduce an encounter order into their pipeline, for example <code>sorted()</code>. Most, but not all, of the practical use cases of <code>takeWhile()</code> and <code>dropWhile()</code> rely upon their input streams having a defined encounter order.</p>
+
+<p>One usecase for wanting to apply <code>takeWhile()</code> on an unordered stream if you want to be able to stop the Stream operation. For example perhaps you have a Stream operation that may operate on an infinite stream, processing all the data in it, but you want to be able to stop the Stream when you application shuts down or if a user needs to cancel the stream pipeline. You can do this with a takeWhile() operation that reads from a piece of external state, such as a volatile boolean flag. When you want to stop the stream pipeline, you simply set it to be false.</p>
+
+<h2 id="toc_2">iterate</h2>
+
+<p>A related update is the introduction of an alternative <code>iterate()</code> method for creating streams. The vintage <code>iterate</code> method from Java 8 takes an initial value and a function that provides the next value in the Stream. Take a look at the following code example.</p>
+
+<pre><code class="language-java">IntStream.iterate(3, x -&gt; x + 3)
+         .filter(x -&gt; x &lt; 100)
+         .forEach(System.out::println);
+</code></pre>
+
+<p>This code prints out all the numbers that are divisible by 3 and less than 100. We start with 3, which is divisible by 3 and add 3 every time we iterate. We then filter to ensure that the numbers are less than 100 and use a method reference to print out the resulting numbers. Looks simple, but if you run it you’ll find that there’s a pretty big problem. Go on try it!</p>
+
+<p>That’s right. The program never terminates, it keeps on adding 3 in a loop indefinitely. That’s because there’s no way to know in the filter that the numbers continue to increase. We can solve that problem with the new version of <code>iterate</code> in Java 9 which also takes a predicate as its second argument that tells us when to continue iterating up until. So we rewrite our code as follows.</p>
+
+<pre><code class="language-java">IntStream.iterate(3, x -&gt; x &lt; 100, x -&gt; x + 3)
+         .forEach(System.out::println);
+</code></pre>
+
+<p>Hey presto, it now stops running after it has printed out the number 99. Our sample code here used the <code>IntStream</code> interface since we were operating on primitive int values, but the <code>iterate()</code> methods appear on both the primitive and regular Stream interfaces.</p>
+
+<h2 id="toc_3">Conclusion</h2>
+
+<p>In this article we’ve gone through four new additions to the Streams API that appear in Java 9 and help fill in some small gaps in its functionality. In our next article we will talking about the upcoming improvements to the Collectors API in Java 9. Hopefully you will join us for that, or on one of our in-house <a href="http://iteratrlearning.com">training courses</a>.</p>
 
                         
                       </div>
@@ -322,7 +236,7 @@ public class WebSocketConfig implements WebSocketConfigurer {
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/5/13</span>
+                    <span class="date">2018/7/7</span>
                     <span>posted in&nbsp;</span> 
           				  
           					    <span class="posted-in"><a href='Java.html'>Java</a></span>
@@ -392,8 +306,6 @@ public class WebSocketConfig implements WebSocketConfigurer {
 
       	<p class="cat-list">
         
-            <a href="Team.html"><strong>Team</strong></a>
-        
             <a href="Infra.html"><strong>Infra</strong></a>
         
             <a href="Coding.html"><strong>Coding</strong></a>
@@ -417,31 +329,31 @@ public class WebSocketConfig implements WebSocketConfigurer {
 	      
 		      
 			      <li class="post">
-			        <a href="15301813999205.html">架构设计：负载均衡层设计方案（9）——负载均衡层总结下篇</a>
+			        <a href="15337171704262.html">Introduction to Testing with Spock and Groovy</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301813109409.html">架构设计：负载均衡层设计方案（8）——负载均衡层总结上篇</a>
+			        <a href="15336595358049.html">10 Excellent Ways to Secure Your Spring Boot Application</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301812452579.html">架构设计：负载均衡层设计方案（7）——LVS + Keepalived + Nginx安装及配置</a>
+			        <a href="15336592302916.html">First MicroProfile.io application using Java Module System</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301811967181.html">架构设计：负载均衡层设计方案（6）——Nginx + Keepalived构建高可用的负载层</a>
+			        <a href="15332186142588.html">Jenkins 的 Pipeline 脚本在美团餐饮 SaaS 中的实践</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301811361753.html">架构设计：负载均衡层设计方案（5）——LVS单节点安装</a>
+			        <a href="15331749691571.html">基于ZooKeeper的分布式锁和队列</a>
 			      </li>
 		     
 		  

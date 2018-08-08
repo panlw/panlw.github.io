@@ -76,8 +76,6 @@
     <li><label>Categories</label></li>
 
         
-            <li><a href="Team.html">Team</a></li>
-        
             <li><a href="Infra.html">Infra</a></li>
         
             <li><a href="Coding.html">Coding</a></li>
@@ -107,188 +105,360 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15244133646661.html">
+                <a class="clearlink" href="15248846042998.html">
                 
-                  <h1>Native Extension for Node.js</h1>
+                  <h1>Modularizing your GraphQL schema code</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://www.nan-labs.com/blog/native-extensions-for-nodejs/">https://www.nan-labs.com/blog/native-extensions-for-nodejs/</a></p>
-
-<p><u>If you are a Spanish reader you can read this post in Spanish here: <a href="http://laplatajs.github.io/blog/2018/02/27/extensiones-nativas.html">Extensiones Nativas: ¿dónde empezar?</a></u></p>
-
-<p>In this article we will talk about the most important concepts to develop native extensions for NodeJS. Later, I will show how to build our first native extension with a practical example. And finally, I will leave some links to read more about it.</p>
+<p><a href="https://dev-blog.apollodata.com/modularizing-your-graphql-schema-code-d7f71d5ed5f2">https://dev-blog.apollodata.com/modularizing-your-graphql-schema-code-d7f71d5ed5f2</a></p>
 </blockquote>
 
-<h2 id="toc_0">The basics to get started with native extensions</h2>
+<h2 id="toc_0">How to split up your schema definition, resolvers, and Query type into multiple files</h2>
 
-<p>In simple terms, we can say that a native extension is a set of C++ implemented logic that can be invoked from JavaScript code.</p>
+<p><img src="media/15248846042998/15248847656531.png" alt=""/></p>
 
-<p>At this point, it’s interesting for us to clarify how NodeJS works and which are the parts involved in it. It’s important to know why we can talk about two languages (JavaScript &amp; C++) under the NodeJS context.</p>
+<p>As your GraphQL application grows from demo, to proof of concept, to production, the complexity of your schema and resolvers will grow in tandem. To organize your code, you’ll want to split up your schema types and the associated resolvers into multiple files.</p>
 
-<p>I like to explain it this way:</p>
+<p>We get this question frequently since there are a lot of different approaches to splitting up your schema code, and it might seem that you need a complex setup to get a good result. But it turns out that we can arrange our schema and resolver code in separate files with just a few simple JavaScript concepts.</p>
 
-<ul>
-<li>  <strong>JavaScript</strong>: it’s the coding language.</li>
-<li>  <strong>V8</strong>: it’s the engine that runs our JavaScript code.</li>
-<li>  <strong>Libuv</strong>: it’s a C library that provides us with asynchronous execution.</li>
-</ul>
+<p>In this post, we present a straightforward method for modularizing schemas built with <code>graphql-tools</code> that you can tweak to match your tastes and your codebase.</p>
 
-<p>Now, where can we place native extensions? I will choose write/read disk action as an example to explain it. Neither JavaScript nor V8 provides us with disk access. Libuv provides asynchronous execution. But, with NodeJS we can write/read to disk, right? Well, this is the point where native extensions get into the match. The fs module is implemented using C++ (it has disk access) and eventually exposes methods (like writeFile and readFile) which can be invoked from JavaScript.</p>
+<h3 id="toc_1">Schema</h3>
 
-<p><img src="media/15244133646661/15244134699236.jpg" alt="Interaction with native extensions diagram"/></p>
+<p>If you’re just starting out and have your entire schema defined in one file, it might look much like the below snippet. Here, we’ll call it <code>schema.js</code>:</p>
 
-<p>Once we have learned this, we can start taking our first steps in native extensions. Let’s talk about the tools we need.</p>
+<pre><code class="language-js">// schema.js 
 
-<h2 id="toc_1">Basic tooling to build a native extension</h2>
+const typeDefs = `
+  type Query {
+    author(id: Int!): Post
+    book(id: Int!): Post
+  }
+  
+  type Author {
+    id: Int!
+    firstName: String
+    lastName: String
+    books: [Book]
+  }
+  
+  type Book {
+    title: String
+    author: Author
+  }
+`;
 
-<h3 id="toc_2">Binding.gyp file</h3>
+makeExecutableSchema({
+  typeDefs: typeDefs,
+  resolvers: {},
+});
+</code></pre>
 
-<p>This file allows us to specify how we need to compile our native extension. One of the main thing that we need to define are the files that will be compiled and how we will call the final binary. It has a JSON like structure, and the keys to get this configured are sources and target.</p>
+<p>Ideally, instead of having everything in one schema definition string, we’d like to put the schema types for <code>Author</code> and <code>Book</code> in files called <code>author.js</code> and <code>book.js</code>.</p>
 
-<h3 id="toc_3"><a href="https://github.com/nodejs/node-gyp">Node-gyp</a></h3>
+<p>At the end of the day, the schema definitions we’ve written in the Schema Definition Language (SDL) are just strings. Treating them as such, we have a simple way of importing type definitions across different files: Split up the string into multiple strings that we can combine later. This is what <code>author.js</code> would look like:</p>
 
-<p>It’s the tool that allows us to compile our native extension. It’s implemented in NodeJS and it’s bundled with npm so we can just run npm install and that will compile our native extension. When we run npm install, it will detect our binding.gyp file included in our root folder and then it will start compiling.</p>
+<pre><code class="language-js">// author.js
+export const typeDef = `
+  type Author {
+    id: Int!
+    firstName: String
+    lastName: String
+    books: [Book]
+  }
+`;
+</code></pre>
 
-<p>Also, it allows us to make release(default) or debug builds. As a result, a binary file with .node extension will be created inside a release or debug folder, depending on how it was configured.</p>
+<p>Here’s <code>book.js</code>:</p>
 
-<h3 id="toc_4"><a href="https://github.com/TooTallNate/node-bindings">Bindings</a></h3>
+<pre><code class="language-js">// book.js
+export const typeDef = `
+  type Book {
+    title: String
+    author: Author
+  }
+`;
+</code></pre>
 
-<p>It’s a NodeJS package which allows us to export our native extension. It’s in charge of searching in a build or release folder for us.</p>
+<p>Finally, we pull it all together in <code>schema.js</code>:</p>
 
-<h3 id="toc_5"><a href="https://nodejs.org/api/n-api.html">N-API</a></h3>
+<pre><code class="language-js">// schema.js
+import { typeDef as Author } from &#39;./author.js&#39;;
+import { typeDef as Book } from &#39;./book.js&#39;;
+</code></pre>
 
-<p>It’s C API that allows us to interact with our engine in a completely abstract way. For me, it’s the result of an evolution that tries to port node to different architectures.</p>
+<pre><code class="language-js">const Query = `
+  type Query {
+    author(id: Int!): Post
+    book(id: Int!): Post
+  }
+`;
+</code></pre>
 
-<p>N-API provides stability and compatibility between different node versions. That is, if my native extension is compiled to node 8.1, I don’t need to compile it again for node 8.6 or 9.3. Thus making the life of the maintainers and contributors easier.</p>
+<pre><code class="language-js">makeExecutableSchema({
+  typeDefs: [ Query, Author, Book ],
+  resolvers: {},
+});
+</code></pre>
 
-<p>At this moment, N-API is under <a href="https://nodejs.org/docs/latest/api/n-api.html#n_api_n_api">experimental state</a>.</p>
+<p>We’re not doing anything fancy here: we’re just importing strings that happen to contain some SDL. Note that for convenience you don’t need to combine the strings yourself — <code>makeExecutableSchema</code> can actually accept an array of type definitions directly to facilitate this approach.</p>
 
-<h3 id="toc_6"><a href="https://github.com/nodejs/node-addon-api">Node addon api</a></h3>
+<h3 id="toc_2">Resolvers</h3>
 
-<p>This NodeJS module provides us with a C++ implementation of N-API and allows us to use the language advantages.</p>
+<p>Now that we have a way to chop up our schema into logical parts, we want to be able to move each resolver with its associated part of the schema as well. In general, we want to keep resolvers for a certain type in the same file as the schema definition for that type.</p>
 
-<h2 id="toc_7">First steps in the native extension world</h2>
+<p>Expanding on our previous example, here’s our <code>schema.js</code> file with some resolvers added into the picture:</p>
 
-<p><u>Note: For this example, I used node 9.3.</u></p>
+<pre><code class="language-js">// schema.js
+import { typeDef as Author } from &#39;./author.js&#39;;
+import { typeDef as Book } from &#39;./book.js&#39;;
+</code></pre>
 
-<p>To get initiated on the native extension world we will use the classic hello world example. The idea is to not overload the code with extra logic so we can focus on the minimum necessary code.</p>
+<pre><code class="language-js">const Query = `
+  type Query {
+    author(id: Int!): Post
+    book(id: Int!): Post
+  }
+`;
+</code></pre>
 
-<p>We start initializing npm so that we can then install our dependencies:</p>
-
-<p><code>npm init</code></p>
-
-<p>Now, as we said, we install our dependencies:</p>
-
-<p><code>npm i node-addon-api bindings</code></p>
-
-<p>At this point we need to create our C file with our logic:</p>
-
-<p><link rel="stylesheet" href="https://assets-cdn.github.com/assets/gist-embed-1baaff35daab552f019ad459494450f1.css"></p>
-
-<pre><code class="language-cpp">#include &lt;napi.h&gt;
-
-Napi::String SayHi(const Napi::CallbackInfo&amp; info) {
-  Napi::Env env = info.Env();
-
-  return Napi::String::New(env, &quot;Hi!&quot;);
-}
-
-Napi::Object init(Napi::Env env, Napi::Object exports) {
-    exports.Set(Napi::String::New(env, &quot;sayHi&quot;), Napi::Function::New(env, SayHi));
-    return exports;
+<pre><code class="language-js">const resolvers = {
+  Query: {
+    author: () =&gt; { ... },
+    book: () =&gt; { ... },
+  },
+  Author: {
+    name: () =&gt; { ... },
+  },
+  Book: {
+    title: () =&gt; { ... },
+  },
 };
-
-NODE_API_MODULE(hello_world, init);
 </code></pre>
 
-<blockquote>
-<p><a href="https://gist.github.com/nanlabsweb/d6c985ee9842fab274d4116c2fb0f443/raw/188b287e5092727700cfe1ddff8f6cbc402f3e3e/hello_world.cc">view raw</a> <a href="https://gist.github.com/nanlabsweb/d6c985ee9842fab274d4116c2fb0f443#file-hello_world-cc">hello_world.cc</a> hosted with ❤ by <a href="https://github.com">GitHub</a></p>
-</blockquote>
-
-<p>This file has three important parts that will be explained from bottom to top:</p>
-
-<ul>
-<li>  <strong>NODE_API_MODULE</strong> (Line 14): The first argument is the native extension name and the second one is the name of the function that initializes our extension.</li>
-<li>  <strong>Init</strong> (Line 10): This is the function that will initialize our native extension. In this function we must export the functions that will be invoked from JavaScript code. To do this, we need to set the name of the function to the exports object and the function itself that will be invoked. This init function must return the exports object.</li>
-<li>  <strong>SayHi</strong> (Line 3): This function is what will be executed when we invoke our native extension from our JavaScript.</li>
-</ul>
-
-<p>Later, we need to create our <strong>binding.gyp</strong> file that will contain our native extension configuration:</p>
-
-<p><link rel="stylesheet" href="https://assets-cdn.github.com/assets/gist-embed-1baaff35daab552f019ad459494450f1.css"></p>
-
-<pre><code class="language-json">{
-  &quot;targets&quot;: [
-    { 
-      &quot;cflags!&quot;: [ &quot;-fno-exceptions&quot; ],
-      &quot;cflags_cc!&quot;: [ &quot;-fno-exceptions&quot; ],
-      &quot;include_dirs&quot; : [
-        &quot;&lt;!@(node -p \&quot;require(&#39;node-addon-api&#39;).include\&quot;)&quot;
-      ],
-      &quot;target_name&quot;: &quot;hello_world&quot;,
-      &quot;sources&quot;: [ &quot;hello_world.cc&quot; ],
-      &#39;defines&#39;: [ &#39;NAPI_DISABLE_CPP_EXCEPTIONS&#39; ]
-    }
-  ]
-}
+<pre><code class="language-js">makeExecutableSchema({
+  typeDefs: [ Query, Author, Book ],
+  resolvers,
+});
 </code></pre>
 
-<blockquote>
-<p><a href="https://gist.github.com/nanlabsweb/ebbc7d0c2dd5249b5f833e8a2b845f5d/raw/61068384831764b78bc8a7ace9deedefb1faadc5/binding.gyp">view raw</a> <a href="https://gist.github.com/nanlabsweb/ebbc7d0c2dd5249b5f833e8a2b845f5d#file-binding-gyp">binding.gyp</a> hosted with ❤ by <a href="https://github.com">GitHub</a></p>
-</blockquote>
+<p>Just like we split up the schema definition string, we can split up the <code>resolvers</code> object. We can put a piece of it in <code>author.js</code>, another in <code>book.js</code>, and then import them and use the <code>lodash.merge</code> function to put it all together in <code>schema.js</code>.</p>
 
-<p>Finally, the JavaScript code that will require our extension and invoke it.</p>
+<p>Here’s what <code>author.js</code> would look like in that case:</p>
 
-<p><link rel="stylesheet" href="https://assets-cdn.github.com/assets/gist-embed-1baaff35daab552f019ad459494450f1.css"></p>
-
-<pre><code>const hello_world = require(&#39;bindings&#39;)(&#39;hello_world&#39;)
-
-console.log(hello_world.sayHi());
+<pre><code class="language-js">// author.js
+export const typeDef = `
+  type Author {
+    id: Int!
+    firstName: String
+    lastName: String
+    books: [Book]
+  }
+`;
 </code></pre>
 
-<blockquote>
-<p><a href="https://gist.github.com/nanlabsweb/30019fc7ae72f3898f93623d535d8790/raw/a43850af02bfb800bad0ab82426c64b307f50e1c/index.js">view raw</a> <a href="https://gist.github.com/nanlabsweb/30019fc7ae72f3898f93623d535d8790#file-index-js">index.js</a> hosted with ❤ by <a href="https://github.com">GitHub</a></p>
-</blockquote>
+<pre><code class="language-js">export const resolvers = {
+  Author: {
+    books: () =&gt; { ... },
+  }
+};
+</code></pre>
 
-<p>Now, we just need to compile our extension running npm install and run the JavaScript file that is used:</p>
+<p>Here’s <code>book.js</code>:</p>
 
-<p><img src="media/15244133646661/15244136958142.gif" alt="Native extensions gif demonstrating real usage."/></p>
+<pre><code class="language-js">// book.js
+export const typeDef = `
+  type Book {
+    title: String
+    author: Author
+  }
+`;
+</code></pre>
 
-<p>And that’s it. We just run our native extension.</p>
+<pre><code class="language-js">export const resolvers = {
+  Book: {
+    author: () =&gt; { ... },
+  }
+};
+</code></pre>
 
-<h2 id="toc_8">What we had before N-API?</h2>
+<p>Then, we apply <code>lodash.merge</code> in <code>schema.js</code> to put everything together:</p>
 
-<p>I find it important to know the context and history of native extensions since it gives access to a lot of documentation and examples. The idea is for N-API to eventually replace NAN. For that reason we should look back to NAN for a moment.</p>
+<pre><code class="language-js">import { merge } from &#39;lodash&#39;;
+</code></pre>
 
-<p>NAN? Yes, <a href="https://github.com/nodejs/nan">Native Abstraction for Node.js</a>. NAN is a C++ library that provides us with V8 abstraction, but it doesn’t allow us to abstract ourselves from the V8.<br/>
-In new NodeJS releases, there could be V8 changes that could break our native extension. Using NAN is a way to avoid this problem.</p>
+<pre><code class="language-js">import { 
+  typeDef as Author, 
+  resolvers as authorResolvers,
+} from &#39;./author.js&#39;;
+</code></pre>
 
-<h2 id="toc_9">Further steps to develop your native extensions</h2>
+<pre><code class="language-js">import { 
+  typeDef as Book, 
+  resolvers as bookResolvers,
+} from &#39;./book.js&#39;;
+</code></pre>
 
-<p>As I said, knowing about NAN allows us to learn from its examples and documentation. It’s a good complement to our native extension learning process.</p>
+<pre><code class="language-js">const Query = `
+  type Query {
+    author(id: Int!): Author
+    book(id: Int!): Book
+  }
+`;
+</code></pre>
 
-<ul>
-<li>  NAPI examples can be found in <a href="https://github.com/nodejs/node/tree/master/test/addons-napi">here</a>.</li>
-<li>  Node-addon-api examples can be found in <a href="https://github.com/nodejs/abi-stable-node-addon-examples">here</a>.</li>
-<li>  Nan examples can be found in <a href="https://github.com/nodejs/nan/tree/master/test">here</a>.</li>
-<li>  Another good source are tests <a href="https://github.com/nodejs/node-addon-api/tree/master/test">here</a>.</li>
-<li>  To learn more about native extensions <a href="https://nodeaddons.com/">here</a>.</li>
-</ul>
+<pre><code class="language-js">const resolvers = {
+  Query: { 
+    ...,
+  }
+};
+</code></pre>
 
-<h2 id="toc_10">Conclusion</h2>
+<pre><code class="language-js">makeExecutableSchema({
+  typeDefs: [ Query, Author, Book ],
+  resolvers: merge(resolvers, authorResolvers, bookResolvers),
+});
+</code></pre>
 
-<p>Learning about native extensions helped me to understand how NodeJS works and how it’s composed. There are more than one scenario where we can use them, such as performance boosts, C/C++ library integrations, or integration with legacy code.</p>
+<p>And that gives us the <code>resolvers</code> structure that we started out with!</p>
 
-<p>In summary, it’s an excellent way to learn about NodeJS internals.</p>
+<h3 id="toc_3">Extending types in multiple files</h3>
 
-<p>If you have any doubt, please post a comment and I will help you.</p>
+<p>We’re still defining <code>authors</code> and <code>books</code> as top-level fields on <code>Query</code> within <code>schema.js</code>, even though these are logically tied to <code>Author</code> and <code>Book</code> and should live in <code>author.js</code> and <code>book.js</code>.</p>
 
-<h3 id="toc_11">Taking part in the community</h3>
+<p>To accomplish that, we can use type extensions. We can define our existing <code>Query</code> type like this:</p>
 
-<p>I made this post for a contribution to <a href="http://laplatajs.github.io/">LaPlataJS</a>. It’s a local JavaScript community where I participate helping with talks, events organization, or posts. I think that whenever you can you should join a community. For me, it has a lot of benefits. You can know really good people, share ideas, learn things and, sometimes, go for a beer with your folks.</p>
+<pre><code class="language-js">const Query = `
+  type Query {
+    _empty: String
+  }
+
+  extend type Query {
+    author(id: Int!): Author 
+  }
+
+  extend type Query {
+    book(id: Int!): Book 
+  }
+`;
+</code></pre>
+
+<p>_Note: In the current version of GraphQL, you can’t have an empty type even if you intend to extend it later. So we need to make sure the Query type has at least one field — in this case we can add a fake <u>empty field. Hopefully in future versions it will be possible to have an empty type to be extended later.</u></p>
+
+<p>Basically, the <code>extend</code> keyword lets us add fields to an already-defined type. We can use this keyword in order to define Query fields relevant to those types in <code>book.js</code> and <code>author.js</code>. We should then also move to defining the Query resolvers for those types in the same place.</p>
+
+<p>Here’s what <code>author.js</code> looks like with this approach:</p>
+
+<pre><code class="language-js">// author.js
+</code></pre>
+
+<pre><code class="language-js">export const typeDef = `
+  extend type Query {
+    author(id: Int!): Author
+  }
+  ```
+  
+```js
+  type Author {
+    id: Int!
+    firstName: String
+    lastName: String
+    books: [Book]
+  }
+`;
+</code></pre>
+
+<pre><code class="language-js">export const resolvers = {
+  Query: {
+    author: () =&gt; { ... },
+  },
+  Author: {
+    books: () =&gt; { ... },
+  }
+};
+</code></pre>
+
+<p>This is what <code>book.js</code> looks like:</p>
+
+<pre><code class="language-js">// book.js
+</code></pre>
+
+<pre><code class="language-js">export const typeDef = `
+  extend type Query {
+    book(id: Int!): Book
+  }
+  ```
+  
+```js
+  type Book {
+    title: String
+    author: Author
+  }
+`;
+</code></pre>
+
+<pre><code class="language-js">export const resolvers = {
+  Query: {
+    book: () =&gt; { ... },
+  },
+  Book: {
+    author: () =&gt; { ... },
+  }
+};
+</code></pre>
+
+<p>Just as before, we put it all together in <code>schema.js</code>:</p>
+
+<pre><code class="language-js">import { merge } from &#39;lodash&#39;;
+</code></pre>
+
+<pre><code class="language-js">import { 
+  typeDef as Author, 
+  resolvers as authorResolvers,
+} from &#39;./author.js&#39;;
+</code></pre>
+
+<pre><code class="language-js">import { 
+  typeDef as Book, 
+  resolvers as bookResolvers,
+} from &#39;./book.js&#39;;
+</code></pre>
+
+<pre><code class="language-js">// If you had Query fields not associated with a
+// specific type you could put them here
+const Query = `
+  type Query {
+    _empty: String
+  }
+`;
+</code></pre>
+
+<pre><code class="language-js">const resolvers = {};
+</code></pre>
+
+<pre><code class="language-js">makeExecutableSchema({
+  typeDefs: [ Query, Author, Book ],
+  resolvers: merge(resolvers, authorResolvers, bookResolvers),
+});
+</code></pre>
+
+<p>Now, the schema and resolver definitions are properly co-located with the associated types!</p>
+
+<h3 id="toc_4">Final tips</h3>
+
+<p>We’ve just been through the mechanics of modularizing your server code. Here are a few additional tips that may be helpful in figuring out how to carve up your codebase:</p>
+
+<ol>
+<li> When learning, prototyping or even building a POC, putting your whole schema in a single file is likely fine: There are benefits to be able to go through your whole schema really quickly, or explain it to a coworker.</li>
+<li> You can organize your schema and resolvers by feature: for example, putting the stuff related to the checkout system together might make sense in an ecommerce site.</li>
+<li> Keep your resolvers in the same file as the schema definition for the fields they implement. This will allow you to reason about your code efficiently.</li>
+<li> Wrap your SDL type definitions with a <code>gql</code> tag using <a href="https://github.com/apollographql/graphql-tag">graphql-tag</a>. If you’re using a GraphQL plugin for your editor or formatting your code with Prettier, you’ll be able to get syntax highlighting for SDL within your code editor as long as you prefix it with the <code>gql</code> tag.</li>
+</ol>
+
+<p>Now, go forth and organize your code!</p>
 
                         
                       </div>
@@ -297,7 +467,7 @@ In new NodeJS releases, there could be V8 changes that could break our native ex
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/4/23</span>
+                    <span class="date">2018/4/28</span>
                     <span>posted in&nbsp;</span> 
           				  
           					    <span class="posted-in"><a href='Node.js.html'>Node.js</a></span>
@@ -367,8 +537,6 @@ In new NodeJS releases, there could be V8 changes that could break our native ex
 
       	<p class="cat-list">
         
-            <a href="Team.html"><strong>Team</strong></a>
-        
             <a href="Infra.html"><strong>Infra</strong></a>
         
             <a href="Coding.html"><strong>Coding</strong></a>
@@ -392,31 +560,31 @@ In new NodeJS releases, there could be V8 changes that could break our native ex
 	      
 		      
 			      <li class="post">
-			        <a href="15301813999205.html">架构设计：负载均衡层设计方案（9）——负载均衡层总结下篇</a>
+			        <a href="15337171704262.html">Introduction to Testing with Spock and Groovy</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301813109409.html">架构设计：负载均衡层设计方案（8）——负载均衡层总结上篇</a>
+			        <a href="15336595358049.html">10 Excellent Ways to Secure Your Spring Boot Application</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301812452579.html">架构设计：负载均衡层设计方案（7）——LVS + Keepalived + Nginx安装及配置</a>
+			        <a href="15336592302916.html">First MicroProfile.io application using Java Module System</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301811967181.html">架构设计：负载均衡层设计方案（6）——Nginx + Keepalived构建高可用的负载层</a>
+			        <a href="15332186142588.html">Jenkins 的 Pipeline 脚本在美团餐饮 SaaS 中的实践</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301811361753.html">架构设计：负载均衡层设计方案（5）——LVS单节点安装</a>
+			        <a href="15331749691571.html">基于ZooKeeper的分布式锁和队列</a>
 			      </li>
 		     
 		  

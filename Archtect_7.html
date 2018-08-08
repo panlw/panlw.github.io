@@ -76,8 +76,6 @@
     <li><label>Categories</label></li>
 
         
-            <li><a href="Team.html">Team</a></li>
-        
             <li><a href="Infra.html">Infra</a></li>
         
             <li><a href="Coding.html">Coding</a></li>
@@ -107,443 +105,267 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15290784953983.html">
+                <a class="clearlink" href="15316420362215.html">
                 
-                  <h1>swoole 协程初体验</h1>
+                  <h1>研究consul的service mesh功能</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://www.jianshu.com/p/745b0b3ffae7">https://www.jianshu.com/p/745b0b3ffae7</a><br/>
-2018-5-30 14:31:38</p>
+<p><a href="https://jeremy-xu.oschina.io/2018/07/%E7%A0%94%E7%A9%B6consul%E7%9A%84service-mesh%E5%8A%9F%E8%83%BD/">https://jeremy-xu.oschina.io/2018/07/%E7%A0%94%E7%A9%B6consul%E7%9A%84service-mesh%E5%8A%9F%E8%83%BD/</a></p>
 </blockquote>
 
-<p>折腾 swoole 协程有一段时间了, 总结一篇入门贴, 希望对新手有帮助.</p>
-
-<p>内容概览:</p>
-
-<ul>
-<li>  协程的执行顺序: 初窥 swoole 中协程的调度</li>
-<li>  协程为什么快: 减少 IO 阻塞带来的性能损耗</li>
-<li>  swoole 协程和 go 协程对比: 单进程 vs 多线程</li>
-</ul>
-
-<h2 id="toc_0">协程的执行顺序</h2>
-
-<p>先来看看基础的例子:</p>
-
-<pre><code class="language-go">go(function () {
-    echo &quot;hello go1 \n&quot;;
-});
-
-echo &quot;hello main \n&quot;;
-
-go(function () {
-    echo &quot;hello go2 \n&quot;;
-});
-
+<pre><code>2018-07-06
 </code></pre>
 
-<p><code>go()</code> 是 <code>\Co::create()</code> 的缩写, 用来创建一个协程, 接受 callback 作为参数, callback 中的代码, 会在这个新建的协程中执行.</p>
+<p>之前一直是将 consul 当成一个服务发现、分布式 KV 服务、服务健康检查服务等，不过前几天 <a href="https://www.hashicorp.com/blog/consul-1-2-service-mesh">consul 发布了 1.2 版本</a>，宣称其实现了 Service Mesh 方案，最近在做 Service Mesh 相关的工作，正好有一点时间，就花时间研究一下。</p>
 
-<p><strong>备注</strong>: <code>\Swoole\Coroutine</code> 可以简写为 <code>\Co</code></p>
+<h2 id="toc_0"><a href="#%E8%AF%95%E7%94%A8consul%E7%9A%84service-mesh"></a>试用 consul 的 service mesh</h2>
 
-<p>上面的代码执行结果:</p>
+<h3 id="toc_1"><a href="#%E5%8D%87%E7%BA%A7consul%E8%87%B31-2%E7%89%88%E6%9C%AC"></a>升级 consul 至 1.2 版本</h3>
 
-<pre><code class="language-sh">root@b98940b00a9b /v/w/c/p/swoole# php co.php
-hello go1
-hello main
-hello go2
+<p>macOS 下升级 consul 很简单，简单用 brew 命令就好</p>
+
+<pre><code class="language-bash">brew update consul
 </code></pre>
 
-<p>执行结果和我们平时写代码的顺序, 好像没啥区别. 实际执行过程:</p>
+<p>为了方便后面修改 consul 的配置文件，添加一个<code>-config-dir</code>参数</p>
 
-<ul>
-<li>  运行此段代码, <strong>系统启动一个新进程</strong></li>
-<li>  遇到 <code>go()</code>, 当前进程中生成一个协程, 协程中输出 <code>heelo go1</code>, 协程退出</li>
-<li>  进程继续向下执行代码, 输出 <code>hello main</code></li>
-<li>  再生成一个协程, 协程中输出 <code>heelo go2</code>, 协程退出</li>
-</ul>
+<p><code>/usr/local/opt/consul/homebrew.mxcl.consul.plist</code></p>
 
-<p><strong>运行此段代码, 系统启动一个新进程</strong>. 如果不理解这句话, 你可以使用如下代码:</p>
-
-<pre><code class="language-php">// co.php
-&lt;?php
-
-sleep(100);
-
+<pre><code class="language-xml">&lt;?xml version=&quot;1.0&quot; encoding=&quot;UTF-8&quot;?&gt;
+&lt;!DOCTYPE plist PUBLIC &quot;-//Apple//DTD PLIST 1.0//EN&quot; &quot;http://www.apple.com/DTDs/PropertyList-1.0.dtd&quot;&gt;
+&lt;plist version=&quot;1.0&quot;&gt;
+  &lt;dict&gt;
+    &lt;key&gt;KeepAlive&lt;/key&gt;
+    &lt;dict&gt;
+      &lt;key&gt;SuccessfulExit&lt;/key&gt;
+      &lt;false/&gt;
+    &lt;/dict&gt;
+    &lt;key&gt;Label&lt;/key&gt;
+    &lt;string&gt;homebrew.mxcl.consul&lt;/string&gt;
+    &lt;key&gt;ProgramArguments&lt;/key&gt;
+    &lt;array&gt;
+      &lt;string&gt;/usr/local/opt/consul/bin/consul&lt;/string&gt;
+      &lt;string&gt;agent&lt;/string&gt;
+      &lt;string&gt;-dev&lt;/string&gt;
+      &lt;string&gt;-advertise&lt;/string&gt;
+      &lt;string&gt;127.0.0.1&lt;/string&gt;
+      &lt;string&gt;-config-dir&lt;/string&gt;
+      &lt;string&gt;/usr/local/etc/consul.d&lt;/string&gt;
+    &lt;/array&gt;
+    &lt;key&gt;RunAtLoad&lt;/key&gt;
+    &lt;true/&gt;
+    &lt;key&gt;WorkingDirectory&lt;/key&gt;
+    &lt;string&gt;/usr/local/var&lt;/string&gt;
+    &lt;key&gt;StandardErrorPath&lt;/key&gt;
+    &lt;string&gt;/usr/local/var/log/consul.log&lt;/string&gt;
+    &lt;key&gt;StandardOutPath&lt;/key&gt;
+    &lt;string&gt;/usr/local/var/log/consul.log&lt;/string&gt;
+  &lt;/dict&gt;
+&lt;/plist&gt;
 </code></pre>
 
-<p>执行并使用 <code>ps aux</code> 查看系统中的进程:</p>
+<p>这个配置文件中，我添加了以下两行：</p>
 
-<pre><code class="language-sh">root@b98940b00a9b /v/w/c/p/swoole# php co.php &amp;
-⏎
-root@b98940b00a9b /v/w/c/p/swoole# ps aux
-PID   USER     TIME   COMMAND
-    1 root       0:00 php -a
-   10 root       0:00 sh
-   19 root       0:01 fish
-  749 root       0:00 php co.php
-  760 root       0:00 ps aux
-⏎
-
+<pre><code class="language-xml">&lt;string&gt;-config-dir&lt;/string&gt;
+&lt;string&gt;/usr/local/etc/consul.d&lt;/string&gt;
 </code></pre>
 
-<p>我们来稍微改一改, 体验协程的调度:</p>
+<h3 id="toc_2"><a href="#%E5%86%99%E4%B8%A4%E4%B8%AA%E6%A8%A1%E6%8B%9F%E7%9A%84%E5%BE%AE%E6%9C%8D%E5%8A%A1"></a>写两个模拟的微服务</h3>
 
-<pre><code class="language-go">use Co;
+<p>用 golang 写两个小程序，用以模拟两个微服务。</p>
 
-go(function () {
-    Co::sleep(1); // 只新增了一行代码
-    echo &quot;hello go1 \n&quot;;
-});
-
-echo &quot;hello main \n&quot;;
-
-go(function () {
-    echo &quot;hello go2 \n&quot;;
-});
-
-</code></pre>
-
-<p><code>\Co::sleep()</code> 函数功能和 <code>sleep()</code> 差不多, 但是它模拟的是 <strong>IO 等待</strong> (IO 后面会细讲). 执行的结果如下:</p>
-
-<pre><code>root@b98940b00a9b /v/w/c/p/swoole# php co.php
-hello main
-hello go2
-hello go1
-
-</code></pre>
-
-<p>怎么不是顺序执行的呢? 实际执行过程:</p>
-
-<ul>
-<li>  运行此段代码, 系统启动一个新进程</li>
-<li>  遇到 <code>go()</code>, 当前进程中生成一个协程</li>
-<li>  协程中遇到 <strong>IO 阻塞</strong> (这里是 <code>Co::sleep()</code> 模拟出的 <strong>IO 等待</strong>), <strong>协程让出控制, 进入协程调度队列</strong></li>
-<li>  进程继续向下执行, 输出 <code>hello main</code></li>
-<li>  执行下一个协程, 输出 <code>hello go2</code></li>
-<li>  之前的协程准备就绪, 继续执行, 输出 <code>hello go1</code></li>
-</ul>
-
-<p>到这里, 已经可以看到 swoole 中 <strong>协程与进程的关系</strong>, 以及 <strong>协程的调度</strong>, 我们再改一改刚才的程序:</p>
-
-<pre><code class="language-go">go(function () {
-    Co::sleep(1);
-    echo &quot;hello go1 \n&quot;;
-});
-
-echo &quot;hello main \n&quot;;
-
-go(function () {
-    Co::sleep(1);
-    echo &quot;hello go2 \n&quot;;
-});
-
-</code></pre>
-
-<p>我想你已经知道输出是什么样子了:</p>
-
-<pre><code class="language-sh">root@b98940b00a9b /v/w/c/p/swoole# php co.php
-hello main
-hello go1
-hello go2
-⏎
-
-</code></pre>
-
-<h2 id="toc_1">协程快在哪? 减少 IO 阻塞导致的性能损失</h2>
-
-<p>大家可能听到使用协程的最多的理由, 可能就是 <strong>协程快</strong>. 那看起来和平时写得差不多的代码, 为什么就要快一些呢? 一个常见的理由是, <strong>可以创建很多个协程来执行任务, 所以快</strong>. 这种说法是对的, 不过还停留在表面.</p>
-
-<p>首先, 一般的计算机任务分为 2 种:</p>
-
-<ul>
-<li>  CPU 密集型, 比如加减乘除等科学计算</li>
-<li>  IO 密集型, 比如网络请求, 文件读写等</li>
-</ul>
-
-<p>其次, 高性能相关的 2 个概念:</p>
-
-<ul>
-<li>  并行: 同一个时刻, 同一个 CPU 只能执行同一个任务, 要同时执行多个任务, 就需要有多个 CPU 才行</li>
-<li>  并发: 由于 CPU 切换任务非常快, 快到人类可以感知的极限, 就会有很多任务 <strong>同时执行</strong> 的错觉</li>
-</ul>
-
-<p>了解了这些, 我们再来看协程, 协程适合的是 <strong>IO 密集型</strong> 应用, 因为协程在 <strong>IO 阻塞</strong> 时会自动调度, 减少 IO 阻塞导致的时间损失.</p>
-
-<p>我们可以对比下面三段代码:</p>
-
-<ul>
-<li>  普通版: 执行 4 个任务</li>
-</ul>
-
-<pre><code class="language-php">$n = 4;
-for ($i = 0; $i &lt; $n; $i++) {
-    sleep(1);
-    echo microtime(true) . &quot;: hello $i \n&quot;;
-};
-echo &quot;hello main \n&quot;;
-
-</code></pre>
-
-<pre><code class="language-sh">root@b98940b00a9b /v/w/c/p/swoole# time php co.php
-1528965075.4608: hello 0
-1528965076.461: hello 1
-1528965077.4613: hello 2
-1528965078.4616: hello 3
-hello main
-real    0m 4.02s
-user    0m 0.01s
-sys     0m 0.00s
-⏎
-
-</code></pre>
-
-<ul>
-<li>  单个协程版:</li>
-</ul>
-
-<pre><code class="language-php">$n = 4;
-go(function () use ($n) {
-    for ($i = 0; $i &lt; $n; $i++) {
-        Co::sleep(1);
-        echo microtime(true) . &quot;: hello $i \n&quot;;
-    };
-});
-echo &quot;hello main \n&quot;;
-
-</code></pre>
-
-<pre><code>root@b98940b00a9b /v/w/c/p/swoole# time php co.php
-hello main
-1528965150.4834: hello 0
-1528965151.4846: hello 1
-1528965152.4859: hello 2
-1528965153.4872: hello 3
-real    0m 4.03s
-user    0m 0.00s
-sys     0m 0.02s
-⏎
-
-</code></pre>
-
-<ul>
-<li>  多协程版: <strong>见证奇迹的时刻</strong></li>
-</ul>
-
-<pre><code class="language-php">$n = 4;
-for ($i = 0; $i &lt; $n; $i++) {
-    go(function () use ($i) {
-        Co::sleep(1);
-        echo microtime(true) . &quot;: hello $i \n&quot;;
-    });
-};
-echo &quot;hello main \n&quot;;
-
-</code></pre>
-
-<pre><code class="language-sh">root@b98940b00a9b /v/w/c/p/swoole# time php co.php
-hello main
-1528965245.5491: hello 0
-1528965245.5498: hello 3
-1528965245.5502: hello 2
-1528965245.5506: hello 1
-real    0m 1.02s
-user    0m 0.01s
-sys     0m 0.00s
-⏎
-
-</code></pre>
-
-<p>为什么时间有这么大的差异呢:</p>
-
-<ul>
-<li>  普通写法, 会遇到 <strong>IO 阻塞</strong> 导致的性能损失</li>
-<li>  单协程: 尽管 IO 阻塞 引发了协程调度, 但当前只有一个协程, 调度之后还是执行当前协程</li>
-<li>  多协程: 真正发挥出了协程的优势, 遇到 IO 阻塞 时发生调度, IO 就绪时恢复运行</li>
-</ul>
-
-<p>我们将多协程版稍微修改一下:</p>
-
-<ul>
-<li>  多协程版 2: CPU 密集型</li>
-</ul>
-
-<pre><code class="language-php">$n = 4;
-for ($i = 0; $i &lt; $n; $i++) {
-    go(function () use ($i) {
-        // Co::sleep(1);
-        sleep(1);
-        echo microtime(true) . &quot;: hello $i \n&quot;;
-    });
-};
-echo &quot;hello main \n&quot;;
-
-</code></pre>
-
-<pre><code class="language-sh">root@b98940b00a9b /v/w/c/p/swoole# time php co.php
-1528965743.4327: hello 0
-1528965744.4331: hello 1
-1528965745.4337: hello 2
-1528965746.4342: hello 3
-hello main
-real    0m 4.02s
-user    0m 0.01s
-sys     0m 0.00s
-⏎
-
-</code></pre>
-
-<p>只是将 <code>Co::sleep()</code> 改成了 <code>sleep()</code>, 时间又和普通版差不多了. 因为:</p>
-
-<ul>
-<li>  <code>sleep()</code> 可以看做是 CPU 密集型任务, 不会引起协程的调度</li>
-<li>  <code>Co::sleep()</code> 模拟的是 IO 密集型任务, 会引发协程的调度</li>
-</ul>
-
-<p><strong>这也是为什么, 协程适合 IO 密集型 的应用.</strong></p>
-
-<p>再来一组对比的例子: 使用 redis</p>
-
-<pre><code class="language-php">// 同步版, redis使用时会有 IO 阻塞
-$cnt = 2000;
-for ($i = 0; $i &lt; $cnt; $i++) {
-    $redis = new \Redis();
-    $redis-&gt;connect(&#39;redis&#39;);
-    $redis-&gt;auth(&#39;123&#39;);
-    $key = $redis-&gt;get(&#39;key&#39;);
-}
-
-// 单协程版: 只有一个协程, 并没有使用到协程调度减少 IO 阻塞
-go(function () use ($cnt) {
-    for ($i = 0; $i &lt; $cnt; $i++) {
-        $redis = new Co\Redis();
-        $redis-&gt;connect(&#39;redis&#39;, 6379);
-        $redis-&gt;auth(&#39;123&#39;);
-        $redis-&gt;get(&#39;key&#39;);
-    }
-});
-
-// 多协程版, 真正使用到协程调度带来的 IO 阻塞时的调度
-for ($i = 0; $i &lt; $cnt; $i++) {
-    go(function () {
-        $redis = new Co\Redis();
-        $redis-&gt;connect(&#39;redis&#39;, 6379);
-        $redis-&gt;auth(&#39;123&#39;);
-        $redis-&gt;get(&#39;key&#39;);
-    });
-}
-
-</code></pre>
-
-<p>性能对比:</p>
-
-<pre><code class="language-sh"># 多协程版
-root@0124f915c976 /v/w/c/p/swoole# time php co.php
-real    0m 0.54s
-user    0m 0.04s
-sys     0m 0.23s
-⏎
-
-# 同步版
-root@0124f915c976 /v/w/c/p/swoole# time php co.php
-real    0m 1.48s
-user    0m 0.17s
-sys     0m 0.57s
-⏎
-
-</code></pre>
-
-<h2 id="toc_2">swoole 协程和 go 协程对比: 单进程 vs 多线程</h2>
-
-<p>接触过 go 协程的 coder, 初始接触 swoole 的协程会有点 <strong>懵</strong>, 比如对比下面的代码:</p>
+<p><code>service1.go</code></p>
 
 <pre><code class="language-go">package main
-
 import (
-    &quot;fmt&quot;
-    &quot;time&quot;
+    &quot;net/http&quot;
+    &quot;log&quot;
+    &quot;io&quot;
 )
-
-func main() {
-    go func() {
-        fmt.Println(&quot;hello go&quot;)
-    }()
-
-    fmt.Println(&quot;hello main&quot;)
-
-    time.Sleep(time.Second)
+func TestServer(w http.ResponseWriter, req *http.Request) {
+    resp, err := http.Get(&quot;http://127.0.0.1:8082/test2&quot;)
+    if resp != nil &amp;&amp; resp.Body != nil {
+        defer resp.Body.Close()
+    }
+    if err != nil {
+        w.Write([]byte(&quot;make request failed\n&quot;))
+        return
+    }
+    io.Copy(w, resp.Body)
 }
-
+func main() {
+    http.HandleFunc(&quot;/test1&quot;, TestServer)
+    err := http.ListenAndServe(&quot;:8081&quot;, nil)
+    if err != nil {
+        log.Fatal(&quot;ListenAndServe: &quot;, err)
+    }
+}
 </code></pre>
 
-<pre><code class="language-sh">&gt; 14:11 src $ go run test.go
-hello main
-hello go
+<p><code>service2.go</code></p>
 
+<pre><code class="language-go">package main
+import (
+    &quot;io&quot;
+    &quot;net/http&quot;
+    &quot;log&quot;
+)
+func TestServer(w http.ResponseWriter, req *http.Request) {
+    io.WriteString(w, &quot;hello, world!\n&quot;)
+}
+func main() {
+    http.HandleFunc(&quot;/test2&quot;, TestServer)
+    err := http.ListenAndServe(&quot;:8082&quot;, nil)
+    if err != nil {
+        log.Fatal(&quot;ListenAndServe: &quot;, err)
+    }
+}
 </code></pre>
 
-<p>刚写 go 协程的 coder, 在写这个代码的时候会被告知不要忘了 <code>time.Sleep(time.Second)</code>, 否则看不到输出 <code>hello go</code>, 其次, <code>hello go</code> 与 <code>hello main</code> 的顺序也和 swoole 中的协程不一样.</p>
+<p>这里模拟微服务<code>service1</code>调用<code>service2</code>。</p>
 
-<p>原因就在于 swoole 和 go 中, <strong>实现协程调度的模型不同</strong>.</p>
+<h3 id="toc_3"><a href="#%E5%9C%A8consul%E9%87%8C%E9%85%8D%E7%BD%AE%E4%B8%A4%E4%B8%AA%E6%9C%8D%E5%8A%A1"></a>在 consul 里配置两个服务</h3>
 
-<p>上面 go 代码的执行过程:</p>
+<p>在 consul 的配置文件目录下新建两个 json 文件，用来配置上述两个服务。</p>
 
-<ul>
-<li>  运行 go 代码, 系统启动一个新进程</li>
-<li>  查找 <code>package main</code>, 然后执行其中的 <code>func mian()</code></li>
-<li>  <strong>遇到协程, 交给协程调度器执行</strong></li>
-<li>  继续向下执行, 输出 <code>hello main</code></li>
-<li>  如果不添加 <code>time.Sleep(time.Second)</code>, main 函数执行完, 程序结束, 进程退出, 导致调度中的协程也终止</li>
-</ul>
+<p><code>/usr/local/etc/consul.d/01_service1.json</code>:</p>
 
-<p>go 中的协程, 使用的 MPG 模型:</p>
+<pre><code class="language-json">{
+  &quot;service&quot;: {
+    &quot;name&quot;: &quot;service1&quot;,
+    &quot;port&quot;: 8081,
+    &quot;connect&quot;: {
+      &quot;proxy&quot;: {
+        &quot;config&quot;: {
+          &quot;upstreams&quot;: [{
+             &quot;destination_name&quot;: &quot;service2&quot;,
+             &quot;local_bind_port&quot;: 38082
+          }]
+        }
+      }
+    }
+  }
+}
+</code></pre>
 
-<ul>
-<li>  M 指的是 Machine, 一个 M 直接关联了一个内核线程</li>
-<li>  P 指的是 processor, 代表了 M 所需的上下文环境, 也是处理用户级代码逻辑的处理器</li>
-<li>  G 指的是 Goroutine, 其实本质上也是一种轻量级的线程</li>
-</ul>
+<p><code>/usr/local/etc/consul.d/01_service2.json</code>:</p>
 
-<p><img src="https://upload-images.jianshu.io/upload_images/567399-d400f4b192f3dc48.png" alt=""/></p>
+<pre><code class="language-json">{
+  &quot;service&quot;: {
+    &quot;name&quot;: &quot;service2&quot;,
+    &quot;port&quot;: 8082,
+    &quot;connect&quot;: {
+      &quot;proxy&quot;: {
+      }
+    }
+  }
+}
+</code></pre>
 
-<p>而 swoole 中的协程调度使用 <strong>单进程模型</strong>, 所有协程都是在当前进程中进行调度, 单进程的好处也很明显 -- <strong>简单 / 不用加锁 / 性能也高</strong>.</p>
+<p>然后执行命令重新加载 consul 的配置</p>
 
-<p>无论是 go 的 MPG 模型, 还是 swoole 的 单进程模型, 都是对 CSP 理论 的实现.</p>
+<pre><code class="language-bash">consul reload
+</code></pre>
 
-<blockquote>
-<p>CSP 通信方式, 在 1985 年时的论文就已经有了, 做理论研究的人, 如果没有能提前几年, 十几年甚至几十年的大胆假设, 可能很难提高了.</p>
-</blockquote>
+<p>修改 service1 中引用 service2 的代码：</p>
 
-<h2 id="toc_3">写在最后</h2>
+<pre><code class="language-go">......
+func TestServer(w http.ResponseWriter, req *http.Request) {
+    //resp, err := http.Get(&quot;http://127.0.0.1:8082/test2&quot;)
+    resp, err := http.Get(&quot;http://127.0.0.1:38082/test2&quot;)
+    if resp != nil &amp;&amp; resp.Body != nil {
+        defer resp.Body.Close()
+    }
+    if err != nil {
+        w.Write([]byte(&quot;make request failed\n&quot;))
+        return
+    }
+    io.Copy(w, resp.Body)
+}
+......
+</code></pre>
 
-<p>今天从 <code>go()</code> 出发, 得以一瞥协程世界, 协程的世界里还有很多很有意思的东西, 需要我们去发现. 比如:</p>
+<h3 id="toc_4"><a href="#%E8%B7%91%E8%B5%B7%E6%9D%A5"></a>跑起来</h3>
 
-<ul>
-<li>  我们普通版的代码是当前进程里执行的, 只是单个进程, 可我们现在可能有了很多协程, 会不会有什么奇遇呢?</li>
-</ul>
+<p>将 service1、service2 跑起来，然后用 curl 命令访问 service1</p>
 
-<p>还有一个细节: swoole 中有 <code>Co::sleep()</code> 和 <code>sleep()</code> 2 个方法的, 而 go 中只有 <code>time.Sleep()</code> 一个方法?</p>
+<pre><code class="language-bash">&gt; go run service1.go &amp;&gt; /dev/null
+&gt; go run service2.go &amp;&gt; /dev/null
+&gt; curl http://127.0.0.1:8081/test1
+# 如果出现以下输出，则说明一切正常，Bingo!
+hello, world!
+</code></pre>
 
-<p>这是 swoole 协程需要经历的一个阶段 (毕竟 go 快 10 年了), 还不够 <strong>智能的判断 IO 阻塞</strong>, 所以上面也使用了相应的协程版 redis <code>co\Redis()</code> -- 你得使用配套协程版, 才能达到协程调度的效果.</p>
+<h3 id="toc_5"><a href="#%E5%85%B6%E5%AE%83%E4%BD%BF%E7%94%A8%E6%96%B9%E6%B3%95"></a>其它使用方法</h3>
 
-<p>如果对协程的发展阶段感兴趣, 可以阅读下面这篇文章:</p>
+<p>除了 Service Mesh 的玩法，consul 1.2 还提供了 SDK 的用法。简单来说就是 Go 语言开发的微服务按照它的规范修改服务提供方、服务消费方的代码，服务间的调用将会自动使用底层的 connect 隧道。这个使用方法不太符合 service mesh 的初衷，做过微服务框架 sdk 的我不是太喜欢，这里就不详细讲了，可以参考官方给出的文档。</p>
 
-<ul>
-<li>  <a href="https://my.oschina.net/yyzybb/blog/1817226">Why c++ coroutine？Why libgo？</a>: 关于协程全景式的概述的, 推荐花时间读一读</li>
-</ul>
+<p><a href="https://www.consul.io/docs/connect/native.html">Connect Native 原理</a></p>
 
-<p>想解锁 swoole 协程的更多姿势:</p>
+<p><a href="https://www.consul.io/docs/connect/native/go.html">Connect Native Go 语言项目改造指引</a></p>
 
-<ul>
-<li>  <a href="https://segmentfault.com/a/1190000013239349">Swoole 2.1 正式版发布，协程 + 通道带来全新的 PHP 编程模式</a></li>
-<li>  <a href="https://segmentfault.com/a/1190000015291606">Swoole 4.0 正式版，面向生产环境的 PHP 协程引擎</a></li>
-<li>  <a href="https://github.com/ThinkDevelopers/PHPConChina/blob/master/PHPCON2018/Swoole4-%E5%85%A8%E6%96%B0%E7%9A%84PHP%E7%BC%96%E7%A8%8B%E6%A8%A1%E5%BC%8F_%E9%9F%A9%E5%A4%A9%E5%B3%B0_PHPCON2018.pdf">Swoole4 - 全新的 PHP 编程模式_韩天峰_PHPCON2018</a></li>
-</ul>
+<h2 id="toc_6"><a href="#consul%E7%9A%84service-mesh%E5%8E%9F%E7%90%86%E5%88%86%E6%9E%90"></a>consul 的 service mesh 原理分析</h2>
 
-<p>最后, <a href="https://gitee.com/daydaygo/coding/blob/master/php/swoole/co.php">本期示例代码可以从我的开源项目中获取, 请享用</a></p>
+<p>其实 consul 的文档本身说的比较明白，这里结合 consul-ui 及代码大概分析一下。</p>
+
+<p>当给 consul 的服务配置里添加了<code>&quot;connect&quot;: { &quot;proxy&quot;: { } }</code>后，consul 将会为每个服务实例创建一个专门的隧道代理，如下图所示：</p>
+
+<p><a href="https://jeremy-xu.oschina.io/images/20180708/image-20180708231726604.png"><img src="https://jeremy-xu.oschina.io/images/20180708/image-20180708231726604.png" alt=""/></a></p>
+
+<p>隧道代理的作用是当以 connect 模式连入时，会自动建立一条到原服务实例的 tcp 隧道，后面 tcp 层以上的应用协议数据流将在这条 tcp 隧道上传输，具体代码在<code>https://github.com/hashicorp/consul/blob/master/connect/proxy/listener.go#NewPublicListener</code>。</p>
+
+<p>而涉及服务间调用时，在 consul 服务配置里添加服务<code>UpstreamListener</code>声明，服务消费方访问服务时需使用<code>UpstreamListener</code>的地址。<code>UpstreamListener</code>实际上是一个反向代理，当访问它时，它会以 connect 模式连接对应的服务实例<code>Connect Proxy</code>，具体代码在<code>https://github.com/hashicorp/consul/blob/master/connect/proxy/listener.go#NewUpstreamListener</code>。</p>
+
+<p>结合上述两条规则，整个数据链路就通了。</p>
+
+<p>这里有一个问题，为啥一定要 connect 模式的隧道代理呢？反向代理服务不能直接连接原来的目标服务地址吗？</p>
+
+<p>看了下<code>https://github.com/hashicorp/consul/blob/master/connect/service.go#Dial</code>，大概知道原因了。因为 connect 模式的隧道代理是使用 TLS 加密的，这样物理服务器节点之间的网络流量就走 TLS 安全连接了，再加上 <a href="https://www.consul.io/docs/connect/intentions.html">intentions</a> 机制，服务间的调用安全性上有了很大保障。还有一个原因，如果采用 <a href="https://www.consul.io/docs/connect/native/go.html">Connect-Native</a> 的方式集成 consul 的 service mesh 功能，底层连接是 TLS，上层就可以很方便地走 HTTP/2.0 协议了。</p>
+
+<h2 id="toc_7"><a href="#consul%E7%9A%84service-mesh%E4%BC%98%E7%BC%BA%E7%82%B9%E5%88%86%E6%9E%90"></a>consul 的 service mesh 优缺点分析</h2>
+
+<p>优点：</p>
+
+<ol>
+<li><p>直接使用 tcp 隧道，因此直接支持各类基于 tcp 的协议代理，如 HTTP/1.1、HTTP/2.0、GRPC。</p></li>
+<li><p>实现原理简单，<code>https://github.com/hashicorp/consul/blob/master/connect/</code>、<code>https://github.com/hashicorp/consul/tree/master/api/connect*.go</code>、<code>https://github.com/hashicorp/consul/tree/master/agent/connect/</code>下的关键文件不超过 20 个，逻辑很容易就看清了。</p></li>
+<li><p>直接结合 consul 做服务注册与服务发现，集成度高。</p></li>
+</ol>
+
+<p>缺点：</p>
+
+<ol>
+<li> 目前的负载均衡算法还很简单，就是随机，见下面：</li>
+</ol>
+
+<p><a href="https://jeremy-xu.oschina.io/images/20180708/image-20180708231828625.png"><img src="https://jeremy-xu.oschina.io/images/20180708/image-20180708231828625.png" alt=""/></a></p>
+
+<ol>
+<li><p>一些微服务框架的基本功能还不具备，如超时、重试、熔断、流量分配等，可以从<code>https://github.com/hashicorp/consul/blob/master/connect/proxy/listener.go#handleConn</code>这里开始扩展。</p></li>
+<li><p>需要手动修改 consul 的服务配置；服务消费方要根据 consul 里的服务配置，修改调用其它服务的地址（这里跟 service mesh 的初衷有些不符）。</p></li>
+</ol>
+
+<h2 id="toc_8"><a href="#%E6%80%BB%E7%BB%93"></a>总结</h2>
+
+<p>目前来看 consul 的 service mesh 方案还比较简单，功能很基本，但具备进一步扩展的空间，可以好好研究学习它的代码。</p>
+
+<h2 id="toc_9"><a href="#%E5%8F%82%E8%80%83"></a>参考</h2>
+
+<ol>
+<li> <a href="https://www.hashicorp.com/blog/consul-1-2-service-mesh">https://www.hashicorp.com/blog/consul-1-2-service-mesh</a></li>
+<li> <a href="https://www.consul.io/intro/getting-started/connect.html">https://www.consul.io/intro/getting-started/connect.html</a></li>
+<li> <a href="https://www.consul.io/docs/agent/options.html">https://www.consul.io/docs/agent/options.html</a></li>
+<li> <a href="https://www.consul.io/docs/connect/intentions.html">https://www.consul.io/docs/connect/intentions.html</a></li>
+<li> <a href="https://www.consul.io/docs/connect/native.html">https://www.consul.io/docs/connect/native.html</a></li>
+<li> <a href="https://www.consul.io/docs/connect/native/go.html">https://www.consul.io/docs/connect/native/go.html</a></li>
+<li> <a href="https://www.consul.io/docs/connect/configuration.html">https://www.consul.io/docs/connect/configuration.html</a></li>
+<li> <a href="https://www.consul.io/docs/connect/proxies.html">https://www.consul.io/docs/connect/proxies.html</a></li>
+<li> <a href="https://www.consul.io/docs/connect/dev.html">https://www.consul.io/docs/connect/dev.html</a></li>
+<li> <a href="https://www.consul.io/docs/connect/ca/consul.html">https://www.consul.io/docs/connect/ca/consul.html</a></li>
+</ol>
 
                         
                       </div>
@@ -552,10 +374,10 @@ hello go
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/6/16</span>
+                    <span class="date">2018/7/15</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Cocurrency.html'>Cocurrency</a></span>
+          					    <span class="posted-in"><a href='Microservice.html'>Microservice</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -622,8 +444,6 @@ hello go
 
       	<p class="cat-list">
         
-            <a href="Team.html"><strong>Team</strong></a>
-        
             <a href="Infra.html"><strong>Infra</strong></a>
         
             <a href="Coding.html"><strong>Coding</strong></a>
@@ -647,31 +467,31 @@ hello go
 	      
 		      
 			      <li class="post">
-			        <a href="15301813999205.html">架构设计：负载均衡层设计方案（9）——负载均衡层总结下篇</a>
+			        <a href="15337171704262.html">Introduction to Testing with Spock and Groovy</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301813109409.html">架构设计：负载均衡层设计方案（8）——负载均衡层总结上篇</a>
+			        <a href="15336595358049.html">10 Excellent Ways to Secure Your Spring Boot Application</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301812452579.html">架构设计：负载均衡层设计方案（7）——LVS + Keepalived + Nginx安装及配置</a>
+			        <a href="15336592302916.html">First MicroProfile.io application using Java Module System</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301811967181.html">架构设计：负载均衡层设计方案（6）——Nginx + Keepalived构建高可用的负载层</a>
+			        <a href="15332186142588.html">Jenkins 的 Pipeline 脚本在美团餐饮 SaaS 中的实践</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301811361753.html">架构设计：负载均衡层设计方案（5）——LVS单节点安装</a>
+			        <a href="15331749691571.html">基于ZooKeeper的分布式锁和队列</a>
 			      </li>
 		     
 		  

@@ -76,8 +76,6 @@
     <li><label>Categories</label></li>
 
         
-            <li><a href="Team.html">Team</a></li>
-        
             <li><a href="Infra.html">Infra</a></li>
         
             <li><a href="Coding.html">Coding</a></li>
@@ -107,200 +105,397 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15281306050002.html">
+                <a class="clearlink" href="15301794059091.html">
                 
-                  <h1>分布式之 redis 复习精讲</h1>
+                  <h1>架构设计：负载均衡层设计方案（2）——Nginx 安装</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="http://www.cnblogs.com/rjzheng/p/9096228.html">http://www.cnblogs.com/rjzheng/p/9096228.html</a></p>
+<p><a href="https://blog.csdn.net/yinwenjie/article/details/46620711">https://blog.csdn.net/yinwenjie/article/details/46620711</a></p>
 </blockquote>
 
-<h2 id="toc_0">引言</h2>
+<p>前一篇文章<a href="http://blog.csdn.net/yinwenjie/article/details/46605451">《架构设计：负载均衡层设计方案（1）——负载场景和解决方式》</a>中我们描述了要搭设负载均衡层的业务场景和负载均衡层搭建和扩展思路。从这篇文章开始的后几篇文章，我们将详细介绍 Nginx、LVS 和 Nginx+Keepalived、LVS+Keepalived 和 LVS+Nginx+Keepalived 的安装细节，以及它们的性能优化方式。</p>
 
-<h3 id="toc_1">为什么写这篇文章?</h3>
+<p>Nginx 和 LVS 都是可以独立工作的，Keepalived 作为检测机制，不但可以和 Nginx、LVS 集成也可以和其他软件集成形成高可用方案（例如可以和 MySQL 数据库集成、可以和 Jetty 服务器集成、还可以和自己写的程序集成）。所以首先我们先来详细讲述 Nginx 和 LVS 的核心工作原理、安装过程和优化方式，再分别讲解他们和 Keepalived 的集成方式。这样的方式应该可以使您更快的掌握其中的核心，并能最快的融会贯通。</p>
 
-<p>博主的<a href="http://www.cnblogs.com/rjzheng/p/8994962.html">《分布式之消息队列复习精讲》</a>得到了大家的好评，内心诚惶诚恐，想着再出一篇关于复习精讲的文章。但是还是要说明一下，复习精讲的文章偏面试准备，真正在开发过程中，还是脚踏实地，一步一个脚印，不要投机取巧。<br/>
-考虑到绝大部分写业务的程序员，在实际开发中使用 redis 的时候，只会 setvalue 和 getvalue 两个操作，对 redis 整体缺乏一个认知。又恰逢博主某个同事下周要去培训 redis，所以博主斗胆以 redis 为题材，对 redis 常见问题做一个总结，希望能够弥补大家的知识盲点。</p>
+<h1 id="toc_0"><a></a>1、Nginx 重要算法介绍</h1>
 
-<h3 id="toc_2">复习要点?</h3>
+<p>Nginx 是什么，请自行百度。我们先介绍几个关键的算法，如果您还不了解这些算法在 Nginx 中所起的作用，请不要着急，本文后半部分将说明它们的作用。</p>
 
-<p>本文围绕以下几点进行阐述<br/>
-1、为什么使用 redis<br/>
-2、使用 redis 有什么缺点<br/>
-3、单线程的 redis 为什么这么快<br/>
-4、redis 的数据类型，以及每种数据类型的使用场景<br/>
-5、redis 的过期策略以及内存淘汰机制<br/>
-6、redis 和数据库双写一致性问题<br/>
-7、如何应对缓存穿透和缓存雪崩问题<br/>
-8、如何解决 redis 的并发竞争问题</p>
+<h2 id="toc_1"><a></a>1.1、一致性 Hash 算法</h2>
 
-<h2 id="toc_3">正文</h2>
+<p><img src="https://img-blog.csdn.net/20150703172857890" alt=""/></p>
 
-<h3 id="toc_4">1、为什么使用 redis</h3>
-
-<p><strong>分析</strong>: 博主觉得在项目中使用 redis，主要是从两个角度去考虑: <strong>性能</strong>和<strong>并发</strong>。当然，redis 还具备可以做分布式锁等其他功能，但是如果只是为了分布式锁这些其他功能，完全还有其他中间件 (如 zookpeer 等) 代替，并不是非要使用 redis。因此，这个问题主要从性能和并发两个角度去答。<br/>
-<strong>回答</strong>: 如下所示，分为两点<br/>
-<strong>（一）性能</strong><br/>
-如下图所示，我们在碰到需要执行耗时特别久，且结果不频繁变动的 SQL，就特别适合将运行结果放入缓存。这样，后面的请求就去缓存中读取，使得请求能够<strong>迅速响应</strong>。<br/>
-<img src="https://images.cnblogs.com/cnblogs_com/rjzheng/1202350/o_redis1.png" alt=""/><br/>
-<strong>题外话：</strong>忽然想聊一下这个<strong>迅速响应</strong>的标准。其实根据交互效果的不同，这个响应时间没有固定标准。不过曾经有人这么告诉我:&quot; 在理想状态下，我们的页面跳转需要在<strong>瞬间</strong>解决，对于页内操作则需要在<strong>刹那</strong>间解决。另外，超过<strong>一弹指</strong>的耗时操作要有进度提示，并且可以随时中止或取消，这样才能给用户最好的体验。&quot;<br/>
-那么<strong>瞬间、刹那、一弹指</strong>具体是多少时间呢？<br/>
-根据《摩诃僧祗律》记载</p>
-
-<pre><code>一刹那者为一念，二十念为一瞬，二十瞬为一弹指，二十弹指为一罗预，二十罗预为一须臾，一日一夜有三十须臾。
-</code></pre>
-
-<p>那么，经过周密的计算，一<strong>瞬间</strong>为 0.36 秒, 一<strong>刹那</strong>有 0.018 秒. 一<strong>弹指</strong>长达 7.2 秒。<br/>
-<strong>（二）并发</strong><br/>
-如下图所示，在大并发的情况下，所有的请求直接访问数据库，数据库会出现连接异常。这个时候，就需要使用 redis 做一个缓冲操作，让请求先访问到 redis，而不是直接访问数据库。<br/>
-<img src="https://images.cnblogs.com/cnblogs_com/rjzheng/1202350/o_redis2.png" alt=""/></p>
-
-<h3 id="toc_5">2、使用 redis 有什么缺点</h3>
-
-<p><strong>分析</strong>: 大家用 redis 这么久，这个问题是必须要了解的，基本上使用 redis 都会碰到一些问题，常见的也就几个。<br/>
-<strong>回答</strong>: 主要是四个问题<br/>
-(一) 缓存和数据库双写一致性问题<br/>
-(二) 缓存雪崩问题<br/>
-(三) 缓存击穿问题<br/>
-(四) 缓存的并发竞争问题<br/>
-这四个问题，我个人是觉得在项目中，比较常遇见的，具体解决方案，后文给出。</p>
-
-<h3 id="toc_6">3、单线程的 redis 为什么这么快</h3>
-
-<p><strong>分析</strong>: 这个问题其实是对 redis 内部机制的一个考察。其实根据博主的面试经验，很多人其实都不知道 redis 是单线程工作模型。所以，这个问题还是应该要复习一下的。<br/>
-<strong>回答</strong>: 主要是以下三点<br/>
-(一) 纯内存操作<br/>
-(二) 单线程操作，避免了频繁的上下文切换<br/>
-(三) 采用了非阻塞 <strong>I/O 多路复用机制</strong></p>
-
-<p><strong>题外话：</strong>我们现在要仔细的说一说 I/O 多路复用机制，因为这个说法实在是太通俗了，通俗到一般人都不懂是什么意思。博主打一个比方：小曲在 S 城开了一家快递店，负责同城快送服务。小曲因为资金限制，雇佣了<strong>一批</strong>快递员，然后小曲发现资金不够了，只够买<strong>一辆</strong>车送快递。<br/>
-<strong>经营方式一</strong><br/>
-客户每送来一份快递，小曲就让一个快递员盯着，然后快递员开车去送快递。慢慢的小曲就发现了这种经营方式存在下述问题</p>
+<p>一致性 Hash 算法是现代系统架构中的最关键算法之一，在分布式计算系统、分布式存储系统、数据分析等众多领域中广泛应用。针对这个系列的博文，在负载均衡层、业务通信层、数据存储层都会有他的身影。</p>
 
 <ul>
-<li>  几十个快递员基本上时间都花在了抢车上了，大部分快递员都处在闲置状态，谁抢到了车，谁就能去送快递</li>
-<li>  随着快递的增多，快递员也越来越多，小曲发现快递店里越来越挤，没办法雇佣新的快递员了</li>
-<li>  快递员之间的协调很花时间</li>
+<li><p>hash 算法的关键在于它能够根据不同的属性数据，生成一串不相同的 hash 值，并且能够将这个 hash 值转换为</p>
+
+<p><span class="MathJax" id="MathJax-Element-1-Frame" tabindex="0" style="text-align: center; position: relative;" data-mathml="<math xmlns=&quot;http://www.w3.org/1998/Math/MathML&quot; display=&quot;block&quot;><nobr aria-hidden="true">0—232−1</nobr><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><mn>0</mn><mo>—</mo><msup><mn>2</mn><mrow class="MJX-TeXAtom-ORD"><mn>32</mn></mrow></msup><mo>−</mo><mn>1</mn></math><script type="math/tex; mode=display" id="MathJax-Element-1">0 — 2<sup>{32}-1</script>范围整数（即上图中的圆环）<mn>0</mn><mo>&amp;#x2014;</mo><msup><mn>2</mn>&lt;mrow</sup> class=&quot;MJX-TeXAtom-ORD&quot;&gt;<mn>32</mn></mrow></msup><mo>&amp;#x2212;</mo><mn>1</mn></math>&quot; role=&quot;presentation&quot;&gt;</span></p></li>
+<li><p>一台服务器的某个或者某一些属性当然也可以进行 hash 计算（通常是这个服务器的 IP 地址和开放端口），并且根据计算分布在这个圆环上的某一个点。也就是图中圆环上的蓝色点。</p></li>
+<li><p>一个处理请求当然也可以根据这个请求的某一个或者某一些属性进行 hash 计算（可以是这个请求的 IP、端口、cookie 值、URL 值或者请求时间等等），并且根据计算记过分布在这个圆环上的某一个点上。也就是上图圆环上的黄色点。</p></li>
+<li><p>我们约定落在某一个蓝点 A 左侧和蓝点 B 右侧的黄色点所代表的请求，都有蓝点 A 所代表的服务器进行处理，这样就完成解决了 “谁来处理” 的问题。在蓝色点稳定存在的前提下，来自于同一个 Hash 约定的请求所落在的位置都是一样的，这就保证了服务处理映射的稳定性。</p></li>
+<li><p>当某一个蓝色点由于某种原因下线，其所影响到的黄色点也是有限的。即下一次客户端的请求将由其他的蓝色点所代表的服务器进行处理。</p></li>
 </ul>
 
-<p>综合上述缺点，小曲痛定思痛，提出了下面的经营方式<br/>
-<strong>经营方式二</strong><br/>
-小曲只雇佣一个快递员。然后呢，客户送来的快递，小曲按<strong>送达地点</strong>标注好，然后<strong>依次</strong>放在一个地方。最后，那个快递员<strong>依次</strong>的去取快递，一次拿一个，然后开着车去送快递，送好了就回来拿下一个快递。</p>
+<h2 id="toc_2"><a></a>1.2、轮询与加权轮询</h2>
 
-<p><strong>对比</strong><br/>
-上述两种经营方式对比，是不是明显觉得第二种，效率更高，更好呢。在上述比喻中:</p>
+<p><img src="https://img-blog.csdn.net/20150705093244323" alt=""/></p>
 
 <ul>
-<li>  每个快递员 ------------------&gt; 每个线程</li>
-<li>  每个快递 --------------------&gt; 每个 socket(I/O 流)</li>
-<li>  快递的送达地点 --------------&gt;socket 的不同状态</li>
-<li>  客户送快递请求 --------------&gt; 来自客户端的请求</li>
-<li>  小曲的经营方式 --------------&gt; 服务端运行的代码</li>
-<li>  一辆车 ----------------------&gt;CPU 的核数</li>
+<li><p>当有任务需要传递到下层节点进行处理时，任务来源点会按照一个固定的顺序，将任务依次分配到下层节点，如果下层可用的节点数量为 X，那么第 N 个任务的分配规则为：</p>
+
+<p><span class="MathJax" id="MathJax-Element-2-Frame" tabindex="0" style="text-align: center; position: relative;" data-mathml="<math xmlns=&quot;http://www.w3.org/1998/Math/MathML&quot; display=&quot;block&quot;><nobr aria-hidden="true">目标节点 =(NmodX)+1</nobr> <math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><mrow class="MJX-TeXAtom-ORD"><mo>目</mo></mrow><mrow class="MJX-TeXAtom-ORD"><mo>标</mo></mrow><mrow class="MJX-TeXAtom-ORD"><mo>节</mo></mrow><mrow class="MJX-TeXAtom-ORD"><mo>点</mo></mrow> <mo>=</mo><mo stretchy="false">(</mo><mi>N</mi><mi>m</mi><mi>o</mi><mi>d</mi><mi>X</mi><mo stretchy="false">)</mo><mo>+</mo><mn>1</mn></math> <script type="math/tex; mode=display" id="MathJax-Element-2">目标节点 = (N mod X) + 1</script><mrow class=&quot;MJX-TeXAtom-ORD&quot;><mo>&amp;#x76EE;</mo></mrow><mrow class=&quot;MJX-TeXAtom-ORD&quot;><mo>&amp;#x6807;</mo></mrow><mrow class=&quot;MJX-TeXAtom-ORD&quot;><mo>&amp;#x8282;</mo></mrow><mrow class=&quot;MJX-TeXAtom-ORD&quot;><mo>&amp;#x70B9;</mo></mrow><mo>=</mo><mo stretchy=&quot;false&quot;>(</mo><mi>N</mi><mi>m</mi><mi>o</mi><mi>d</mi><mi>X</mi><mo stretchy=&quot;false&quot;>)</mo><mo>+</mo><mn>1</mn></math>&quot; role=&quot;presentation&quot;&gt;</span></p></li>
+<li><p>轮询处理在很多架构思想中都有体现：DNS 解析多 IP 时、LVS 向下转发消息时、Nginx 向下转发消息时、Zookeeper 向计算节点分配任务时。了解基本的轮询过程有助于我们在进行软件架构设计时进行思想借鉴。</p></li>
+<li><p>但是上面的轮询方式是有缺陷的，由于各种客观原因我们可能无法保证任务处理节点的处理能力都是一样的（CPU、IO、内存频率等不同）。所以 A 节点业务能同时处理 100 个任务，但是 B 节点可能同时只能处理 50 个任务。</p></li>
+<li><p>在这种情况下我们需要依据下层节点某个或者多个属性设置权值。这个属性可能是网络带宽、CPU 繁忙程度或者就是各一个固定的权值。</p></li>
 </ul>
 
-<p>于是我们有如下结论<br/>
-1、经营方式一就是传统的并发模型，每个 I/O 流 (快递) 都有一个新的线程 (快递员) 管理。<br/>
-2、经营方式二就是 I/O 多路复用。只有单个线程 (一个快递员)，通过跟踪每个 I/O 流的状态 (每个快递的送达地点)，来管理多个 I/O 流。</p>
+<p>那么加权轮询的分配依据是什么呢？有很多分配依据，例如：概率算法（此算法中包括蒙特卡罗算法，拉斯维加斯算法和舍伍德算法，在网络上有很多介绍资料）、最大公约数法。这里我们对最大公约数算法进行介绍，因为该方法简单实用：</p>
 
-<p>下面类比到真实的 redis 线程模型，如图所示<br/>
-<img src="https://images.cnblogs.com/cnblogs_com/rjzheng/1202350/o_redis3.png" alt=""/><br/>
-参照上图，简单来说，就是。我们的 redis-client 在操作的时候，会产生具有不同事件类型的 socket。在服务端，有一段 I/0 多路复用程序，将其置入队列之中。然后，文件事件分派器，依次去队列中取，转发到不同的事件处理器中。<br/>
-需要说明的是，这个 I/O 多路复用机制，redis 还提供了 select、epoll、evport、kqueue 等多路复用函数库，大家可以自行去了解。</p>
-
-<h3 id="toc_7">4、redis 的数据类型，以及每种数据类型的使用场景</h3>
-
-<p><strong>分析</strong>：是不是觉得这个问题很基础，其实我也这么觉得。然而根据面试经验发现，至少百分八十的人答不上这个问题。建议，在项目中用到后，再类比记忆，体会更深，不要硬记。基本上，一个合格的程序员，五种类型都会用到。<br/>
-<strong>回答</strong>：一共五种<br/>
-(一)String<br/>
-这个其实没啥好说的，最常规的 set/get 操作，value 可以是 String 也可以是数字。一般做<strong>一些复杂的计数功能的缓存。</strong><br/>
-(二)hash<br/>
-这里 value 存放的是结构化的对象，比较方便的就是操作其中的某个字段。博主在做<strong>单点登录</strong>的时候，就是用这种数据结构存储用户信息，以 cookieId 作为 key，设置 30 分钟为缓存过期时间，能很好的模拟出类似 session 的效果。<br/>
-(三)list<br/>
-使用 List 的数据结构，可以<strong>做简单的消息队列的功能</strong>。另外还有一个就是，可以利用 lrange 命令，<strong>做基于 redis 的分页功能</strong>，性能极佳，用户体验好。<br/>
-(四)set<br/>
-因为 set 堆放的是一堆不重复值的集合。所以可以做<strong>全局去重的功能</strong>。为什么不用 JVM 自带的 Set 进行去重？因为我们的系统一般都是集群部署，使用 JVM 自带的 Set，比较麻烦，难道为了一个做一个全局去重，再起一个公共服务，太麻烦了。<br/>
-另外，就是利用交集、并集、差集等操作，可以<strong>计算共同喜好，全部的喜好，自己独有的喜好等功能</strong>。<br/>
-(五)sorted set<br/>
-sorted set 多了一个权重参数 score, 集合中的元素能够按 score 进行排列。可以做<strong>排行榜应用，取 TOP N 操作</strong>。另外，参照另一篇<a href="https://www.cnblogs.com/rjzheng/p/8972725.html">《分布式之延时任务方案解析》</a>，该文指出了 sorted set 可以用来做<strong>延时任务</strong>。最后一个应用就是可以做<strong>范围查找</strong>。</p>
-
-<h3 id="toc_8">5、redis 的过期策略以及内存淘汰机制</h3>
-
-<p><strong>分析</strong>: 这个问题其实相当重要，到底 redis 有没用到家，这个问题就可以看出来。比如你 redis 只能存 5G 数据，可是你写了 10G，那会删 5G 的数据。怎么删的，这个问题思考过么？还有，你的数据已经设置了过期时间，但是时间到了，内存占用率还是比较高，有思考过原因么?<br/>
-<strong>回答</strong>:<br/>
-redis 采用的是定期删除 + 惰性删除策略。<br/>
-<strong>为什么不用定时删除策略?</strong><br/>
-定时删除, 用一个定时器来负责监视 key, 过期则自动删除。虽然内存及时释放，但是十分消耗 CPU 资源。在大并发请求下，CPU 要将时间应用在处理请求，而不是删除 key, 因此没有采用这一策略.<br/>
-<strong>定期删除 + 惰性删除是如何工作的呢?</strong><br/>
-定期删除，redis 默认每个 100ms 检查，是否有过期的 key, 有过期 key 则删除。需要说明的是，redis 不是每个 100ms 将所有的 key 检查一次，而是随机抽取进行检查 (如果每隔 100ms, 全部 key 进行检查，redis 岂不是卡死)。因此，如果只采用定期删除策略，会导致很多 key 到时间没有删除。<br/>
-于是，惰性删除派上用场。也就是说在你获取某个 key 的时候，redis 会检查一下，这个 key 如果设置了过期时间那么是否过期了？如果过期了此时就会删除。<br/>
-<strong>采用定期删除 + 惰性删除就没其他问题了么?</strong><br/>
-不是的，如果定期删除没删除 key。然后你也没即时去请求 key，也就是说惰性删除也没生效。这样，redis 的内存会越来越高。那么就应该采用<strong>内存淘汰机制</strong>。<br/>
-在 redis.conf 中有一行配置</p>
-
-<pre><code># maxmemory-policy volatile-lru
-</code></pre>
-
-<p>该配置就是配内存淘汰策略的 (什么，你没配过？好好反省一下自己)<br/>
-1）noeviction：当内存不足以容纳新写入数据时，新写入操作会报错。<strong>应该没人用吧。</strong><br/>
-2）allkeys-lru：当内存不足以容纳新写入数据时，在键空间中，移除最近最少使用的 key。<strong>推荐使用，目前项目在用这种。</strong><br/>
-3）allkeys-random：当内存不足以容纳新写入数据时，在键空间中，随机移除某个 key。<strong>应该也没人用吧，你不删最少使用 Key, 去随机删。</strong><br/>
-4）volatile-lru：当内存不足以容纳新写入数据时，在设置了过期时间的键空间中，移除最近最少使用的 key。<strong>这种情况一般是把 redis 既当缓存，又做持久化存储的时候才用。不推荐</strong><br/>
-5）volatile-random：当内存不足以容纳新写入数据时，在设置了过期时间的键空间中，随机移除某个 key。<strong>依然不推荐</strong><br/>
-6）volatile-ttl：当内存不足以容纳新写入数据时，在设置了过期时间的键空间中，有更早过期时间的 key 优先移除。<strong>不推荐</strong><br/>
-ps：如果没有设置 expire 的 key, 不满足先决条件 (prerequisites); 那么 volatile-lru, volatile-random 和 volatile-ttl 策略的行为, 和 noeviction(不删除) 基本上一致。</p>
-
-<h3 id="toc_9">6、redis 和数据库双写一致性问题</h3>
-
-<p><strong>分析</strong>: 一致性问题是分布式常见问题，还可以再分为最终一致性和强一致性。数据库和缓存双写，就必然会存在不一致的问题。答这个问题，先明白一个前提。就是<strong>如果对数据有强一致性要求，不能放缓存。</strong>我们所做的一切，只能保证最终一致性。另外，我们所做的方案其实从根本上来说，只能说<strong>降低不一致发生的概率</strong>，无法完全避免。因此，有强一致性要求的数据，不能放缓存。<br/>
-<strong>回答</strong>:<a href="https://www.cnblogs.com/rjzheng/p/9041659.html">《分布式之数据库和缓存双写一致性方案解析》</a>给出了详细的分析，在这里简单的说一说。首先，采取正确更新策略，先更新数据库，再删缓存。其次，因为可能存在删除缓存失败的问题，提供一个补偿措施即可，例如利用消息队列。</p>
-
-<h3 id="toc_10">7、如何应对缓存穿透和缓存雪崩问题</h3>
-
-<p><strong>分析</strong>: 这两个问题，说句实在话，一般中小型传统软件企业，很难碰到这个问题。如果有大并发的项目，流量有几百万左右。这两个问题一定要深刻考虑。<br/>
-<strong>回答</strong>: 如下所示<br/>
-<strong>缓存穿透</strong>，即黑客故意去请求缓存中不存在的数据，导致所有的请求都怼到数据库上，从而数据库连接异常。<br/>
-<strong>解决方案</strong>:<br/>
-(一) 利用互斥锁，缓存失效的时候，先去获得锁，得到锁了，再去请求数据库。没得到锁，则休眠一段时间重试<br/>
-(二) 采用异步更新策略，无论 key 是否取到值，都直接返回。value 值中维护一个缓存失效时间，缓存如果过期，异步起一个线程去读数据库，更新缓存。需要做<strong>缓存预热</strong> (项目启动前，先加载缓存) 操作。<br/>
-(三) 提供一个能迅速判断请求是否有效的拦截机制，比如，利用布隆过滤器，内部维护一系列合法有效的 key。迅速判断出，请求所携带的 Key 是否合法有效。如果不合法，则直接返回。<br/>
-<strong>缓存雪崩</strong>，即缓存同一时间大面积的失效，这个时候又来了一波请求，结果请求都怼到数据库上，从而导致数据库连接异常。<br/>
-<strong>解决方案</strong>:<br/>
-(一) 给缓存的失效时间，加上一个随机值，避免集体失效。<br/>
-(二) 使用互斥锁，但是该方案吞吐量明显下降了。<br/>
-(三) 双缓存。我们有两个缓存，缓存 A 和缓存 B。缓存 A 的失效时间为 20 分钟，缓存 B 不设失效时间。自己做缓存预热操作。然后细分以下几个小点</p>
+<p><img src="https://img-blog.csdn.net/20150705113306874" alt=""/></p>
 
 <ul>
-<li>  I 从缓存 A 读数据库，有则直接返回</li>
-<li>  II A 没有数据，直接从 B 读数据，直接返回，并且异步启动一个更新线程。</li>
-<li>  III 更新线程同时更新缓存 A 和缓存 B。</li>
+<li><p>首先按照某种规则计算得到每个处理节点的权值，上文已经说到计算规则可能是这个服务节点的 CPU 利用率、网络占用情况或者在配置文件中的固定权重。</p></li>
+<li><p>求这些权值的最大公约数，在上图中三个节点的权值分别是 100、80、60. 那么求得的最大公约数就是 20（如果您忘记了最大公约数的定义，请自行复习）。那么这三个节点的被除结果分别是 5、4、3，求和值为 12。</p></li>
+<li><p>得到以上的计算结果，就可以开始进行请求分配了，公式同样为：</p>
+
+<p><span class="MathJax" id="MathJax-Element-3-Frame" tabindex="0" style="text-align: center; position: relative;" data-mathml="<math xmlns=&quot;http://www.w3.org/1998/Math/MathML&quot; display=&quot;block&quot;><nobr aria-hidden="true">(NmodX)+1=Y</nobr><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><mo stretchy="false">(</mo><mi>N</mi><mi>m</mi><mi>o</mi><mi>d</mi><mi>X</mi><mo stretchy="false">)</mo><mo>+</mo><mn>1</mn><mo>=</mo><mi>Y</mi></math><script type="math/tex; mode=display" id="MathJax-Element-3">(N mod X) + 1 = Y</script><br/>
+其中 N 表示当前的第 N 次任务；X 表示整除后的求和结果；Y 为处理节点。<mo stretchy=&quot;false&quot;>(</mo><mi>N</mi><mi>m</mi><mi>o</mi><mi>d</mi><mi>X</mi><mo stretchy=&quot;false&quot;>)</mo><mo>+</mo><mn>1</mn><mo>=</mo><mi>Y</mi></math>&quot; role=&quot;presentation&quot;&gt;</span></p></li>
 </ul>
 
-<h3 id="toc_11">8、如何解决 redis 的并发竞争 key 问题</h3>
+<blockquote>
+<p>总结一下：加权轮询是轮询方案的补充，通过将处理节点的属性转换成权值可以有效的描述处理节点的处理能力，实现更科学的处理任务分配。加权轮询的关键在于加权算法，最大公约数算法简单实用，定位效率高。</p>
+</blockquote>
 
-<p><strong>分析</strong>: 这个问题大致就是，同时有多个子系统去 set 一个 key。这个时候要注意什么呢？大家思考过么。需要说明一下，博主提前百度了一下，发现答案基本都是推荐用 redis 事务机制。博主<strong>不推荐使用 redis 的事务机制。</strong>因为我们的生产环境，基本都是 redis 集群环境，做了数据分片操作。你一个事务中有涉及到多个 key 操作的时候，这多个 key 不一定都存储在同一个 redis-server 上。因此，<strong>redis 的事务机制，十分鸡肋。</strong><br/>
-<strong>回答:</strong> 如下所示<br/>
-(1) 如果对这个 key 操作，<strong>不要求顺序</strong><br/>
-这种情况下，准备一个分布式锁，大家去抢锁，抢到锁就做 set 操作即可，比较简单。<br/>
-(2) 如果对这个 key 操作，<strong>要求顺序</strong><br/>
-假设有一个 key1, 系统 A 需要将 key1 设置为 valueA, 系统 B 需要将 key1 设置为 valueB, 系统 C 需要将 key1 设置为 valueC.<br/>
-期望按照 key1 的 value 值按照 valueA--&gt;valueB--&gt;valueC 的顺序变化。这种时候我们在数据写入数据库的时候，需要保存一个时间戳。假设时间戳如下</p>
+<h1 id="toc_3"><a></a>2、Nginx 的安装</h1>
 
-<pre><code>系统A key 1 {valueA  3:00}
-系统B key 1 {valueB  3:05}
-系统C key 1 {valueC  3:10}
+<h2 id="toc_4"><a></a>2.1、准备工作</h2>
+
+<p>操作系统：centOS 6.5。</p>
+
+<p>Nginx 的下载地址：<a href="http://nginx.org/en/download.html">http://nginx.org/en/download.html</a>。请下载 stable 的版本 1.8.0。后续 Nginx 肯定还会有升级，官网上面会持续更新 stable version。</p>
+
+<p>最小必备组件：<br/>
+yum -y install make zlib zlib-devel gcc gcc-c++ ssh libtool</p>
+
+<h2 id="toc_5"><a></a>2.2、正式安装</h2>
+
+<ul>
+<li><p>下载 nginx1.8.0 版本<br/>
+<img src="https://img-blog.csdn.net/20150705120030369" alt=""/></p></li>
+<li><p>解压 nginx 的 tar 文件<br/>
+<img src="https://img-blog.csdn.net/20150705120225553" alt=""/></p></li>
+<li><p>进行源码编译<br/>
+<img src="https://img-blog.csdn.net/20150705120707338" alt=""/></p></li>
+</ul>
+
+<p>我们看到这时编译检查报错，报错写得很清楚，为了支持 HTTP 重写模块，Nginx 需要 PCRElib 的支持。那我们到 <a href="http://ncu.dl.sourceforge.net/project/pcre/pcre/8.37/pcre-8.37.tar.gz">http://ncu.dl.sourceforge.net/project/pcre/pcre/8.37/pcre-8.37.tar.gz</a> 下载一个稳定的 pcre 版本编译安装即可（不一定是 8.37 版本）。</p>
+
+<ul>
+<li><p>再进行源码编译安装<br/>
+./configure –prefix=/usr/nginx-1.8.0<br/>
+make &amp;&amp; make install<br/>
+<img src="https://img-blog.csdn.net/20150705130214392" alt=""/></p></li>
+<li><p>整个验证、编译、安装过程不应该报任何错误。如果您使用 prefix 设置了安装目标目录，那么可能您还需要在 / etc/profix 文件中设置环境变量：<br/>
+<img src="https://img-blog.csdn.net/20150705130747519" alt=""/></p></li>
+</ul>
+
+<h2 id="toc_6"><a></a>2.3、安装验证和启动</h2>
+
+<p>下面介绍几个 nginx 常用的命令，如果您可以正常使用这些命令，那么说明 nginx 已经安装成功了。</p>
+
+<p>nginx：直接在命令行键入 nginx，就可以启动 nginx。</p>
+
+<p>nginx -t：检查配置文件是否正确。这个命令可以检查 nginx.conf 配置文件其格式、语法是否正确。如果配置文件存在错误，则会出现相应提示；如果 nginx.conf 文件正确，也会出现相应的成功提示。</p>
+
+<p>nginx -s reload：重加载 / 重启 nginx——以新的 nginx.conf 配置文件中的定义。</p>
+
+<p>nginx -s stop：停止 nginx。</p>
+
+<h1 id="toc_7"><a></a>3、进阶</h1>
+
+<p>Nginx 在安装完成后，不用更改任何配置信息就可以直接运行。但是很显然这不会满足我们生产环境的要求。所以我们要重点介绍 Nginx 的配置文件，以及其中重要的配置项的含义。</p>
+
+<h2 id="toc_8"><a></a>3.1、重要配置项</h2>
+
+<p>如果您是按照本文的描述方式安装的 Nginx，那么 Nginx 的主配置文件在：/usr/nginx-1.8.0/conf/nginx.conf 的位置，如果您在编译安装的时候并没有指定安装目录，那么 Nginx 的主配置文件在：/usr/local/nginx/conf/nginx.conf 的位置。当然您还可以在启动 Nginx 的时候使用 -c 的参数人为指定 Nginx 的配置文件位置（但是这种方式不建议）。</p>
+
+<p>我们重新整理了 Nginx 的配置文件，将其分块，以便于讲解：</p>
+
+<pre><code>#================================以下是全局配置项
+#指定运行nginx的用户和用户组，默认情况下该选项关闭（关闭的情况就是nobody）
+#user  nobody nobody;     
+#运行nginx的进程数量，后文详细讲解
+worker_processes  1;      
+#nginx运行错误的日志存放位置。当然您还可以指定错误级别
+#error_log  logs/error.log;    
+#error_log  logs/error.log  notice;
+#error_log  logs/error.log  info;
+#指定主进程id文件的存放位置，虽然worker_processes != 1的情况下，会有很多进程，管理进程只有一个
+#pid        logs/nginx.pid;    
+
+events {
+    #每一个进程可同时建立的连接数量，后问详细讲解
+    worker_connections  1024;   
+    #连接规则，可以采用[kqueue rtsig epoll select poll eventport ]，后文详细讲解
+    use   epoll;    
+}
+#================================以上是全局配置项
+
+http {
+    #================================以下是Nginx后端服务配置项
+    upstream backendserver1 {
+        #nginx向后端服务器分配请求任务的方式，默认为轮询；如果指定了ip_hash，就是hash算法（上文介绍的算法内容）
+        #ip_hash    
+        #后端服务器 ip:port ，如果有多个服务节点，这里就配置多个
+        server 192.168.220.131:8080; 
+        server 192.168.220.132:8080;    
+        #backup表示，这个是一个备份节点，只有当所有节点失效后，nginx才会往这个节点分配请求任务
+        #server 192.168.220.133:8080 backup;        
+        #weight，固定权重，还记得我们上文提到的加权轮询方式吧。
+        #server 192.168.220.134:8080 weight=100;    
+    }
+    #================================以上是Nginx后端服务配置项
+
+    #=================================================以下是 http 协议主配置
+    #安装nginx后，在conf目录下除了nginx.conf主配置文件以外，有很多模板配置文件，这里就是导入这些模板文件
+    include       mime.types;
+    #HTTP核心模块指令，这里设定默认类型为二进制流，也就是当文件类型未定义时使用这种方式
+    default_type  application/octet-stream;     
+    #日志格式
+    #log_format  main  &#39;$remote_addr - $remote_user [$time_local] &quot;$request&quot; &#39;   
+                      &#39;$status $body_bytes_sent &quot;$http_referer&quot; &#39;
+                      &#39;&quot;$http_user_agent&quot; &quot;$http_x_forwarded_for&quot;&#39;;
+
+    #日志文件存放的位置
+    #access_log  logs/access.log  main;         
+
+    #sendfile 规则开启
+    sendfile        on;
+    #指定一个连接的等待时间（单位秒），如果超过等待时间，连接就会断掉。注意一定要设置，否则高并发情况下会产生性能问题。
+    keepalive_timeout  65;                      
+
+    #开启数据压缩，后文详细介绍
+    gzip  on;                                   
+    #=================================================以上是 http 协议主配置
+
+    #=================================================以下是一个服务实例的配置
+    server {
+        #这个代理实例的监听端口
+        listen       80;
+        #server_name 取个唯一的实例名都要想半天？
+        server_name  localhost; 
+        #文字格式
+        charset utf-8;  
+        #access_log  logs/host.access.log  main;    
+
+        #location将按照规则分流满足条件的URL。&quot;location /&quot;您可以理解为“默认分流位置”。
+        location / {
+            #root目录，这个html表示nginx主安装目录下的“html”目录。
+            root   html;   
+            #目录中的默认展示页面
+            index  index.html index.htm;        
+        }
+
+        #location支持正则表达式，“~” 表示匹配正则表达式。
+        location ~ ^/business/ {   
+            #方向代理。后文详细讲解。
+            proxy_pass http://backendserver1;   
+        }
+
+        #redirect server error pages to the static page /50x.html
+        #error_page  404              /404.html;
+        error_page   500 502 503 504  /50x.html;
+        location = /50x.html {
+            root   html;
+        }
+    }
+    #=================================================以上是一个服务实例的配置
+}
+
 </code></pre>
 
-<p>那么，假设这会系统 B 先抢到锁，将 key1 设置为 {valueB 3:05}。接下来系统 A 抢到锁，发现自己的 valueA 的时间戳早于缓存中的时间戳，那就不做 set 操作了。以此类推。</p>
+<p>以上是一个完整的 nginx 配置信息，可以直接粘贴使用，但不建议您这样做。因为上文中很多关键的配置属性都还没有讲解。这样粘贴复制不利于您的工作和学习。</p>
 
-<p>其他方法，比如利用队列，将 set 方法变成串行访问也可以。总之，灵活变通。</p>
+<h3 id="toc_9"><a></a>3.1.1、use [kqueue | rtsig | epoll | select | poll]</h3>
 
-<h2 id="toc_12">总结</h2>
+<p>科技在发展，社会在进步，满足摩尔定义的 IT 行业更是这样。以前所有的连接都是阻断式的（blocking I/O）也就是说一个 TCP 连接线程在发出 Request 后，代码就不会再往下执行了，直到得到远端的 Response 为止；服务器端也一样的，在处理完某一个客户端的 Request 之前，其他客户端的请求都会等待。这种处理方式使客户端和服务器端的通讯性能大打折扣。</p>
 
-<p>本文对 redis 的常见问题做了一个总结。大部分是博主自己在工作中遇到，以及以前面试别人的时候，爱问的一些问题。另外，<strong>不推荐大家临时抱佛脚</strong>，真正碰到一些有经验的工程师，其实几下就能把你问懵。最后，希望大家有所收获吧。</p>
+<p>很明显多线程貌似能够解决这个问题：一个线程处理不了，我可以再开线程来处理啊。但是多线程是有局限性的：</p>
+
+<ul>
+<li><p>创建一个线程会消耗有限的资源。以 JAVA JVM 为例，创建一个新的线程 JVM 会单独开放 1MB 的栈内存空间（通过 - Xss 参数可设置），虽然栈内存不受 - Xmx 和 - Xms 两个参数影响，但是可以说明线程的创建是需要消耗额外资源的。</p></li>
+<li><p>多线程工作时，计算机的 CPU 会耗费大量的资源让多线程在不同的状态下进行切换。在后续的文章中本书还会介绍依据这样的原理让计算机的 CPU 呈波形变化的编程方式。</p></li>
+<li><p>在 Linux 操作系统下，单个用户能够创建的线程和进程总数、整个操作系统能够创建的线程总数都是有限的。通过 limit -a 命令，您可以查看相关的内核参数。</p></li>
+<li><p>所以依靠线程来解决 bio 的问题是不靠谱的，只能起到缓解处理并行请求的作用。您可以想象一次并发 10 万个处理请求的问题，是不可能在计算机上同时创建 10 万个线程来解决的。</p></li>
+</ul>
+
+<p>基于上面的描述，NIO（no blocking I/O）技术就这样诞生了。依靠 event loop 机制（想看这个机制的详细分析，请持续关注我的博客 <sup>_<sup>），单个线程可以同时处理多个</sup></sup> request 请求，并在处理完产生 response 的时候，回调相关的远程事件。根据 NIO 实现机制的不同，技术名称也就不同了。我要说什么，您，应该懂了。</p>
+
+<p>epoll、kqueue 等这些组件都是对多路复用网络 I/O 模型的实现，其中 epoll 是 poll 的升级版本，在 linux 环境下可以使用但限于 linux2.6 及以上版本。kqueue 用在 bsd 上使用。</p>
+
+<h3 id="toc_10"><a></a>3.1.2、worker_processes 和 worker_connections</h3>
+
+<p><strong>worker_processes</strong>：操作系统启动多少个工作进程运行 Nginx。注意是工作进程，不是有多少个 nginx 工程。在 Nginx 运行的时候，会启动两种进程，一种是主进程 master process；一种是工作进程 worker process。例如我在配置文件中将 worker_processes 设置为 4，启动 Nginx 后，使用进程查看命令观察名字叫做 nginx 的进程信息，我会看到如下结果：</p>
+
+<p><img src="https://img-blog.csdn.net/20150707193821782" alt=""/></p>
+
+<p>图中可以看到 1 个 nginx 主进程，master process；还有四个工作进程，worker process。主进程负责监控端口，协调工作进程的工作状态，分配工作任务，工作进程负责进行任务处理。一般这个参数要和操作系统的 CPU 内核数成倍数。</p>
+
+<p><strong>worker_connections</strong>：这个属性是指单个工作进程可以允许同时建立外部连接的数量。无论这个连接是外部主动建立的，还是内部建立的。这里需要注意的是，一个工作进程建立一个连接后，进程将打开一个文件副本。所以这个数量还受<strong>操作系统设定的，进程最大可打开的文件数有关</strong>。网上 50% 的文章告诉了您这个事实，并要求您修改 worker_connections 属性的时候，一定要使用 ulimit -n 修改操作系统对进程最大文件数的限制，但是这样更改只能在当次用户的当次 shell 回话中起作用，并不是永久了。接着您继续 Google / 百度，发现 30% 的文章还告诉您，要想使 “进程最大可打开的文件数” 永久有效，还需要修改 / etc/security/limits.conf 这个主配置文件，但是您应该如何正确检查 “进程的最大可打开文件” 的方式，却没有说。</p>
+
+<p>下面本文告诉您全面的、正确的设置方式:</p>
+
+<ul>
+<li><p><strong>更改操作系统级别的 “进程最大可打开文件数” 的设置</strong>：<br/>
+首先您需要操作系统的 root 权限：</p>
+
+<blockquote>
+<p>叫您的操作系统管理员给您。</p>
+</blockquote>
+
+<p>修改 limits.conf 主配置文件</p>
+
+<blockquote>
+<p>vim /etc/security/limits.conf</p>
+</blockquote>
+
+<p>在主配置文件最后加入下面两句：</p>
+
+<blockquote>
+<ul>
+<li>soft nofile 65535</li>
+<li>hard nofile 65535</li>
+</ul>
+</blockquote>
+
+<p>注意 “_” 是要加到文件里面的。这两句话的含义是 soft（应用软件）级别限制的最大可打开文件数的限制，hard 表示操作系统级别限制的最大可打开文件数的限制，“_” 表示所有用户都生效。保存这个文件（只有 root 用户能够有权限）。</p>
+
+<p>保存这个文件后，配置是不会马上生效的，为了保证本次 shell 会话中的配置马上有效，我们需要通过 ulimit 命令更改本次的 shell 会话设置（当然您如果要重启系统，我也不能说什么）。</p>
+
+<blockquote>
+<p>ulimit -n 65535</p>
+</blockquote>
+
+<p>执行命令后，配置马上生效。您可以用 ulimit -a 查看目前会话中的所有核心配置：</p>
+
+<blockquote>
+<p>ulimit -a<br/>
+core file size (blocks, -c) 0<br/>
+data seg size (kbytes, -d) unlimited<br/>
+scheduling priority (-e) 0<br/>
+file size (blocks, -f) unlimited<br/>
+pending signals (-i) 7746<br/>
+max locked memory (kbytes, -l) 64<br/>
+max memory size (kbytes, -m) unlimited<br/>
+open files (-n) 65535<br/>
+pipe size (512 bytes, -p) 8<br/>
+POSIX message queues (bytes, -q) 819200<br/>
+real-time priority (-r) 0<br/>
+stack size (kbytes, -s) 10240<br/>
+cpu time (seconds, -t) unlimited<br/>
+max user processes (-u) 7746<br/>
+virtual memory (kbytes, -v) unlimited<br/>
+file locks (-x) unlimited</p>
+</blockquote>
+
+<p>请注意 open files 这一项。</p></li>
+<li><p><strong>更改 Nginx 软件级别的 “进程最大可打开文件数” 的设置：</strong><br/>
+刚才更改的只是操作系统级别的 “进程最大可打开文件” 的限制，作为 Nginx 来说，我们还要对这个软件进行更改。打开 nginx.conf 主陪文件。您需要配合 worker_rlimit_nofile 属性。如下：</p>
+
+<blockquote>
+<p>user root root;<br/>
+worker_processes 4;<br/>
+<strong>worker_rlimit_nofile 65535;</strong></p>
+
+<h1 id="toc_11">error_log logs/error.log;</h1>
+
+<h1 id="toc_12">error_log logs/error.log notice;</h1>
+
+<h1 id="toc_13">error_log logs/error.log info;</h1>
+
+<h1 id="toc_14">pid logs/nginx.pid;</h1>
+
+<p>events {<br/>
+use epoll;<br/>
+<strong>worker_connections 65535;</strong><br/>
+}</p>
+</blockquote>
+
+<p>这里只粘贴了部分代码，其他的配置代码和主题无关，也就不需要粘贴了。请注意代码行中加粗的两个配置项，请一定两个属性全部配置。配置完成后，请通过 nginx -s reload 命令重新启动 Nginx。</p></li>
+<li><p><strong>验证 Nginx 的 “进程最大可打开文件数” 是否起作用：</strong></p>
+
+<p>那么我们如何来验证配置是否起作用了呢？在 linux 系统中，所有的进程都会有一个临时的核心配置文件描述，存放路径在 / pro / 进程号 / limit。</p>
+
+<p>首先我们来看一下，没有进行参数优化前的进程配置信息：</p>
+
+<blockquote>
+<p>ps -elf | grep nginx<br/>
+1 S root 1594 1 0 80 0 - 6070 rt_sig 05:06 ? 00:00:00 nginx: master process /usr/nginx-1.8.0/sbin/nginx<br/>
+5 S root 1596 1594 0 80 0 - 6176 ep_pol 05:06 ? 00:00:00 nginx: worker process<br/>
+5 S root 1597 1594 0 80 0 - 6176 ep_pol 05:06 ? 00:00:00 nginx: worker process<br/>
+5 S root 1598 1594 0 80 0 - 6176 ep_pol 05:06 ? 00:00:00 nginx: worker process<br/>
+5 S root 1599 1594 0 80 0 - 6176 ep_pol 05:06 ? 00:00:00 nginx: worker process</p>
+</blockquote>
+
+<p>可以看到，nginx 工作进程的进程号是：1596 1597 1598 1599。我们选择一个进程，查看其核心配置信息：</p>
+
+<blockquote>
+<p>cat /proc/1598/limits</p>
+</blockquote>
+
+<p><img src="https://img-blog.csdn.net/20150707204548230" alt=""/></p>
+
+<p>请注意其中的 Max open files ，分别是 1024 和 4096。那么更改配置信息，并重启 Nginx 后，配置信息就是下图所示了：</p>
+
+<p><img src="https://img-blog.csdn.net/20150707204756789" alt=""/></p></li>
+</ul>
+
+<h3 id="toc_15"><a></a>3.1.3、max client 的计算方式：</h3>
+
+<p>这个小结我们主要来说明两个在网上经常说的公式：</p>
+
+<ul>
+<li><p>max_client = worker_processes * worker_connections</p></li>
+<li><p>max_client = worker_processes * worker_connections / 4</p></li>
+</ul>
+
+<p>这两个公式分别说明，在 Nginx 充当服务器（例如 nginx 上面装载 PHP）的时候，Nginx 可同时承载的连接数量是最大工作线程 * 每个线程允许的连接数量；当 Nginx 充当反向代理服务的时候，其可同时承载的连接数量是最大工作线程 * 每个线程允许的连接数量 / 4。</p>
+
+<p>第一个问题很好理解，关键是第二个问题：为什么会除以 4。网上的帖子给出的答案是。浏览器 -&gt;Nginx、Nginx-&gt; 后端服务器、后端服务器 -&gt;Nginx、Nginx-&gt; 浏览器，所以需要除以四，我想说 TCP 协议是双向全双工协议，为什么需要这样建立连接呢？所以这个说法肯定是错误的。</p>
+
+<p>在 nginx 官方文档上有这样一句话：</p>
+
+<blockquote>
+<p>Since a browser opens 2 connections by default to a server and nginx uses the fds (file descriptors) from the same pool to connect to the upstream backend。</p>
+</blockquote>
+
+<p>翻译成中文的描述就是，浏览器会建立两条连接到 Nginx（注意两条连接都是浏览器建立的），Nginx 也会建立对应的两条连接到后端服务器。这样就是四条连接了。</p>
+
+<h3 id="toc_16"><a></a>3.1.4、gzip</h3>
+
+<p>后文补讲，放在这里算是一个扣子 <sup>_^</sup></p>
+
+<h2 id="toc_17"><a></a>3.2、健康检查模块</h2>
+
+<p>后文补讲，放在这里算是一个扣子 <sup>_^</sup></p>
+
+<h2 id="toc_18"><a></a>3.3、图片处理模块</h2>
+
+<p>后文补讲，放在这里算是一个扣子 <sup>_^</sup></p>
+
+<h2 id="toc_19"><a></a>3.4、Nginx 的 Rewrite 功能</h2>
+
+<p>后文补讲，放在这里算是一个扣子 <sup>_^</sup></p>
+
+<h1 id="toc_20"><a></a>4、后文介绍</h1>
+
+<p>我原本计划一篇文章就把 Nginx 的主要特性都进行介绍，奈何 Nginx 的强大功能确实太多了。为了保证您对知识的全面消化，这边文章就写到这里了。LVS 的讲解再往后拖一周左右吧，下篇文章我们继续讲解 Nginx 的强大功能，包括 gzip 功能、强大的 rewrite 功能，以及两个扩展模块：健康检查模块和图片处理模块，至于 Nginx 集成 PHP 作为服务器的特性，为了保证这个系列文章的中心线络就不再讲了，那又是一套完整的知识体系。敬请期待我的下一篇博客，谢谢。另外，目前一周一篇文章的频率我觉得是比较合适的，后面的文章我争取保持这个速度。</p>
+
+<p><link rel="stylesheet" href="https://csdnimg.cn/release/phoenix/template/css/markdown_views-ea0013b516.css"></p>
 
                         
                       </div>
@@ -309,10 +504,10 @@ ps：如果没有设置 expire 的 key, 不满足先决条件 (prerequisites); �
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/6/5</span>
+                    <span class="date">2018/6/28</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Solution.html'>Solution</a></span>
+          					    <span class="posted-in"><a href='Network.html'>Network</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -379,8 +574,6 @@ ps：如果没有设置 expire 的 key, 不满足先决条件 (prerequisites); �
 
       	<p class="cat-list">
         
-            <a href="Team.html"><strong>Team</strong></a>
-        
             <a href="Infra.html"><strong>Infra</strong></a>
         
             <a href="Coding.html"><strong>Coding</strong></a>
@@ -404,31 +597,31 @@ ps：如果没有设置 expire 的 key, 不满足先决条件 (prerequisites); �
 	      
 		      
 			      <li class="post">
-			        <a href="15301813999205.html">架构设计：负载均衡层设计方案（9）——负载均衡层总结下篇</a>
+			        <a href="15337171704262.html">Introduction to Testing with Spock and Groovy</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301813109409.html">架构设计：负载均衡层设计方案（8）——负载均衡层总结上篇</a>
+			        <a href="15336595358049.html">10 Excellent Ways to Secure Your Spring Boot Application</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301812452579.html">架构设计：负载均衡层设计方案（7）——LVS + Keepalived + Nginx安装及配置</a>
+			        <a href="15336592302916.html">First MicroProfile.io application using Java Module System</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301811967181.html">架构设计：负载均衡层设计方案（6）——Nginx + Keepalived构建高可用的负载层</a>
+			        <a href="15332186142588.html">Jenkins 的 Pipeline 脚本在美团餐饮 SaaS 中的实践</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301811361753.html">架构设计：负载均衡层设计方案（5）——LVS单节点安装</a>
+			        <a href="15331749691571.html">基于ZooKeeper的分布式锁和队列</a>
 			      </li>
 		     
 		  

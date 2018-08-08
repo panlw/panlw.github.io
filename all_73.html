@@ -76,8 +76,6 @@
     <li><label>Categories</label></li>
 
         
-            <li><a href="Team.html">Team</a></li>
-        
             <li><a href="Infra.html">Infra</a></li>
         
             <li><a href="Coding.html">Coding</a></li>
@@ -107,490 +105,200 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15262258657164.html">
+                <a class="clearlink" href="15281306050002.html">
                 
-                  <h1>飞哥教你使用异步编程提升服务性能</h1>
+                  <h1>分布式之 redis 复习精讲</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://mp.weixin.qq.com/s/kchPiySDDu1FMF3tuEggiw">https://mp.weixin.qq.com/s/kchPiySDDu1FMF3tuEggiw</a></p>
+<p><a href="http://www.cnblogs.com/rjzheng/p/9096228.html">http://www.cnblogs.com/rjzheng/p/9096228.html</a></p>
 </blockquote>
 
-<p>作者：肖飞，2011 年加入京东，目前在交易平台，主导交易平台核心系统的架构优化和技术攻关，以及公共技术组件和平台的建设。</p>
+<h2 id="toc_0">引言</h2>
 
-<p>庞大复杂的系统通常会采用服务化组件来实现。系统越复杂，组件之间的依赖和调用关系也会越复杂。对于处于底层的基础服务，直接和间接的调用所带来的流量压力非常大。处于中间层的聚合型服务，面对的挑战则是依赖的服务太多，后端个别服务的性能延迟就会影响其吞吐量。性能优化是我们系统稳定性中的重要一环，这其中，调用所依赖的 RPC 服务或后端数据是重点之一。</p>
+<h3 id="toc_1">为什么写这篇文章?</h3>
 
-<p>目前，除了传统 JDBC 这样从 API 到主流驱动实现就是阻塞式的类库之外，其他常用的 RPC/HTTP 服务、MQ、Redis、Mongodb、Kafka 等系统都提供了成熟的基于 NIO 的客户端库，也有相应的异步 API。</p>
+<p>博主的<a href="http://www.cnblogs.com/rjzheng/p/8994962.html">《分布式之消息队列复习精讲》</a>得到了大家的好评，内心诚惶诚恐，想着再出一篇关于复习精讲的文章。但是还是要说明一下，复习精讲的文章偏面试准备，真正在开发过程中，还是脚踏实地，一步一个脚印，不要投机取巧。<br/>
+考虑到绝大部分写业务的程序员，在实际开发中使用 redis 的时候，只会 setvalue 和 getvalue 两个操作，对 redis 整体缺乏一个认知。又恰逢博主某个同事下周要去培训 redis，所以博主斗胆以 redis 为题材，对 redis 常见问题做一个总结，希望能够弥补大家的知识盲点。</p>
 
-<p>但是目前交易平台的大多数中台服务系统，还在习惯性使用着这些库的同步 API，并不能充分的利用 CPU，这也给我们带来了一定的优化空间。从 16 年开始我们在一些核心的但是服务逻辑相对简单的系统中使用异步方式来实现，虽然暂时还做不到完全的异步化，但是也取得了比较好的效果。这篇文章虽然更多是一个简介性质，但是也涵盖了我们在异步编程中需要关注的要点。希望大家能够习惯和拥抱异步编程。</p>
+<h3 id="toc_2">复习要点?</h3>
 
-<h2 id="toc_0"><strong>一、相关概念介绍</strong></h2>
+<p>本文围绕以下几点进行阐述<br/>
+1、为什么使用 redis<br/>
+2、使用 redis 有什么缺点<br/>
+3、单线程的 redis 为什么这么快<br/>
+4、redis 的数据类型，以及每种数据类型的使用场景<br/>
+5、redis 的过期策略以及内存淘汰机制<br/>
+6、redis 和数据库双写一致性问题<br/>
+7、如何应对缓存穿透和缓存雪崩问题<br/>
+8、如何解决 redis 的并发竞争问题</p>
 
-<p>同步 (Synchronous)/ 异步 (Asynchronous)，通常是指函数调用中的消息通信的两种不同模式。</p>
+<h2 id="toc_3">正文</h2>
 
-<h3 id="toc_1"><strong>1、异步和同步的区别</strong></h3>
+<h3 id="toc_4">1、为什么使用 redis</h3>
 
-<p>函数调用发生时，消息 (参数) 从 caller 传递到 callee，控制权 (指令执行) 从 caller 转移到 callee。调用返回时，控制权从 callee 转移到 caller。两者的区别在于，callee 是否需要等待执行完成才将控制权转移给 caller。</p>
+<p><strong>分析</strong>: 博主觉得在项目中使用 redis，主要是从两个角度去考虑: <strong>性能</strong>和<strong>并发</strong>。当然，redis 还具备可以做分布式锁等其他功能，但是如果只是为了分布式锁这些其他功能，完全还有其他中间件 (如 zookpeer 等) 代替，并不是非要使用 redis。因此，这个问题主要从性能和并发两个角度去答。<br/>
+<strong>回答</strong>: 如下所示，分为两点<br/>
+<strong>（一）性能</strong><br/>
+如下图所示，我们在碰到需要执行耗时特别久，且结果不频繁变动的 SQL，就特别适合将运行结果放入缓存。这样，后面的请求就去缓存中读取，使得请求能够<strong>迅速响应</strong>。<br/>
+<img src="https://images.cnblogs.com/cnblogs_com/rjzheng/1202350/o_redis1.png" alt=""/><br/>
+<strong>题外话：</strong>忽然想聊一下这个<strong>迅速响应</strong>的标准。其实根据交互效果的不同，这个响应时间没有固定标准。不过曾经有人这么告诉我:&quot; 在理想状态下，我们的页面跳转需要在<strong>瞬间</strong>解决，对于页内操作则需要在<strong>刹那</strong>间解决。另外，超过<strong>一弹指</strong>的耗时操作要有进度提示，并且可以随时中止或取消，这样才能给用户最好的体验。&quot;<br/>
+那么<strong>瞬间、刹那、一弹指</strong>具体是多少时间呢？<br/>
+根据《摩诃僧祗律》记载</p>
 
-<p>在 RPC 这种更复杂的场景下，本质上并没有不同。</p>
-
-<p>◆ 同步</p>
-
-<p><img src="https://mmbiz.qpic.cn/mmbiz_png/MrFJyDNenF8OUIRCOltzbKCk6yXqAJP3BYu3bYrc81Uak1E6HfspC1tnU2KGnthJwVLAOaqr2OzlfVQhO1LqEg/640?wx_fmt=png" alt=""/></p>
-
-<p>1.callee 执行完成才返回<br/>
-2. 返回值即结果</p>
-
-<p>◆ 异步</p>
-
-<p><img src="https://mmbiz.qpic.cn/mmbiz_png/MrFJyDNenF8OUIRCOltzbKCk6yXqAJP3ENZ7lSUyf8z1icwTJr6rwVLiaNGLWfrrFHOa8kSfLQNVd8ch5dZiaoRsw/640?wx_fmt=png" alt=""/></p>
-
-<p>1.callee 不需要执行完成就可返回<br/>
-2.caller 要获取结果，需要通过轮询、回调等机制</p>
-
-<h4 id="toc_2">◆ 同步 RPC</h4>
-
-<p><img src="https://mmbiz.qpic.cn/mmbiz_png/MrFJyDNenF8OUIRCOltzbKCk6yXqAJP3jPWsYVcxUuMPzdeJ6sichCQjFM9iceIqvic0yHHKg1Oibexuwn7USoA3oA/640?wx_fmt=png" alt=""/></p>
-
-<h4 id="toc_3">◆ 异步 RPC</h4>
-
-<p><img src="https://mmbiz.qpic.cn/mmbiz_png/MrFJyDNenF8OUIRCOltzbKCk6yXqAJP33QaY0TSkO7pMFQwLRglBPiadzQBF2SpJxa8RDrGSKfRWCkuyUWXCGMg/640?wx_fmt=png" alt=""/></p>
-
-<p>可以看到，在异步 RPC 的场景下，客户端和服务端用于处理 IO 的 CPU 能得到充分利用，通常只需要远低于 caller 请求数量的线程就可以了，这就是多路复用。</p>
-
-<h3 id="toc_4"><strong>2、callee 执行机制</strong></h3>
-
-<p>上图中 callee 的 background execute 通常是采用池化线程来完成的，比如 ThreadPoolExecutor 或 EventLoop1。</p>
-
-<h3 id="toc_5"><strong>3、caller 获取执行结果</strong></h3>
-
-<p>caller 调用 callee 时，如果需要获取执行结果（消息双向传递），或者获知执行是否完成（消息单向传递无返回值），在异步模式下，主要依靠下面两种机制。</p>
-
-<h4 id="toc_6">◆ 轮询 (Polling)</h4>
-
-<p>比如 Java 的 Future 就提供了 isDone() 这种询问机制。</p>
-
-<pre><code class="language-java">//Caller.java
-void call() {
-     Future&lt;Void&gt; f = callee.asyncCall(param);
-     // do some other things
-     while (true) {
-          if (f.isDone()) break;
-        //do some other things or sleep or timeout
-    }
-}
+<pre><code>一刹那者为一念，二十念为一瞬，二十瞬为一弹指，二十弹指为一罗预，二十罗预为一须臾，一日一夜有三十须臾。
 </code></pre>
 
-<p>或阻塞版本</p>
+<p>那么，经过周密的计算，一<strong>瞬间</strong>为 0.36 秒, 一<strong>刹那</strong>有 0.018 秒. 一<strong>弹指</strong>长达 7.2 秒。<br/>
+<strong>（二）并发</strong><br/>
+如下图所示，在大并发的情况下，所有的请求直接访问数据库，数据库会出现连接异常。这个时候，就需要使用 redis 做一个缓冲操作，让请求先访问到 redis，而不是直接访问数据库。<br/>
+<img src="https://images.cnblogs.com/cnblogs_com/rjzheng/1202350/o_redis2.png" alt=""/></p>
 
-<pre><code class="language-java">//Caller.java
-void call() {
-    Future&lt;Void&gt; f = callee.asyncCall(param);
-    // do some other things
-    f.get(timeout, TimeUnit.SECONDS);
-}
+<h3 id="toc_5">2、使用 redis 有什么缺点</h3>
+
+<p><strong>分析</strong>: 大家用 redis 这么久，这个问题是必须要了解的，基本上使用 redis 都会碰到一些问题，常见的也就几个。<br/>
+<strong>回答</strong>: 主要是四个问题<br/>
+(一) 缓存和数据库双写一致性问题<br/>
+(二) 缓存雪崩问题<br/>
+(三) 缓存击穿问题<br/>
+(四) 缓存的并发竞争问题<br/>
+这四个问题，我个人是觉得在项目中，比较常遇见的，具体解决方案，后文给出。</p>
+
+<h3 id="toc_6">3、单线程的 redis 为什么这么快</h3>
+
+<p><strong>分析</strong>: 这个问题其实是对 redis 内部机制的一个考察。其实根据博主的面试经验，很多人其实都不知道 redis 是单线程工作模型。所以，这个问题还是应该要复习一下的。<br/>
+<strong>回答</strong>: 主要是以下三点<br/>
+(一) 纯内存操作<br/>
+(二) 单线程操作，避免了频繁的上下文切换<br/>
+(三) 采用了非阻塞 <strong>I/O 多路复用机制</strong></p>
+
+<p><strong>题外话：</strong>我们现在要仔细的说一说 I/O 多路复用机制，因为这个说法实在是太通俗了，通俗到一般人都不懂是什么意思。博主打一个比方：小曲在 S 城开了一家快递店，负责同城快送服务。小曲因为资金限制，雇佣了<strong>一批</strong>快递员，然后小曲发现资金不够了，只够买<strong>一辆</strong>车送快递。<br/>
+<strong>经营方式一</strong><br/>
+客户每送来一份快递，小曲就让一个快递员盯着，然后快递员开车去送快递。慢慢的小曲就发现了这种经营方式存在下述问题</p>
+
+<ul>
+<li>  几十个快递员基本上时间都花在了抢车上了，大部分快递员都处在闲置状态，谁抢到了车，谁就能去送快递</li>
+<li>  随着快递的增多，快递员也越来越多，小曲发现快递店里越来越挤，没办法雇佣新的快递员了</li>
+<li>  快递员之间的协调很花时间</li>
+</ul>
+
+<p>综合上述缺点，小曲痛定思痛，提出了下面的经营方式<br/>
+<strong>经营方式二</strong><br/>
+小曲只雇佣一个快递员。然后呢，客户送来的快递，小曲按<strong>送达地点</strong>标注好，然后<strong>依次</strong>放在一个地方。最后，那个快递员<strong>依次</strong>的去取快递，一次拿一个，然后开着车去送快递，送好了就回来拿下一个快递。</p>
+
+<p><strong>对比</strong><br/>
+上述两种经营方式对比，是不是明显觉得第二种，效率更高，更好呢。在上述比喻中:</p>
+
+<ul>
+<li>  每个快递员 ------------------&gt; 每个线程</li>
+<li>  每个快递 --------------------&gt; 每个 socket(I/O 流)</li>
+<li>  快递的送达地点 --------------&gt;socket 的不同状态</li>
+<li>  客户送快递请求 --------------&gt; 来自客户端的请求</li>
+<li>  小曲的经营方式 --------------&gt; 服务端运行的代码</li>
+<li>  一辆车 ----------------------&gt;CPU 的核数</li>
+</ul>
+
+<p>于是我们有如下结论<br/>
+1、经营方式一就是传统的并发模型，每个 I/O 流 (快递) 都有一个新的线程 (快递员) 管理。<br/>
+2、经营方式二就是 I/O 多路复用。只有单个线程 (一个快递员)，通过跟踪每个 I/O 流的状态 (每个快递的送达地点)，来管理多个 I/O 流。</p>
+
+<p>下面类比到真实的 redis 线程模型，如图所示<br/>
+<img src="https://images.cnblogs.com/cnblogs_com/rjzheng/1202350/o_redis3.png" alt=""/><br/>
+参照上图，简单来说，就是。我们的 redis-client 在操作的时候，会产生具有不同事件类型的 socket。在服务端，有一段 I/0 多路复用程序，将其置入队列之中。然后，文件事件分派器，依次去队列中取，转发到不同的事件处理器中。<br/>
+需要说明的是，这个 I/O 多路复用机制，redis 还提供了 select、epoll、evport、kqueue 等多路复用函数库，大家可以自行去了解。</p>
+
+<h3 id="toc_7">4、redis 的数据类型，以及每种数据类型的使用场景</h3>
+
+<p><strong>分析</strong>：是不是觉得这个问题很基础，其实我也这么觉得。然而根据面试经验发现，至少百分八十的人答不上这个问题。建议，在项目中用到后，再类比记忆，体会更深，不要硬记。基本上，一个合格的程序员，五种类型都会用到。<br/>
+<strong>回答</strong>：一共五种<br/>
+(一)String<br/>
+这个其实没啥好说的，最常规的 set/get 操作，value 可以是 String 也可以是数字。一般做<strong>一些复杂的计数功能的缓存。</strong><br/>
+(二)hash<br/>
+这里 value 存放的是结构化的对象，比较方便的就是操作其中的某个字段。博主在做<strong>单点登录</strong>的时候，就是用这种数据结构存储用户信息，以 cookieId 作为 key，设置 30 分钟为缓存过期时间，能很好的模拟出类似 session 的效果。<br/>
+(三)list<br/>
+使用 List 的数据结构，可以<strong>做简单的消息队列的功能</strong>。另外还有一个就是，可以利用 lrange 命令，<strong>做基于 redis 的分页功能</strong>，性能极佳，用户体验好。<br/>
+(四)set<br/>
+因为 set 堆放的是一堆不重复值的集合。所以可以做<strong>全局去重的功能</strong>。为什么不用 JVM 自带的 Set 进行去重？因为我们的系统一般都是集群部署，使用 JVM 自带的 Set，比较麻烦，难道为了一个做一个全局去重，再起一个公共服务，太麻烦了。<br/>
+另外，就是利用交集、并集、差集等操作，可以<strong>计算共同喜好，全部的喜好，自己独有的喜好等功能</strong>。<br/>
+(五)sorted set<br/>
+sorted set 多了一个权重参数 score, 集合中的元素能够按 score 进行排列。可以做<strong>排行榜应用，取 TOP N 操作</strong>。另外，参照另一篇<a href="https://www.cnblogs.com/rjzheng/p/8972725.html">《分布式之延时任务方案解析》</a>，该文指出了 sorted set 可以用来做<strong>延时任务</strong>。最后一个应用就是可以做<strong>范围查找</strong>。</p>
+
+<h3 id="toc_8">5、redis 的过期策略以及内存淘汰机制</h3>
+
+<p><strong>分析</strong>: 这个问题其实相当重要，到底 redis 有没用到家，这个问题就可以看出来。比如你 redis 只能存 5G 数据，可是你写了 10G，那会删 5G 的数据。怎么删的，这个问题思考过么？还有，你的数据已经设置了过期时间，但是时间到了，内存占用率还是比较高，有思考过原因么?<br/>
+<strong>回答</strong>:<br/>
+redis 采用的是定期删除 + 惰性删除策略。<br/>
+<strong>为什么不用定时删除策略?</strong><br/>
+定时删除, 用一个定时器来负责监视 key, 过期则自动删除。虽然内存及时释放，但是十分消耗 CPU 资源。在大并发请求下，CPU 要将时间应用在处理请求，而不是删除 key, 因此没有采用这一策略.<br/>
+<strong>定期删除 + 惰性删除是如何工作的呢?</strong><br/>
+定期删除，redis 默认每个 100ms 检查，是否有过期的 key, 有过期 key 则删除。需要说明的是，redis 不是每个 100ms 将所有的 key 检查一次，而是随机抽取进行检查 (如果每隔 100ms, 全部 key 进行检查，redis 岂不是卡死)。因此，如果只采用定期删除策略，会导致很多 key 到时间没有删除。<br/>
+于是，惰性删除派上用场。也就是说在你获取某个 key 的时候，redis 会检查一下，这个 key 如果设置了过期时间那么是否过期了？如果过期了此时就会删除。<br/>
+<strong>采用定期删除 + 惰性删除就没其他问题了么?</strong><br/>
+不是的，如果定期删除没删除 key。然后你也没即时去请求 key，也就是说惰性删除也没生效。这样，redis 的内存会越来越高。那么就应该采用<strong>内存淘汰机制</strong>。<br/>
+在 redis.conf 中有一行配置</p>
+
+<pre><code># maxmemory-policy volatile-lru
 </code></pre>
 
-<p>轮询的控制逻辑在 caller 端。</p>
+<p>该配置就是配内存淘汰策略的 (什么，你没配过？好好反省一下自己)<br/>
+1）noeviction：当内存不足以容纳新写入数据时，新写入操作会报错。<strong>应该没人用吧。</strong><br/>
+2）allkeys-lru：当内存不足以容纳新写入数据时，在键空间中，移除最近最少使用的 key。<strong>推荐使用，目前项目在用这种。</strong><br/>
+3）allkeys-random：当内存不足以容纳新写入数据时，在键空间中，随机移除某个 key。<strong>应该也没人用吧，你不删最少使用 Key, 去随机删。</strong><br/>
+4）volatile-lru：当内存不足以容纳新写入数据时，在设置了过期时间的键空间中，移除最近最少使用的 key。<strong>这种情况一般是把 redis 既当缓存，又做持久化存储的时候才用。不推荐</strong><br/>
+5）volatile-random：当内存不足以容纳新写入数据时，在设置了过期时间的键空间中，随机移除某个 key。<strong>依然不推荐</strong><br/>
+6）volatile-ttl：当内存不足以容纳新写入数据时，在设置了过期时间的键空间中，有更早过期时间的 key 优先移除。<strong>不推荐</strong><br/>
+ps：如果没有设置 expire 的 key, 不满足先决条件 (prerequisites); 那么 volatile-lru, volatile-random 和 volatile-ttl 策略的行为, 和 noeviction(不删除) 基本上一致。</p>
 
-<h4 id="toc_7">◆ 回调 (Callback)</h4>
+<h3 id="toc_9">6、redis 和数据库双写一致性问题</h3>
 
-<p>caller 设置一个回调函数，供 callee 执行完成后调用这个函数。回调的控制是反转的，通常由 callee 端控制。</p>
+<p><strong>分析</strong>: 一致性问题是分布式常见问题，还可以再分为最终一致性和强一致性。数据库和缓存双写，就必然会存在不一致的问题。答这个问题，先明白一个前提。就是<strong>如果对数据有强一致性要求，不能放缓存。</strong>我们所做的一切，只能保证最终一致性。另外，我们所做的方案其实从根本上来说，只能说<strong>降低不一致发生的概率</strong>，无法完全避免。因此，有强一致性要求的数据，不能放缓存。<br/>
+<strong>回答</strong>:<a href="https://www.cnblogs.com/rjzheng/p/9041659.html">《分布式之数据库和缓存双写一致性方案解析》</a>给出了详细的分析，在这里简单的说一说。首先，采取正确更新策略，先更新数据库，再删缓存。其次，因为可能存在删除缓存失败的问题，提供一个补偿措施即可，例如利用消息队列。</p>
 
-<pre><code class="language-java">//Caller.java
-void call() {
-    callee.asyncCall(param, new AsyncHandler&lt;Response&lt;Message&gt;&gt;() {
-        @Override public void handleResponse(Response&lt;Message&gt; response) {
-            msg = response.get();
-            // process the msg...
-        }
-    });
-    // do some other things
-}
+<h3 id="toc_10">7、如何应对缓存穿透和缓存雪崩问题</h3>
+
+<p><strong>分析</strong>: 这两个问题，说句实在话，一般中小型传统软件企业，很难碰到这个问题。如果有大并发的项目，流量有几百万左右。这两个问题一定要深刻考虑。<br/>
+<strong>回答</strong>: 如下所示<br/>
+<strong>缓存穿透</strong>，即黑客故意去请求缓存中不存在的数据，导致所有的请求都怼到数据库上，从而数据库连接异常。<br/>
+<strong>解决方案</strong>:<br/>
+(一) 利用互斥锁，缓存失效的时候，先去获得锁，得到锁了，再去请求数据库。没得到锁，则休眠一段时间重试<br/>
+(二) 采用异步更新策略，无论 key 是否取到值，都直接返回。value 值中维护一个缓存失效时间，缓存如果过期，异步起一个线程去读数据库，更新缓存。需要做<strong>缓存预热</strong> (项目启动前，先加载缓存) 操作。<br/>
+(三) 提供一个能迅速判断请求是否有效的拦截机制，比如，利用布隆过滤器，内部维护一系列合法有效的 key。迅速判断出，请求所携带的 Key 是否合法有效。如果不合法，则直接返回。<br/>
+<strong>缓存雪崩</strong>，即缓存同一时间大面积的失效，这个时候又来了一波请求，结果请求都怼到数据库上，从而导致数据库连接异常。<br/>
+<strong>解决方案</strong>:<br/>
+(一) 给缓存的失效时间，加上一个随机值，避免集体失效。<br/>
+(二) 使用互斥锁，但是该方案吞吐量明显下降了。<br/>
+(三) 双缓存。我们有两个缓存，缓存 A 和缓存 B。缓存 A 的失效时间为 20 分钟，缓存 B 不设失效时间。自己做缓存预热操作。然后细分以下几个小点</p>
+
+<ul>
+<li>  I 从缓存 A 读数据库，有则直接返回</li>
+<li>  II A 没有数据，直接从 B 读数据，直接返回，并且异步启动一个更新线程。</li>
+<li>  III 更新线程同时更新缓存 A 和缓存 B。</li>
+</ul>
+
+<h3 id="toc_11">8、如何解决 redis 的并发竞争 key 问题</h3>
+
+<p><strong>分析</strong>: 这个问题大致就是，同时有多个子系统去 set 一个 key。这个时候要注意什么呢？大家思考过么。需要说明一下，博主提前百度了一下，发现答案基本都是推荐用 redis 事务机制。博主<strong>不推荐使用 redis 的事务机制。</strong>因为我们的生产环境，基本都是 redis 集群环境，做了数据分片操作。你一个事务中有涉及到多个 key 操作的时候，这多个 key 不一定都存储在同一个 redis-server 上。因此，<strong>redis 的事务机制，十分鸡肋。</strong><br/>
+<strong>回答:</strong> 如下所示<br/>
+(1) 如果对这个 key 操作，<strong>不要求顺序</strong><br/>
+这种情况下，准备一个分布式锁，大家去抢锁，抢到锁就做 set 操作即可，比较简单。<br/>
+(2) 如果对这个 key 操作，<strong>要求顺序</strong><br/>
+假设有一个 key1, 系统 A 需要将 key1 设置为 valueA, 系统 B 需要将 key1 设置为 valueB, 系统 C 需要将 key1 设置为 valueC.<br/>
+期望按照 key1 的 value 值按照 valueA--&gt;valueB--&gt;valueC 的顺序变化。这种时候我们在数据写入数据库的时候，需要保存一个时间戳。假设时间戳如下</p>
+
+<pre><code>系统A key 1 {valueA  3:00}
+系统B key 1 {valueB  3:05}
+系统C key 1 {valueC  3:10}
 </code></pre>
 
-<h3 id="toc_8"><strong>4、异步模式的场景</strong></h3>
+<p>那么，假设这会系统 B 先抢到锁，将 key1 设置为 {valueB 3:05}。接下来系统 A 抢到锁，发现自己的 valueA 的时间戳早于缓存中的时间戳，那就不做 set 操作了。以此类推。</p>
 
-<h4 id="toc_9">◆ 阻塞</h4>
+<p>其他方法，比如利用队列，将 set 方法变成串行访问也可以。总之，灵活变通。</p>
 
-<p>阻塞 (Blocking)/ 非阻塞(Non-Blocking) 是用来描述，在等待调用结果时 caller 线程的状态。阻塞，通常意味着 caller 线程不再使用 CPU 时间，处于可被 OS 调度的状态(注意与 Java 线程状态 2 的区别)。 磁盘 IO 和网络 IO 是常见的会引起线程阻塞的场景 3。受制于底层 OS 的同步阻塞式 IO 系统函数，调用 Java OIO(Old blocking IO) API 无疑是会阻塞的。对于 DiskIO，Java NIO2 提供了异步 API。对于 SocketIO，Java NIO2 以及 NIO 框架 Netty，都提供了异步 API。</p>
+<h2 id="toc_12">总结</h2>
 
-<blockquote>
-<p>◆ Linux 提供了异步 IO 系统函数，只能用于 DiskIO，还有一些限制 4，Java NIO2 AsynchronousFileChannel 内部仍然使用线程池 + 阻塞式 API 的实现。</p>
-
-<p>◆ Linux 为 SocketIO 准备就绪阶段提供了非阻塞式 API(select/poll/epoll)，但是 IO 执行阶段仍然是同步阻塞的，因此主流的 Java NIO 框架的 Reactor 模式内部实现使用了线程池。</p>
-</blockquote>
-
-<h4 id="toc_10">◆ 并行</h4>
-
-<p>比如需要调用多个没有依赖关系的服务，或者访问分散在多个存储分片中的数据，如果服务接口或数据访问接口实现了异步 API，那么就很方便实现并行调用，减少总体调用耗时。</p>
-
-<h4 id="toc_11">◆ 速度不匹配</h4>
-
-<p>使用中间队列解偶 caller 和 callee 的速度不匹配问题，削峰填谷。</p>
-
-<h4 id="toc_12">◆ 批量</h4>
-
-<p>使用中间队列解偶 caller 和 callee 的速度不匹配问题，削峰填谷。</p>
-
-<h2 id="toc_13"><strong>二、异步 API 的几种风格</strong></h2>
-
-<h3 id="toc_14"><strong>1、Callback</strong></h3>
-
-<p>这个比较传统，比如 zookeeper 客户端提供的基于回调的异步 API:</p>
-
-<pre><code class="language-java">try {
-    zookeeper.create(path, data, acl, createMode, new StringCallback() {
-        public void processResult(int rc, String path, Object ctx, String name) {
-            if (rc != KeeperException.Code.OK.intValue()) {
-                // error handle
-            } else {
-                // success process
-                // 如果需要在成功后再发起基于回调的异步调用，会形成callback hell
-            }
-        }
-    }, ctx);
-} catch( Throwable e) {
-    // error handle
-}
-</code></pre>
-
-<blockquote>
-<p>◆ Callback 通常是无状态的 </p>
-
-<p>◆ 要获取 Callback 的计算结果，通常需要 closure </p>
-
-<p>◆ 异常处理比较分散 </p>
-
-<p>◆ 在有多个异步调用链的时候，容易造成 Callback hell</p>
-</blockquote>
-
-<h3 id="toc_15"><strong>2、Future/Promise</strong></h3>
-
-<p>Promise 是 callee 给 caller 的凭证，代表未完成但承诺完成（成功或失败）的结果。Promise 本身是有状态的，通常由 callee 端维护。其状态转移如下（术语参考 Promise/A + 和 ES6）：</p>
-
-<p><img src="https://mmbiz.qpic.cn/mmbiz_png/MrFJyDNenF8OUIRCOltzbKCk6yXqAJP3dnnIwboxWueXlrTo9wSvNYa6AfRIfwibZobCqckibNSvwyEzLd3GyO9Q/640?wx_fmt=png" alt=""/></p>
-
-<blockquote>
-<p>Promise 的状态只能转移一次，因此如果有 callback，那么. then(callback) 或. catch(callback) 也只被执行一次。</p>
-</blockquote>
-
-<p>JDK5 的 Future 只能用轮询或者阻塞的方式获取结果，caller 端处理比较繁琐。Guava 的 ListenableFuture，特别是 JDK8 的 CompletableFuture，则是完整实现了 Promise 风格的异步 API。 个人认为 Promise 是更好的 Callback，ListenableFuture 接口只是比 Future 多了一个 void addListener(Runnable, Executor) 方法。 Promise 提供了比 Callback 更易用更清晰的编程模式，尤其是涉及多个异步 API 的串行调用（chaining 或 pipelining )、组合调用（并行、合并）、异常处理等方面有很大的优势。</p>
-
-<blockquote>
-<p><strong>引申阅读</strong> </p>
-
-<p>◆ 这篇文章谈到了 Future 和 Promise 的细微区别、相关历史和技术。 </p>
-
-<p>◆ 这里有一些讨论：Aren’t promises just callbacks?,Is there really a fundamental difference between callbacks and Promises?。 </p>
-
-<p>◆ Promise 借鉴了函数式中的一些概念: 从函数式编程到 Promise。 </p>
-
-<p>◆ 这篇文章简要对比了几种语言中的 Promise 框架。</p>
-</blockquote>
-
-<h3 id="toc_16"><strong>3、ReactiveX</strong></h3>
-
-<p>其官方网站的介绍</p>
-
-<blockquote>
-<p>An API for asynchronous programming with observable streams</p>
-</blockquote>
-
-<p>其关键的概念 Observable 比较 Promise 来说：</p>
-
-<p>◆ Promise 代表一个异步计算值，而 Observable 代表着一系列值 (stream)。 </p>
-
-<p>◆ Promise 的值只能产生一次，而 Observable 的事件可以不断产生。因此 Rx 首先流行在前端 UI 场景：事件来源多，数据变化影响多个 UI 组件的变更。</p>
-
-<p>Rx 的学习曲线比 Promise 要高得多，而且目前 Promise 风格的异步编程能够满足我们大部分的服务端开发场景，因此我们这里主要关注 Promise。</p>
-
-<h2 id="toc_17"><strong>三、Promise 在服务端的应用</strong></h2>
-
-<p>下面穿插着以 JDK8 的 CompletableFuture 和 Guava 的 ListenableFuture（适用 JDK6）为例介绍 Promise 的用法。</p>
-
-<h3 id="toc_18"><strong>1、符合 Promise 风格的方法签名</strong></h3>
-
-<p>Promise 风格的方法签名，有个不成文的规则是不抛出异常，因为异常是 Promise 对象本身就能携带的两种状态之一。比如我们想把一个 Callback 风格的异步 API 包装成 Promise 风格的（通常在使用一个较老的类库时需要这样的包装），可以这样：</p>
-
-<pre><code class="language-java">//caller.java
-CompletableFuture&lt;String&gt; asyncCall(final String msg) {
-    CompletableFuture&lt;String&gt; promise = new CompletableFuture&lt;&gt;();
-    try {
-        callee.asyncCall(msg, new Callback&lt;String&gt;() {
-            public void onSuccess(String r) { promise.complete(r); }
-            public void onFail(Throwable t) { promise.completeExceptionally(t); }
-        });
-    } catch (Throwable e) {
-        promise.completeExceptionally(t);
-    }
-    return promise;
-}
-</code></pre>
-
-<p>下面是使用 ListenableFuture 的实现异步发送消息的 API。</p>
-
-<pre><code class="language-java">//LocalMessageEngine.java
-static class WriteTask {
-    // SettableFuture是Guava中一种可设置状态的Promise类型。
-    final SettableFuture&lt;Boolean&gt; promise = SettableFuture.create();
-    final byte[] message;
-    WriteTask(byte[] message) {
-        this.message = message;
-    }
-}
-public Producer createProducer() {
-    return new Producer() {
-        public ListenableFuture&lt;Boolean&gt; asyncProduce(byte[] message) {
-            if (!Engine.this.started) {
-                // 返回前已完成
-                return Futures.immediateFailedFuture(new IllegalStateException(&quot;Message engine was stopped or not started&quot;));
-            }
-
-            WriteTask task = new WriteTask(message);
-            boolean queued = writeTaskQueue.offer(task);
-            if (!queued) {
-                task.promise.set(Boolean.FALSE);
-            }
-            return task.promise;
-        }
-    };
-}
-</code></pre>
-
-<p>上面两个例子，描述了如何创建一个 Promise 对象返回给 caller，以及如何在 callee 端 fulfill 或 reject 这个 Promise。你可能会发现，返回给 caller 之前 Promise 是可以处于完成状态的。在继续下面的使用介绍前，先简单的看下 ListenableFuture 和 CompletableFuture 的几个主要 API。</p>
-
-<p><img src="https://mmbiz.qpic.cn/mmbiz_png/MrFJyDNenF8OUIRCOltzbKCk6yXqAJP3ibyDlfaV7ZWzC5wCKpCF3S5ia5bicPE3gnEUibA9xWOafp3uOnPiaxrLLhQ/640?wx_fmt=png" alt=""/></p>
-
-<p><strong>2、串行调用</strong></p>
-
-<p>ListenableFuture 没有提供 then 方法，而是通过 Futures 的一系列静态方法来实现 Promise 风格的 API。由于两者有大部分的 API 是可以相互转化的，限于篇幅下面就不全部演示了。Promse 的 callback 就是其 then 或 catch 方法的函数型参数，当 Promise 被 resolve 时执行这个 callback 函数。这个 callback 函数的输入，就是 Promise 的 resolved 值。根据 callback 函数的输出的不同，需要采取不同的 then 方法。</p>
-
-<h4 id="toc_19">◆ callback 无输出</h4>
-
-<p>Futures.addCallback 和 CompletableFuture.thenAccept 接受无输出的 callback。</p>
-
-<pre><code class="language-java">// Guava
-ListenableFuture&lt;QueryResult&gt; promise1 = ...;
-Futures.addCallback(promise1, new FutureCallback&lt;QueryResult&gt;() {
-    public void onSuccess(QueryResult result) {
-        storeInLocalCache(result);
-    }
-    public void onFailure(Throwable t) {
-        reportError(t);
-    }
-});
-</code></pre>
-
-<pre><code class="language-java">// CompletableFuture
-CompletableFuture&lt;QueryResult&gt; promise1 = ...;
-CompletableFuture&lt;Void&gt; promise2 = promise1.thenAccept(result -&gt; storeInLocalCache(result));
-return promise2;
-//return promise1.thenAccept(result -&gt; storeInLocalCache(result));//thenAccept返回另一个Promise实例
-</code></pre>
-
-<p>先忽略异常处理。对比下这种场景下的 ListenableFuture 和 CompletableFuture：前者采取了更传统的 callback 风格，后者则返回一个新的 Promise 实例，callback 计算完毕则 promise2 被 fulfilled，很容易通过 promise2 来获取 callback 执行完毕与否，不需要 closure。</p>
-
-<h4 id="toc_20">◆ callback 输出一个普通计算值</h4>
-
-<p>这种情况下 callback 就是一个转换函数，输入是前一个 Promise 的 fulfilled 值，输出则作为新 Promise 的 fulfilled 值。Futures.transform 和 CompletableFuture.thenApply 接收这样的 callback 函数。</p>
-
-<pre><code class="language-java">// CompletableFuture
-CompletableFuture&lt;QueryResult&gt; queryFuture = ...;
-CompletableFuture&lt;List&lt;Row&gt;&gt; rowsFuture = queryFuture.thenApply(result -&gt; result.getRows());
-return rowsFuture;
-</code></pre>
-
-<h4 id="toc_21">◆ callback 输出一个异步计算值，即一个 Promise</h4>
-
-<p>乍一看，这种情况下的输出跟上一种好像没什么区别。但实际上，输出一个 Promise 值和输出一个普通的值有根本的区别。还记得吧，Promise 代表着一个未完成的并且承诺完成的值。通常这种情况下，意味着 callback 里调用了另外一个 Promise 风格的异步 API。比如下面的例子中 indexService.lookUp 和 dataService.read 方法，由于涉及到 IO，都设计为异步 API。</p>
-
-<pre><code class="language-java">//Guava
-ListenableFuture&lt;RowKey&gt; rowKeyFuture = indexService.lookUp(query);
-AsyncFunction&lt;RowKey, QueryResult&gt; queryFunction = new AsyncFunction&lt;RowKey, QueryResult&gt;() {
-    public ListenableFuture&lt;QueryResult&gt; apply(RowKey rowKey) {
-        return dataService.read(rowKey);
-    }
-};
-ListenableFuture&lt;QueryResult&gt; queryFuture = Futures.transformAsync(rowKeyFuture, queryFunction);
-return queryFuture;
-</code></pre>
-
-<p>Futures.transformAsync 和 CompletableFuture.thenCompose 接收这样的 callback 函数。</p>
-
-<p>设想一下，如果某个逻辑中需要调用的多个 Promise 风格的异步方法（比如多个 RPC 调用），并且有先后依赖关系，即上一个方法的执行结果作为下一个方法的输入。就可以用 thenCompose 把他们串起来。</p>
-
-<pre><code class="language-java">//CompletableFuture
-CompletableFuture&lt;RPC4Result&gt; promise4 = rpc1.call(input) //promise1
-    .thenCompose(rpc1Result -&gt; rpc2.call(rpc1Result)) //promise2
-    .thenCompose(rpc2Result -&gt; rpc3.call(rpc2Result)) //promise3
-    .thenCompose(rpc3Result -&gt; rpc4.call(rpc3Result)) //promise4
-return promise4;
-</code></pre>
-
-<p>不要被链式调用给忽悠了，你还是可以正常使用普通的风格。</p>
-
-<p>单纯看来，上述的串行调用场景下使用 Promise 风格的 API 好像只是消除了 Callback hell。那么采用同步 API 就既没有 Callback hell 的问题，又符合数据依赖关系。可是，你会发现，上面的举例中结尾都返回了 Promise，就是说，包含这段代码的方法被设计为异步 API。而使用同步 API，则会强制这个方法的调用者只能使用同步方式调用。</p>
-
-<h3 id="toc_22"><strong>3、并行调用</strong></h3>
-
-<p>异步 API 很适合并行调用。caller 在调用多个没有依赖关系的异步 API 时，可以先依次发起调用而不用等待每个调用真正执行完成，从 callee 的角度来讲，执行是并行的。caller 可以对调用结果进行合并处理，关键是，合并也是异步风格的。</p>
-
-<pre><code class="language-java">//Guava
-List&lt;ListenableFuture&lt;QueryResult&gt;&gt; partialPromises = new ArrayList&lt;ListenableFuture&lt;QueryResult&gt;&gt;(nodes.size());
-for (Node node : nodes) {
-    partialPromises.add(lookupHandler(node).query());
-}
-ListenableFuture&lt;List&lt;Row&gt;&gt; mergedPromise = Futures.transform(Futures.allAsList(partialPromises), new Function&lt;List&lt;List&lt;Row&gt;&gt;, List&lt;Row&gt;&gt;() {
-    @Override public Long apply(List&lt;List&lt;Row&gt;&gt; input) {
-        return merge(input);
-    }
-})
-return mergedPromise;
-</code></pre>
-
-<p>Futures.allAsList 是并行执行所有的 promises，若有一个 promise 异常完成则尝试 reject 尚未 resolved 的 promise。也可以使用 Futures.successfulAsList，区别在于后者并不会 reject 尚未 resolved 的 promise。CompletableFuture 的对应物是 allOf 和 anyOf。</p>
-
-<h3 id="toc_23"><strong>4、调用编排</strong></h3>
-
-<p>合并结果设计为异步风格的好处在于，很方便做合并、串行混合调用编排，比如某个逻辑中需要调用四个个 RPC 服务 A、B、C、D，其中：A 的输出作为 B、C 的输入，B、C 可并行，B、C 的输出合并后作为 D 的输入。</p>
-
-<pre><code class="language-java">//CompletableFuture
-CompletableFuture&lt;AResult&gt; promiseA = rpcA.call(input);
-CompletableFuture&lt;DResult&gt; promiseD = promiseA.thenCompose(aResult -&gt; {
-    CompletableFuture&lt;BResult&gt; promiseB = rpcB.call(aResult);
-    CompletableFuture&lt;CResult&gt; promiseC = rpcC.call(aResult);
-    CompletableFuture&lt;MergedResult&gt; mergedPromise = promiseB.thenCombine(promiseC, (bResult, cResult) -&gt; {
-        return merge(bResult, cResult)
-    });
-    return mergedPromise;
-}).thenCompose(mergedResult -&gt; rpcD.call(mergedResult));
-return promiseD;
-</code></pre>
-
-<h3 id="toc_24"><strong>5、异常处理</strong></h3>
-
-<p>上面提到过 Callback 风格的异步 API，异常处理比较分散。而 Promise 风格的异常处理则优雅得多。我们需要记住，异常是 Promise 携带的两种状态之一。那么异常可以作为 callback 函数的输入。</p>
-
-<h4 id="toc_25">◆ 通用异常处理</h4>
-
-<p>Futures.catching 和 CompletableFuture.exceptionally 接收异常值为参数的 callback 函数。</p>
-
-<pre><code class="language-java">//Guava
-ListenableFuture&lt;Integer&gt; fetchCounterPromise = ...;
-// Falling back to a zero counter in case an exception happens when
-// processing the RPC to fetch counters.
-ListenableFuture&lt;Integer&gt; faultTolerantPromise = Futures.catching(
-    fetchCounterPromise, FetchException.class,
-    new Function&lt;FetchException, Integer&gt;() {
-        public Integer apply(FetchException e) {
-            return 0;
-        }
-    });
-</code></pre>
-
-<p>我们再看一个更复杂的例子。</p>
-
-<pre><code class="language-java">//CompletableFuture
-CompletableFuture&lt;FaultTolerantResult&gt; faultTolerantPromise = rpc1.call(input) //promise1
-    .thenCompose(rpc1Result -&gt; rpc2.call(rpc1Result)) //promise2
-    .thenCompose(rpc2Result -&gt; rpc3.call(rpc2Result)) //promise3
-    .thenCompose(rpc3Result -&gt; rpc4.call(rpc3Result)) //promise4
-    .exceptionally(err -&gt; {
-        // process err
-        return faultTolerantValue;
-    });  //faultTolerantPromise
-return faultTolerantPromise;
-</code></pre>
-
-<p>再提醒一遍，不要被链式调用迷惑了。这个例子里面，rpc1/rpc2/rpc3/rpc4 都有可能发生异常，但我们只需要在最后统一处理（返回异常值或转换为一个默认正常值）。比如 rpc2 发生异常，那么 rpc3/rpc4 的逻辑（接收正常值的 callback 函数）都不会执行，但是 rpc2 的异常会传递给 promise3/promise4。</p>
-
-<h4 id="toc_26">◆ 恢复</h4>
-
-<p>假设在读取某个数据存储发生异常，我们需要某种恢复机制，比如读取另一个 backup 的数据存储（某种重试），那么可以使用 Futures.cachingAsync 和 CompletableFuture.handle。</p>
-
-<pre><code class="language-java">//CompletableFuture
-public &lt;V&gt; CompletableFuture&lt;V&gt; dispatch(final Command&lt;V&gt; command) {
-    final CompletableFuture&lt;V&gt; dispatched = loadbalance.selectHandler().dispatch(command);
-    if (maxTries &gt; 0) {
-        final AtomicInteger leftTries = new AtomicInteger(maxTries);
-        final BiFunction&lt;CompletableFuture&lt;V&gt;, Throwable, CompletableFuture&lt;V&gt;&gt; fallback = new BiFunction&lt;CompletableFuture&lt;V&gt;, Throwable, CompletableFuture&lt;V&gt;&gt;() {
-            @Override
-            public CompletableFuture&lt;V&gt; apply(CompletableFuture&lt;V&gt; input, Throwable cause) {
-                if (cause == null) return input;
-                if (cause instanceof RecoverableException &amp;&amp; leftTries.getAndDecrement() &gt; 0) {
-                    final CompletableFuture&lt;V&gt; next = loadbalance.selectHandler().dispatch(new Command&lt;V&gt;(command.type, command.args));
-                    return next.handle((v, err) -&gt; err).thenCompose(err -&gt; apply(next, err));
-                }
-                CompletableFuture&lt;V&gt; errFuture = new CompletableFuture&lt;&gt;();
-                errFuture.completeExceptionally(cause);
-                return errFuture;
-            }
-        };
-        return dispatched.handle((v, err) -&gt; err).thenCompose(err -&gt; fallback.apply(dispatched, err));
-    }
-    return dispatched;
-}
-</code></pre>
-
-<h4 id="toc_27">◆ 超时</h4>
-
-<p>Promise 是一个承诺完成（成功或失败）的结果，但是并不承诺完成时间。所以，通常需要一种超时机制，幸运的是 ListenableFuture 和 CompletableFuture 都实现了 Future 接口。</p>
-
-<pre><code class="language-java">CompletableFuture&lt;FaultTolerantResult&gt; faultTolerantPromise = ...;
-try {
-    FaultTolerantResult result = faultTolerantPromise.get(1000, TimeUnit.SECONDS);
-    // process result
-} catch (TimeoutException e) {
-    //尝试取消执行尚未开始的callback函数
-    faultTolerantPromise.cancel(false);` 
-
-}
-</code></pre>
-
-<h2 id="toc_28"><strong>四、Promise 异步编程的注意点</strong></h2>
-
-<p>异步编程比同步编程困难。异步编程通常主要解决一小部分问题，比如阻塞。Promise 借鉴了函数式编程的风格，大量的逻辑会分散在各种 callback 函数来实现。因此对于习惯了同步编程的 OO 式或命令式编程风格的开发人员，需要一定的习惯时间。</p>
-
-<p>上面谈到 callee 执行机制的时候，谈到了线程池，那么 callee 计算完成时，callback 函数的执行通常是池中 resolve Promise 的线程执行。但是，如果 caller 在设置 callback 的时候，Promise 已经完成，那么 callback 的执行线程则是 caller 线程。因此，请特别关注 callback 函数的执行线程的差别。请遵循：</p>
-
-<p>◆ callback 尽量轻量 </p>
-
-<p>◆ callback 避免阻塞 </p>
-
-<p>◆ 否则请指定执行线程</p>
-
-<p>如果 callback 执行了大量的计算，甚至执行了阻塞式操作，那么就很有可能阻塞住 Promise 的 resolve 线程，通常这类线程都是极少的，比如执行 IO 的 EventLoop 线程，有可能造成其他 Promise 得不到执行。</p>
-
-<blockquote>
-<p>摘自 ListenableFuture 的文档： </p>
-
-<p>Note: For fast, lightweight listeners that would be safe to execute in any thread, consider MoreExecutors.directExecutor. Otherwise, avoid it. Heavyweight directExecutor listeners can cause problems, and these problems can be difficult to reproduce because they depend on timing. For example: </p>
-
-<p>◆ The listener may be executed by the caller of addListener. That caller may be a UI thread or other latency-sensitive thread. This can harm UI responsiveness. </p>
-
-<p>◆ The listener may be executed by the thread that completes this Future. That thread may be an internal system thread such as an RPC network thread. Blocking that thread may stall progress of the whole system. It may even cause a deadlock. </p>
-
-<p>◆ The listener may delay other listeners, even listeners that are not themselves directExecutor listeners.</p>
-</blockquote>
-
-<p>我们也的确碰到过使用 MoreExecutors.directExecutor 时，由于编写了太过复杂的 callback 链，导致线程死锁的问题。</p>
-
-<p>CompletableFuture 和 ListenableFuture 都有指定 callback 执行线程的方法：</p>
-
-<pre><code class="language-java">//使用内置的通用ForkJoin线程池
-completableFuture.thenAcceptAsync(callback);
-//使用指定的线程执行器
-completableFuture.thenAcceptAsync(callback, executor);
-//使用指定的线程执行器
-Futures.transform(input, callback, executor);
-</code></pre>
-
-<p>正因为异步编程的复杂性，因此目前我们也尽量在业务逻辑相对简单的应用上进行异步化改造。后续，我们也会评估 Quasar 等协程框架。</p>
-
-<p>完~</p>
+<p>本文对 redis 的常见问题做了一个总结。大部分是博主自己在工作中遇到，以及以前面试别人的时候，爱问的一些问题。另外，<strong>不推荐大家临时抱佛脚</strong>，真正碰到一些有经验的工程师，其实几下就能把你问懵。最后，希望大家有所收获吧。</p>
 
                         
                       </div>
@@ -599,10 +307,10 @@ Futures.transform(input, callback, executor);
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/5/13</span>
+                    <span class="date">2018/6/5</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Java.html'>Java</a></span>
+          					    <span class="posted-in"><a href='Solution.html'>Solution</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -669,8 +377,6 @@ Futures.transform(input, callback, executor);
 
       	<p class="cat-list">
         
-            <a href="Team.html"><strong>Team</strong></a>
-        
             <a href="Infra.html"><strong>Infra</strong></a>
         
             <a href="Coding.html"><strong>Coding</strong></a>
@@ -694,31 +400,31 @@ Futures.transform(input, callback, executor);
 	      
 		      
 			      <li class="post">
-			        <a href="15301813999205.html">架构设计：负载均衡层设计方案（9）——负载均衡层总结下篇</a>
+			        <a href="15337171704262.html">Introduction to Testing with Spock and Groovy</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301813109409.html">架构设计：负载均衡层设计方案（8）——负载均衡层总结上篇</a>
+			        <a href="15336595358049.html">10 Excellent Ways to Secure Your Spring Boot Application</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301812452579.html">架构设计：负载均衡层设计方案（7）——LVS + Keepalived + Nginx安装及配置</a>
+			        <a href="15336592302916.html">First MicroProfile.io application using Java Module System</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301811967181.html">架构设计：负载均衡层设计方案（6）——Nginx + Keepalived构建高可用的负载层</a>
+			        <a href="15332186142588.html">Jenkins 的 Pipeline 脚本在美团餐饮 SaaS 中的实践</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301811361753.html">架构设计：负载均衡层设计方案（5）——LVS单节点安装</a>
+			        <a href="15331749691571.html">基于ZooKeeper的分布式锁和队列</a>
 			      </li>
 		     
 		  

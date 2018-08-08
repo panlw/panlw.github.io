@@ -76,8 +76,6 @@
     <li><label>Categories</label></li>
 
         
-            <li><a href="Team.html">Team</a></li>
-        
             <li><a href="Infra.html">Infra</a></li>
         
             <li><a href="Coding.html">Coding</a></li>
@@ -107,188 +105,403 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15244133646661.html">
+                <a class="clearlink" href="15277861393795.html">
                 
-                  <h1>Native Extension for Node.js</h1>
+                  <h1>深入浅出Netty - EventLoop, EventLoopGroup</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://www.nan-labs.com/blog/native-extensions-for-nodejs/">https://www.nan-labs.com/blog/native-extensions-for-nodejs/</a></p>
-
-<p><u>If you are a Spanish reader you can read this post in Spanish here: <a href="http://laplatajs.github.io/blog/2018/02/27/extensiones-nativas.html">Extensiones Nativas: ¿dónde empezar?</a></u></p>
-
-<p>In this article we will talk about the most important concepts to develop native extensions for NodeJS. Later, I will show how to build our first native extension with a practical example. And finally, I will leave some links to read more about it.</p>
+<p>DECEMBER 24 2016 <a href="https://caorong.github.io/2016/12/24/head-first-netty-1/">原文地址</a></p>
 </blockquote>
 
-<h2 id="toc_0">The basics to get started with native extensions</h2>
+<p>近年来netty 十分流行，至于为何那么流行，因为它性能好，能更有效的利用系统资源。</p>
 
-<p>In simple terms, we can say that a native extension is a set of C++ implemented logic that can be invoked from JavaScript code.</p>
+<p>但是， netty 很容易上手， 但是很多时候却无法理解设计的初衷， 比如为什么会有 EventLoop 这个东东， 本文从历史阐述原因。</p>
 
-<p>At this point, it’s interesting for us to clarify how NodeJS works and which are the parts involved in it. It’s important to know why we can talk about two languages (JavaScript &amp; C++) under the NodeJS context.</p>
+<h2 id="toc_0"><a href="#%E5%90%8C%E6%AD%A5%E7%BD%91%E7%BB%9C%E6%A8%A1%E5%9E%8B" title="同步网络模型"></a>同步网络模型</h2>
 
-<p>I like to explain it this way:</p>
+<p>首先说说同步模型， 也就是常说的 bio， bio 是基于 stream 的。 网上找到一个图如下</p>
 
-<ul>
-<li>  <strong>JavaScript</strong>: it’s the coding language.</li>
-<li>  <strong>V8</strong>: it’s the engine that runs our JavaScript code.</li>
-<li>  <strong>Libuv</strong>: it’s a C library that provides us with asynchronous execution.</li>
-</ul>
+<p><img src="media/15277861393795/15277864485883.jpg" alt=""/></p>
 
-<p>Now, where can we place native extensions? I will choose write/read disk action as an example to explain it. Neither JavaScript nor V8 provides us with disk access. Libuv provides asynchronous execution. But, with NodeJS we can write/read to disk, right? Well, this is the point where native extensions get into the match. The fs module is implemented using C++ (it has disk access) and eventually exposes methods (like writeFile and readFile) which can be invoked from JavaScript.</p>
+<p>从图可知，对于bio 来说，我的程序何时处理完需要靠 看 datasource 何时发完数据。</p>
 
-<p><img src="media/15244133646661/15244134699236.jpg" alt="Interaction with native extensions diagram"/></p>
+<p>这是非常坑爹的， 举个例子， 如果我的服务是一个多线程的 bio 的服务(比如 10个线程)，然后某个黑客建10个 telnet 连上你的server， holding住 不发数据，那么你的服务就down了。</p>
 
-<p>Once we have learned this, we can start taking our first steps in native extensions. Let’s talk about the tools we need.</p>
+<p>那么如何解决这种问题？ 如果 waiting client 发的数据不阻塞 worker 线程不就行了？</p>
 
-<h2 id="toc_1">Basic tooling to build a native extension</h2>
+<p>于是出现了 异步网络模型</p>
 
-<h3 id="toc_2">Binding.gyp file</h3>
+<h2 id="toc_1"><a href="#%E5%BC%82%E6%AD%A5%E7%BD%91%E7%BB%9C%E6%A8%A1%E5%9E%8B" title="异步网络模型"></a>异步网络模型</h2>
 
-<p>This file allows us to specify how we need to compile our native extension. One of the main thing that we need to define are the files that will be compiled and how we will call the final binary. It has a JSON like structure, and the keys to get this configured are sources and target.</p>
+<p>异步网络模型， 也就是非阻塞IO， 在java 中由于 jdk1.4 之后才被引入所以被称之为 Nio (New IO)</p>
 
-<h3 id="toc_3"><a href="https://github.com/nodejs/node-gyp">Node-gyp</a></h3>
+<p>网上同样找到个图</p>
 
-<p>It’s the tool that allows us to compile our native extension. It’s implemented in NodeJS and it’s bundled with npm so we can just run npm install and that will compile our native extension. When we run npm install, it will detect our binding.gyp file included in our root folder and then it will start compiling.</p>
+<p><img src="media/15277861393795/15277864586815.jpg" alt=""/></p>
 
-<p>Also, it allows us to make release(default) or debug builds. As a result, a binary file with .node extension will be created inside a release or debug folder, depending on how it was configured.</p>
+<p>由图可知， 实现异步的原理是 系统帮你给每一个连接(channel) 都维护了一个 <code>buffer</code>。<br/>
+将 client 发来的数据暂存到 <code>buffer</code> 中, 待 java 进程需要的时候一次性做一次内存拷贝，在 java 进程中使用。</p>
 
-<h3 id="toc_4"><a href="https://github.com/TooTallNate/node-bindings">Bindings</a></h3>
+<p>当然， 写出也是同样的 写到 <code>buffer</code> 中，当 <code>buffer</code> 满 或者 手动调用 <code>flush</code> 写出去。</p>
 
-<p>It’s a NodeJS package which allows us to export our native extension. It’s in charge of searching in a build or release folder for us.</p>
+<p>下面有个简单的 非阻塞 echo server demo， 当读到 q 时关闭连接。</p>
 
-<h3 id="toc_5"><a href="https://nodejs.org/api/n-api.html">N-API</a></h3>
+<pre><code class="language-java">ServerSocketChannel serverSocketChannel = ServerSocketChannel.open();
 
-<p>It’s C API that allows us to interact with our engine in a completely abstract way. For me, it’s the result of an evolution that tries to port node to different architectures.</p>
+serverSocketChannel.socket().bind(new InetSocketAddress(9999));
+serverSocketChannel.configureBlocking(false);
 
-<p>N-API provides stability and compatibility between different node versions. That is, if my native extension is compiled to node 8.1, I don’t need to compile it again for node 8.6 or 9.3. Thus making the life of the maintainers and contributors easier.</p>
+final List&lt;SocketChannel&gt; socketChannelList = Lists.newLinkedList();
 
-<p>At this moment, N-API is under <a href="https://nodejs.org/docs/latest/api/n-api.html#n_api_n_api">experimental state</a>.</p>
-
-<h3 id="toc_6"><a href="https://github.com/nodejs/node-addon-api">Node addon api</a></h3>
-
-<p>This NodeJS module provides us with a C++ implementation of N-API and allows us to use the language advantages.</p>
-
-<h2 id="toc_7">First steps in the native extension world</h2>
-
-<p><u>Note: For this example, I used node 9.3.</u></p>
-
-<p>To get initiated on the native extension world we will use the classic hello world example. The idea is to not overload the code with extra logic so we can focus on the minimum necessary code.</p>
-
-<p>We start initializing npm so that we can then install our dependencies:</p>
-
-<p><code>npm init</code></p>
-
-<p>Now, as we said, we install our dependencies:</p>
-
-<p><code>npm i node-addon-api bindings</code></p>
-
-<p>At this point we need to create our C file with our logic:</p>
-
-<p><link rel="stylesheet" href="https://assets-cdn.github.com/assets/gist-embed-1baaff35daab552f019ad459494450f1.css"></p>
-
-<pre><code class="language-cpp">#include &lt;napi.h&gt;
-
-Napi::String SayHi(const Napi::CallbackInfo&amp; info) {
-  Napi::Env env = info.Env();
-
-  return Napi::String::New(env, &quot;Hi!&quot;);
-}
-
-Napi::Object init(Napi::Env env, Napi::Object exports) {
-    exports.Set(Napi::String::New(env, &quot;sayHi&quot;), Napi::Function::New(env, SayHi));
-    return exports;
-};
-
-NODE_API_MODULE(hello_world, init);
-</code></pre>
-
-<blockquote>
-<p><a href="https://gist.github.com/nanlabsweb/d6c985ee9842fab274d4116c2fb0f443/raw/188b287e5092727700cfe1ddff8f6cbc402f3e3e/hello_world.cc">view raw</a> <a href="https://gist.github.com/nanlabsweb/d6c985ee9842fab274d4116c2fb0f443#file-hello_world-cc">hello_world.cc</a> hosted with ❤ by <a href="https://github.com">GitHub</a></p>
-</blockquote>
-
-<p>This file has three important parts that will be explained from bottom to top:</p>
-
-<ul>
-<li>  <strong>NODE_API_MODULE</strong> (Line 14): The first argument is the native extension name and the second one is the name of the function that initializes our extension.</li>
-<li>  <strong>Init</strong> (Line 10): This is the function that will initialize our native extension. In this function we must export the functions that will be invoked from JavaScript code. To do this, we need to set the name of the function to the exports object and the function itself that will be invoked. This init function must return the exports object.</li>
-<li>  <strong>SayHi</strong> (Line 3): This function is what will be executed when we invoke our native extension from our JavaScript.</li>
-</ul>
-
-<p>Later, we need to create our <strong>binding.gyp</strong> file that will contain our native extension configuration:</p>
-
-<p><link rel="stylesheet" href="https://assets-cdn.github.com/assets/gist-embed-1baaff35daab552f019ad459494450f1.css"></p>
-
-<pre><code class="language-json">{
-  &quot;targets&quot;: [
-    { 
-      &quot;cflags!&quot;: [ &quot;-fno-exceptions&quot; ],
-      &quot;cflags_cc!&quot;: [ &quot;-fno-exceptions&quot; ],
-      &quot;include_dirs&quot; : [
-        &quot;&lt;!@(node -p \&quot;require(&#39;node-addon-api&#39;).include\&quot;)&quot;
-      ],
-      &quot;target_name&quot;: &quot;hello_world&quot;,
-      &quot;sources&quot;: [ &quot;hello_world.cc&quot; ],
-      &#39;defines&#39;: [ &#39;NAPI_DISABLE_CPP_EXCEPTIONS&#39; ]
+new Thread(new Runnable() {
+  @Override
+  public void run() {
+    while (true) {
+      // 处理 每个连接是否可读, 这里的逻辑是 读4个字节后切断连接
+      for (SocketChannel socketChannel : Lists.newArrayList(socketChannelList)) {
+        try {
+          ByteBuffer buf = ByteBuffer.allocate(4);
+          int readed = socketChannel.read(buf);
+          System.out.println(readed);
+          System.out.println(Arrays.toString(buf.array()));
+          if (readed &gt; 0 &amp;&amp; buf.array()[0] == &#39;q&#39;) {
+            // close
+            socketChannel.close();
+            // remove from list
+            socketChannelList.remove(socketChannel);
+          }
+        } catch (Throwable e) {
+          e.printStackTrace();
+        }
+      }
+      try {
+        Thread.sleep(100);
+      } catch (InterruptedException e) {
+      }
     }
-  ]
+  }
+}, &quot;server-handler-thread&quot;).start();
+
+// 等待新连接连进来
+while (true) {
+  SocketChannel socketChannel = serverSocketChannel.accept();
+  if (socketChannel != null) {
+    socketChannelList.add(socketChannel);
+  }
+  Thread.sleep(1000);
 }
 </code></pre>
 
-<blockquote>
-<p><a href="https://gist.github.com/nanlabsweb/ebbc7d0c2dd5249b5f833e8a2b845f5d/raw/61068384831764b78bc8a7ace9deedefb1faadc5/binding.gyp">view raw</a> <a href="https://gist.github.com/nanlabsweb/ebbc7d0c2dd5249b5f833e8a2b845f5d#file-binding-gyp">binding.gyp</a> hosted with ❤ by <a href="https://github.com">GitHub</a></p>
-</blockquote>
+<p>简单分析下上面的代码，</p>
 
-<p>Finally, the JavaScript code that will require our extension and invoke it.</p>
+<ol>
+<li> 由于 accept 是非阻塞的， 所以我们要一直轮询 判断是否有新连接进来。</li>
+<li> 连接进来后，由于我们不知道 client 何时能发完数据， 所以我们维护了一个列表 <code>socketChannelList</code> 定期去轮询列表，看是否有数据可读。</li>
+</ol>
 
-<p><link rel="stylesheet" href="https://assets-cdn.github.com/assets/gist-embed-1baaff35daab552f019ad459494450f1.css"></p>
+<p>但是后来大家发现， 每当用 nonblocking socket 的时候都要做类似的操作， 于是想把它们提出来，提取成一个通用模块， 让代码实现更容易，</p>
 
-<pre><code>const hello_world = require(&#39;bindings&#39;)(&#39;hello_world&#39;)
+<p>在 <a href="https://en.wikipedia.org/wiki/Berkeley_sockets">berkeley socket</a> 中这个模块被称为 select, poll, epoll. (后面2个是加强版)</p>
 
-console.log(hello_world.sayHi());
+<p>而在java中， java 在他们之上抽象成 Selector</p>
+
+<h2 id="toc_2"><a href="#Selector-select-poll-epoll" title="Selector(select, poll, epoll)"></a>Selector(select, poll, epoll)</h2>
+
+<p>既然 select 是一个使用 nonblocking io 的通用封装， 那么在 linux 中， 为什么要有 select, poll, epoll 这么多的选择呢？</p>
+
+<p>我猜测，最早其实只有 select， 然后由于linux 是一个开源， 所以， 后来别人实现了性能更好的 poll, 再之后 epoll 也是这样。</p>
+
+<p>但是, 由于它们都在 linux 2.6.12 之前就已经被实现了， 在github上 都看不到具体提交历史了。。</p>
+
+<p><a href="https://github.com/torvalds/linux/commits/a379f71a30dddbd2e7393624e455ce53c87965d1/fs/select.c?after=Y3Vyc29yOqN59xow3dvS5zk2JORVzlPIeWXRKzY5">select.c</a>,<br/>
+<a href="https://github.com/torvalds/linux/commits/5924bbecd0267d87c24110cbe2041b5075173a25/include/linux/poll.h">poll.h</a>,<br/>
+<a href="https://github.com/torvalds/linux/commits/5924bbecd0267d87c24110cbe2041b5075173a25/include/linux/eventpoll.h">eventpoll.h</a></p>
+
+<p>我们再来看看 使用了 selector 后的非阻塞 IO 的编码, 同样实现一个 echo server</p>
+
+<pre><code class="language-java">Selector selector = Selector.open();
+ServerSocketChannel servChannel = ServerSocketChannel.open();
+servChannel.configureBlocking(false);
+// 建立一个server socket，到本地端口9999， backlog 1024
+servChannel.socket().setReuseAddress(true);
+servChannel.socket().bind(new InetSocketAddress(9999), 1024);
+// selector 关心 server 上的 ACCEPT 事件
+servChannel.register(selector, SelectionKey.OP_ACCEPT); 
+
+while (start) {
+  try {
+    // 阻塞等待 直到有IO事件可读(系统IO事件队列不为空)
+    selector.select();
+    // 获取 事件 以及 事件所对应的 channel (client server 的连接)
+    Set&lt;SelectionKey&gt; selectedKeys = selector.selectedKeys();
+    Iterator&lt;SelectionKey&gt; it = selectedKeys.iterator();
+    SelectionKey key = null;
+    while (it.hasNext()) {
+      key = it.next();
+      it.remove();
+      try {
+        if (key.isValid()) {
+          // OP_ACCEPT 事件 表示有个新client 完成了三次握手。连接上了本服务器
+          if (key.isAcceptable()) {
+            // Accept the new connection
+            ServerSocketChannel ssc = (ServerSocketChannel) key.channel();
+            SocketChannel sc = ssc.accept();
+            sc.configureBlocking(false);
+            // 将该连接的可读事件 注册到 selector， 到时候他发起请求的时候，我会收到新事件
+            sc.register(selector, SelectionKey.OP_READ);
+          }
+          // OP_READ 事件 说明 client 发的数据已经发到了系统缓冲区，server 可以去读了。
+          if (key.isReadable()) {
+            SocketChannel sc = (SocketChannel) key.channel();
+            // 分配用户台空间, 将数据从内核态 拷贝到 用户态
+            ByteBuffer readBuffer = ByteBuffer.allocate(4);
+            int readBytes = sc.read(readBuffer);
+            if (readBytes &gt; 0) {
+              // 切换读写模式 详见下面的图, 表示自己目前可以读 [position, limit]
+              readBuffer.flip();
+              byte[] bytes = new byte[readBuffer.remaining()];
+              // 将buffer 数据拷贝到 bytes 数组
+              // 如果这里只收到一半的数据怎么办？
+              String body = new String(bytes, &quot;UTF-8&quot;);
+              System.out.println(body);
+              // 将 read的数据 写回去
+              ByteBuffer writeBuffer = ByteBuffer.allocate(bytes.length);
+              writeBuffer.put(bytes);
+              writeBuffer.flip();
+              sc.write(writeBuffer);
+            } else if (readBytes &lt; 0) {
+              // 对端链路关闭
+              key.cancel();
+              sc.close();
+            } else
+              ;
+          }
+        }
+      } catch (Exception e) {
+        if (key != null) {
+          key.cancel();
+          if (key.channel() != null)
+            key.channel().close();
+        }
+      }
+    }
+  } catch (Exception e) {
+    throw e;
+  }
+}
 </code></pre>
 
-<blockquote>
-<p><a href="https://gist.github.com/nanlabsweb/30019fc7ae72f3898f93623d535d8790/raw/a43850af02bfb800bad0ab82426c64b307f50e1c/index.js">view raw</a> <a href="https://gist.github.com/nanlabsweb/30019fc7ae72f3898f93623d535d8790#file-index-js">index.js</a> hosted with ❤ by <a href="https://github.com">GitHub</a></p>
-</blockquote>
+<pre><code class="language-sh">~ ᐅ nc localhost 9999
+1
+1
+2
+2
+</code></pre>
 
-<p>Now, we just need to compile our extension running npm install and run the JavaScript file that is used:</p>
+<p>但是， 很奇怪的是，代码更长了。。。</p>
 
-<p><img src="media/15244133646661/15244136958142.gif" alt="Native extensions gif demonstrating real usage."/></p>
+<p>因为其实真正的 selector 将所有的socket 的时间都封装进去了。</p>
 
-<p>And that’s it. We just run our native extension.</p>
+<p>带来的结果是， java 层的代码 只要一个线程就能处理所有了，(我之前的实现需要2个线程)。</p>
 
-<h2 id="toc_8">What we had before N-API?</h2>
+<p>当然还有个问题是， 及时用了 selector， 我们依然认为代码可读性非常差， 代码容易写错。</p>
 
-<p>I find it important to know the context and history of native extensions since it gives access to a lot of documentation and examples. The idea is for N-API to eventually replace NAN. For that reason we should look back to NAN for a moment.</p>
+<p>于是， netty 登场了， 他在 selector 之上， 又封装了一层， 让我们先看下 同样实现 netty 的代码。</p>
 
-<p>NAN? Yes, <a href="https://github.com/nodejs/nan">Native Abstraction for Node.js</a>. NAN is a C++ library that provides us with V8 abstraction, but it doesn’t allow us to abstract ourselves from the V8.<br/>
-In new NodeJS releases, there could be V8 changes that could break our native extension. Using NAN is a way to avoid this problem.</p>
+<h2 id="toc_3"><a href="#netty-echo-server" title="netty echo server"></a>netty echo server</h2>
 
-<h2 id="toc_9">Further steps to develop your native extensions</h2>
+<pre><code class="language-java">public class Netty4Demo {
+  public class EchoHandler extends SimpleChannelInboundHandler {
+    @Override
+    public void channelRead0(ChannelHandlerContext ctx, Object msg) throws Exception {
+      // 为什么 这里可以强转String？
+      String in = (String) msg;
+      System.out.print(in);
+      // 将数据写回
+      ctx.writeAndFlush(in);
+    }
+  }
 
-<p>As I said, knowing about NAN allows us to learn from its examples and documentation. It’s a good complement to our native extension learning process.</p>
+  public void run() throws Exception {
+    EventLoopGroup acceptGroup = new NioEventLoopGroup(1); // 指定 Acceptor 线程池大小
+    EventLoopGroup ioGroup = new NioEventLoopGroup(1); // 指定 NIO线程池大小
+    try {
+      ServerBootstrap b = new ServerBootstrap(); // 创建 ServerBootstrap 对象，他是Netty 用于启动NIO 服务端的辅助启动类，目的是降低服务端的开发复杂度。
+      b.group(acceptGroup, ioGrou).channel(
+          NioServerSocketChannel.class) // 指定使用 java 的NioServerSocketChannel
+          .childHandler(new ChannelInitializer&lt;SocketChannel&gt;() { // 创建 IOThread 的 pipeline
+            @Override
+            public void initChannel(SocketChannel ch) throws Exception {
+              ch.pipeline()
+                .addLast(new StringDecoder())
+                .addLast(new StringEncoder()); // 添加echo Handler
+                .addLast(new EchoHandler())
+            }
+          }).option(ChannelOption.SO_BACKLOG, 128)          // server socket config backlog 设置为 128
+          .childOption(ChannelOption.SO_KEEPALIVE, true); // client socket config 设置 keepalive = true
+      // 绑定端口，开始接收进来的连接
+      ChannelFuture f = b.bind(9999).sync(); // 同步等待绑定本地端口
 
-<ul>
-<li>  NAPI examples can be found in <a href="https://github.com/nodejs/node/tree/master/test/addons-napi">here</a>.</li>
-<li>  Node-addon-api examples can be found in <a href="https://github.com/nodejs/abi-stable-node-addon-examples">here</a>.</li>
-<li>  Nan examples can be found in <a href="https://github.com/nodejs/nan/tree/master/test">here</a>.</li>
-<li>  Another good source are tests <a href="https://github.com/nodejs/node-addon-api/tree/master/test">here</a>.</li>
-<li>  To learn more about native extensions <a href="https://nodeaddons.com/">here</a>.</li>
-</ul>
+      // 等待服务器  socket 关闭 。
+      // 在这个例子中，这不会发生，但你可以优雅地关闭你的服务器。
+      f.channel().closeFuture().sync();
+    } finally {
+      // 释放两个线程池
+      acceptGroup.shutdownGracefully();
+      ioGrou.shutdownGracefully();
+    }
+  }
 
-<h2 id="toc_10">Conclusion</h2>
+  public static void main(String[] args) throws Exception {
+    new Netty4Demo().run();
+  }
+}
+</code></pre>
 
-<p>Learning about native extensions helped me to understand how NodeJS works and how it’s composed. There are more than one scenario where we can use them, such as performance boosts, C/C++ library integrations, or integration with legacy code.</p>
+<pre><code class="language-sh">~ ᐅ nc localhost 9999
+1
+1
+2
+2
+3
+3
+</code></pre>
 
-<p>In summary, it’s an excellent way to learn about NodeJS internals.</p>
+<p>代码短了一些， 关键是少了很多 if 判断， 代码可读性更好了。</p>
 
-<p>If you have any doubt, please post a comment and I will help you.</p>
+<p>但是， 可读性提高(抽象)的同时， 又带出了了问题， EventLoop 是什么 , EventloopGroup 是什么？ 为什么要有它们？</p>
 
-<h3 id="toc_11">Taking part in the community</h3>
+<p>这里要解释以上的问题， 要先从 线程模型说起</p>
 
-<p>I made this post for a contribution to <a href="http://laplatajs.github.io/">LaPlataJS</a>. It’s a local JavaScript community where I participate helping with talks, events organization, or posts. I think that whenever you can you should join a community. For me, it has a lot of benefits. You can know really good people, share ideas, learn things and, sometimes, go for a beer with your folks.</p>
+<h2 id="toc_4"><a href="#%E7%BA%BF%E7%A8%8B%E6%A8%A1%E5%9E%8B" title="线程模型"></a>线程模型</h2>
+
+<p>首先是 单线程模型， 如下图</p>
+
+<p><img src="media/15277861393795/15277864778610.jpg" alt=""/></p>
+
+<p>上面直接用 selector 实现的 echo server 就是单线程模型，<br/>
+还有类似存在 GIL 问题的语言比如 python 的 tornado 也是 单线程模型。</p>
+
+<p>然后是多线程模型</p>
+
+<p><img src="media/15277861393795/15277864864829.jpg" alt=""/></p>
+
+<p>多线程模型的区别就是 让接收连接 和 对连接读写的处理 分别用不同的线程处理。 比如上面的 echo server demo 就可以被称为一个 多线程模型。<br/>
+只不过扩展性差了些。。。</p>
+
+<p>netty 的 EventloopGroup 其实就是线程池， 通过它来配置 接收连接 和 处理连接读写 的线程池大小。</p>
+
+<h2 id="toc_5"><a href="#netty-%E4%B9%8B-EventloopGroup" title="netty 之 EventloopGroup"></a>netty 之 EventloopGroup</h2>
+
+<p><img src="media/15277861393795/15277864950859.jpg" alt=""/></p>
+
+<p>上图就是 EventLoopGroup 的大致模块图。</p>
+
+<p>Boss EventloopGroup 和 worker EventloopGroup 分别 处理 接收连接， 和读写。</p>
+
+<p>而 Eventloop 里则封装了类似上面单线程的 echo server 的模块下面会详细说。</p>
+
+<p>对于开发者来说，主要关心紫色圈出部分。 其余的都已经封装完毕</p>
+
+<p>有几个关键点。</p>
+
+<ol>
+<li> Eventloopsize 建议设置为 2 的次方，dispatch 使用位移，更快。</li>
+<li> 侦听一个端口，只会绑定到 BossEventLoopGroup 中的一个 Eventloop，所以， BossEventLoopGroup 配置多个也无用。</li>
+</ol>
+
+<h2 id="toc_6"><a href="#EventLoop" title="EventLoop"></a>EventLoop</h2>
+
+<p>如果只使用 tcp 和 异步阻塞的话主要关心以下2个 EventLoop (本文也只介绍这2个)</p>
+
+<p>NioEventLoop - 基于java 原生nio</p>
+
+<pre><code>level-triggered （水平触发）
+
+</code></pre>
+
+<p>EpollEventLoop - native jni 直接调用 epoll, only work on linux</p>
+
+<pre><code>edge-triggered （边缘触发）更少的系统调用
+C代码，更少GC，更少synchronized
+暴露了更多的Socket配置参数
+
+</code></pre>
+
+<h3 id="toc_7"><a href="#%E6%B5%81%E7%A8%8B%E5%9B%BE" title="流程图"></a>流程图</h3>
+
+<p><img src="media/15277861393795/15277865072620.jpg" alt=""/></p>
+
+<p>关键点</p>
+
+<ol>
+<li> 整个loop 干的事情就是 <code>select -&gt; processIO -&gt; runAllTask</code></li>
+<li> 这是一个死循环</li>
+<li> 那么这个loop 如何自己优雅退出？ noway，只能通过外部添加 CloseTask， 比如添加到 MpscQueue</li>
+<li> deadline 为 定时任务的触发时间，避免 select 阻塞, 让 定时任务不能及时执行。</li>
+<li> 在select 这一步 解决 epollbug</li>
+</ol>
+
+<p>关于解决 epoll bug的原理是 应当 “阻塞”的 select 变得不再阻塞。<br/>
+所以只需要统计下 select 次数就行了</p>
+
+<p>部分关键代码:</p>
+
+<pre><code class="language-java">for(;;){
+    int selectedKeys = selector.select(timeoutMillis); // select with timeout
+    selectCnt ++;
+    // 我由于 select 阻塞 而等待了 timeoutMillis 毫秒， 说明， 我阻塞了，说明没有bug
+    if (time - TimeUnit.MILLISECONDS.toNanos(timeoutMillis) &gt;= currentTimeNanos) {
+        selectCnt = 1;
+    } else if (SELECTOR_AUTO_REBUILD_THRESHOLD &gt; 0 &amp;&amp;
+            selectCnt &gt;= SELECTOR_AUTO_REBUILD_THRESHOLD) {
+        // 在小于 timeoutMillis 毫秒的时间内 select 的次数超过了 阀值(512) 次
+        rebuildSelector();
+        selector = this.selector;
+
+        selector.selectNow();// Select again
+        selectCnt = 1;
+        break;
+    }
+}
+</code></pre>
+
+<h2 id="toc_8"><a href="#other" title="other"></a>other</h2>
+
+<h3 id="toc_9"><a href="#Selector-wakeup" title="Selector.wakeup()"></a>Selector.wakeup()</h3>
+
+<p>java 的 Selector 在原生的 select api 之上 增加了个 Selector.wakeup()</p>
+
+<p>她的目的是唤醒 阻塞在 <code>select()</code> 的线程, (通过写一个字节)</p>
+
+<p>为什么要唤醒？ 什么时候需要唤醒？</p>
+
+<ol>
+<li>注册了新的 channel 或者事件。</li>
+<li>channel 关闭， 取消注册。</li>
+<li>优先级更高的事件触发（如定时器事件）， 希望及时处理。</li>
+</ol>
+
+<h4 id="toc_10"><a href="#%E5%8E%9F%E7%90%86" title="原理"></a>原理</h4>
+
+<p>Linux上利用pipe调用创建一个管道，Windows上则是一个loopback的tcp连接。这是因为win32的管道无法加入select的fd set，将管道或者TCP连接加入select fd set。</p>
+
+<p>wakeup往管道或者连接写入一个字节，阻塞的select因为有I/O事件就绪，立即返回。可见，wakeup的调用开销不可忽视。</p>
+
+<p>之前看到的 coolshell 也分析过 –&gt; Java NIO类库Selector机制解析（<a href="http://blog.csdn.net/haoel/archive/2008/03/27/2224055.aspx">上</a>，<a href="http://blog.csdn.net/haoel/archive/2008/03/27/2224069.aspx">下</a>，<a href="http://blog.csdn.net/haoel/archive/2008/05/04/2379586.aspx">续</a>）</p>
+
+<h1 id="toc_11"><a href="#reference" title="reference"></a>reference</h1>
+
+<p><a href="http://www.infoq.com/cn/articles/netty-threading-model">http://www.infoq.com/cn/articles/netty-threading-model</a></p>
+
+<p><a href="http://calvin1978.blogcn.com/articles/netty-performance.html">http://calvin1978.blogcn.com/articles/netty-performance.html</a></p>
+
+<p><a href="http://calvin1978.blogcn.com/articles/netty-performance2.html">http://calvin1978.blogcn.com/articles/netty-performance2.html</a></p>
+
+<p><a href="http://tech.meituan.com/nio.html">http://tech.meituan.com/nio.html</a></p>
 
                         
                       </div>
@@ -297,10 +510,10 @@ In new NodeJS releases, there could be V8 changes that could break our native ex
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/4/23</span>
+                    <span class="date">2018/6/1</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Node.js.html'>Node.js</a></span>
+          					    <span class="posted-in"><a href='Network.html'>Network</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -367,8 +580,6 @@ In new NodeJS releases, there could be V8 changes that could break our native ex
 
       	<p class="cat-list">
         
-            <a href="Team.html"><strong>Team</strong></a>
-        
             <a href="Infra.html"><strong>Infra</strong></a>
         
             <a href="Coding.html"><strong>Coding</strong></a>
@@ -392,31 +603,31 @@ In new NodeJS releases, there could be V8 changes that could break our native ex
 	      
 		      
 			      <li class="post">
-			        <a href="15301813999205.html">架构设计：负载均衡层设计方案（9）——负载均衡层总结下篇</a>
+			        <a href="15337171704262.html">Introduction to Testing with Spock and Groovy</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301813109409.html">架构设计：负载均衡层设计方案（8）——负载均衡层总结上篇</a>
+			        <a href="15336595358049.html">10 Excellent Ways to Secure Your Spring Boot Application</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301812452579.html">架构设计：负载均衡层设计方案（7）——LVS + Keepalived + Nginx安装及配置</a>
+			        <a href="15336592302916.html">First MicroProfile.io application using Java Module System</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301811967181.html">架构设计：负载均衡层设计方案（6）——Nginx + Keepalived构建高可用的负载层</a>
+			        <a href="15332186142588.html">Jenkins 的 Pipeline 脚本在美团餐饮 SaaS 中的实践</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301811361753.html">架构设计：负载均衡层设计方案（5）——LVS单节点安装</a>
+			        <a href="15331749691571.html">基于ZooKeeper的分布式锁和队列</a>
 			      </li>
 		     
 		  

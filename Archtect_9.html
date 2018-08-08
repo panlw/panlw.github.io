@@ -76,8 +76,6 @@
     <li><label>Categories</label></li>
 
         
-            <li><a href="Team.html">Team</a></li>
-        
             <li><a href="Infra.html">Infra</a></li>
         
             <li><a href="Coding.html">Coding</a></li>
@@ -107,101 +105,316 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15290745541526.html">
+                <a class="clearlink" href="15305085046380.html">
                 
-                  <h1>蚂蚁金服RPC框架结构分析</h1>
+                  <h1>How to Dockerize your End-to-End acceptance tests</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://juejin.im/post/5b0573046fb9a07aa542ad58">https://juejin.im/post/5b0573046fb9a07aa542ad58</a></p>
+<p><a href="https://medium.freecodecamp.org/how-to-dockerize-your-end-to-end-acceptance-tests-dbb593acb8e0">https://medium.freecodecamp.org/how-to-dockerize-your-end-to-end-acceptance-tests-dbb593acb8e0</a></p>
 </blockquote>
 
-<p>蚂蚁金服近期开源了研发多年的SOFA一篮子框架，其中就有一个非常核心的RPC框架，它叫SOFA-BOLT。小编今天花了近一天的时间仔细阅读研究它的源码，阅读过程中遇到了不少问题，蚂蚁金服的相关技术人员都非常耐心的及时解答了我的疑难。这里将我从中学到的知识点一并分享给大家。</p>
+<p>This article serves as a “how-to” guide for using Selenium Docker images alongside CodeceptJS and an Express server.</p>
 
-<p>SOFA-BOLT基于开源的Netty框架，同时提供了服务器和客户端的实现。它的源码非常值得一读，结构简单，考虑周全，绝不是一个普通的玩具。它没有滥用设计模式，源码阅读起来比较直接，没有太多绕来绕去的复杂结构。</p>
+<p>In it, we will cover:</p>
 
-<p><img src="media/15290745541526/15290751810439.jpg" alt=""/></p>
+<ul>
+<li>  What is E2E acceptance testing?</li>
+<li>  Why use Docker?</li>
+<li>  Loosely coupled testing tools</li>
+<li>  Layers of testing tools</li>
+<li>  Creating a test project</li>
+</ul>
 
-<p>一个节点既可以同时既是RPC服务器又是客户端，作为客户端该节点需要其它节点提供服务，作为服务器它可以为其它节点提供服务。不过上面这张图并不是合理的结构，因为两个服务相互耦合了，我需要你，你也需要我，就成了鸡蛋问题。比较合理的结构一般如下图所示，它们之间不构成环。<br/>
-<img src="media/15290745541526/15290751964181.jpg" alt=""/></p>
+<h3 id="toc_0">E2E Acceptance Testing</h3>
 
-<h2 id="toc_0">通讯协议</h2>
+<p><a href="https://en.wikipedia.org/wiki/Acceptance_testing">Acceptance testing</a> is a <a href="https://www.tutorialspoint.com/software_testing_dictionary/acceptance_testing.htm">phase</a> in a typical software development process. It covers tests to see if the product has met the overall requirement specifications, and if it is “accepted” as ready for delivery. It is typically the last phase of testing before releasing the product to production. This could include user-based acceptance tests, business-based acceptance tests, or even alpha/beta testing.</p>
 
-<p>通讯协议是客户端和服务器之间交流的语言，SOFA定义了自己的一套通讯协议，它的编码解码分为二层，第一层是消息体对象的二进制序列化，这部分默认由开源的Hession协议库序列化完成，第二层是负责给序列化的消息体增加一系列包装字段，形成一个完整的消息。包括请求ID、消息体的长度、协议版本号和CRC32校验位等等<br/>
-如果希望进一步优化网络性能，SOFA还提供了Snappy压缩协议，可以在现有的两层协议基础上增加第三层，能显著降低网络传输负担。压缩是时间换空间，提升网络性能的同时，它也会加重CPU计算，所以在使用时需要适当进行权衡。</p>
+<p><a href="http://toolsqa.com/software-testing/what-does-end-to-end-test-mean/">End-to-End</a> (E2E) testing is one implementation of acceptance testing. It is an <u>approach</u> to acceptance testing, but the terms are not synonymous. It allows testing the flow of an application from start to finish to see if it is performing as designed. In the case of a web application, it would involve determining a user scenario and testing each of the steps the user would take in order. The test fails if the scenario is not completed successfully.</p>
 
-<p><img src="media/15290745541526/15290752045597.jpg" alt=""/></p>
+<p>Various tools exist to automate this process, simulating user interaction with the application.</p>
 
-<h2 id="toc_1">连接池</h2>
+<h3 id="toc_1">Why Docker?</h3>
 
-<p>客户端和服务器之间一般需要建立多个连接，但是也不能每个请求都建立一个连接。一般是通过维护一个连接池，限定最大连接数。客户端通过有限的连接来和服务器进行通信。</p>
+<p>Creating and running E2E tests is often considered a flaky and complex process. It requires a lot of set up that can still easily fail when run on different machines or in a CI (continuous integration) environment. Installing and maintaining different browsers and WebDrivers both for local tests and CI tests takes time. And even when done, it can still fail because of simple issues such as if the <a href="https://medium.com/@garrensmith/consistent-selenium-testing-with-docker-f2d5a24a1bc5">screen resolution on developer’s local machines, or in CI, is different</a>.</p>
 
-<p>我们在使用Jedis客户端和Redis服务器进行通信时，也是通过连接池来获取连接的。Jedis的连接必须是线程独占的，因为它不是线程安全的。从连接池中获取连接时，其它线程就暂时拿不到这个连接了，待当前线程处理完毕后，要将连接归还给线程池，这样其它线程才可以继续使用这个连接。</p>
+<p>The standard advantages of Docker also apply: not having to deal with OS compatibility or having dependancies installed. To run the Selenium Server you would need Java installed (<a href="https://engineering.thetrainline.com/dockerize-your-webdriverio-environment-to-run-everywhere-4f98e7a1d80e">or at least be started/stopped explicitly</a>). To run Express you would need Node.js, and for Chrome you’d need Chrome itself as well as ChromeDriver.</p>
 
-<p><img src="media/15290745541526/15290752153060.jpg" alt=""/></p>
+<p>When using Docker these dependancies are eliminated. You simply use different containers that already contain these, which will function precisely the same no matter on which machine they are run. When you then think how easy it is to build Docker into your CI, Dockerizing your test process becomes an obvious choice.</p>
 
-<p>Redis的客户端请求和应答是顺序性的，一问一答，所以请求和应答不需要唯一ID就可以建立起关联。</p>
+<h3 id="toc_2">Loosely coupled testing tools</h3>
 
-<p>Bolt不一样，它的问答是乱序的，问和答之间是必须通过请求的唯一ID来建立起关联。Bolt的客户端是线程安全的，它可以同时传递多个请求，连接对象会维护一个正在处理的RPC请求对象字典。当客户端想要发起RPC请求时，它不是从连接池中摘出一个独占连接，而是随意选择一个连接来传递自己的请求，这个连接也可以被其它线程同时使用。</p>
+<p>There are several frameworks available when writing E2E tests, and for a newcomer it can be hard to know which to choose and invest time into. If you choose the wrong one, you’ll have wasted a lot of time.</p>
 
-<h2 id="toc_2">负载均衡</h2>
+<p>This is where <a href="http://codecept.io/">CodeceptJS</a> comes into the picture. CodeceptJS is a testing framework that takes a scenario-driven, <a href="https://en.wikipedia.org/wiki/Behavior-driven_development">behaviour driven development</a> (BDD) approach, with an API language that is easy for non-engineers to understand and use. However, perhaps even more importantly, it is backend agnostic. It is written on top of several popular testing libraries (WebDriverIO or Puppeteer, for example) and its single high level API communicates to whichever one you choose. It’s <a href="https://hackernoon.com/effective-end-2-end-testing-in-javascript-with-codeceptjs-37c8d7d6a928">creators believe</a> that</p>
 
-<p>客户端提供了多种复杂均衡的实现，阿里默认使用带权重的随机算法(RandomLoadBalancer)，此外还有</p>
+<blockquote>
+<p>Your tests should not be bound to your execution engine. Whether you choose Selenium or Puppeteer your tests should look almost the same. If you (later) feel the limitation of one engine you can easily switch your tests to other.</p>
+</blockquote>
 
-<ol>
-<li>ConsistentHashLoaderBalancer 一致性hash，客户端和服务器之间的连接关系(谁跟谁连)比较稳定</li>
-<li>LocalPreferenceLoadBalancer 本地环回地址优先，提升本机调用性能</li>
-<li>RoundRobinLoadBalancer 循环依次来</li>
-<li>WeightedRoundRobinLoadBalancer 带权重的循环依次来</li>
-<li>RandomLoadBalancer 这个是带权重的随机，阿里的默认使用</li>
-</ol>
+<h3 id="toc_3">Layers of testing tools</h3>
 
-<h2 id="toc_3">服务器线程模型</h2>
+<p><img src="https://cdn-images-1.medium.com/max/1600/1*p0ALhZOLfRFYBvosshCmjQ.png" alt=""/>Some of the different products available at each layer of simulating user interaction with a browser</p>
 
-<p>服务器采用传统netty多线程模型，一个acceptor线程专门用来接收连接，然后扔给io线程处理读消息并解码成请求对象，最后扔给业务线程池进行处理。<br/>
-<img src="media/15290745541526/15290752347331.jpg" alt=""/></p>
+<p>Let’s take a bottom-up approach to looking at how each layer builds on the last.</p>
 
-<h2 id="toc_4">心跳</h2>
+<p>It is worth initially referencing <a href="https://www.seleniumhq.org/">Selenium</a>, a long running project with an actively used set of tools, which today is made up of Selenium WebDriver, Grid, Server, and IDE. In creating these tools they have set many industry standards, often confusingly named after the Selenium product they came from. This can be seen in ‘Selenium WebDriver’, and the ‘WebDriver wire protocol’ that was established in its development. Those applicable will be shown in more detail below.</p>
 
-<p>客户端和服务器之间会有定时心跳检测连接的存活，默认30s来一次。tcp的关闭是通过FIN包来通知对方的，如果因为网络问题，对方连FIN包都收不到，那么即使一边关闭了套接字，另一边可能还以为连接正常。所以心跳检测存活机制在长连接应用里非常普遍。如果客户端连续发了三次心跳都没有收到服务器的回复，那么就认为连接已经关闭。服务器也会有连接存活检测，如果一个客户端连接90s内没有任何消息进来，那么也认为该连接已经断开。服务器不会主动发送心跳消息。</p>
+<h4 id="toc_4">Browser</h4>
 
-<h2 id="toc_5">双工通信</h2>
+<p>Any web browser: Chrome, Firefox, Internet Explorer, Safari, Opera, and so on. Often referred to as the ‘user agent’ in documentation.</p>
 
-<p>RPC一般是由客户端向服务器发起一个请求，然后收到服务器的应答。Bolt的RPC是双工通信，服务器也可以向客户端主动发起请求，它们共享一个TCP连接。TCP连接本身就是双工的，所以这也不算什么奇迹。只是服务器在什么业务场景需要向客户端主动发起请求，这个蚂蚁并没有进行详细说明。<br/>
-<img src="media/15290745541526/15290752519556.jpg" alt=""/></p>
+<h4 id="toc_5">W3C’s WebDriver wire protocol</h4>
 
-<p>客户端作为主动连接方，它要负责重连和发起心跳消息。服务器作为被动方，它不需要处理重连，如果连接断开，它就直接将连接从集合中移除就行，不需要做特殊的处理，但是它会检测心跳消息，如果在一定时间内连接通道没有任何消息到来，它就会主动关闭。</p>
+<p>The WebDriver wire protocol is a platform and language-neutral way of interacting with web browsers. It defines a common <a href="http://www.drdobbs.com/web-development/restful-web-services-a-tutorial/240169069">RESTful web service</a> using JSON over HTTP in request/response pairs. It allows DOM elements to be manipulated from an external source, while also allowing navigation to web pages, user input, JavaScript execution, and more.</p>
 
-<h2 id="toc_6">重连</h2>
+<p>Initially written by Selenium for the Selenium WebDriver, this protocol has now reached the Editor’s Draft stage in becoming an official <a href="https://w3c.github.io/webdriver/">W3C standard</a>.</p>
 
-<p>客户端的重连策略是一个单独的模块，有两个地方会成为重连的入口。一个是正常连接断开触发channelInActive回调，另一个就是重连连接不能建立成功时需要进行重试。Bolt有一个单独的重连线程，所有需要重连的连接会被包装成一个任务塞进这个线程的任务队列，该线程不断地从队列里拿任务进行重连处理，如果重连失败会尝试再将任务重新包装进队列延后继续处理。默认是1s钟处理一个重连任务。<br/>
-<img src="media/15290745541526/15290752597075.jpg" alt=""/></p>
+<p>Other protocols do exit, but will not be covered in great detail here. All explanations will assume a backend that implements the WebDriver wire protocol.</p>
 
-<p>RPC连接是延迟建立的，它在第一次客户端发送RPC请求时尝试进行连接，如果连接失败，它会立即继续重连最多默认两次。如果三次尝试连接后还是没有建立成功，就向上层爆出异常。它不需要包装一个重连任务塞进ReconnectManager，因为后续客户端请求会继续触发连接。</p>
+<p>Another notable protocol is the <a href="https://chromedevtools.github.io/devtools-protocol/">Chrome DevTools protocol</a> used by <a href="https://github.com/GoogleChrome/puppeteer">Puppeteer</a>. Puppeteer does not use Selenium Server, and comes bundled with a recent version of <a href="https://www.howtogeek.com/202825/what%E2%80%99s-the-difference-between-chromium-and-chrome/">Chromium</a> intended for local use. If you wish to run Puppeteer in Docker, you can either use the <a href="https://codecept.io/docker/">CodeceptJS image</a> (that comes with Puppeteer and Nightmare) or follow the official guide to creating a <a href="https://github.com/GoogleChrome/puppeteer/blob/master/docs/troubleshooting.md#running-puppeteer-in-docker">custom image</a> that can support it.</p>
 
-<h2 id="toc_7">单向消息</h2>
+<h4 id="toc_6">Browser WebDrivers</h4>
 
-<p>RPC通常是一应一答，客户端可以同步等待响应，也可以提供回调接口等待结果通知。Bolt除了提供应答模式之外，还提供了oneway单向消息，这种消息服务器收到后不用回复，客户端发送请求之后就立即返回了也不需要等待结果。<br/>
-oneway消息一般用于不那么重要的日志类消息，它不能保证服务器一定能收到，所以此种业务消息应该是那种允许丢失的消息，形式上类似于UDP，它在牺牲可靠性的前提下能大幅提升消息的吞吐量。</p>
+<p>These are browser specific implementations of the WebDriver wire protocol, for example <a href="https://sites.google.com/a/chromium.org/chromedriver/home">ChromeDriver</a> for Chrome or <a href="https://github.com/mozilla/geckodriver">GeckoDriver</a> for Firefox. Each acts as a standalone <a href="https://github.com/SeleniumHQ/selenium/wiki/JsonWireProtocol#server">server</a> to receive requests from the <a href="https://github.com/SeleniumHQ/selenium/wiki/JsonWireProtocol#client">client</a> where the WebDriver API is being used (generally where the tests are held). In order to communicate with the intended browser, the correct WebDriver implementation <strong>must</strong> be installed.</p>
 
-<h2 id="toc_8">消息追踪</h2>
+<h4 id="toc_7">Selenium Server</h4>
 
-<p>Bolt提供了回调接口，方便监控系统可以对请求的调用状况进行分析。监控的客户端可以通过实现该接口，注册进RPC的客户端和服务器进行打点收集日志，然后发送到日志分析系统。</p>
+<p>If the tests are being run on the same machine that they are defined, then the client-side WebDriver API implementation used (described below) can communicate directly with the browser WebDriver and a <a href="https://www.seleniumhq.org/docs/03_webdriver.jsp">Selenium Server is not required</a>.</p>
 
-<pre><code>`interface Tracer {
-    void startRpc(SofaRequest request);
-    void serverReceived(SofaRequest request);
-    void serverSend(SofaRequest request, SofaResponse response, Throwable throwable);
-    void clientReceived(SofaRequest request, SofaResponse response, Throwable throwable);
-    ...
-}`
+<p>However, if tests are to be run on a different machine, whether in CI, in a <a href="https://www.guru99.com/introduction-to-selenium-grid.html">Selenium Grid</a> setup across multiple machines or virtual machines (VMs), on a remote testing platform such as <a href="https://www.browserstack.com/start#os=Windows&amp;os_version=7&amp;browser=IE&amp;browser_version=11.0&amp;zoom_to_fit=true&amp;full_screen=true&amp;resolution=responsive-mode&amp;url=https%3A%2F%2Fwww.skyscanner.net%2Ftransport%2Fflights%2Fedi%2Fde%3Fmigrate%3Dtrue&amp;speed=1">BrowserStack</a> or <a href="https://saucelabs.com/">SauceLabs</a>, or within Docker, then a Selenium Server is used. It acts as a proxy to forward requests from the client-side WebDriver API to the correct browser WebDriver, and passes back the response from the browser.</p>
+
+<p><img src="https://cdn-images-1.medium.com/max/1600/1*hmr8_c0WIcilEsMdfc-u-w.png" alt=""/>As we’ll see later, ‘machine’ can also be swapped for ‘container’</p>
+
+<h4 id="toc_8">Client-side WebDriver Implementation</h4>
+
+<p>A variety of tools implement the client-side WebDriver wire protocol. Here the protocol can be seen as an API to send requests to the browser via the layers described above. Many tools using the protocol are full frameworks, such as <a href="http://webdriver.io/guide/getstarted/modes.html">WebDriverIO</a>, that include their own test runners.</p>
+
+<p>Other implementations include: the <a href="https://www.swtestacademy.com/selenium-testing-selenium-history/">original</a> Selenium WebDriver, Protractor, Appium, and more.</p>
+
+<p>The libraries of each aim to achieve the same results, but with slightly different focuses and API implementations. This can be as basic as <a href="http://www.protractortest.org/#/tutorial">Protractor’s</a> <code>browser.get(url)</code> versus <a href="http://webdriver.io/api/protocol/url.html">WebDriverIO’s</a> <code>browser.url(url)</code>.</p>
+
+<h4 id="toc_9">One API to rule them all</h4>
+
+<p>As described at the beginning of this section, this is where CodeceptJS comes into play. It refers to other client-side WebDriver protocol (or other) implementations as “<a href="https://codecept.io/helpers/WebDriverIO/">helpers</a>”, and allows you to specify the helper you prefer while using one API language. CodeceptJS does not care which protocol is being used by the helper chosen.</p>
+
+<p>WebDriverIO, Puppeteer, Protractor, Nightmare and Appium are all current helpers that are available.</p>
+
+<p>In CodeceptJS the previous command would be <code>I.amOnPage(url)</code> no matter which helper was chosen. This means that if you wanted to switch out your backend to one of the other helpers supported, your tests would not have to be re-written. It is possible to <a href="https://codecept.io/helpers/">overwrite or add to</a> the default API methods via custom classes should you wish.</p>
+
+<h3 id="toc_10">Creating a test project</h3>
+
+<p>With so many layers this starts to sound complex, but between CodeceptJS’s initialisation script and Docker images, we can quickly have a working example.</p>
+
+<h4 id="toc_11">What we will produce</h4>
+
+<p><img src="https://cdn-images-1.medium.com/max/1600/1*wKrNJtA4OpbtHjhTRCsc5w.png" alt=""/>Two containers will be used for now, though this can be extended</p>
+
+<p>We will write a simple test in CodeceptJS, specifying a WebDriverIO backend helper, that will communicate with a remote browser within the standalone-firefox Docker container. We will use the Express “hello world” app, but this could be replaced by any app you wish.</p>
+
+<p><img src="https://cdn-images-1.medium.com/max/1600/1*XT4px3Nj57WeVjdv6Rt7mg.png" alt=""/>Soon only two commands will be needed to run the Dockerized app and all test suites</p>
+
+<p>Once we have everything set up, we will be able to run only two commands to run the tests:</p>
+
+<ul>
+<li>  <code>docker-compose up --build</code></li>
+<li>  <code>docker exec -it app npm run test:e2e</code></li>
+</ul>
+
+<p>By running in two side by side terminal windows, we can see the containers running and the test executing in real time.</p>
+
+<h4 id="toc_12"><u>Prerequisites</u></h4>
+
+<ul>
+<li>  <a href="https://store.docker.com/search?type=edition&amp;offering=community">Docker</a>, for whichever machine you are developing on.</li>
+<li>  You could also install <a href="https://nodesource.com/blog/installing-nodejs-tutorial-mac-os-x/">Node.js, &amp; npm</a> for local development and debugging, but these can also be fully run within Docker.</li>
+</ul>
+
+<h4 id="toc_13">File structure</h4>
+
+<p>We will be producing the file structure below. You can see a <a href="https://github.com/dominicfraser/CodeceptJSDockerExamples/tree/master/seleniumStandaloneFirefox">working example on Github</a>.</p>
+
+<pre><code>|-- .gitignore 
+|-- output/
+|-- Dockerfile
+|-- app.js
+|-- docker-compose.yml
+|-- package.json
+|-- package-lock.json
+|-- e2eTests/    
+|-- common_test.js    
+|-- docker.conf.js
 </code></pre>
 
-<h2 id="toc_9">总结</h2>
+<h4 id="toc_14">Dependencies</h4>
 
-<p>Bolt是一个成熟的比较复杂的RPC系统，这篇小文章只讲解了其中一部分，内部还有大量的实现细节有待去挖掘。</p>
+<p>First we will create our <a href="https://docs.nodejitsu.com/articles/getting-started/npm/what-is-the-file-package-json/">package.json</a> with Express as a dependency and CodeceptJS and WebDriverIO as dev dependencies.</p>
+
+<pre><code class="language-json">{
+  &quot;name&quot;: &quot;example-standalone-firefox&quot;,
+  &quot;version&quot;: &quot;1.0.0&quot;,
+  &quot;description&quot;: &quot;Example of Dockerizing E2E testing&quot;,
+  &quot;scripts&quot;: {
+    &quot;start&quot;: &quot;node app.js&quot;,
+    &quot;test:e2e&quot;: &quot;codeceptjs run --steps --verbose --config=./e2eTests/docker.conf.js&quot;
+  },
+  &quot;dependencies&quot;: {
+    &quot;express&quot;: &quot;^4.16.3&quot;
+  },
+  &quot;devDependencies&quot;: {
+    &quot;codeceptjs&quot;: &quot;^1.2.0&quot;,
+    &quot;webdriverio&quot;: &quot;^4.12.0&quot;
+  }
+}
+</code></pre>
+
+<p>We have also included two scripts, one to run the Express app we will add (<code>npm run start</code>), and one to run our CodeceptJS test (<code>npm run test:e2e</code>).</p>
+
+<pre><code class="language-json">codeceptjs run --steps --verbose --config=./e2eTests/docker.conf.js```
+
+`--steps` is great for showing output in the terminal as tests are running, while `--verbose` extends the level of detail even further. `--verbose` is likely not needed as standard, but is good for seeing how the example works. `--config` shows us the path to the backend configuration file, in this case kept in a separate `e2eTests` directory.
+
+#### Our app
+
+Next we need an app to test. For this we will run the Express “[hello world](https://expressjs.com/en/starter/hello-world.html)” app from `app.js`.
+
+```js
+const express = require(&#39;express&#39;);
+const app = express();
+app.get(&#39;/&#39;, (req, res) =&gt; res.send(&#39;Hello World!&#39;));
+const server = app.listen(3000, () =&gt; {
+    const port = server.address().port
+    console.log(`Example app listening on port ${port}`)
+ })
+ ```
+
+You can view this using `npm run start` and then going to `localhost:3000` in your browser.
+
+#### Test configuration
+
+CodeceptJS requires two files, a configuration file and a test file. The test file is extremely simple: it tests that the app can be accessed, saves a screenshot, and checks that the text “Hello” can be seen on the page.
+
+```js
+Feature(&#39;Basic test&#39;);
+Scenario(&#39;navigate to homepage&#39;, I =&gt; {
+  I.amOnPage(&#39;http://app:3000&#39;);
+  I.saveScreenshot(&#39;frontpageScreenshot.png&#39;);
+  I.see(&#39;Hello&#39;);
+});
+</code></pre>
+
+<p>The first indication that we will be using multiple Docker containers is shown here in the use of <code>app:3000</code> rather than <code>localhost:3000</code>. <code>localhost</code> can only be understood from within a single container. If a command is being run from another container (in this case by Firefox in our second Selenium container), then it needs a more definitive reference. We could use the first container’s IP address directly, but using the container’s name is much easier to read.</p>
+
+<p>In this case, <code>app</code> will be the name of the container that is running the app, so we can use <code>app:3000</code>. Don’t worry if you don’t follow this yet, seeing how our <code>docker-compose.yml</code> is structured will help.</p>
+
+<p>We also need a main <a href="https://codecept.io/configuration/">configuration</a> file. This can be written in JSON or JS, but here we use JS. Let’s look at this:</p>
+
+<pre><code class="language-js">exports.config = {
+  tests: &#39;./*_test.js&#39;,    // how to know which files are test files
+  output: &#39;./output&#39;,      // where to save screenshots
+  helpers: {
+   WebDriverIO: {               // which backend helper to use
+     url: &#39;http://app:3000&#39;,    // a base URL to start on
+     host: &#39;firefox-container&#39;, // identifying where selenium runs
+     browser: &#39;firefox&#39;,        // a series of [config options](https://codecept.io/helpers/WebDriverIO/)
+     smartWait: 5000,              
+     waitForTimeout: 10000,
+     desiredCapabilities: {        // for a demo app we do not want 
+         acceptInsecureCerts: true,   to worry about SSL certs
+     }
+   },
+  },
+  name: &#39;codeceptjs-docker&#39;,
+};
+</code></pre>
+
+<h4 id="toc_15">Setting up Docker</h4>
+
+<p>Referring back to the diagram above in the “What we will produce” section, we can see that we will be using two Docker containers. They must be aware of each other and be able to communicate. One will contain our app and tests, and one a Selenium Server, GeckoDriver, and Firefox, so that we do not need Firefox installed on our local machine.</p>
+
+<p><a href="https://docs.docker.com/compose/">Docker Compose</a> is a tool for “defining and running multi-container Docker applications.” It starts Docker containers with the <a href="https://docs.docker.com/compose/reference/overview/">command</a> <code>docker-compose up</code>, and stops them with <code>docker-compose down</code>. If a user defined Dockerfile is being used, <code>--build</code> is used to build it, either the first time <code>docker-compose up</code> is run, or if changes have been made to the Dockerfile. <code>docker-compose.yml</code> is the file that defines what the <code>up</code> command will do.</p>
+
+<p>Our next step is to create this <code>docker-compose.yml</code>. It is heavily dependant on indentation.</p>
+
+<pre><code class="language-yml">version: &quot;2&quot;        // which version of compose syntax you are using
+services:
+  app:
+    container_name: app  // explicit so we can use this for app:3000
+    build: .             // a self defined Dockerfile, see below
+    ports:               // exposes port 3000 (where express runs)
+      - &quot;3000:3000&quot;         to other containers, and to our local       
+    depends_on:             browser
+      - firefox-container
+    volumes:             // maps so changes to these can be seen
+      - ./e2eTests:/e2eTests
+      - ./package.json:/package.json
+      - ./package-lock.json:/package-lock.json
+      - ./.gitignore:/.gitignore
+      - ./app.js:/app.js
+  firefox-container:      // we&#39;ll look at this below
+    container_name: firefox-container
+    image: selenium/standalone-firefox:3.12.0-americium
+    volumes:
+      - /dev/shm:/dev/shm
+    ports:
+      - &quot;4444:4444&quot;
+</code></pre>
+
+<p>For our Selenium Server, drivers, and browser, we use a pre-defined image available from the public <a href="https://hub.docker.com/">Docker Hub</a> called <a href="https://hub.docker.com/r/selenium/standalone-firefox/">selenium/standalone-firefox</a>. We specify which version we want, 3.12.0-americium. If we did not specify this the latest image would be used by default (which is not a bad thing). As <a href="https://github.com/SeleniumHQ/docker-selenium#running-the-images">advised</a>, we configure it to share the host’s memory to prevent the browser being run from crashing, and expose port 4444, the default Selenium port. We also map this to port 4444 on our local machine, allowing us to visit <code>localhost:4444/wd/hub/static/resource/hub.html</code> in our browser.</p>
+
+<p>For our <code>app</code> container, we are not just using an image built by someone else, but are writing a Dockerfile to specify how our app is built. In the same way as the <code>selenium-firefox</code> container we expose a port, 3000 in this case, as that is where Express runs by default. By mapping this using <code>3000:3000</code> we are able to visit <code>localhost:3000</code> while the app is being run in Docker to see it in our local browser.</p>
+
+<p>Our Dockerfile uses the public <code>node:carbon</code> image as a base, sets the working directory, copies some files from our local machine to the container, runs <code>npm install</code> so that the container has all needed dependencies, and then runs the <code>npm start</code> command we specified.</p>
+
+<pre><code class="language-dockerfile">FROM node:carbon
+WORKDIR ./
+COPY ./package.json ./package-lock.json ./app.js ./
+RUN npm install
+CMD [ &quot;npm&quot;, &quot;start&quot; ]
+</code></pre>
+
+<p>This means that when <code>docker-compose up --build</code> is run, it will follow these steps, resulting in our app being ready and running on port 3000.</p>
+
+<p><strong>Note</strong>: The <code>--build</code> flag is only needed the first time <code>docker-compose up</code> is run, or if changes have been made to our Dockerfile or the steps executed within it. For example, if we added another dependency in our <code>package.json</code> then Docker would not know about it if we did not rebuild our image, as <code>npm install</code> is run within the Dockerfile.</p>
+
+<h4 id="toc_16">Running tests</h4>
+
+<p>We now have a simple app, tests written for it, and a Docker Compose configuration that will run both our app, a Selenium Server, and Firefox.</p>
+
+<p>We can start all of these using <code>docker-compose up --build</code>.</p>
+
+<p>To run commands <u>within</u> a running Docker container, <code>docker exec</code> can be used from another terminal window. The format is:</p>
+
+<p><code>docker exex &lt;flags&gt; &lt;container_name&gt; &lt;command&gt;</code></p>
+
+<p>The command we will use is:</p>
+
+<p><code>docker exec [-it](https://docs.docker.com/engine/reference/commandline/exec/#options) app npm run test:e2e</code></p>
+
+<p>We can now see our test running, and see each step as it is performed! From here we can extend what our test does, add additional tests (ending the filenames in <code>_test.js</code>), and use the same two commands to run them. No more setup is needed.</p>
+
+<p>You now have an easily extensible E2E testing setup that can be relied on to run the same way no matter which machine it is run on. It was written with API commands that can be easily understood by both developers and non-developers. All that remains now is to decide which behaviour your app should be capable of, and test it!</p>
+
+<h3 id="toc_17">Final words</h3>
+
+<p>SeleniumHQ also produces Docker <a href="https://github.com/SeleniumHQ/docker-selenium#standalone-chrome-and-firefox">images for Chrome testing</a>, and images for using Selenium Grid for running multiple instances of Chrome and Firefox at one time.</p>
+
+<p>CodeceptJS also has <a href="https://codecept.io/docker/">instructions for running CodeceptJS in Docker</a>, so that it does not need to be specified as a dependency in your app.</p>
+
+<p>A more technical, but still starter level description of how Docker works can be seen in the first section of the post I wrote titled <a href="https://medium.freecodecamp.org/amazon-ecs-terms-and-architecture-807d8c4960fd">_A beginner’s guide to Amazon’s Elastic Container Service_</a>_._</p>
+
+<p>Thanks for reading 😀</p>
+
+<h4 id="toc_18">Resources</h4>
+
+<ul>
+<li>  <a href="https://github.com/dominicfraser/CodeceptJSDockerExamples">Github</a> of CodeceptJS Docker examples</li>
+<li>  <a href="https://codecept.io/quickstart/">CodeceptJS QuickStart guide</a></li>
+<li>  <a href="https://www.youtube.com/watch?v=cDwNfAEo0lA">Selenium WebDriver Architecture</a></li>
+<li>  <a href="https://seleniumjava.com/2015/09/13/how-does-selenium-webdriver-work/">Selenium WebDriver Flow</a></li>
+</ul>
 
                         
                       </div>
@@ -210,10 +423,10 @@ oneway消息一般用于不那么重要的日志类消息，它不能保证服�
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/6/15</span>
+                    <span class="date">2018/7/2</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Microservice.html'>Microservice</a></span>
+          					    <span class="posted-in"><a href='Q&A.html'>Q&A</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -280,8 +493,6 @@ oneway消息一般用于不那么重要的日志类消息，它不能保证服�
 
       	<p class="cat-list">
         
-            <a href="Team.html"><strong>Team</strong></a>
-        
             <a href="Infra.html"><strong>Infra</strong></a>
         
             <a href="Coding.html"><strong>Coding</strong></a>
@@ -305,31 +516,31 @@ oneway消息一般用于不那么重要的日志类消息，它不能保证服�
 	      
 		      
 			      <li class="post">
-			        <a href="15301813999205.html">架构设计：负载均衡层设计方案（9）——负载均衡层总结下篇</a>
+			        <a href="15337171704262.html">Introduction to Testing with Spock and Groovy</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301813109409.html">架构设计：负载均衡层设计方案（8）——负载均衡层总结上篇</a>
+			        <a href="15336595358049.html">10 Excellent Ways to Secure Your Spring Boot Application</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301812452579.html">架构设计：负载均衡层设计方案（7）——LVS + Keepalived + Nginx安装及配置</a>
+			        <a href="15336592302916.html">First MicroProfile.io application using Java Module System</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301811967181.html">架构设计：负载均衡层设计方案（6）——Nginx + Keepalived构建高可用的负载层</a>
+			        <a href="15332186142588.html">Jenkins 的 Pipeline 脚本在美团餐饮 SaaS 中的实践</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15301811361753.html">架构设计：负载均衡层设计方案（5）——LVS单节点安装</a>
+			        <a href="15331749691571.html">基于ZooKeeper的分布式锁和队列</a>
 			      </li>
 		     
 		  
