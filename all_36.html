@@ -105,374 +105,206 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15301811967181.html">
+                <a class="clearlink" href="15325941121250.html">
                 
-                  <h1>架构设计：负载均衡层设计方案（6）——Nginx + Keepalived构建高可用的负载层</h1>
+                  <h1>Spring Boot Application as a Service</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://blog.csdn.net/yinwenjie/article/details/47130609">https://blog.csdn.net/yinwenjie/article/details/47130609</a></p>
+<p><a href="http://www.baeldung.com/spring-boot-app-as-a-service">http://www.baeldung.com/spring-boot-app-as-a-service</a></p>
 </blockquote>
 
-<h1 id="toc_0"><a></a>1、概述</h1>
+<h2 id="toc_0"><strong>1. Overview</strong></h2>
 
-<p>前两遍文章中，我们一直在说后文要介绍 Nginx + Keepalived 的搭建方式。这篇文章开始，我们就来兑现前文的承诺，后续的两篇文章我们将介绍 Nginx + Keepalived 和 LVS + Keepalived 搭建高可用的负载层系统。如果你还不了解 Nginx 和 LVS 的相关知识，请参见我之前的两篇文章《架构设计：负载均衡层设计方案（2）——Nginx 安装》（<a href="http://blog.csdn.net/yinwenjie/article/details/46620711">http://blog.csdn.net/yinwenjie/article/details/46620711</a>）、《架构设计：负载均衡层设计方案（4）——LVS 原理》（<a href="http://blog.csdn.net/yinwenjie/article/details/46845997">http://blog.csdn.net/yinwenjie/article/details/46845997</a>）</p>
+<p>This article explores some options of running Spring Boot applications as a service.</p>
 
-<h1 id="toc_1"><a></a>2、准备工作</h1>
+<p>Firstly, we are going to explain web applications’ packaging options and system services. In the subsequent sections, we explore different alternatives we have when setting up a service for both Linux as Windows based systems.</p>
 
-<h2 id="toc_2"><a></a>2.1、准备两台独立工作的 Nginx 系统</h2>
+<p>Finally, we will conclude with some references to additional sources of information.</p>
 
-<p>准备两台 Nginx 的主机，如果您不知道为什么需要准备两台，没关系，准备就行。保证两台 Nginx 主机能够被外网访问。在我这里，安装两台 Nginx 的虚拟机 IP 地址分别是：</p>
+<h2 id="toc_1"><strong>2. Project Setup and Build Instructions</strong></h2>
+
+<h3 id="toc_2"><strong>2.1. Packaging</strong></h3>
+
+<p>Web applications are traditionally packaged as a Web Application aRchives (WAR) and deployed to a web server.</p>
+
+<p>Spring Boot applications may be packaged both as WAR and JAR files. The latter embeds a web server within a JAR file, which allows you to run applications without the need of an installation and configuration of an application server.</p>
+
+<h3 id="toc_3"><strong>2.2. Maven Configuration</strong></h3>
+
+<p>Let’s start by defining the configuration of our <u>pom.xml</u> file:</p>
+
+<pre><code class="language-xml">&lt;packaging&gt;jar&lt;/packaging&gt;
+ 
+&lt;parent&gt;
+    &lt;groupId&gt;org.springframework.boot&lt;/groupId&gt;
+    &lt;artifactId&gt;spring-boot-starter-parent&lt;/artifactId&gt;
+    &lt;version&gt;1.4.0.RELEASE&lt;/version&gt;
+&lt;/parent&gt;
+ 
+&lt;dependencies&gt;
+    ....
+&lt;/dependencies&gt;
+ 
+&lt;build&gt;
+    &lt;plugins&gt;
+        &lt;plugin&gt;
+            &lt;groupId&gt;org.springframework.boot&lt;/groupId&gt;
+            &lt;artifactId&gt;spring-boot-maven-plugin&lt;/artifactId&gt;
+            &lt;configuration&gt;
+                &lt;executable&gt;true&lt;/executable&gt;
+            &lt;/configuration&gt;
+        &lt;/plugin&gt;
+    &lt;/plugins&gt;
+&lt;/build&gt;
+</code></pre>
+
+<p>The packaging must be set to <u>jar</u>. We are using the latest stable version of Spring Boot at the time of writing, but any version after 1.3 will be enough. You can find more information about available versions <a href="http://projects.spring.io/spring-boot/">here</a>.</p>
+
+<p>Notice that we have set the <u><executable></u> parameter to <u>true</u> for the <u>spring-boot-maven-plugin</u> artifact. This makes sure that a <u>MANIFEST.MF</u> file is added to the JAR package. This manifest contains a <u>Main-Class</u> entry that specifies which class defines the main method for your application.</p>
+
+<h3 id="toc_4"><strong>2.3. Building Your Application</strong></h3>
+
+<p>Run the following command inside your application’s root directory:</p>
+
+<pre><code>$ mvn clean package
+</code></pre>
+
+<p>The executable JAR file is now available in the <u>target</u> directory and we may start up the application by executing the following command on the command line:</p>
+
+<pre><code>$ java -jar your-app.jar
+</code></pre>
+
+<p>At this point, you still need to invoke the Java interpreter with the <u>-jar</u> option. There are many reasons why it would be preferable to have your app started by being able to invoke it as a service.</p>
+
+<h2 id="toc_5"><strong>3. On Linux</strong></h2>
+
+<p>In order to run a program as a background process, we could simply use the <u>nohup</u> Unix command, but this is not the preferred way either for various reasons. A good explanation is provided in this <a href="http://stackoverflow.com/questions/958249/whats-the-difference-between-nohup-and-a-daemon">thread</a>.</p>
+
+<p>Instead, we are going to <u>daemonize</u> our process. Under Linux, we may choose to configure a daemon either with a traditional <u>System V init</u> script or with a <u>Systemd</u> configuration file. The former is traditionally the most well-known option but is gradually being replaced by the latter.</p>
+
+<p>You may find more details on this difference <a href="http://www.tecmint.com/systemd-replaces-init-in-linux/">here</a>.</p>
+
+<p>For enhanced security we first create a specific user to run the service with and change the executable JAR file permissions accordingly:</p>
+
+<pre><code>$ sudo useradd baeldung
+$ sudo passwd baeldung
+$ sudo chown baeldung:baeldung your-app.jar
+$ sudo chmod 500 your-app.jar
+</code></pre>
+
+<h3 id="toc_6"><strong>3.1. System V Init</strong></h3>
+
+<p>A Spring Boot executable JAR file makes the service setup process very easy:</p>
+
+<pre><code>$ sudo ln -s /path/to/your-app.jar /etc/init.d/your-app
+</code></pre>
+
+<p>The above command creates a symbolic link to your executable JAR file. You must use the full path to your executable JAR file, otherwise, the symbolic link will not work properly. This link enables you to start the application as a service:</p>
+
+<pre><code>$ sudo service your-app start
+</code></pre>
+
+<p>The script supports the standard service <u>start</u>, <u>stop</u>, <u>restart</u> and <u>status</u> commands. Moreover:</p>
 
 <ul>
-<li>  Nginx VM1：192.168.61.129:80</li>
-<li>  Nginx VM2：192.168.61.130:80</li>
+<li>  it starts the services running under the user <u>baeldung</u> we have just created</li>
+<li>  it tracks the application’s process ID in <u>/var/run/your-app/your-app.pid</u></li>
+<li>  it writes console logs to <u>/var/log/your-app.log</u>, which you may want to check in case your application fails to start properly</li>
 </ul>
 
-<p>访问相关的地址，确保两台 Nginx 都是可用的：</p>
+<h3 id="toc_7"><strong>3.2. Systemd</strong></h3>
 
-<ul>
-<li><p>VM1：<br/>
-<img src="https://img-blog.csdn.net/20150730141119869" alt=""/></p></li>
-<li><p>VM2：<br/>
-<img src="https://img-blog.csdn.net/20150730141305112" alt=""/></p></li>
-</ul>
+<p>The <u>systemd</u> service setup is very simple as well. Firstly, we create a script named <u>your-app.service</u> using the following example and put it in <u>/etc/systemd/system</u> directory:</p>
 
-<p>Nginx 的安装在我的前文《架构设计：负载均衡层设计方案（2）——Nginx 安装》（<a href="http://blog.csdn.net/yinwenjie/article/details/46620711">http://blog.csdn.net/yinwenjie/article/details/46620711</a>）中已经进行了详细的讲解，所以这里的讲解就一笔带过。</p>
-
-<h2 id="toc_3"><a></a>2.2、再分别独立安装 Keepalived 系统</h2>
-
-<p>我们的目标是 “<strong>在一台工作的 Nginx 崩溃的情况下，系统能够检测到，并自动将请求切换到另外一台备份的 Nginx 服务器上</strong>”。所以，之前安装的两台 Nginx，一台是 Master 服务器是主要的工作服务器，另一台是备份服务器，在 Master 服务器出现问题后，由后者接替其工作。如下图所示（外网的请求使用一个由 keepalived 控制的虚拟的浮动 IP 进行访问）：</p>
-
-<p><img src="https://img-blog.csdn.net/20150730143806220" alt=""/></p>
-
-<ul>
-<li><p>请到 <a href="http://www.keepalived.org">www.keepalived.org</a> 下载 keepalived 的稳定版本，我下载的是 1.2.17 版本。</p></li>
-<li><p>解压，并且安装。注意，我在这里制定了 perfix 参数，指定安装位置，这是为了我自己便于管理。您在安装的时候，可以根据自己的情况来决定是不是加这个参数：</p>
-
-<pre><code>tar -zxvf keepalived-1.2.17.tar.gz
-
-./configure --perfix=/usr/keepalived-1.2.17
-
-make &amp; make install 
-
-</code></pre></li>
-<li><p>如果您不是安装到默认路径，那么为了将 keepalived 做成系统服务，您需要拷贝一些文件到指定的路径下，如下：</p>
-
-<pre><code>cp /usr/keepalived-1.2.17/etc/sysconfig/keepalived  /etc/sysconfig/keepalived
-
-cp /usr/keepalived-1.2.17/sbin/keepalived /usr/sbin/keepalived
-
-cp /usr/keepalived-1.2.17/etc/rc.d/init.d/keepalived  /etc/rc.d/init.d/keepalived
-
-mkdir /etc/keepalived
-
-cp /usr/keepalived-1.2.17/etc/keepalived/keepalived.conf /etc/keepalived/keepalived.conf
-
-</code></pre></li>
-<li><p>然后您可以将 keepalived 做成服务了：</p>
-
-<pre><code>/etc/rc.d/init.d/keepalived
-
-chkconfig keepalived on
-
-</code></pre></li>
-</ul>
-
-<h1 id="toc_4"><a></a>3、检查 Nginx 状态</h1>
-
-<p>在正式介绍 Nginx + Keepalived 的配置前，我们首先介绍一下如何检查 Nginx 的状态。是的，这是为下一小节做准备。<strong>我们只有能够正确检查 Nginx 的状态，才说得上在 Nginx 节点出现问题的情况下，切换到另一台 Nginx 上接替其工作</strong>。</p>
-
-<p>Nginx 为什么会停止响应呢？在我的工作经验中，无非有以下几种情况：</p>
-
-<ul>
-<li><p>Nginx 的所有进程被强行终止（或管理进程）。<br/>
-这种情况，是我们需要检查和切换的。无论什么情况下进程被终止了，如果它不能重启，我们就要切换到备机。</p></li>
-<li><p>Nginx 日志盘的挂载点崩溃或者磁盘写满。<br/>
-这个也是我们需要检查和切换的。</p></li>
-<li><p>Nginx 已经达到设置的最大连接数，暂时停止响应。<br/>
-这种情况下，我们不能进行备机切换，因为通过 VIP:192.168.61.100 连接过来的用户请求比较多（在我们优化参数后，可以达到 65535 / 4 的数量），一旦我们进行备机切换，这些用户请求将全部异常。这个问题的解决需要靠增加负载机器，而不是主备切换。</p></li>
-<li><p>Nginx 物理机异常关机。<br/>
-这个肯定是需要进行检查和切换的。</p></li>
-</ul>
-
-<p>我们来看一段 Linux 脚本：</p>
-
-<pre><code>#!/bin/sh
-if [ $(ps -C nginx --no-header | wc -l) -eq 0 ]; then
-    /usr/nginx-1.6.2/sbin/nginx
-fi
-
-sleep 2
-if [ $(ps -C nginx --no-header | wc -l) -eq 0 ]; then
-    service keepalived stop
-fi
-
+<pre><code class="language-service">[Unit]
+Description=A Spring Boot application
+After=syslog.target
+ 
+[Service]
+User=baeldung
+ExecStart=/path/to/your-app.jar SuccessExitStatus=143 
+ 
+[Install] 
+WantedBy=multi-user.target
 </code></pre>
 
-<p>我们大致讲解一下 “ps -C nginx –no-header | wc -l” 这个命令：<br/>
-- ps 这个命令用来进行 Linux 中进程相关的查询，-C 意思是按照进程名称进行查询。查询出来后的结果如下：</p>
+<p>Remember to modify <u>Description</u>, <u>User</u> and <u>ExecStart</u> fields to match your application. You should be able to execute the aforementioned standard service commands at this point as well.</p>
 
-<pre><code>[root@vm2 ~]# ps -C nginx
-  PID TTY          TIME CMD
- 3374 ?        00:00:00 nginx
- 3375 ?        00:00:01 nginx
+<p>As opposed to the <u>System V init</u> approach described in the previous section, the process ID file and console log file should be configured explicitly using appropriate fields in the service script. An exhaustive list of options may be found <a href="http://www.freedesktop.org/software/systemd/man/systemd.service.html">here</a>.</p>
 
+<h3 id="toc_8"><strong>3.3. Upstart</strong></h3>
+
+<p><a href="http://upstart.ubuntu.com/">Upstart</a> is an event-based service manager, a potential replacement for the <u>System V init</u> that offers more control on the behavior of the different daemons.</p>
+
+<p>The site has good <a href="http://upstart.ubuntu.com/getting-started.html">setup instructions</a> that should work for almost any Linux distribution. When using Ubuntu you probably have it installed and configured already (check if there are any jobs with a name starting with “upstart” in <u>/etc/init</u>).</p>
+
+<p>We create a job <u>your-app.conf</u> to start our Spring Boot application:</p>
+
+<pre><code># Place in /home/{user}/.config/upstart
+ 
+description &quot;Some Spring Boot application&quot;
+ 
+respawn # attempt service restart if stops abruptly
+ 
+exec java -jar /path/to/your-app.jar
 </code></pre>
 
-<ul>
-<li><p>如果要去掉统计出来的结果表的头部，那么要使用 –no-header 参数，加上参数后，查询结果如下：</p>
+<p>Now run “start your-app” and your service will start.</p>
 
-<pre><code>[root@vm2 ~]# ps -C nginx  --no-header
- 3374 ?        00:00:00 nginx
- 3375 ?        00:00:01 nginx
+<p>Upstart offers many job configuration options, you can find most of them <a href="http://upstart.ubuntu.com/cookbook/">here</a>.</p>
 
-</code></pre></li>
-<li><p>“|”，这是 Linux 中的管道流命令，将上一个命令的输出结果作为下一个命令的输入。</p></li>
-<li><p>wc 统计命令，-l 参数，代表按行数进行统计。所以整个命令的输出结果为：</p>
+<h2 id="toc_9"><strong>4. On Windows</strong></h2>
 
-<pre><code>[root@vm2 ~]# ps -C nginx --no-header | wc -l
-2
+<p>In this section, we present a couple of options that may be used to run a Java JAR as a Windows service.</p>
 
-</code></pre></li>
-</ul>
+<h3 id="toc_10"><strong>4.1. Windows Service Wrapper</strong></h3>
 
-<p>清楚了其中最关键的命令，我们再来讲解一下整个脚本的含义：<br/>
-第一个判断说明的是，如果当前 nginx 的进程数量 == 0，那么执行 nginx 的启动命令，试图重新启动 nginx；接下来等待 2 秒（这是为了给 nginx 一定的启动时间），然后再次查看 Nginx 的进程数量，如果仍然 == 0，那么停止这台机器的 keepalived 服务，以便备用的 Keepalived 节点检查到 Keepalived 已经停止这个事件，并将浮动 IP 切换到备用服务器上。</p>
+<p>Due to difficulties with the GPL license of the <a href="http://wrapper.tanukisoftware.org/doc/english/index.html">Java Service Wrapper</a> (see next subsection) in combination with e.g. the MIT license of Jenkins, the <a href="https://github.com/kohsuke/winsw">Windows Service Wrapper</a> project, also known as <u>winsw</u>, was conceived.</p>
 
-<p><strong>注意，这段脚本是和我机器上的 Nginx 安装路径、Keepalived 服务的状态有关的，您如果要用的话，请进行相应的更改</strong>。</p>
+<p><u>Winsw</u> provides programmatic means to install/uninstall/start/stop a service. In addition, it may be used to run any kind of executable as a service under Windows, whereas Java Service Wrapper, as implied by its name, only supports Java applications.</p>
 
-<h1 id="toc_5"><a></a>4、Nginx + Keepalived 最简配置</h1>
+<p>First, you download the binaries <a href="http://repo.jenkins-ci.org/releases/com/sun/winsw/winsw/">here</a>. Next, the configuration file that defines our Windows service, <u>MyApp.xml</u>, should look like this:</p>
 
-<h2 id="toc_6"><a></a>4.1、请再次确认前提</h2>
-
-<p>（首先，为了保证不会出现额外的问题，请首先关闭防火墙，当然正式环境里面，防火墙不能关闭）</p>
-
-<p>外网进行 Nginx 访问的浮动 IP：192.168.61.100</p>
-
-<ul>
-<li><p>我们将 192.168.61.129 这台服务器上运行的 Nginx 作为主要的 Nginx，其上的 keepalived 服务我们设置成 Master 方式。</p></li>
-<li><p>我们将 192.168.61.129 这台服务器上运行的 Nginx 作为备用的 Nginx 服务，其上的 keepalived 服务我们设置为 Backup 方式。</p></li>
-</ul>
-
-<h2 id="toc_7"><a></a>4.2、正式开始设置</h2>
-
-<p>注意，经过安装，您的 keepalived 配置文件的位置在 “/etc/keepalived/keepalived.conf”（如果没有，请创建一个，但是经过之前的步骤，这个位置肯定是有文件的，如果没有可能是之前您的步骤出现了什么问题）。</p>
-
-<h2 id="toc_8"><a></a>4.2.1、设置 192.168.61.129 上的 MASTER</h2>
-
-<p>我们先来看看 192.168.61.129 上的原始 ip 信息：</p>
-
-<p><img src="https://img-blog.csdn.net/20150730181017823" alt=""/></p>
-
-<p>注意，这个 129 机器上的网卡设备号是 eth1，而不是 eth0，这个参数我们将在配置 keepalived 的时候使用到。</p>
-
-<p>下面是 129 上 keepalived 的最简配置：</p>
-
-<pre><code>! Configuration File for keepalived
-# global setting , notify email setting
-global_defs {
-   #存在于同一个网段中，一组keepalived的各个节点都有不同的名字
-   #在全局设置中，我们还可以设置管理员的email信息等。
-   router_id LVS_V1
-}
-
-#这个是我们在上一小结讲到的nginx检查脚本，我们保存在这个文件中（注意文件权限）
-vrrp_script chknginx {
-    script &quot;/usr/keepalived-1.2.17/bin/checknginx.sh&quot;
-    #每10秒钟，检查一次
-    interval 10
-}
-
-#keepalived实例设置，是最重要的设置信息
-vrrp_instance VI_1 {
-    #state状态MASTER表示是主要工作节点。
-    #一个keepalived组中，最多只有一个MASTER节点，当然也可以没有
-    state MASTER
-    #实例所绑定的网卡设备，我的网卡设备是eth1。您按照您自己的来
-    interface eth1
-    #同一个keepalived组，节点的设置必须一样，这样才会被识别
-    virtual_router_id 52
-    #节点优先级，BACKUP的优先级一定要比MASTER的优先级低
-    priority 100
-    #组播信息发送间隔，两个节点设置必须一样
-    advert_int 1
-    #实际的eth1上的固定ip地址
-    mcast_src_ip=192.168.61.129
-    #验证信息，只有验证信息相同，才能被加入到一个组中。
-    authentication {
-        auth_type PASS
-        auth_pass 1111
-    }
-    #虚拟地址和绑定的端口，如果有多个，就绑定多个
-    #dev 是指定浮动IP要绑定的网卡设备号
-    virtual_ipaddress {
-        192.168.61.100 dev eth1
-    }
-
-    #设置的检查脚本
-    #关联上方的“vrrp_script chknginx”
-    track_script {
-        chknginx
-    }
-}
-
+<pre><code class="language-xml">&lt;service&gt;
+    &lt;id&gt;MyApp&lt;/id&gt;
+    &lt;name&gt;MyApp&lt;/name&gt;
+    &lt;description&gt;This runs Spring Boot as a Service.&lt;/description&gt;
+    &lt;env name=&quot;MYAPP_HOME&quot; value=&quot;%BASE%&quot;/&gt;
+    &lt;executable&gt;java&lt;/executable&gt;
+    &lt;arguments&gt;-Xmx256m -jar &quot;%BASE%\MyApp.jar&quot;&lt;/arguments&gt;
+    &lt;logmode&gt;rotate&lt;/logmode&gt;
+&lt;/service&gt;
 </code></pre>
 
-<h2 id="toc_9"><a></a>4.2.2、设置 192.168.61.130 上的 BACKUP</h2>
+<p>Finally, you have to rename the <u>winsw.exe</u> to <u>MyApp.exe</u> so that its name matches with the <u>MyApp.xml</u> configuration file. Thereafter you can install the service like so:</p>
 
-<p>再来看看 192.168.61.130 这个备用节点上 keepalived 的设置：</p>
-
-<pre><code>! Configuration File for keepalived
-# global setting , notify email setting
-global_defs {
-   #这里和master节点不同
-   router_id LVS_V2
-}
-
-#check nginx
-vrrp_script chknginx {
-    script &quot;/usr/keepalived-1.2.17/bin/checknginx.sh&quot;
-    interval 10
-}
-
-# instance setting
-vrrp_instance VI_1 {
-    # 这里和Master节点不一样
-    state BACKUP
-    interface eth1
-    # 这里一定是一样的
-    virtual_router_id 52
-    # 这里的优先级比Master节点低
-    priority 99
-    advert_int 1
-    # 这里和Master节点不一样
-    mcast_src_ip=192.168.61.130
-    authentication {
-        auth_type PASS
-        auth_pass 1111
-    }
-    virtual_ipaddress {
-        192.168.61.100 dev eth1
-    }
-
-    track_script {
-        chknginx
-    }
-}
-
+<pre><code>$ MyApp.exe install
 </code></pre>
 
-<h2 id="toc_10"><a></a>4.3、启动主节点和备用节点</h2>
+<p>Similarly, you may use <u>uninstall</u>, <u>start</u>, <u>stop</u>, etc.</p>
 
-<p>以上配置中请注意几个关键点：</p>
+<h3 id="toc_11"><strong>4.2. Java Service Wrapper</strong></h3>
 
-<ul>
-<li>  注意 nginx 状态检查的脚本的位置，根据自己创建文件的位置不一样，脚本检查的指定位置也不一样</li>
-<li>  注意优先级，MASTER 节点的优先级一定要高于所有的 BACKUP 节点。</li>
-<li>  <strong>注意局域网的组播地址，一定要可用</strong>。局域网内所有 keepalived 节点都是利用组播方式寻找对方。</li>
-<li>  谁说 BACKUP 节点只能有一个！？</li>
-<li>  最后，keepalived 一定要注册成服务形式，您可以想象上面所有脚本、配置、命令如果重启后再来一次，会是什么情况。</li>
-</ul>
+<p>In case you don’t mind the GPL licensing of the <a href="http://wrapper.tanukisoftware.org/doc/english/index.html">Java Service Wrapper</a> project, this alternative may address your needs to configure your JAR file as a Windows service equally well. Basically, the Java Service Wrapper also requires you to specify in a configuration file which specifies how to run your process as a service under Windows.</p>
 
-<p>接下来，我们要开始启动 Master 节点和 Backup 节点了，为了准确的查看日志状态，您需要观察系统日志。系统日志所在的位置：</p>
+<p><a href="http://edn.embarcadero.com/article/32068">This article</a> explains in a very detailed way how to set up such an execution of a JAR file as a service under Windows, so we there’s no need to repeat the info.</p>
 
-<pre><code>tail -f /var/log/messages
+<h2 id="toc_12"><strong>5. Additional References</strong></h2>
 
-</code></pre>
+<p>Spring Boot applications may also be started as Windows service using <a href="http://commons.apache.org/proper/commons-daemon/procrun.html">Procrun</a> of the <a href="http://commons.apache.org/daemon/index.html">Apache Commons Daemon</a> project. Procrun is a set of applications that allow Windows users to wrap Java applications as Windows services. Such a service may be set to start automatically when the machine boots and will continue to run without any user being logged on.</p>
 
-<p>先启动 Master 节点：</p>
+<p>More details on starting Spring Boot applications under Unix may be found <a href="http://docs.spring.io/spring-boot/docs/current/reference/html/deployment-install.html">here</a>. There are also detailed instructions on how to modify <a href="https://access.redhat.com/documentation/en-US/Red_Hat_Enterprise_Linux/7/html/System_Administrators_Guide/sect-Managing_Services_with_systemd-Unit_Files.html">Systemd unit files for Redhat</a> based systems. Finally</p>
 
-<pre><code>service keepalived start
+<p>Finally, <a href="https://coderwall.com/p/ssuaxa/how-to-make-a-jar-file-linux-executable">this quick howto</a> describes how to incorporate a Bash script into your JAR file, so that it becomes an executable itself!</p>
 
-</code></pre>
+<h2 id="toc_13"><strong>6. Conclusion</strong></h2>
 
-<p>再启动 Backup 节点：</p>
+<p>Services allow you to manage your application state very efficiently and, as we have seen, service setup for Spring Boot applications is now easier than ever.</p>
 
-<pre><code>service keepalived start
-
-</code></pre>
-
-<p><strong>如果设置和启动都是成功的，您不会在日志信息中收到任何的 keepalived 报错信息</strong>。接下来您就可以使用 192.168.61.100 这个 IP 访问 Nginx 了：</p>
-
-<p><img src="https://img-blog.csdn.net/20150730210724952" alt=""/></p>
-
-<p>另外，这个绑定在 192.168.61.129 上的浮动 ip：192.168.61.100，您通过 ipconfig 命令一般是看不到的，要使用 ip addr 命令进行查看：</p>
-
-<p><img src="https://img-blog.csdn.net/20150730211138410" alt=""/></p>
-
-<p>为了试验，我们主动停止 Master 节点上的 keepalived 服务（注意，杀 Nginx 进程不起作用，因为我们的检查脚本会试图重新启动 Nginx 进程），接下来我们可以看到浮动 IP 漂移到了 130 备机上：</p>
-
-<p><img src="https://img-blog.csdn.net/20150730211530195" alt=""/></p>
-
-<h1 id="toc_11"><a></a>5、Nginx + Keepalived 非抢占模式</h1>
-
-<p>通过第 4 节的详细介绍，相信您对 Nginx + Keepalived 的安装方式有了一个明确的理解。keepalived 的切换可以是自动的，但是却做不到毫秒级别，他怎么都需要几秒钟的时间进行切换。</p>
-
-<p>这就有一个问题，虽然在主节点出现问题我们转向备份节点时，这个延时无可避免，但是在我们修复主节点后，实际上并没有必要再马上做一次切换，所以 Keepalived 提供了一种非抢占模式，来满足这个要求。</p>
-
-<p>下面我们就来介绍一下 Keepalived 的非抢占模式的配置（无 MASTER 节点，全部依据优先级确定哪个节点进行工作）：</p>
-
-<h2 id="toc_12"><a></a>5.1、原来主节点的配置改动</h2>
-
-<pre><code>! Configuration File for keepalived
-# global setting , notify email setting
-global_defs {
-   router_id LVS_V1
-}
-
-vrrp_script chknginx {
-    script &quot;/usr/keepalived-1.2.17/bin/checknginx.sh&quot;
-    interval 10
-    # 一旦节点失效，节点的优先级就减少2
-    # 有多少个keepalived节点，就填写多少数量。
-    # 这样保证这个节点的优先级比其他节点都低
-    weight -2
-    # fall 表示多少次检查失败，就算节点失效。默认1
-    #fall 1
-}
-
-vrrp_instance VI_1 {
-    #state状态都是BACKUP表示是主要工作节点。
-    state BACKUP
-    interface eth1
-    virtual_router_id 52
-    # 这个关键配置项，设置为“非抢占”模式
-    nopreempt
-    # 每个节点的优先级一定要不一样
-    priority 100
-    advert_int 1
-    mcast_src_ip=192.168.61.129
-    authentication {
-        auth_type PASS
-        auth_pass 1111
-    }
-    #虚拟地址和绑定的端口，如果有多个，就绑定多个
-    #dev 是指定浮动IP要绑定的网卡设备号
-    virtual_ipaddress {
-        192.168.61.100 dev eth1
-    }
-
-    #设置的检查脚本
-    #关联上方的“vrrp_script chknginx”
-    track_script {
-        chknginx
-    }
-}
-
-</code></pre>
-
-<p>原来的主节点设置更改完成。</p>
-
-<h2 id="toc_13"><a></a>5.2、原来备份节点的配置改动</h2>
-
-<p>加入 “非抢占” 模式的关键字、更改一个确定的优先级，设置检查失败后优先级的递减量，就行了。</p>
-
-<h1 id="toc_14"><a></a>6、后文介绍</h1>
-
-<p>这是我 8 月份的首篇文章，后文我们将介绍 LVS + Keepalived + Nginx 的安装和配置方式。注意，LVS 被 Keepalived 后，就没有必要在对 Nginx 做 Keepalived 了。</p>
+<p>Just remember to follow the important and simple security measures on user permissions to run your service.</p>
 
                         
                       </div>
@@ -481,10 +313,10 @@ vrrp_instance VI_1 {
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/6/28</span>
+                    <span class="date">2018/7/26</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Network.html'>Network</a></span>
+          					    <span class="posted-in"><a href='Java.html'>Java</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -574,31 +406,31 @@ vrrp_instance VI_1 {
 	      
 		      
 			      <li class="post">
-			        <a href="15337171704262.html">Introduction to Testing with Spock and Groovy</a>
+			        <a href="15358820607055.html">Java 8 Concurrency Tutorial: Atomic Variables and ConcurrentMap</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15336595358049.html">10 Excellent Ways to Secure Your Spring Boot Application</a>
+			        <a href="15358774987730.html">Java 8 Concurrency Tutorial: Synchronization and Locks</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15336592302916.html">First MicroProfile.io application using Java Module System</a>
+			        <a href="15358757119900.html">Java 8 Concurrency Tutorial: Threads and Executors</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15332186142588.html">Jenkins 的 Pipeline 脚本在美团餐饮 SaaS 中的实践</a>
+			        <a href="15358756631902.html">Java 8 Stream Tutorial</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15331749691571.html">基于ZooKeeper的分布式锁和队列</a>
+			        <a href="15358753472382.html">Migrate Maven Projects to Java 11</a>
 			      </li>
 		     
 		  

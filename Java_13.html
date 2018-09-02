@@ -105,383 +105,277 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15277824520436.html">
+                <a class="clearlink" href="15309739332194.html">
                 
-                  <h1>【RPC 专栏】深入理解 RPC 之动态代理篇</h1>
+                  <h1>Spring WebFlux and rxjava2-jdbc</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p>原文地址 <a href="https://www.cnkirito.moe/rpc-dynamic-proxy/">https://www.cnkirito.moe/rpc-dynamic-proxy/</a></p>
+<p><a href="https://medium.com/netifi/spring-webflux-and-rxjava2-jdbc-83a94e71ba04">https://medium.com/netifi/spring-webflux-and-rxjava2-jdbc-83a94e71ba04</a></p>
 </blockquote>
 
-<p>提到 JAVA 中的动态代理，大多数人都不会对 JDK 动态代理感到陌生，Proxy，InvocationHandler 等类都是 J2SE 中的基础概念。动态代理发生在服务调用方/客户端，RPC 框架需要解决的一个问题是：像调用本地接口一样调用远程的接口。于是如何组装数据报文，经过网络传输发送至服务提供方，屏蔽远程接口调用的细节，便是动态代理需要做的工作了。RPC 框架中的代理层往往是单独的一层，以方便替换代理方式（如 motan 代理层位于<code>com.weibo.api.motan.proxy</code> ，dubbo代理层位于 <code>com.alibaba.dubbo.common.bytecode</code> ）。</p>
+<p>Spring <a href="https://docs.spring.io/spring/docs/current/spring-framework-reference/web-reactive.html#spring-webflux">WebFlux</a> is a great way to create a non-blocking REST application. One issue that you run into when start working with WebFlux is JDBC. JDBC is blocking. New school databases like <a href="http://cassandra.apache.org/">Cassandra</a> or <a href="https://www.couchbase.com/">Couchbase</a> have non-blocking drivers. In Couchbase’s case its driver uses <a href="https://github.com/ReactiveX/RxJava">RXJava</a>. NoSQL databases are great, but you can’t always use one for various reasons. There is some effort going into creating asynchronous drivers for databases, as well as Oracle’s effort to create <a href="https://blogs.oracle.com/java/jdbc-next:-a-new-asynchronous-api-for-connecting-to-a-database">ADBA</a>. Unfortunately, these are early days, and if you want to talk to a SQL database on the JVM you’re stuck with a blocking driver. This is a problem when you’re building a non-blocking application with Spring WebFlux . Luckily reactor-core and rxjava2 both implement <a href="http://www.reactive-streams.org/">ReactiveStreams</a>.</p>
 
-<p>实现动态代理的方案有下列几种：</p>
+<p>This means that you can use David Moten’s <a href="https://github.com/davidmoten/rxjava2-jdbc">rxjava2-jdbc</a> library. It takes a normal JDBC driver and allows you to interact with it in a way that won’t block your application. It does this by scheduling potentially blocking work on different threads. Additionally, it has DSL that lets you model your SQL statements and results into streams. This makes integrating into your reactive application a snap.</p>
+
+<p>Rxjava2-jdbc also provides non-blocking connection pooling. Normally in a blocking application threads are blocked until a connection is available to make a query. This is a problem for a non-blocking application as you will quickly exhaust all database connection threads and turn your wonderful non-blocking application into a clunky blocking application. In rxjava2-jdbc its connection pool returns a <a href="http://reactivex.io/RxJava/javadoc/io/reactivex/Single.html">Single</a> that is controlled by the connection pool. This means that instead of assigning threads to each query, queries subscribe to the connection pool and receive a connection when one is available — no blocked threads!</p>
+
+<p>Nothing is better than an example, so I created one that uses Spring WebFlux, rxjava2-jdbc, and H2. The example is a simple REST application that uses an embedded H2 database. It can be found <a href="https://github.com/netifi/webflux-rxjava2-jdbc-example">here</a>. The example has two objects. The first is an Employee object which contains information about the employee including: first name, last name, and department id. The second object is the Department object, which contains information about different departments. The application has restful endpoints for basic create, read, delete and list operations for the Employee and list operations for Department.</p>
+
+<h4 id="toc_0">Running the Example</h4>
+
+<p>Running the example is simple and can be done with following command:</p>
+
+<pre><code class="language-sh">./gradlew clean run
+</code></pre>
+
+<p>This command will configure the database and start the WebFlux application using Spring Boot. The example doesn’t need a servlet container to run, and instead uses <a href="http://netty.io">Netty</a> to serve traffic. If you want to test and see if the example is up and running you can run the following curl command:</p>
+
+<pre><code class="language-sh">curl localhost:8080/employees
+</code></pre>
+
+<p>You should see a JSON employee list if it’s running properly.</p>
+
+<h4 id="toc_1">Routing Requests</h4>
+
+<p>Let’s take look inside the application and see what it’s doing. The first thing to take a look at is the <u>EmployeeRouter</u> class. This class routes incoming HTTP requests to the appropriate handler based on URL and HTTP method.</p>
+
+<p><a href="https://gist.github.com/robertroeser/e7ce97c4fc7d69de449925e7a3f2b7e1#file-employeerouter-java">EmployeeRouter.java hosted with ❤ by GitHub</a></p>
+
+<pre><code class="language-java">@Configuration
+public class EmployeeRouter {
+  @Bean
+  public RouterFunction&lt;ServerResponse&gt; route(EmployeeHandler handler) {
+    return RouterFunctions.route(
+            GET(&quot;/employees&quot;).and(RequestPredicates.accept(MediaType.APPLICATION_JSON)),
+            handler::getAllEmployees)
+        .andRoute(
+            GET(&quot;/employee/fn/{fn}/ln/{ln}&quot;)
+                .and(RequestPredicates.accept(MediaType.APPLICATION_JSON)),
+            handler::getEmployee)
+        .andRoute(
+            PUT(&quot;/employee&quot;).and(RequestPredicates.accept(MediaType.APPLICATION_JSON)),
+            handler::createNewEmployee)
+        .andRoute(
+            DELETE(&quot;/employee/id/{id}&quot;).and(RequestPredicates.accept(MediaType.APPLICATION_JSON)),
+            handler::deleteEmployee)
+        .andRoute(
+            GET(&quot;/departments&quot;).and(RequestPredicates.accept(MediaType.APPLICATION_JSON)),
+            handler::getAllDepartments);
+  }
+}
+</code></pre>
+
+<p>In Spring WebFlux because it’s non-blocking these handlers must return a Mono<T>.</p>
+
+<h4 id="toc_2">Handling Requests</h4>
+
+<p>The next class to take a look at is the class that is handling the requests, <u>EmployeeHandler</u>.</p>
+
+<p><a href="https://gist.github.com/robertroeser/5d4ab5386e5b2e7301c33551ead8ada8#file-employeehandler-java">EmployeeHandler.java hosted with ❤ by GitHub</a></p>
+
+<pre><code class="language-java">@Component
+public class EmployeeHandler {
+  private final EmployeeRepository repository;
+
+  public EmployeeHandler(EmployeeRepository repository) {
+    this.repository = repository;
+  }
+
+  public Mono&lt;ServerResponse&gt; getAllEmployees(ServerRequest request) {
+    Flux&lt;Employee&gt; employees = repository.getAllEmployees();
+    return ServerResponse.ok()
+        .contentType(MediaType.APPLICATION_JSON)
+        .body(employees, Employee.class);
+  }
+
+  public Mono&lt;ServerResponse&gt; getEmployee(ServerRequest request) {
+    String firstName = request.pathVariable(&quot;fn&quot;);
+    String lastName = request.pathVariable(&quot;ln&quot;);
+    Mono&lt;Employee&gt; employee = repository.getEmployee(firstName, lastName);
+
+    return ServerResponse.ok()
+        .contentType(MediaType.APPLICATION_JSON)
+        .body(employee, Employee.class);
+  }
+
+  public Mono&lt;ServerResponse&gt; createNewEmployee(ServerRequest request) {
+    Mono&lt;Employee&gt; employeeMono = request.bodyToMono(Employee.class);
+    Mono&lt;Employee&gt; employee = repository.createNewEmployee(employeeMono);
+
+    return ServerResponse.ok()
+        .contentType(MediaType.APPLICATION_JSON)
+        .body(employee, Employee.class);
+  }
+
+  public Mono&lt;ServerResponse&gt; deleteEmployee(ServerRequest request) {
+    String id = request.pathVariable(&quot;id&quot;);
+    Mono&lt;Void&gt; employee = repository.deleteEmployee(id);
+
+    return ServerResponse.ok().contentType(MediaType.APPLICATION_JSON).build(employee);
+  }
+
+  public Mono&lt;ServerResponse&gt; getAllDepartments(ServerRequest request) {
+    Flux&lt;Department&gt; allDepartments = repository.getAllDepartments();
+    return ServerResponse.ok()
+        .contentType(MediaType.APPLICATION_JSON)
+        .body(allDepartments, Department.class);
+  }
+}
+</code></pre>
+
+<p>This is the class that is responsible for handling incoming requests. Each handle method returns a <u>Mono<ServerResponse></u>. The ServerResponse object has a builder that is used to create the response, and has methods that take Fluxes and Monos for responses. The <u>ServerResponse</u> object will also automatically serialize your results to JSON. Additionally, if you return a stream of responses, WebFlux will automatically turn the response into a JSON list. You can can see this in the <u>getAllEmployees</u> and <u>getAllDepoartment</u> methods. A method to look closer at is the <u>deleteEmployee</u> method. The <u>deleteEmployee</u> method is a little different then the other methods. You’ll notice that most methods use the <u>body</u> method to create a response. The <u>deleteEmployee</u> doesn’t have a body so it uses the <u>build</u> method instead which takes a Mono<Void>.</p>
+
+<h4 id="toc_3">Interacting with the Database</h4>
+
+<p>To create our responses we need to get the information from our database. The object that takes care of that is the the <u>EmployeeRepository</u> which is being injected into the handler. This is normally where things start to fall apart because you’re accessing a blocking database. In our case though we’re using rxjava2-jdbc and it’s no longer an issue. While this does turn a JDBC driver into a non-blocking driver and deals with the difficulties of scheduling potentially blocking work off the event loop, this isn’t as efficient as a purely non-blocking approach. However, it is sufficient for all but the highest throughput applications. Lets take a look at the <u>EmployeeRepository</u> class:</p>
+
+<p><a href="https://gist.github.com/robertroeser/580116df0045187e4850bd4016704ce1#file-employeerepository-java">EmployeeRepository.java hosted with ❤ by GitHub</a></p>
+
+<pre><code class="language-java">@Component
+public class EmployeeRepository {
+  private Database db;
+
+  public EmployeeRepository() throws Exception {
+    Connection connection = DriverManager.getConnection(&quot;jdbc:h2:./build/mydatabase&quot;, &quot;sa&quot;, &quot;sa&quot;);
+    NonBlockingConnectionPool pool =
+        Pools.nonBlocking()
+            .maxPoolSize(Runtime.getRuntime().availableProcessors() * 5)
+            .connectionProvider(ConnectionProvider.from(connection))
+            .build();
+
+    this.db = Database.from(pool);
+  }
+
+  Flux&lt;Employee&gt; getAllEmployees() {
+    String sql = &quot;SELECT * FROM employee e JOIN department d ON e.department_id = d.department_id&quot;;
+
+    Flowable&lt;Employee&gt; employeeFlowable =
+        db.select(sql)
+            .get(
+                rs -&gt; {
+                  Employee employee = new Employee();
+                  employee.setId(rs.getInt(&quot;employee_id&quot;));
+                  employee.setFirstName(rs.getString(&quot;employee_firstname&quot;));
+                  employee.setLastName(rs.getString(&quot;employee_lastname&quot;));
+                  employee.setDepartment(rs.getString(&quot;department_name&quot;));
+
+                  return employee;
+                });
+
+    return Flux.from(employeeFlowable);
+  }
+
+  Mono&lt;Employee&gt; getEmployee(String firstName, String lastName) {
+    String sql =
+        &quot;SELECT employee_id, employee_firstname, employee_lastname, department_name FROM employee e &quot;
+            + &quot;JOIN department d ON e.department_id = d.department_id &quot;
+            + &quot;WHERE employee_firstname = ? AND &quot;
+            + &quot;employee_lastname = ?&quot;;
+
+    Flowable&lt;Employee&gt; employeeFlowable =
+        db.select(sql)
+            .parameters(firstName, lastName)
+            .get(
+                rs -&gt; {
+                  Employee employee = new Employee();
+                  employee.setId(rs.getInt(&quot;employee_id&quot;));
+                  employee.setFirstName(rs.getString(&quot;employee_firstname&quot;));
+                  employee.setLastName(rs.getString(&quot;employee_lastname&quot;));
+                  employee.setDepartment(rs.getString(&quot;department_name&quot;));
+
+                  return employee;
+                });
+
+    return Mono.from(employeeFlowable);
+  }
+
+  Mono&lt;Employee&gt; createNewEmployee(Mono&lt;Employee&gt; employeeMono) {
+
+    String createSql =
+        &quot;INSERT INTO employee (employee_firstname, employee_lastname, department_id) VALUES (?, ?, ?)&quot;;
+    String selectDepartmentId = &quot;SELECT department_id from department where department_name = ?&quot;;
+    String selectSql =
+        &quot;SELECT employee_id, employee_firstname, employee_lastname, department_name FROM employee e &quot;
+            + &quot;JOIN department d ON e.department_id = d.department_id &quot;
+            + &quot;WHERE employee_id = ?&quot;;
+
+    return employeeMono.flatMap(
+        newEmployee -&gt; {
+          Flowable&lt;Integer&gt; employeeIds =
+              db.select(selectDepartmentId)
+                  .parameters(newEmployee.getDepartment())
+                  .getAs(Integer.class)
+                  .flatMap(
+                      departmentId -&gt;
+                          db.update(createSql)
+                              .parameters(
+                                  newEmployee.getFirstName(),
+                                  newEmployee.getLastName(),
+                                  departmentId)
+                              .returnGeneratedKeys()
+                              .getAs(Integer.class));
+
+          Flowable&lt;Employee&gt; employeeFlowable =
+              db.select(selectSql)
+                  .parameterStream(employeeIds)
+                  .get(
+                      rs -&gt; {
+                        Employee employee = new Employee();
+                        employee.setId(rs.getInt(&quot;employee_id&quot;));
+                        employee.setFirstName(rs.getString(&quot;employee_firstname&quot;));
+                        employee.setLastName(rs.getString(&quot;employee_lastname&quot;));
+                        employee.setDepartment(rs.getString(&quot;department_name&quot;));
+
+                        return employee;
+                      });
+
+          return Mono.from(employeeFlowable);
+        });
+  }
+
+  Mono&lt;Void&gt; deleteEmployee(String id) {
+    String sql = &quot;DELETE FROM employee WHERE employee_id = ?&quot;;
+    Flowable&lt;Integer&gt; counts = db.update(sql).parameter(id).counts();
+    return Flux.from(counts).then();
+  }
+
+  Flux&lt;Department&gt; getAllDepartments() {
+    return Flux.from(db.select(Department.class).get());
+  }
+}
+</code></pre>
+
+<p>The first thing to look at here is the constructor. The main class in rxjava2-jdbc is the Database class. This is what you use to interact with the database and run queries. Before you can do that you need to create a connection to the database. For our example, we’re creating a connection to an H2 database. Many databases allow you to pass in user credentials and other information in there connection string. If they do then you can use just create a database like so:</p>
+
+<pre><code class="language-java">Database db = Database.from(“&lt;connection_string”&gt;, &lt;pool_size&gt;);
+</code></pre>
+
+<p>However, H2 doesn’t allow you to do this, so you need to create a Connection object in order to pass in credentials. You then have to use the Pools builder to create a pool. Once you’ve created the your pool you can create the database object.</p>
+
+<p>The great thing about rxjava2-jdbc is that any JDBC driver can used. You can switch any standard JDBC database like Oracle, SQL Server, DB2, etc.</p>
+
+<p>I’m not going to go into too much detail about how rxjava2-jdbc works here because David Moten’s github page has great <a href="https://github.com/davidmoten/rxjava2-jdbc/blob/master/README.adoc">documentation</a>.</p>
+
+<p>I will point out a few things though about using Spring WebFlux and rxjava2-jdbc together. The good news is they both implement <a href="http://www.reactive-streams.org/">ReactiveStreams</a> so it’s transparent for them to interoperate. The way to do this with reactor-core is to use the <u>Flux.from</u> or <u>Mono.from</u> methods. These can take any publisher. It is important to note that in the Mono version it can only emit one item or it will throw an exception. Another thing to take a look at is the <u>deleteEmployee</u> method. This method returns a Mono<Void> which is a special convention in reactor-core. This roughly equivalent to a Completable in rxjava2. To mimic this behavior in reactor-core, call the <u>then</u> method on a Flux or a Mono. This will ignore all elements that are emitted from the stream, and either complete or emit an exception.</p>
+
+<h4 id="toc_4">Write some Code</h4>
+
+<p>To really get a feel for how this works, the next step is to write some code. One idea I would suggest are to port the sample app to the database of your choice. Another idea is to create endpoints for creating a new department and deleting one. You can use the <u>createNewEmployee</u> and <u>deleteEmployee</u> methods as references.</p>
+
+<h4 id="toc_5">Conclusion</h4>
+
+<p>The reality is that many applications today use SQL databases, and reactive application developers did not have an easy way to access them without turning their non-blocking application into a blocking application. Hopefully in the future there will be great solutions around truly non-blocking JDBC drivers. Until that time, I hope you can see with this blog post, that while not perfect, there is an effective solution.</p>
 
 <ul>
-<li>  jdk 动态代理</li>
-<li>  cglib 动态代理</li>
-<li>  javassist 动态代理</li>
-<li>  ASM 字节码</li>
-<li>  javassist 字节码</li>
+<li>  <a href="https://medium.com/tag/java?source=post">Java</a></li>
+<li>  <a href="https://medium.com/tag/rxjava?source=post">Rxjava</a></li>
+<li>  <a href="https://medium.com/tag/spring?source=post">Spring</a></li>
+<li>  <a href="https://medium.com/tag/reactive?source=post">Reactive</a></li>
+<li>  <a href="https://medium.com/tag/rest?source=post">Rest</a></li>
 </ul>
-
-<p>其中 cglib 底层实现依赖于 ASM，javassist 自成一派。由于 ASM 和 javassist 需要程序员直接操作字节码，导致使用门槛相对较高，但实际上他们的应用是非常广泛的，如 Hibernate 底层使用了 javassist（默认）和 cglib，Spring 使用了 cglib 和 jdk 动态代理。</p>
-
-<p>RPC 框架无论选择何种代理技术，所需要完成的任务其实是固定的，不外乎‘整理报文’，‘确认网络位置’，‘序列化’,’网络传输’，‘反序列化’，’返回结果’…</p>
-
-<h2 id="toc_0"><a href="#%E6%8A%80%E6%9C%AF%E9%80%89%E5%9E%8B%E7%9A%84%E5%BD%B1%E5%93%8D%E5%9B%A0%E7%B4%A0" title="技术选型的影响因素"></a>技术选型的影响因素</h2>
-
-<p>框架中使用何种动态代理技术，影响因素也不少。</p>
-
-<h3 id="toc_1"><a href="#%E6%80%A7%E8%83%BD" title="性能"></a>性能</h3>
-
-<p>从早期 dubbo 的作者梁飞的博客 <a href="http://javatar.iteye.com/blog/814426">http://javatar.iteye.com/blog/814426</a> 中可以得知 dubbo 选择使用 javassist 作为动态代理方案主要考虑的因素是<strong>性能</strong>。</p>
-
-<p>从其博客的测试结果来看 javassist &gt; cglib &gt; jdk 。但实际上他的测试过程稍微有点瑕疵：在 cglib 和 jdk 代理对象调用时，走的是反射调用，而在 javassist 生成的代理对象调用时，走的是直接调用（可以先阅读下梁飞大大的博客）。这意味着 cglib 和 jdk 慢的原因并不是由动态代理产生的，而是由反射调用产生的（顺带一提，很多人认为 jdk 动态代理的原理是反射，其实它的底层也是使用的字节码技术）。而最终我的测试结果，结论如下： javassist ≈ cglib &gt; jdk 。javassist 和 cglib 的效率基本持平 ，而他们两者的执行效率基本可以达到 jdk 动态代理的2倍（这取决于测试的机器以及 jdk 的版本，jdk1.8 相较于 jdk1.6 动态代理技术有了质的提升，所以并不是传闻中的那样：cglib 比 jdk 快 10倍）。文末会给出我的测试代码。</p>
-
-<h3 id="toc_2"><a href="#%E4%BE%9D%E8%B5%96" title="依赖"></a>依赖</h3>
-
-<blockquote>
-<p>motan默认的实现是jdk动态代理，代理方案支持SPI扩展，可以自行扩展其他实现方式。</p>
-
-<p>使用jdk做为默认，主要是减少core包依赖，性能不是唯一考虑因素。另外使用字节码方式javaassist性能比较优秀，动态代理模式下jdk性能也不会差多少。</p>
-
-<p>– <strong>rayzhang0603</strong>(motan贡献者)</p>
-</blockquote>
-
-<p>motan 选择使用 jdk 动态代理，原因主要有两个：减少 motan-core 的依赖，方便。至于扩展性，dubbo 并没有预留出动态代理的扩展接口，而是写死了 bytecode ，这点上 motan 做的较好。</p>
-
-<h3 id="toc_3"><a href="#%E6%98%93%E7%94%A8%E6%80%A7" title="易用性"></a>易用性</h3>
-
-<p>从 dubbo 和 motan 的源码中便可以直观的看出两者的差距了，dubbo 为了使用 javassist 技术花费不少的精力，而 motan 使用 jdk 动态代理只用了一个类。dubbo 的设计者为了追求极致的性能而做出的工作是值得肯定的，motan 也预留了扩展机制，两者各有千秋。</p>
-
-<h2 id="toc_4"><a href="#%E5%8A%A8%E6%80%81%E4%BB%A3%E7%90%86%E5%85%A5%E9%97%A8%E6%8C%87%E5%8D%97" title="动态代理入门指南"></a>动态代理入门指南</h2>
-
-<p>为了方便对比几种动态代理技术，先准备一个统一接口。</p>
-
-<pre><code class="language-java">public interface BookApi {
-    void sell();
-}
-</code></pre>
-
-<h3 id="toc_5"><a href="#JDK%E5%8A%A8%E6%80%81%E4%BB%A3%E7%90%86" title="JDK动态代理"></a>JDK动态代理</h3>
-
-<pre><code class="language-java">private static BookApi createJdkDynamicProxy(final BookApi delegate) {
-        BookApi jdkProxy = (BookApi) Proxy.newProxyInstance(ClassLoader.getSystemClassLoader(),
-                new Class[]{BookApi.class}, new JdkHandler(delegate));
-        return jdkProxy;
-}
-
-private static class JdkHandler implements InvocationHandler {
-
-        final Object delegate;
-
-        JdkHandler(Object delegate) {
-            this.delegate = delegate;
-        }
-
-        @Override
-        public Object invoke(Object object, Method method, Object[] objects)
-                throws Throwable {
-            //添加代理逻辑&lt;1&gt;
-            if(method.getName().equals(&quot;sell&quot;)){
-                System.out.print(&quot;&quot;);
-            }
-            return null;
-//            return method.invoke(delegate, objects);
-        }
-</code></pre>
-
-<p><1> 在真正的 RPC 调用中 ，需要填充‘整理报文’，‘确认网络位置’，‘序列化’,’网络传输’，‘反序列化’，’返回结果’等逻辑。</p>
-
-<h3 id="toc_6"><a href="#Cglib%E5%8A%A8%E6%80%81%E4%BB%A3%E7%90%86" title="Cglib动态代理"></a>Cglib动态代理</h3>
-
-<pre><code class="language-java">private static BookApi createCglibDynamicProxy(final BookApi delegate) throws Exception {
-        Enhancer enhancer = new Enhancer();
-        enhancer.setCallback(new CglibInterceptor(delegate));
-        enhancer.setInterfaces(new Class[]{BookApi.class});
-        BookApi cglibProxy = (BookApi) enhancer.create();
-        return cglibProxy;
-    }
-
-    private static class CglibInterceptor implements MethodInterceptor {
-
-        final Object delegate;
-
-        CglibInterceptor(Object delegate) {
-            this.delegate = delegate;
-        }
-
-        @Override
-        public Object intercept(Object object, Method method, Object[] objects,
-                                MethodProxy methodProxy) throws Throwable {
-            //添加代理逻辑
-            if(method.getName().equals(&quot;sell&quot;)) {
-                System.out.print(&quot;&quot;);
-            }
-            return null;
-//            return methodProxy.invoke(delegate, objects);
-        }
-    }
-</code></pre>
-
-<p>和 JDK 动态代理的操作步骤没有太大的区别，只不过是替换了 cglib 的API而已。</p>
-
-<p>需要引入 cglib 依赖：</p>
-
-<pre><code class="language-xml">&lt;dependency&gt;
-    &lt;groupId&gt;cglib&lt;/groupId&gt;
-    &lt;artifactId&gt;cglib&lt;/artifactId&gt;
-    &lt;version&gt;3.2.5&lt;/version&gt;
-&lt;/dependency&gt;
-</code></pre>
-
-<h3 id="toc_7"><a href="#Javassist%E5%AD%97%E8%8A%82%E7%A0%81" title="Javassist字节码"></a>Javassist字节码</h3>
-
-<p>到了 javassist，稍微有点不同了。因为它是通过直接操作字节码来生成代理对象。</p>
-
-<pre><code class="language-java">private static BookApi createJavassistBytecodeDynamicProxy() throws Exception {
-    ClassPool mPool = new ClassPool(true);
-    CtClass mCtc = mPool.makeClass(BookApi.class.getName() + &quot;JavaassistProxy&quot;);
-    mCtc.addInterface(mPool.get(BookApi.class.getName()));
-    mCtc.addConstructor(CtNewConstructor.defaultConstructor(mCtc));
-    mCtc.addMethod(CtNewMethod.make(
-            &quot;public void sell() { System.out.print(\&quot;\&quot;) ; }&quot;, mCtc));
-    Class&lt;?&gt; pc = mCtc.toClass();
-    BookApi bytecodeProxy = (BookApi) pc.newInstance();
-    return bytecodeProxy;
-}
-</code></pre>
-
-<p>需要引入 javassist 依赖：</p>
-
-<pre><code class="language-xml">&lt;dependency&gt;
-    &lt;groupId&gt;org.javassist&lt;/groupId&gt;
-    &lt;artifactId&gt;javassist&lt;/artifactId&gt;
-    &lt;version&gt;3.21.0-GA&lt;/version&gt;
-&lt;/dependency&gt;
-</code></pre>
-
-<h2 id="toc_8"><a href="#%E5%8A%A8%E6%80%81%E4%BB%A3%E7%90%86%E6%B5%8B%E8%AF%95" title="动态代理测试"></a>动态代理测试</h2>
-
-<p>测试环境：window i5 8g jdk1.8 cglib3.2.5 javassist3.21.0-GA</p>
-
-<p>动态代理其实分成了两步：代理对象的创建，代理对象的调用。坊间流传的动态代理性能对比主要指的是后者；前者一般不被大家考虑，如果远程Refer的对象是单例的，其只会被创建一次，而如果是原型模式，多例对象的创建其实也是性能损耗的一个考虑因素（只不过远没有调用占比大）。</p>
-
-<blockquote>
-<p>Create JDK Proxy: 21 ms</p>
-
-<p>Create CGLIB Proxy: 342 ms</p>
-
-<p>Create Javassist Bytecode Proxy: 419 ms</p>
-</blockquote>
-
-<p>可能出乎大家的意料，JDK 创建动态代理的速度比后两者要快10倍左右。</p>
-
-<p>下面是调用速度的测试：</p>
-
-<blockquote>
-<p>case 1:</p>
-
-<p>JDK Proxy invoke cost 1912 ms</p>
-
-<p>CGLIB Proxy invoke cost 1015 ms</p>
-
-<p>JavassistBytecode Proxy invoke cost 1280 ms</p>
-
-<p>case 2:</p>
-
-<p>JDK Proxy invoke cost 1747 ms</p>
-
-<p>CGLIB Proxy invoke cost 1234 ms</p>
-
-<p>JavassistBytecode Proxy invoke cost 1175 ms</p>
-
-<p>case 3:</p>
-
-<p>JDK Proxy invoke cost 2616 ms</p>
-
-<p>CGLIB Proxy invoke cost 1373 ms</p>
-
-<p>JavassistBytecode Proxy invoke cost 1335 ms</p>
-</blockquote>
-
-<p>Jdk 的执行速度一定会慢于 Cglib 和 Javassist，但最慢也就2倍，并没有达到数量级的差距；Cglib 和 Javassist不相上下，差距不大（测试中偶尔发现Cglib实行速度会比平时慢10倍，不清楚是什么原因）</p>
-
-<p>所以出于易用性和性能，私以为使用 Cglib 是一个很好的选择（性能和 Javassist 持平，易用性和 Jdk 持平）。</p>
-
-<h2 id="toc_9"><a href="#%E5%8F%8D%E5%B0%84%E8%B0%83%E7%94%A8" title="反射调用"></a>反射调用</h2>
-
-<p>既然提到了动态代理和 cglib ，顺带提一下反射调用如何加速的问题。RPC 框架中在 Provider 服务端需要根据客户端传递来的 className + method + param 来找到容器中的实际方法执行反射调用。除了反射调用外，还可以使用 Cglib 来加速。</p>
-
-<h3 id="toc_10"><a href="#JDK%E5%8F%8D%E5%B0%84%E8%B0%83%E7%94%A8" title="JDK反射调用"></a>JDK反射调用</h3>
-
-<pre><code class="language-java">Method method = serviceClass.getMethod(methodName, new Class[]{});
-method.invoke(delegate, new Object[]{});
-</code></pre>
-
-<h3 id="toc_11"><a href="#Cglib%E8%B0%83%E7%94%A8" title="Cglib调用"></a>Cglib调用</h3>
-
-<pre><code class="language-java">FastClass serviceFastClass = FastClass.create(serviceClass);
-FastMethod serviceFastMethod = serviceFastClass.getMethod(methodName, new Class[]{});
-serviceFastMethod.invoke(delegate, new Object[]{});
-</code></pre>
-
-<p>但实测效果发现 Cglib 并不一定比 JDK 反射执行速度快，还会跟具体的方法实现有关(大雾)。</p>
-
-<h2 id="toc_12"><a href="#%E6%B5%8B%E8%AF%95%E4%BB%A3%E7%A0%81" title="测试代码"></a>测试代码</h2>
-
-<pre><code class="language-java">public class Main {
-
-    public static void main(String[] args) throws Exception {
-
-        BookApi delegate = new BookApiImpl();
-        long time = System.currentTimeMillis();
-        BookApi jdkProxy = createJdkDynamicProxy(delegate);
-        time = System.currentTimeMillis() - time;
-        System.out.println(&quot;Create JDK Proxy: &quot; + time + &quot; ms&quot;);
-
-        time = System.currentTimeMillis();
-        BookApi cglibProxy = createCglibDynamicProxy(delegate);
-        time = System.currentTimeMillis() - time;
-        System.out.println(&quot;Create CGLIB Proxy: &quot; + time + &quot; ms&quot;);
-
-        time = System.currentTimeMillis();
-        BookApi javassistBytecodeProxy = createJavassistBytecodeDynamicProxy();
-        time = System.currentTimeMillis() - time;
-        System.out.println(&quot;Create JavassistBytecode Proxy: &quot; + time + &quot; ms&quot;);
-
-        for (int i = 0; i &lt; 10; i++) {
-            jdkProxy.sell();//warm
-        }
-        long start = System.currentTimeMillis();
-        for (int i = 0; i &lt; 10000000; i++) {
-            jdkProxy.sell();
-        }
-        System.out.println(&quot;JDK Proxy invoke cost &quot; + (System.currentTimeMillis() - start) + &quot; ms&quot;);
-
-        for (int i = 0; i &lt; 10; i++) {
-            cglibProxy.sell();//warm
-        }
-        start = System.currentTimeMillis();
-        for (int i = 0; i &lt; 10000000; i++) {
-            cglibProxy.sell();
-        }
-        System.out.println(&quot;CGLIB Proxy invoke cost &quot; + (System.currentTimeMillis() - start) + &quot; ms&quot;);
-
-        for (int i = 0; i &lt; 10; i++) {
-            javassistBytecodeProxy.sell();//warm
-        }
-        start = System.currentTimeMillis();
-        for (int i = 0; i &lt; 10000000; i++) {
-            javassistBytecodeProxy.sell();
-        }
-        System.out.println(&quot;JavassistBytecode Proxy invoke cost &quot; + (System.currentTimeMillis() - start) + &quot; ms&quot;);
-
-        Class&lt;?&gt; serviceClass = delegate.getClass();
-        String methodName = &quot;sell&quot;;
-        for (int i = 0; i &lt; 10; i++) {
-            cglibProxy.sell();//warm
-        }
-        // 执行反射调用
-        for (int i = 0; i &lt; 10; i++) {//warm
-            Method method = serviceClass.getMethod(methodName, new Class[]{});
-            method.invoke(delegate, new Object[]{});
-        }
-        start = System.currentTimeMillis();
-        for (int i = 0; i &lt; 10000000; i++) {
-            Method method = serviceClass.getMethod(methodName, new Class[]{});
-            method.invoke(delegate, new Object[]{});
-        }
-        System.out.println(&quot;反射 invoke cost &quot; + (System.currentTimeMillis() - start) + &quot; ms&quot;);
-
-        // 使用 CGLib 执行反射调用
-        for (int i = 0; i &lt; 10; i++) {//warm
-            FastClass serviceFastClass = FastClass.create(serviceClass);
-            FastMethod serviceFastMethod = serviceFastClass.getMethod(methodName, new Class[]{});
-            serviceFastMethod.invoke(delegate, new Object[]{});
-        }
-        start = System.currentTimeMillis();
-        for (int i = 0; i &lt; 10000000; i++) {
-            FastClass serviceFastClass = FastClass.create(serviceClass);
-            FastMethod serviceFastMethod = serviceFastClass.getMethod(methodName, new Class[]{});
-            serviceFastMethod.invoke(delegate, new Object[]{});
-        }
-        System.out.println(&quot;CGLIB invoke cost &quot; + (System.currentTimeMillis() - start) + &quot; ms&quot;);
-
-    }
-
-    private static BookApi createJdkDynamicProxy(final BookApi delegate) {
-        BookApi jdkProxy = (BookApi) Proxy.newProxyInstance(ClassLoader.getSystemClassLoader(),
-                new Class[]{BookApi.class}, new JdkHandler(delegate));
-        return jdkProxy;
-    }
-
-    private static class JdkHandler implements InvocationHandler {
-
-        final Object delegate;
-
-        JdkHandler(Object delegate) {
-            this.delegate = delegate;
-        }
-
-        @Override
-        public Object invoke(Object object, Method method, Object[] objects)
-                throws Throwable {
-            //添加代理逻辑
-            if(method.getName().equals(&quot;sell&quot;)){
-                System.out.print(&quot;&quot;);
-            }
-            return null;
-//            return method.invoke(delegate, objects);
-        }
-    }
-
-    private static BookApi createCglibDynamicProxy(final BookApi delegate) throws Exception {
-        Enhancer enhancer = new Enhancer();
-        enhancer.setCallback(new CglibInterceptor(delegate));
-        enhancer.setInterfaces(new Class[]{BookApi.class});
-        BookApi cglibProxy = (BookApi) enhancer.create();
-        return cglibProxy;
-    }
-
-    private static class CglibInterceptor implements MethodInterceptor {
-
-        final Object delegate;
-
-        CglibInterceptor(Object delegate) {
-            this.delegate = delegate;
-        }
-
-        @Override
-        public Object intercept(Object object, Method method, Object[] objects,
-                                MethodProxy methodProxy) throws Throwable {
-            //添加代理逻辑
-            if(method.getName().equals(&quot;sell&quot;)) {
-                System.out.print(&quot;&quot;);
-            }
-            return null;
-//            return methodProxy.invoke(delegate, objects);
-        }
-    }
-
-    private static BookApi createJavassistBytecodeDynamicProxy() throws Exception {
-        ClassPool mPool = new ClassPool(true);
-        CtClass mCtc = mPool.makeClass(BookApi.class.getName() + &quot;JavaassistProxy&quot;);
-        mCtc.addInterface(mPool.get(BookApi.class.getName()));
-        mCtc.addConstructor(CtNewConstructor.defaultConstructor(mCtc));
-        mCtc.addMethod(CtNewMethod.make(
-                &quot;public void sell() { System.out.print(\&quot;\&quot;) ; }&quot;, mCtc));
-        Class&lt;?&gt; pc = mCtc.toClass();
-        BookApi bytecodeProxy = (BookApi) pc.newInstance();
-        return bytecodeProxy;
-    }
-
-}
-</code></pre>
 
                         
                       </div>
@@ -490,7 +384,7 @@ serviceFastMethod.invoke(delegate, new Object[]{});
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/6/1</span>
+                    <span class="date">2018/7/7</span>
                     <span>posted in&nbsp;</span> 
           				  
           					    <span class="posted-in"><a href='Java.html'>Java</a></span>
@@ -583,31 +477,31 @@ serviceFastMethod.invoke(delegate, new Object[]{});
 	      
 		      
 			      <li class="post">
-			        <a href="15337171704262.html">Introduction to Testing with Spock and Groovy</a>
+			        <a href="15358820607055.html">Java 8 Concurrency Tutorial: Atomic Variables and ConcurrentMap</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15336595358049.html">10 Excellent Ways to Secure Your Spring Boot Application</a>
+			        <a href="15358774987730.html">Java 8 Concurrency Tutorial: Synchronization and Locks</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15336592302916.html">First MicroProfile.io application using Java Module System</a>
+			        <a href="15358757119900.html">Java 8 Concurrency Tutorial: Threads and Executors</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15332186142588.html">Jenkins 的 Pipeline 脚本在美团餐饮 SaaS 中的实践</a>
+			        <a href="15358756631902.html">Java 8 Stream Tutorial</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15331749691571.html">基于ZooKeeper的分布式锁和队列</a>
+			        <a href="15358753472382.html">Migrate Maven Projects to Java 11</a>
 			      </li>
 		     
 		  

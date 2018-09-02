@@ -105,349 +105,133 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15282782041132.html">
+                <a class="clearlink" href="15295434052821.html">
                 
-                  <h1>Enabling Centralized Logging</h1>
+                  <h1>Open Sourcing Zuul 2</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://dzone.com/articles/centralized-logging">https://dzone.com/articles/centralized-logging</a></p>
+<p><a href="https://medium.com/netflix-techblog/open-sourcing-zuul-2-82ea476cb2b3">https://medium.com/netflix-techblog/open-sourcing-zuul-2-82ea476cb2b3</a></p>
 </blockquote>
 
-<p>An essential requirement for microservices architecture is the ability to look through the request propagation between multiple microservices. If you have only few microservices, you might be able to ssh to all the servers and tail the logs. However, if you happen to have multiple servers per service, this is not something that is easy to do. The solution is to build a centralized logging system that could gather all our application logs into a single service. The logging system should meet the following requirements:</p>
+<p>We are excited to announce the open sourcing of <a href="https://github.com/netflix/zuul/">Zuul 2</a>, Netflix’s cloud gateway. We use Zuul 2 at Netflix as the front door for all requests coming into Netflix’s cloud infrastructure. Zuul 2 significantly improves the architecture and features that allow our gateway to handle, route, and protect Netflix’s cloud systems, and helps provide our 125 million members the best experience possible. The Cloud Gateway team at Netflix runs and operates more than 80 clusters of Zuul 2, sending traffic to about 100 (and growing) backend service clusters which amounts to more than 1 million requests per second. Nearly all of this traffic is from customer devices and browsers that enable the discovery and playback experience you are likely familiar with.</p>
 
-<ol>
-<li> It should work in real-time.</li>
-<li> It should be easy to search.</li>
-<li> It should help developers correlate requests between microservices.</li>
-<li> It should be application agnostic.</li>
-<li> It should place very little overhead on the application.</li>
-</ol>
+<p>This post will overview Zuul 2, provide details on some of the interesting features we are releasing today, and discuss some of the other projects that we’re building with Zuul 2.</p>
 
-<p>There are some helpful tools which can be used for building the logging system.</p>
+<h3 id="toc_0">How Zuul 2 Works</h3>
+
+<p>For context, here’s a high-level diagram of Zuul 2’s architecture:</p>
+
+<p><img src="https://cdn-images-1.medium.com/max/1600/0*ycjEWsSKCaPemEg3." alt=""/></p>
+
+<p>The Netty handlers on the front and back of the filters are mainly responsible for handling the network protocol, web server, connection management and proxying work. With those inner workings abstracted away, the filters do all of the heavy lifting. The inbound filters run before proxying the request and can be used for authentication, routing, or decorating the request. The endpoint filters can either be used to return a static response or proxy the request to the backend service (or origin as we call it). The outbound filters run after a response has been returned and can be used for things like gzipping, metrics, or adding/removing custom headers.</p>
+
+<p>Zuul’s functionality depends almost entirely on the logic that you add in each filter. That means you can deploy it in multiple contexts and have it solve different problems based on the configurations and filters it is running.</p>
+
+<p>We use Zuul at the entrypoint of all external traffic into Netflix’s cloud services and we’ve started using it for routing internal traffic, as well. We deploy the same core but with a substantially reduced amount of functionality (i.e. fewer filters). This allows us to leverage load balancing, self service routing, and resiliency features for internal traffic.</p>
+
+<h3 id="toc_1">Open Source</h3>
+
+<p>The Zuul code that’s running today is the most stable and resilient version of Zuul yet. The various phases of evolving and refactoring the codebase have paid dividends and we couldn’t be happier to share it with you.</p>
+
+<p>Today we are releasing many <a href="https://github.com/Netflix/zuul/wiki/Core-Features">core features</a>. Here are the ones we’re most excited about:</p>
+
+<h4 id="toc_2">Server Protocols</h4>
 
 <ul>
-<li>  <strong>Spring Cloud Sleuth -</strong> Library from Spring cloud project that provides automatic instrumentation of communication channels. It lets you track the progress of subsequent microservices by adding the appropriate headers to the HTTP requests.</li>
-<li>  <strong>Zipkin</strong> - Zipkin is a distributed tracing system. It helps gather timing data needed to troubleshoot latency problems in microservice architectures. It manages both the collection and lookup of this data. Zipkin’s design is based on the Google Dapper paper.</li>
-<li>  <strong>Splunk -</strong> Splunk is centralized logs analysis tool for machine generated data, unstructured/structured and complex multi-line data which provides the following features such as Easy Search/Navigate, Real-Time Visibility, Historical Analytics, Reports, Alerts, Dashboards and Visualization.</li>
-<li>  <strong>ELK -</strong> Elasticsearch, Logstash, Kibana: three different tools usually used together. They are used for searching, analyzing, and visualizing log data in a real time.</li>
+<li>  <strong>HTTP/2</strong> — full server support for inbound HTTP/2 connections</li>
+<li>  <strong>Mutual TLS</strong> — allow for running Zuul in more secure scenarios</li>
 </ul>
 
-<h2 id="toc_0">Architecture</h2>
-
-<p><img src="https://dzone.com/storage/temp/6480958-image001v1.png" alt=""/></p>
-
-<h2 id="toc_1">Instrument Your Application</h2>
-
-<p>The first step is to instrument your application so that each log statement includes traceId and spanId that will help in tracing a call as it propagates through different microservices. In the following sections, instructions are provided for instrumenting Spring Boot, NodeJS and Python applications.</p>
-
-<h2 id="toc_2">Enabling Tracing for SpringBoot Applications With the Sleuth Library</h2>
-
-<p>1. Update the POM file to include the Sleuth Spring Boot starter library:</p>
-
-<p><strong>pom.xml</strong></p>
-
-<pre><code class="language-xml">&lt;dependencyManagement&gt;
-    &lt;dependencies&gt;
-        &lt;dependency&gt;
-            &lt;groupId&gt;org.springframework.cloud&lt;/groupId&gt;
-            &lt;artifactId&gt;spring-cloud-sleuth&lt;/artifactId&gt;
-            &lt;version&gt;1.2.2.RELEASE&lt;/version&gt;
-            &lt;type&gt;pom&lt;/type&gt;
-            &lt;scope&gt;import&lt;/scope&gt;
-        &lt;/dependency&gt;
-    &lt;/dependencies&gt;
-&lt;/dependencyManagement&gt;
-&lt;dependency&gt;
-&lt;groupId&gt;org.springframework.cloud&lt;/groupId&gt;
-    &lt;artifactId&gt;spring-cloud-starter-sleuth&lt;/artifactId&gt;
-&lt;/dependency&gt;
-</code></pre>
-
-<p>2. Update application.properties to include spring.application.name and logging.file.</p>
-
-<p><strong>application.properties</strong></p>
-
-<pre><code class="language-properties">spring.application.name=&quot;Spring Boot 1&quot;
-logging.file=/var/log/logs/springboot1.log
-</code></pre>
-
-<p>3. Use SLF4J for logging.</p>
-
-<p><strong>Application.java</strong></p>
-
-<pre><code class="language-java">import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-private static final Logger logger = LoggerFactory.getLogger(Application.class);
-logger.info(quote.toString());
-</code></pre>
-
-<p>4. Use a RestTemplate object that is autowired by Spring. This is necessary because Spring Cloud Sleuth adds the trace id and span id via headers in the request.</p>
-
-<p><strong>Application.java</strong></p>
-
-<pre><code class="language-java">import org.springframework.web.client.RestTemplate;
-@Bean
-RestTemplate restTemplate() {
-return new RestTemplate();
-}
-@Autowired
-RestTemplate restTemplate;
-    Quote quote = restTemplate.getForObject(&quot;http://localhost:8082/quote&quot;, Quote.class);
-</code></pre>
-
-<p>As an example, let&#39;s say we have a case like the following:</p>
-
-<p><img src="https://dzone.com/storage/temp/6461026-image002.png" alt=""/></p>
-
-<p>Now, if you run the microservices and hit the endpoint, you should see your logging statement printed in the in the log file of Microservice 1:</p>
-
-<pre><code class="language-log">2017-08-21 06:09:41.925  INFO [&quot;Spring Boot 1&quot;,945690e8fc53b5b5,945690e8fc53b5b5,false] 25841 --- [http-nio-8080-exec-10] c.b.l.controller.LoggingController       : Quote{type=&#39;success&#39;, value=Value{id=10, quote=&#39;Really loving Spring Boot, makes stand alone Spring apps easy.&#39;}}
-2017-08-21 06:29:44.244  INFO [&quot;Spring Boot 1&quot;,b9184768fa226280,b9184768fa226280,false] 25841 --- [http-nio-8080-exec-2] c.b.l.controller.LoggingController       : Quote{type=&#39;success&#39;, value=Value{id=11, quote=&#39;I have two hours today to build an app from scratch. @springboot to the rescue!&#39;}}
-2017-08-21 06:36:13.698  INFO [&quot;Spring Boot 1&quot;,f21c03b4f86f31a8,f21c03b4f86f31a8,false] 25841 --- [http-nio-8080-exec-4] c.b.l.controller.LoggingController       : Quote{type=&#39;success&#39;, value=Value{id=4, quote=&#39;Previous to Spring Boot, I remember XML hell, confusing set up, and many hours of frustration.&#39;}}
-</code></pre>
-
-<p>and Microservice 2:</p>
-
-<pre><code class="language-log">2017-08-21 06:29:44.238  INFO [&quot;Spring Boot 2&quot;,b9184768fa226280,7a80e050a5c4aa2c,false] 25867 --- [http-nio-8082-exec-5] c.b.l.controller.LoggingController       : Quote{type=&#39;success&#39;, value=Value{id=11, quote=&#39;I have two hours today to build an app from scratch. @springboot to the rescue!&#39;}}
-2017-08-21 06:36:13.693  INFO [&quot;Spring Boot 2&quot;,f21c03b4f86f31a8,cbeb473567ccd74a,false] 25867 --- [http-nio-8082-exec-6] c.b.l.controller.LoggingController       : Quote{type=&#39;success&#39;, value=Value{id=4, quote=&#39;Previous to Spring Boot, I remember XML hell, confusing set up, and many hours of frustration.&#39;}}
-</code></pre>
-
-<p>The portion of the log statement that Sleuth adds is [&quot;Spring Boot 1&quot;, 945690e8fc53b5b5, 945690e8fc53b5b5, false]. The first part is the application name (whatever you set spring.application.name to in application.properties). The second value is the trace id. The third value is the span id. Finally, the last value indicates whether the span should be exported to Zipkin. The trace ids are the same but the span ids are different. The trace ids are what is going to allow you to trace a request as it travels from one service to the next. The span ids are different because we have two different “units of work” occurring, one for each request.</p>
-
-<h2 id="toc_3">Enabling Tracing for NodeJS Applications</h2>
-
-<p>The instrumentation to include traceId and spanId in logs for NodeJS and JavaScript is manual unlike in case of Spring Boot applications where these are added to each log by Spring Cloud Sleuth.</p>
-
-<p>1. Instrument the NodeJS application following the steps listed here - <a href="https://github.com/openzipkin/zipkin-js-example">https://github.com/openzipkin/zipkin-js-example</a>. This project shows an example of how to use Zipkin in JavaScript.</p>
-
-<p>2. Add a logger to include traceId and spanId in the logs.</p>
-
-<p><strong>logger.js</strong></p>
-
-<pre><code class="language-js">const winston = require(&#39;winston&#39;),
-  moment = require(&#39;moment&#39;);
-var logger = new winston.Logger({
-  transports: [
-    new winston.transports.Console({
-      formatter: (options) =&gt; {
-        const traceId = options.meta.TraceId;
-        const spanId = options.meta.SpanId;
-        const service = options.meta.serviceName;
-        const logLevel = options.level.toUpperCase();
-        const time = moment();
-        const message = options.message || &#39;&#39;;
-        return JSON.stringify({
-          timestamp: time.toISOString(),
-          logLevel,
-          message,
-          traceId,
-          spanId,
-          service
-        });
-      }
-    }),
-    new winston.transports.File({
-      filename: &#39;frontend.log&#39;,
-      formatter: (options) =&gt; {
-        const traceId = options.meta.TraceId;
-        const spanId = options.meta.SpanId;
-        const service = options.meta.serviceName;
-        const logLevel = options.level.toUpperCase();
-        const time = moment();
-        const message = options.message || &#39;&#39;;
-        return JSON.stringify({
-          timestamp: time.toISOString(),
-          logLevel,
-          message,
-          traceId,
-          spanId,
-          service
-        });
-      }
-    })
-  ]
-}); 
-module.exports.logger = logger;
-</code></pre>
-
-<p>3. Use the logger to log.</p>
-
-<p><strong>frontend.js</strong></p>
-
-<pre><code class="language-js">const {logger} = require(&#39;./logger&#39;);
-app.get(&#39;/&#39;, (req, res) =&gt; {
-  zipkinRest(&#39;http://localhost:9000/api&#39;)
-    .then(response =&gt; {
-      logger.log(&#39;info&#39;, &#39;Hello distributed log files!&#39;, 
-        { &#39;serviceName&#39;:&#39;frontend&#39;, &#39;TraceId&#39;: req.header(&#39;X-B3-TraceId&#39;), &#39;SpanId&#39;: req.header(&#39;X-B3-SpanId&#39;) });
-      res.send(response.entity);
-    })
-    .catch(err =&gt; logger.error(&#39;Error&#39;, err.stack));
-});
-</code></pre>
-
-<p><strong>backend.js</strong></p>
-
-<pre><code class="language-js">const {logger} = require(&#39;./logger&#39;);
-app.get(&#39;/api&#39;, (req, res) =&gt; {
-  logger.log(&#39;info&#39;, &#39;Hello distributed log files!&#39;, 
-    { &#39;serviceName&#39;:&#39;backend&#39;, &#39;TraceId&#39;: req.header(&#39;X-B3-TraceId&#39;), &#39;SpanId&#39;: req.header(&#39;X-B3-SpanId&#39;) });
-  res.send(new Date().toString())
-});
-</code></pre>
-
-<p>The logfile will have traceId and spanId with the log message.</p>
-
-<p><strong>frontend.log</strong></p>
-
-<pre><code class="language-log">{&quot;level&quot;:&quot;info&quot;,&quot;message&quot;:&quot;Frontend listening on port 8085!&quot;,&quot;timestamp&quot;:&quot;2017-08-24T06:26:58.536Z&quot;}
-{&quot;serviceName&quot;:&quot;frontend&quot;,&quot;TraceId&quot;:&quot;2c97a4bac4820ef8&quot;,&quot;SpanId&quot;:&quot;2c97a4bac4820ef8&quot;,&quot;level&quot;:&quot;info&quot;,&quot;message&quot;:&quot;Hello distributed log files!&quot;,&quot;timestamp&quot;:&quot;2017-08-24T06:27:02.990Z&quot;}
-{&quot;serviceName&quot;:&quot;backend&quot;,&quot;TraceId&quot;:&quot;2c97a4bac4820ef8&quot;,&quot;SpanId&quot;:&quot;7a0eff44fc42fde9&quot;,&quot;level&quot;:&quot;info&quot;,&quot;message&quot;:&quot;Hello distributed log files!&quot;,&quot;timestamp&quot;:&quot;2017-08-24T06:27:02.977Z&quot;}
-</code></pre>
-
-<p>Notice that the traceId is the same across two microservices.</p>
-
-<h2 id="toc_4">Enabling Tracing for Python Applications</h2>
-
-<p>We&#39;ll be using the py_zipkin python package to instrument our Python applications. Here again, the instrumentation is manual.</p>
-
-<p>1. Install py_zipkin and use the examples from <a href="https://github.com/Yelp/py_zipkin">https://github.com/Yelp/py_zipkin</a> to instrument your Python application.</p>
-
-<p>2. Add service_name, span_id and trace_id in your logging configuration.</p>
-
-<p><strong>logging.conf</strong></p>
-
-<pre><code class="language-conf">[formatter_myFormatter]
-format=%(asctime)s - %(name)s - %(levelname)s - %(service_name)s - %(trace_id)s - %(span_id)s - %(message)s
-</code></pre>
-
-<p>3. Trace a service call.</p>
-
-<p><strong>demo.py</strong></p>
-
-<pre><code class="language-py">from py_zipkin.zipkin import zipkin_span, create_http_headers_for_new_span
-@zipkin_span(service_name=&#39;webapp&#39;, span_name=&#39;do_stuff&#39;)
-def do_stuff():
-    headers = create_http_headers_for_new_span()
-    app.logger.info(&#39;From demo app&#39;, extra={&#39;service_name&#39;:&#39;demo&#39;, &#39;trace_id&#39;:headers[&#39;X-B3-TraceId&#39;], &#39;span_id&#39;:headers[&#39;X-B3-SpanId&#39;]})
-    requests.get(&#39;http://localhost:6000/service1/&#39;, headers=headers)
-return &#39;OK&#39;
-</code></pre>
-
-<p><strong>service1.py</strong></p>
-
-<pre><code class="language-py">@app.route(&#39;/service1/&#39;)
-def index():
-    with zipkin_span(
-        service_name=&#39;service1&#39;,
-        zipkin_attrs=ZipkinAttrs(
-            trace_id=request.headers[&#39;X-B3-TraceID&#39;],
-            span_id=request.headers[&#39;X-B3-SpanID&#39;],
-            parent_span_id=request.headers[&#39;X-B3-ParentSpanID&#39;],
-            flags=request.headers[&#39;X-B3-Flags&#39;],
-            is_sampled=request.headers[&#39;X-B3-Sampled&#39;],
-        ),
-        span_name=&#39;index_service1&#39;,
-        transport_handler=http_transport,
-        port=6000,
-        sample_rate=100, #0.05, # Value between 0.0 and 100.0
-    ) as zipkin_context:
-        headers = create_http_headers_for_new_span()
-        app.logger.info(&#39;From service1 app&#39;, extra={&#39;service_name&#39;:&#39;service1&#39;, &#39;trace_id&#39;:headers[&#39;X-B3-TraceId&#39;], &#39;span_id&#39;:headers[&#39;X-B3-SpanId&#39;]})
-        do_stuff()
-    return &#39;OK&#39;, 200
-</code></pre>
-
-<p>4. The log file will have traceId and spanId from the calls.</p>
-
-<p><strong>demo.log</strong></p>
-
-<pre><code class="language-log">2017-08-29 08:29:36,065 - __main__ - INFO - demo - 884f9f20a9172104 - 2352d7d1fadd521c - From demo app
-2017-08-29 08:29:36,069 - __main__ - INFO - service1 - 884f9f20a9172104 - d7867b21585a9ba1 - From service1 app
-</code></pre>
-
-<p>Note that the traceId is the same across the two services.</p>
-
-<h2 id="toc_5">Aggregate Logs</h2>
-
-<p>Once you have instrumented your application to automatically include tracing information in the logs, now let us look at Splunk and ELK for aggregating logs at a central place and correlating requests as it propagates through various services.</p>
-
-<h2 id="toc_6">Enabling Centralized Logging Using Splunk</h2>
-
-<p>Splunk works on the client-server model. Splunk Forwarder is used to collect the machine-generated data from the client side and forward it to the Splunk server. We tested with the Splunk free license for a low volume of logs; it provides a maximum 500 MB of indexing per day.</p>
-
-<p><img src="https://dzone.com/storage/temp/6461050-image003.jpg" alt=""/></p>
-
-<p>1. Download and install Splunk server.</p>
-
-<pre><code class="language-sh">wget -O splunk-6.6.2-4b804538c686-Linux-x86_64.tgz &#39;https://www.splunk.com/bin/splunk/DownloadActivityServlet?architecture=x86_64&amp;platform=linux&amp;version=6.6.2&amp;product=splunk&amp;filename=splunk-6.6.2-4b804538c686-Linux-x86_64.tgz&amp;wget=true&#39;
-sudo cp splunk-6.6.2-4b804538c686-Linux-x86_64.tgz /opt
-cd /opt
-sudo tar xvzf splunk-6.6.2-4b804538c686-Linux-x86_64.tgz
-cd splunk
-cd bin
-sudo ./splunk start --accept-license
-</code></pre>
-
-<p>Splunk will be available at: http://<ip>:8000 (admin/admin)</p>
-
-<p>2. Enable the receiving port to get logs from Splunk Forwarder. We can do this from GUI and CLI as well. Port 9997 is the default and it can be changed.</p>
-
-<p>3. Download and install Splunk Forwarder.</p>
-
-<pre><code class="language-sh">wget -O splunkforwarder-6.6.2-4b804538c686-Linux-x86_64.tgz &#39;https://www.splunk.com/bin/splunk/DownloadActivityServlet?architecture=x86_64&amp;platform=linux&amp;version=6.6.2&amp;product=universalforwarder&amp;filename=splunkforwarder-6.6.2-4b804538c686-Linux-x86_64.tgz&amp;wget=true&#39;
-sudo cp splunkforwarder-6.6.2-4b804538c686-Linux-x86_64.tgz /opt
-cd /opt
-sudo tar xvzf splunkforwarder-6.6.2-4b804538c686-Linux-x86_64.tgz
-cd splunkforwarder
-cd bin
-sudo ./splunk enable boot-start --accept-license
-sudo ./splunk add forward-server &lt;ip&gt;:9997
-sudo ./splunk list forward-server
-sudo ./splunk add monitor /var/log
-sudo ./splunk restart
-</code></pre>
-
-<p>Now login into Splunk web console and search for configured logs.<br/>
-<img src="https://dzone.com/storage/temp/6461051-image004.jpg" alt=""/></p>
-
-<h2 id="toc_7">Enabling Centralized Logging Using ELK</h2>
-
-<p>There are three options that you have if you want Elasticsearch on AWS:</p>
+<h4 id="toc_3">Resiliency Features</h4>
 
 <ul>
-<li>  Get an EC2, install on your own, Elastic.co has written a simple and comprehensive article on this.</li>
-<li>  Get a third party managed Elastic search as a service, again Elastic.co is pretty good for that.</li>
-<li>  Get the AWS Elasticsearch as a service.</li>
+<li>  <strong>Adaptive Retries</strong> — the core retry logic that we use at Netflix to increase our resiliency and availability</li>
+<li>  <strong>Origin Concurrency Protection </strong>— configurable concurrency limits to protect your origins from getting overloaded and protect other origins behind Zuul from each other</li>
 </ul>
 
-<p>We have installed ELK on our AWS. Learn how to access Kibana <a href="https://www.elastic.co/guide/en/kibana/current/access.html">here</a>.</p>
+<h4 id="toc_4">Operational Features</h4>
 
-<p>1. To send application logs to the central Elasticsearch, follow <a href="https://www.elastic.co/guide/en/beats/filebeat/5.3/filebeat-getting-started.html">these steps</a> on each server. </p>
+<ul>
+<li>  <strong>Request Passport </strong>— track all the lifecycle events for each request, which is invaluable for debugging async requests</li>
+<li>  <strong>Status Categories</strong> — an enumeration of possible success and failure states for requests that are more granular than HTTP status codes</li>
+<li>  <strong>Request Attempts</strong> — track proxy attempts and status of each, particularly useful for debugging retries and routing</li>
+</ul>
 
-<p><strong>/etc/filebeat/filebeat.yml</strong></p>
+<p>We are also working on some features that will be <a href="https://github.com/Netflix/zuul/wiki/Coming-Soon">coming soon</a>, including:</p>
 
-<pre><code class="language-yml">filebeat.prospectors:
-- input_type: log
-  # Paths that should be crawled and fetched. Glob based paths.
-  paths:
-    - /var/log/logs/*.log
-    #- c:\programdata\elasticsearch\logs\*
-output.logstash:
-  # The Logstash hosts
-  hosts: [&quot;&lt;ip&gt;:5044&quot;]
-</code></pre>
+<ul>
+<li>  <strong>Websocket/SSE </strong>— support for side-channel push notifications</li>
+<li>  <strong>Throttling and rate-limiting</strong> — protection from malicious client connections and requests, helping defend against volumetric attacks</li>
+<li>  <strong>Brownout filters</strong> — for disabling certain CPU-intensive features when Zuul is overloaded</li>
+<li>  <strong>Configurable routing</strong> — file-based routing configuration, instead of having to create routing filters in Zuul</li>
+</ul>
 
-<p>2. FileBeat sends the logs to logstash, which has been configured to send the logs to Elasticsearch. Kibana has been configured to query indices in Elasticsearch.</p>
+<p>We would love to hear from you and see all the new and interesting applications of Zuul. For instructions on getting started, please visit our <a href="https://github.com/Netflix/zuul/wiki/Getting-Started-2.0">wiki page</a>.</p>
 
-<p><img src="https://dzone.com/storage/temp/6461053-image005.png" alt=""/></p>
+<h3 id="toc_5">Leveraging Zuul 2 at Netflix</h3>
 
-<p>3. By default, Kibana does not require login credentials. Hit the url http://<ip>:5601 in the browser, and search for logs.</p>
+<p>Internally, there are several major features that we’ve been working on but have not open sourced yet. Each one deserves its own blog post, but let’s go over them briefly.</p>
 
-<p><img src="https://dzone.com/storage/temp/6461055-image006.jpg" alt=""/></p>
+<h3 id="toc_6">Self Service Routing</h3>
+
+<p>The most widely-used feature by our partners is self service routing. We provide an application and API for users to create routing rules based on any criteria in the request URL, path, query params, or headers. We then publish these routing rules to all the Zuul instances.</p>
+
+<p>The main use case is for routing traffic to a specific test or staging cluster. However, there are many use cases for real production traffic. For example:</p>
+
+<ul>
+<li>  Services needing to shard their traffic create routing rules that map certain paths or prefixes to separate origins</li>
+<li>  Developers onboard new services by creating a route that maps a new hostname to their new origin</li>
+<li>  Developers run load tests by routing a percentage of existing traffic to a small cluster and ensuring applications will degrade gracefully under load</li>
+<li>  Teams refactoring applications migrate to a new origin slowly by creating rules mapping traffic gradually, one path at a time</li>
+<li>  Teams test changes (canary testing) by sending a small percentage of traffic to an instrumented cluster running the new build</li>
+<li>  If teams need to test changes requiring multiple consecutive requests on their new build, they run sticky canary tests that route the same users to their new build for brief periods of time</li>
+<li>  Security teams create rules that reject “bad” requests based on path or header rules across all Zuul clusters</li>
+</ul>
+
+<p>As you can see we use self service routing extensively and are increasing the customizability and scope of routes to allow for even more use cases.</p>
+
+<h3 id="toc_7">Load Balancing for Resiliency</h3>
+
+<p>Another major feature we’ve worked on is making load balancing to origins more intelligent. We are able to route around failures, slowness, GC issues, and various other things that crop up often when running large amounts of nodes. The goal of this work is to increase resiliency, availability, and quality of service for all Netflix services.</p>
+
+<p>We have several cases that we handle:</p>
+
+<h4 id="toc_8">Cold Instances</h4>
+
+<p>When new origin instances start up, we send them a reduced amount of traffic for some time, until they’re warmed up. This was an issue we observed for applications with large codebases and huge metaspace usage. It takes a significant amount of time for these apps to JIT their code and be ready to handle a large amount of traffic.</p>
+
+<p>We also generally bias the traffic to older instances and if we happen to hit a cold instance that throttles, we can always retry on a warm one. This gives us an order of magnitude improvement in availability.</p>
+
+<h4 id="toc_9">High Error Rates</h4>
+
+<p>Errors happen all the time and for varying reasons, whether it’s because of a bug in the code, a bad instance, or an invalid configuration property being set. Fortunately, as a proxy, we can detect errors reliably — either we get a 5xx error or there are connectivity problems to the service.</p>
+
+<p>We track error rates for each origin and if the error rate is high enough, it implies the entire service is in trouble. We throttle retries from devices and disable internal retries to allow the service to recover. Moreover, we also track successive failures per instance and blacklist the bad ones for a period of time.</p>
+
+<h4 id="toc_10">Overloaded Instances</h4>
+
+<p>With the above approaches we send less traffic to servers in a cluster that are throttling or refusing connections, and lessened the impact by retrying those failed requests on other servers.</p>
+
+<p>We’re now rolling out an additional approach where we aim to avoid overloading servers in the first place. This is achieved by allowing origins to signal to Zuul their current utilization, which Zuul then uses as a factor in its load-balancing choices — leading to reduced error rates, retries, and latency.</p>
+
+<p>The origins add a header to all responses stating their utilization as a percentage, along with a target utilization they would like to have across the cluster. Calculating the percentage is completely up to each application and engineers can use whatever metric suits them best. This allows for a general solution as opposed to us trying to come up with a one-size-fits-all approach.</p>
+
+<p>With this functionality in place, we assign a score (combination of instance utilization and other factors like the ones above) to each instance and do a choice-of-two load balancing selection.</p>
+
+<h3 id="toc_11">Anomaly Detection and Contextual Alerting</h3>
+
+<p>As we grew from just a handful of origins to a new world where anyone can quickly spin up a container cluster and put it behind Zuul, we found there was a need to automatically detect and pinpoint origin failures.</p>
+
+<p>With the help of <a href="https://medium.com/netflix-techblog/stream-processing-with-mantis-78af913f51a6">Mantis real time event streaming</a>, we built an anomaly detector that aggregates error rates per service and notifies us in real time when services are in trouble. It takes all of the anomalies in a given time window and creates a timeline of all the origins in trouble. We then create a contextual alert email with the timeline of events and services affected. This allows an operator to quickly correlate these events and orient themselves to debug a specific app or feature, and ultimately find the root cause.</p>
+
+<p>In fact, it was so useful that we expanded it to send notifications to the origin teams themselves. We’ve also added more internal applications, other than Zuul, and can build a much more extensive timeline of events. This has been a huge help during production incidents and helps operators quickly detect and fix problems before they cascade into massive outages.</p>
+
+<p>We hope to open source as many of the above features as we can. Keep watching the tech blog for more depth on them in the future. If you want to help us solve these kinds of problem, please check out our <a href="https://jobs.netflix.com/teams/engineering?team=Product%20Engineering&amp;organization=Engineering">jobs site</a>.</p>
+
+<p>— Arthur Gonigberg (@agonigberg), Mikey Cohen (@moldfarm ), Michael Smith (@kerumai ), Gaya Varadarajan ( @gaya3varadhu ), Sudheer Vinukonda ( @apachesudheerv ), Susheel Aroskar (@susheelaroskar )</p>
 
                         
                       </div>
@@ -456,10 +240,10 @@ output.logstash:
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/6/6</span>
+                    <span class="date">2018/6/21</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Logging.html'>Logging</a></span>
+          					    <span class="posted-in"><a href='Microservice.html'>Microservice</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -549,31 +333,31 @@ output.logstash:
 	      
 		      
 			      <li class="post">
-			        <a href="15337171704262.html">Introduction to Testing with Spock and Groovy</a>
+			        <a href="15358820607055.html">Java 8 Concurrency Tutorial: Atomic Variables and ConcurrentMap</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15336595358049.html">10 Excellent Ways to Secure Your Spring Boot Application</a>
+			        <a href="15358774987730.html">Java 8 Concurrency Tutorial: Synchronization and Locks</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15336592302916.html">First MicroProfile.io application using Java Module System</a>
+			        <a href="15358757119900.html">Java 8 Concurrency Tutorial: Threads and Executors</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15332186142588.html">Jenkins 的 Pipeline 脚本在美团餐饮 SaaS 中的实践</a>
+			        <a href="15358756631902.html">Java 8 Stream Tutorial</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15331749691571.html">基于ZooKeeper的分布式锁和队列</a>
+			        <a href="15358753472382.html">Migrate Maven Projects to Java 11</a>
 			      </li>
 		     
 		  

@@ -105,133 +105,267 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15295434052821.html">
+                <a class="clearlink" href="15316420362215.html">
                 
-                  <h1>Open Sourcing Zuul 2</h1>
+                  <h1>研究consul的service mesh功能</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://medium.com/netflix-techblog/open-sourcing-zuul-2-82ea476cb2b3">https://medium.com/netflix-techblog/open-sourcing-zuul-2-82ea476cb2b3</a></p>
+<p><a href="https://jeremy-xu.oschina.io/2018/07/%E7%A0%94%E7%A9%B6consul%E7%9A%84service-mesh%E5%8A%9F%E8%83%BD/">https://jeremy-xu.oschina.io/2018/07/%E7%A0%94%E7%A9%B6consul%E7%9A%84service-mesh%E5%8A%9F%E8%83%BD/</a></p>
 </blockquote>
 
-<p>We are excited to announce the open sourcing of <a href="https://github.com/netflix/zuul/">Zuul 2</a>, Netflix’s cloud gateway. We use Zuul 2 at Netflix as the front door for all requests coming into Netflix’s cloud infrastructure. Zuul 2 significantly improves the architecture and features that allow our gateway to handle, route, and protect Netflix’s cloud systems, and helps provide our 125 million members the best experience possible. The Cloud Gateway team at Netflix runs and operates more than 80 clusters of Zuul 2, sending traffic to about 100 (and growing) backend service clusters which amounts to more than 1 million requests per second. Nearly all of this traffic is from customer devices and browsers that enable the discovery and playback experience you are likely familiar with.</p>
+<pre><code>2018-07-06
+</code></pre>
 
-<p>This post will overview Zuul 2, provide details on some of the interesting features we are releasing today, and discuss some of the other projects that we’re building with Zuul 2.</p>
+<p>之前一直是将 consul 当成一个服务发现、分布式 KV 服务、服务健康检查服务等，不过前几天 <a href="https://www.hashicorp.com/blog/consul-1-2-service-mesh">consul 发布了 1.2 版本</a>，宣称其实现了 Service Mesh 方案，最近在做 Service Mesh 相关的工作，正好有一点时间，就花时间研究一下。</p>
 
-<h3 id="toc_0">How Zuul 2 Works</h3>
+<h2 id="toc_0"><a href="#%E8%AF%95%E7%94%A8consul%E7%9A%84service-mesh"></a>试用 consul 的 service mesh</h2>
 
-<p>For context, here’s a high-level diagram of Zuul 2’s architecture:</p>
+<h3 id="toc_1"><a href="#%E5%8D%87%E7%BA%A7consul%E8%87%B31-2%E7%89%88%E6%9C%AC"></a>升级 consul 至 1.2 版本</h3>
 
-<p><img src="https://cdn-images-1.medium.com/max/1600/0*ycjEWsSKCaPemEg3." alt=""/></p>
+<p>macOS 下升级 consul 很简单，简单用 brew 命令就好</p>
 
-<p>The Netty handlers on the front and back of the filters are mainly responsible for handling the network protocol, web server, connection management and proxying work. With those inner workings abstracted away, the filters do all of the heavy lifting. The inbound filters run before proxying the request and can be used for authentication, routing, or decorating the request. The endpoint filters can either be used to return a static response or proxy the request to the backend service (or origin as we call it). The outbound filters run after a response has been returned and can be used for things like gzipping, metrics, or adding/removing custom headers.</p>
+<pre><code class="language-bash">brew update consul
+</code></pre>
 
-<p>Zuul’s functionality depends almost entirely on the logic that you add in each filter. That means you can deploy it in multiple contexts and have it solve different problems based on the configurations and filters it is running.</p>
+<p>为了方便后面修改 consul 的配置文件，添加一个<code>-config-dir</code>参数</p>
 
-<p>We use Zuul at the entrypoint of all external traffic into Netflix’s cloud services and we’ve started using it for routing internal traffic, as well. We deploy the same core but with a substantially reduced amount of functionality (i.e. fewer filters). This allows us to leverage load balancing, self service routing, and resiliency features for internal traffic.</p>
+<p><code>/usr/local/opt/consul/homebrew.mxcl.consul.plist</code></p>
 
-<h3 id="toc_1">Open Source</h3>
+<pre><code class="language-xml">&lt;?xml version=&quot;1.0&quot; encoding=&quot;UTF-8&quot;?&gt;
+&lt;!DOCTYPE plist PUBLIC &quot;-//Apple//DTD PLIST 1.0//EN&quot; &quot;http://www.apple.com/DTDs/PropertyList-1.0.dtd&quot;&gt;
+&lt;plist version=&quot;1.0&quot;&gt;
+  &lt;dict&gt;
+    &lt;key&gt;KeepAlive&lt;/key&gt;
+    &lt;dict&gt;
+      &lt;key&gt;SuccessfulExit&lt;/key&gt;
+      &lt;false/&gt;
+    &lt;/dict&gt;
+    &lt;key&gt;Label&lt;/key&gt;
+    &lt;string&gt;homebrew.mxcl.consul&lt;/string&gt;
+    &lt;key&gt;ProgramArguments&lt;/key&gt;
+    &lt;array&gt;
+      &lt;string&gt;/usr/local/opt/consul/bin/consul&lt;/string&gt;
+      &lt;string&gt;agent&lt;/string&gt;
+      &lt;string&gt;-dev&lt;/string&gt;
+      &lt;string&gt;-advertise&lt;/string&gt;
+      &lt;string&gt;127.0.0.1&lt;/string&gt;
+      &lt;string&gt;-config-dir&lt;/string&gt;
+      &lt;string&gt;/usr/local/etc/consul.d&lt;/string&gt;
+    &lt;/array&gt;
+    &lt;key&gt;RunAtLoad&lt;/key&gt;
+    &lt;true/&gt;
+    &lt;key&gt;WorkingDirectory&lt;/key&gt;
+    &lt;string&gt;/usr/local/var&lt;/string&gt;
+    &lt;key&gt;StandardErrorPath&lt;/key&gt;
+    &lt;string&gt;/usr/local/var/log/consul.log&lt;/string&gt;
+    &lt;key&gt;StandardOutPath&lt;/key&gt;
+    &lt;string&gt;/usr/local/var/log/consul.log&lt;/string&gt;
+  &lt;/dict&gt;
+&lt;/plist&gt;
+</code></pre>
 
-<p>The Zuul code that’s running today is the most stable and resilient version of Zuul yet. The various phases of evolving and refactoring the codebase have paid dividends and we couldn’t be happier to share it with you.</p>
+<p>这个配置文件中，我添加了以下两行：</p>
 
-<p>Today we are releasing many <a href="https://github.com/Netflix/zuul/wiki/Core-Features">core features</a>. Here are the ones we’re most excited about:</p>
+<pre><code class="language-xml">&lt;string&gt;-config-dir&lt;/string&gt;
+&lt;string&gt;/usr/local/etc/consul.d&lt;/string&gt;
+</code></pre>
 
-<h4 id="toc_2">Server Protocols</h4>
+<h3 id="toc_2"><a href="#%E5%86%99%E4%B8%A4%E4%B8%AA%E6%A8%A1%E6%8B%9F%E7%9A%84%E5%BE%AE%E6%9C%8D%E5%8A%A1"></a>写两个模拟的微服务</h3>
 
-<ul>
-<li>  <strong>HTTP/2</strong> — full server support for inbound HTTP/2 connections</li>
-<li>  <strong>Mutual TLS</strong> — allow for running Zuul in more secure scenarios</li>
-</ul>
+<p>用 golang 写两个小程序，用以模拟两个微服务。</p>
 
-<h4 id="toc_3">Resiliency Features</h4>
+<p><code>service1.go</code></p>
 
-<ul>
-<li>  <strong>Adaptive Retries</strong> — the core retry logic that we use at Netflix to increase our resiliency and availability</li>
-<li>  <strong>Origin Concurrency Protection </strong>— configurable concurrency limits to protect your origins from getting overloaded and protect other origins behind Zuul from each other</li>
-</ul>
+<pre><code class="language-go">package main
+import (
+    &quot;net/http&quot;
+    &quot;log&quot;
+    &quot;io&quot;
+)
+func TestServer(w http.ResponseWriter, req *http.Request) {
+    resp, err := http.Get(&quot;http://127.0.0.1:8082/test2&quot;)
+    if resp != nil &amp;&amp; resp.Body != nil {
+        defer resp.Body.Close()
+    }
+    if err != nil {
+        w.Write([]byte(&quot;make request failed\n&quot;))
+        return
+    }
+    io.Copy(w, resp.Body)
+}
+func main() {
+    http.HandleFunc(&quot;/test1&quot;, TestServer)
+    err := http.ListenAndServe(&quot;:8081&quot;, nil)
+    if err != nil {
+        log.Fatal(&quot;ListenAndServe: &quot;, err)
+    }
+}
+</code></pre>
 
-<h4 id="toc_4">Operational Features</h4>
+<p><code>service2.go</code></p>
 
-<ul>
-<li>  <strong>Request Passport </strong>— track all the lifecycle events for each request, which is invaluable for debugging async requests</li>
-<li>  <strong>Status Categories</strong> — an enumeration of possible success and failure states for requests that are more granular than HTTP status codes</li>
-<li>  <strong>Request Attempts</strong> — track proxy attempts and status of each, particularly useful for debugging retries and routing</li>
-</ul>
+<pre><code class="language-go">package main
+import (
+    &quot;io&quot;
+    &quot;net/http&quot;
+    &quot;log&quot;
+)
+func TestServer(w http.ResponseWriter, req *http.Request) {
+    io.WriteString(w, &quot;hello, world!\n&quot;)
+}
+func main() {
+    http.HandleFunc(&quot;/test2&quot;, TestServer)
+    err := http.ListenAndServe(&quot;:8082&quot;, nil)
+    if err != nil {
+        log.Fatal(&quot;ListenAndServe: &quot;, err)
+    }
+}
+</code></pre>
 
-<p>We are also working on some features that will be <a href="https://github.com/Netflix/zuul/wiki/Coming-Soon">coming soon</a>, including:</p>
+<p>这里模拟微服务<code>service1</code>调用<code>service2</code>。</p>
 
-<ul>
-<li>  <strong>Websocket/SSE </strong>— support for side-channel push notifications</li>
-<li>  <strong>Throttling and rate-limiting</strong> — protection from malicious client connections and requests, helping defend against volumetric attacks</li>
-<li>  <strong>Brownout filters</strong> — for disabling certain CPU-intensive features when Zuul is overloaded</li>
-<li>  <strong>Configurable routing</strong> — file-based routing configuration, instead of having to create routing filters in Zuul</li>
-</ul>
+<h3 id="toc_3"><a href="#%E5%9C%A8consul%E9%87%8C%E9%85%8D%E7%BD%AE%E4%B8%A4%E4%B8%AA%E6%9C%8D%E5%8A%A1"></a>在 consul 里配置两个服务</h3>
 
-<p>We would love to hear from you and see all the new and interesting applications of Zuul. For instructions on getting started, please visit our <a href="https://github.com/Netflix/zuul/wiki/Getting-Started-2.0">wiki page</a>.</p>
+<p>在 consul 的配置文件目录下新建两个 json 文件，用来配置上述两个服务。</p>
 
-<h3 id="toc_5">Leveraging Zuul 2 at Netflix</h3>
+<p><code>/usr/local/etc/consul.d/01_service1.json</code>:</p>
 
-<p>Internally, there are several major features that we’ve been working on but have not open sourced yet. Each one deserves its own blog post, but let’s go over them briefly.</p>
+<pre><code class="language-json">{
+  &quot;service&quot;: {
+    &quot;name&quot;: &quot;service1&quot;,
+    &quot;port&quot;: 8081,
+    &quot;connect&quot;: {
+      &quot;proxy&quot;: {
+        &quot;config&quot;: {
+          &quot;upstreams&quot;: [{
+             &quot;destination_name&quot;: &quot;service2&quot;,
+             &quot;local_bind_port&quot;: 38082
+          }]
+        }
+      }
+    }
+  }
+}
+</code></pre>
 
-<h3 id="toc_6">Self Service Routing</h3>
+<p><code>/usr/local/etc/consul.d/01_service2.json</code>:</p>
 
-<p>The most widely-used feature by our partners is self service routing. We provide an application and API for users to create routing rules based on any criteria in the request URL, path, query params, or headers. We then publish these routing rules to all the Zuul instances.</p>
+<pre><code class="language-json">{
+  &quot;service&quot;: {
+    &quot;name&quot;: &quot;service2&quot;,
+    &quot;port&quot;: 8082,
+    &quot;connect&quot;: {
+      &quot;proxy&quot;: {
+      }
+    }
+  }
+}
+</code></pre>
 
-<p>The main use case is for routing traffic to a specific test or staging cluster. However, there are many use cases for real production traffic. For example:</p>
+<p>然后执行命令重新加载 consul 的配置</p>
 
-<ul>
-<li>  Services needing to shard their traffic create routing rules that map certain paths or prefixes to separate origins</li>
-<li>  Developers onboard new services by creating a route that maps a new hostname to their new origin</li>
-<li>  Developers run load tests by routing a percentage of existing traffic to a small cluster and ensuring applications will degrade gracefully under load</li>
-<li>  Teams refactoring applications migrate to a new origin slowly by creating rules mapping traffic gradually, one path at a time</li>
-<li>  Teams test changes (canary testing) by sending a small percentage of traffic to an instrumented cluster running the new build</li>
-<li>  If teams need to test changes requiring multiple consecutive requests on their new build, they run sticky canary tests that route the same users to their new build for brief periods of time</li>
-<li>  Security teams create rules that reject “bad” requests based on path or header rules across all Zuul clusters</li>
-</ul>
+<pre><code class="language-bash">consul reload
+</code></pre>
 
-<p>As you can see we use self service routing extensively and are increasing the customizability and scope of routes to allow for even more use cases.</p>
+<p>修改 service1 中引用 service2 的代码：</p>
 
-<h3 id="toc_7">Load Balancing for Resiliency</h3>
+<pre><code class="language-go">......
+func TestServer(w http.ResponseWriter, req *http.Request) {
+    //resp, err := http.Get(&quot;http://127.0.0.1:8082/test2&quot;)
+    resp, err := http.Get(&quot;http://127.0.0.1:38082/test2&quot;)
+    if resp != nil &amp;&amp; resp.Body != nil {
+        defer resp.Body.Close()
+    }
+    if err != nil {
+        w.Write([]byte(&quot;make request failed\n&quot;))
+        return
+    }
+    io.Copy(w, resp.Body)
+}
+......
+</code></pre>
 
-<p>Another major feature we’ve worked on is making load balancing to origins more intelligent. We are able to route around failures, slowness, GC issues, and various other things that crop up often when running large amounts of nodes. The goal of this work is to increase resiliency, availability, and quality of service for all Netflix services.</p>
+<h3 id="toc_4"><a href="#%E8%B7%91%E8%B5%B7%E6%9D%A5"></a>跑起来</h3>
 
-<p>We have several cases that we handle:</p>
+<p>将 service1、service2 跑起来，然后用 curl 命令访问 service1</p>
 
-<h4 id="toc_8">Cold Instances</h4>
+<pre><code class="language-bash">&gt; go run service1.go &amp;&gt; /dev/null
+&gt; go run service2.go &amp;&gt; /dev/null
+&gt; curl http://127.0.0.1:8081/test1
+# 如果出现以下输出，则说明一切正常，Bingo!
+hello, world!
+</code></pre>
 
-<p>When new origin instances start up, we send them a reduced amount of traffic for some time, until they’re warmed up. This was an issue we observed for applications with large codebases and huge metaspace usage. It takes a significant amount of time for these apps to JIT their code and be ready to handle a large amount of traffic.</p>
+<h3 id="toc_5"><a href="#%E5%85%B6%E5%AE%83%E4%BD%BF%E7%94%A8%E6%96%B9%E6%B3%95"></a>其它使用方法</h3>
 
-<p>We also generally bias the traffic to older instances and if we happen to hit a cold instance that throttles, we can always retry on a warm one. This gives us an order of magnitude improvement in availability.</p>
+<p>除了 Service Mesh 的玩法，consul 1.2 还提供了 SDK 的用法。简单来说就是 Go 语言开发的微服务按照它的规范修改服务提供方、服务消费方的代码，服务间的调用将会自动使用底层的 connect 隧道。这个使用方法不太符合 service mesh 的初衷，做过微服务框架 sdk 的我不是太喜欢，这里就不详细讲了，可以参考官方给出的文档。</p>
 
-<h4 id="toc_9">High Error Rates</h4>
+<p><a href="https://www.consul.io/docs/connect/native.html">Connect Native 原理</a></p>
 
-<p>Errors happen all the time and for varying reasons, whether it’s because of a bug in the code, a bad instance, or an invalid configuration property being set. Fortunately, as a proxy, we can detect errors reliably — either we get a 5xx error or there are connectivity problems to the service.</p>
+<p><a href="https://www.consul.io/docs/connect/native/go.html">Connect Native Go 语言项目改造指引</a></p>
 
-<p>We track error rates for each origin and if the error rate is high enough, it implies the entire service is in trouble. We throttle retries from devices and disable internal retries to allow the service to recover. Moreover, we also track successive failures per instance and blacklist the bad ones for a period of time.</p>
+<h2 id="toc_6"><a href="#consul%E7%9A%84service-mesh%E5%8E%9F%E7%90%86%E5%88%86%E6%9E%90"></a>consul 的 service mesh 原理分析</h2>
 
-<h4 id="toc_10">Overloaded Instances</h4>
+<p>其实 consul 的文档本身说的比较明白，这里结合 consul-ui 及代码大概分析一下。</p>
 
-<p>With the above approaches we send less traffic to servers in a cluster that are throttling or refusing connections, and lessened the impact by retrying those failed requests on other servers.</p>
+<p>当给 consul 的服务配置里添加了<code>&quot;connect&quot;: { &quot;proxy&quot;: { } }</code>后，consul 将会为每个服务实例创建一个专门的隧道代理，如下图所示：</p>
 
-<p>We’re now rolling out an additional approach where we aim to avoid overloading servers in the first place. This is achieved by allowing origins to signal to Zuul their current utilization, which Zuul then uses as a factor in its load-balancing choices — leading to reduced error rates, retries, and latency.</p>
+<p><a href="https://jeremy-xu.oschina.io/images/20180708/image-20180708231726604.png"><img src="https://jeremy-xu.oschina.io/images/20180708/image-20180708231726604.png" alt=""/></a></p>
 
-<p>The origins add a header to all responses stating their utilization as a percentage, along with a target utilization they would like to have across the cluster. Calculating the percentage is completely up to each application and engineers can use whatever metric suits them best. This allows for a general solution as opposed to us trying to come up with a one-size-fits-all approach.</p>
+<p>隧道代理的作用是当以 connect 模式连入时，会自动建立一条到原服务实例的 tcp 隧道，后面 tcp 层以上的应用协议数据流将在这条 tcp 隧道上传输，具体代码在<code>https://github.com/hashicorp/consul/blob/master/connect/proxy/listener.go#NewPublicListener</code>。</p>
 
-<p>With this functionality in place, we assign a score (combination of instance utilization and other factors like the ones above) to each instance and do a choice-of-two load balancing selection.</p>
+<p>而涉及服务间调用时，在 consul 服务配置里添加服务<code>UpstreamListener</code>声明，服务消费方访问服务时需使用<code>UpstreamListener</code>的地址。<code>UpstreamListener</code>实际上是一个反向代理，当访问它时，它会以 connect 模式连接对应的服务实例<code>Connect Proxy</code>，具体代码在<code>https://github.com/hashicorp/consul/blob/master/connect/proxy/listener.go#NewUpstreamListener</code>。</p>
 
-<h3 id="toc_11">Anomaly Detection and Contextual Alerting</h3>
+<p>结合上述两条规则，整个数据链路就通了。</p>
 
-<p>As we grew from just a handful of origins to a new world where anyone can quickly spin up a container cluster and put it behind Zuul, we found there was a need to automatically detect and pinpoint origin failures.</p>
+<p>这里有一个问题，为啥一定要 connect 模式的隧道代理呢？反向代理服务不能直接连接原来的目标服务地址吗？</p>
 
-<p>With the help of <a href="https://medium.com/netflix-techblog/stream-processing-with-mantis-78af913f51a6">Mantis real time event streaming</a>, we built an anomaly detector that aggregates error rates per service and notifies us in real time when services are in trouble. It takes all of the anomalies in a given time window and creates a timeline of all the origins in trouble. We then create a contextual alert email with the timeline of events and services affected. This allows an operator to quickly correlate these events and orient themselves to debug a specific app or feature, and ultimately find the root cause.</p>
+<p>看了下<code>https://github.com/hashicorp/consul/blob/master/connect/service.go#Dial</code>，大概知道原因了。因为 connect 模式的隧道代理是使用 TLS 加密的，这样物理服务器节点之间的网络流量就走 TLS 安全连接了，再加上 <a href="https://www.consul.io/docs/connect/intentions.html">intentions</a> 机制，服务间的调用安全性上有了很大保障。还有一个原因，如果采用 <a href="https://www.consul.io/docs/connect/native/go.html">Connect-Native</a> 的方式集成 consul 的 service mesh 功能，底层连接是 TLS，上层就可以很方便地走 HTTP/2.0 协议了。</p>
 
-<p>In fact, it was so useful that we expanded it to send notifications to the origin teams themselves. We’ve also added more internal applications, other than Zuul, and can build a much more extensive timeline of events. This has been a huge help during production incidents and helps operators quickly detect and fix problems before they cascade into massive outages.</p>
+<h2 id="toc_7"><a href="#consul%E7%9A%84service-mesh%E4%BC%98%E7%BC%BA%E7%82%B9%E5%88%86%E6%9E%90"></a>consul 的 service mesh 优缺点分析</h2>
 
-<p>We hope to open source as many of the above features as we can. Keep watching the tech blog for more depth on them in the future. If you want to help us solve these kinds of problem, please check out our <a href="https://jobs.netflix.com/teams/engineering?team=Product%20Engineering&amp;organization=Engineering">jobs site</a>.</p>
+<p>优点：</p>
 
-<p>— Arthur Gonigberg (@agonigberg), Mikey Cohen (@moldfarm ), Michael Smith (@kerumai ), Gaya Varadarajan ( @gaya3varadhu ), Sudheer Vinukonda ( @apachesudheerv ), Susheel Aroskar (@susheelaroskar )</p>
+<ol>
+<li><p>直接使用 tcp 隧道，因此直接支持各类基于 tcp 的协议代理，如 HTTP/1.1、HTTP/2.0、GRPC。</p></li>
+<li><p>实现原理简单，<code>https://github.com/hashicorp/consul/blob/master/connect/</code>、<code>https://github.com/hashicorp/consul/tree/master/api/connect*.go</code>、<code>https://github.com/hashicorp/consul/tree/master/agent/connect/</code>下的关键文件不超过 20 个，逻辑很容易就看清了。</p></li>
+<li><p>直接结合 consul 做服务注册与服务发现，集成度高。</p></li>
+</ol>
+
+<p>缺点：</p>
+
+<ol>
+<li> 目前的负载均衡算法还很简单，就是随机，见下面：</li>
+</ol>
+
+<p><a href="https://jeremy-xu.oschina.io/images/20180708/image-20180708231828625.png"><img src="https://jeremy-xu.oschina.io/images/20180708/image-20180708231828625.png" alt=""/></a></p>
+
+<ol>
+<li><p>一些微服务框架的基本功能还不具备，如超时、重试、熔断、流量分配等，可以从<code>https://github.com/hashicorp/consul/blob/master/connect/proxy/listener.go#handleConn</code>这里开始扩展。</p></li>
+<li><p>需要手动修改 consul 的服务配置；服务消费方要根据 consul 里的服务配置，修改调用其它服务的地址（这里跟 service mesh 的初衷有些不符）。</p></li>
+</ol>
+
+<h2 id="toc_8"><a href="#%E6%80%BB%E7%BB%93"></a>总结</h2>
+
+<p>目前来看 consul 的 service mesh 方案还比较简单，功能很基本，但具备进一步扩展的空间，可以好好研究学习它的代码。</p>
+
+<h2 id="toc_9"><a href="#%E5%8F%82%E8%80%83"></a>参考</h2>
+
+<ol>
+<li> <a href="https://www.hashicorp.com/blog/consul-1-2-service-mesh">https://www.hashicorp.com/blog/consul-1-2-service-mesh</a></li>
+<li> <a href="https://www.consul.io/intro/getting-started/connect.html">https://www.consul.io/intro/getting-started/connect.html</a></li>
+<li> <a href="https://www.consul.io/docs/agent/options.html">https://www.consul.io/docs/agent/options.html</a></li>
+<li> <a href="https://www.consul.io/docs/connect/intentions.html">https://www.consul.io/docs/connect/intentions.html</a></li>
+<li> <a href="https://www.consul.io/docs/connect/native.html">https://www.consul.io/docs/connect/native.html</a></li>
+<li> <a href="https://www.consul.io/docs/connect/native/go.html">https://www.consul.io/docs/connect/native/go.html</a></li>
+<li> <a href="https://www.consul.io/docs/connect/configuration.html">https://www.consul.io/docs/connect/configuration.html</a></li>
+<li> <a href="https://www.consul.io/docs/connect/proxies.html">https://www.consul.io/docs/connect/proxies.html</a></li>
+<li> <a href="https://www.consul.io/docs/connect/dev.html">https://www.consul.io/docs/connect/dev.html</a></li>
+<li> <a href="https://www.consul.io/docs/connect/ca/consul.html">https://www.consul.io/docs/connect/ca/consul.html</a></li>
+</ol>
 
                         
                       </div>
@@ -240,7 +374,7 @@
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/6/21</span>
+                    <span class="date">2018/7/15</span>
                     <span>posted in&nbsp;</span> 
           				  
           					    <span class="posted-in"><a href='Microservice.html'>Microservice</a></span>
@@ -333,31 +467,31 @@
 	      
 		      
 			      <li class="post">
-			        <a href="15337171704262.html">Introduction to Testing with Spock and Groovy</a>
+			        <a href="15358820607055.html">Java 8 Concurrency Tutorial: Atomic Variables and ConcurrentMap</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15336595358049.html">10 Excellent Ways to Secure Your Spring Boot Application</a>
+			        <a href="15358774987730.html">Java 8 Concurrency Tutorial: Synchronization and Locks</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15336592302916.html">First MicroProfile.io application using Java Module System</a>
+			        <a href="15358757119900.html">Java 8 Concurrency Tutorial: Threads and Executors</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15332186142588.html">Jenkins 的 Pipeline 脚本在美团餐饮 SaaS 中的实践</a>
+			        <a href="15358756631902.html">Java 8 Stream Tutorial</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15331749691571.html">基于ZooKeeper的分布式锁和队列</a>
+			        <a href="15358753472382.html">Migrate Maven Projects to Java 11</a>
 			      </li>
 		     
 		  

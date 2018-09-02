@@ -105,323 +105,200 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15277850962764.html">
+                <a class="clearlink" href="15281306050002.html">
                 
-                  <h1>Leaf——美团点评分布式ID生成系统</h1>
+                  <h1>分布式之 redis 复习精讲</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://tech.meituan.com/MT_Leaf.html">原文地址</a></p>
+<p><a href="http://www.cnblogs.com/rjzheng/p/9096228.html">http://www.cnblogs.com/rjzheng/p/9096228.html</a></p>
 </blockquote>
 
-<h1 id="toc_0">背景</h1>
+<h2 id="toc_0">引言</h2>
 
-<p>在复杂分布式系统中，往往需要对大量的数据和消息进行唯一标识。如在美团点评的金融、支付、餐饮、酒店、猫眼电影等产品的系统中，数据日渐增长，对数据分库分表后需要有一个唯一ID来标识一条数据或消息，数据库的自增ID显然不能满足需求；特别一点的如订单、骑手、优惠券也都需要有唯一ID做标识。此时一个能够生成全局唯一ID的系统是非常必要的。概括下来，那业务系统对ID号的要求有哪些呢？</p>
+<h3 id="toc_1">为什么写这篇文章?</h3>
 
-<ol>
-<li> 全局唯一性：不能出现重复的ID号，既然是唯一标识，这是最基本的要求。</li>
-<li> 趋势递增：在MySQL InnoDB引擎中使用的是聚集索引，由于多数RDBMS使用B-tree的数据结构来存储索引数据，在主键的选择上面我们应该尽量使用有序的主键保证写入性能。</li>
-<li> 单调递增：保证下一个ID一定大于上一个ID，例如事务版本号、IM增量消息、排序等特殊需求。</li>
-<li> 信息安全：如果ID是连续的，恶意用户的扒取工作就非常容易做了，直接按照顺序下载指定URL即可；如果是订单号就更危险了，竞对可以直接知道我们一天的单量。所以在一些应用场景下，会需要ID无规则、不规则。</li>
-</ol>
+<p>博主的<a href="http://www.cnblogs.com/rjzheng/p/8994962.html">《分布式之消息队列复习精讲》</a>得到了大家的好评，内心诚惶诚恐，想着再出一篇关于复习精讲的文章。但是还是要说明一下，复习精讲的文章偏面试准备，真正在开发过程中，还是脚踏实地，一步一个脚印，不要投机取巧。<br/>
+考虑到绝大部分写业务的程序员，在实际开发中使用 redis 的时候，只会 setvalue 和 getvalue 两个操作，对 redis 整体缺乏一个认知。又恰逢博主某个同事下周要去培训 redis，所以博主斗胆以 redis 为题材，对 redis 常见问题做一个总结，希望能够弥补大家的知识盲点。</p>
 
-<p>上述123对应三类不同的场景，3和4需求还是互斥的，无法使用同一个方案满足。</p>
+<h3 id="toc_2">复习要点?</h3>
 
-<p>同时除了对ID号码自身的要求，业务还对ID号生成系统的可用性要求极高，想象一下，如果ID生成系统瘫痪，整个美团点评支付、优惠券发券、骑手派单等关键动作都无法执行，这就会带来一场灾难。</p>
+<p>本文围绕以下几点进行阐述<br/>
+1、为什么使用 redis<br/>
+2、使用 redis 有什么缺点<br/>
+3、单线程的 redis 为什么这么快<br/>
+4、redis 的数据类型，以及每种数据类型的使用场景<br/>
+5、redis 的过期策略以及内存淘汰机制<br/>
+6、redis 和数据库双写一致性问题<br/>
+7、如何应对缓存穿透和缓存雪崩问题<br/>
+8、如何解决 redis 的并发竞争问题</p>
 
-<p>由此总结下一个ID生成系统应该做到如下几点：</p>
+<h2 id="toc_3">正文</h2>
 
-<ol>
-<li> 平均延迟和TP999延迟都要尽可能低；</li>
-<li> 可用性5个9；</li>
-<li> 高QPS。</li>
-</ol>
+<h3 id="toc_4">1、为什么使用 redis</h3>
 
-<h1 id="toc_1">常见方法介绍</h1>
+<p><strong>分析</strong>: 博主觉得在项目中使用 redis，主要是从两个角度去考虑: <strong>性能</strong>和<strong>并发</strong>。当然，redis 还具备可以做分布式锁等其他功能，但是如果只是为了分布式锁这些其他功能，完全还有其他中间件 (如 zookpeer 等) 代替，并不是非要使用 redis。因此，这个问题主要从性能和并发两个角度去答。<br/>
+<strong>回答</strong>: 如下所示，分为两点<br/>
+<strong>（一）性能</strong><br/>
+如下图所示，我们在碰到需要执行耗时特别久，且结果不频繁变动的 SQL，就特别适合将运行结果放入缓存。这样，后面的请求就去缓存中读取，使得请求能够<strong>迅速响应</strong>。<br/>
+<img src="https://images.cnblogs.com/cnblogs_com/rjzheng/1202350/o_redis1.png" alt=""/><br/>
+<strong>题外话：</strong>忽然想聊一下这个<strong>迅速响应</strong>的标准。其实根据交互效果的不同，这个响应时间没有固定标准。不过曾经有人这么告诉我:&quot; 在理想状态下，我们的页面跳转需要在<strong>瞬间</strong>解决，对于页内操作则需要在<strong>刹那</strong>间解决。另外，超过<strong>一弹指</strong>的耗时操作要有进度提示，并且可以随时中止或取消，这样才能给用户最好的体验。&quot;<br/>
+那么<strong>瞬间、刹那、一弹指</strong>具体是多少时间呢？<br/>
+根据《摩诃僧祗律》记载</p>
 
-<h3 id="toc_2">UUID</h3>
-
-<p>UUID(Universally Unique Identifier)的标准型式包含32个16进制数字，以连字号分为五段，形式为8-4-4-4-12的36个字符，示例：<code>550e8400-e29b-41d4-a716-446655440000</code>，到目前为止业界一共有5种方式生成UUID，详情见IETF发布的UUID规范 <a href="http://www.ietf.org/rfc/rfc4122.txt">A Universally Unique IDentifier (UUID) URN Namespace</a>。</p>
-
-<p>优点：</p>
-
-<ul>
-<li>  性能非常高：本地生成，没有网络消耗。</li>
-</ul>
-
-<p>缺点：</p>
-
-<ul>
-<li>  不易于存储：UUID太长，16字节128位，通常以36长度的字符串表示，很多场景不适用。</li>
-<li>  信息不安全：基于MAC地址生成UUID的算法可能会造成MAC地址泄露，这个漏洞曾被用于寻找梅丽莎病毒的制作者位置。</li>
-<li><p>ID作为主键时在特定的环境会存在一些问题，比如做DB主键的场景下，UUID就非常不适用：</p>
-
-<p>① MySQL官方有明确的建议主键要尽量越短越好[4]，36个字符长度的UUID不符合要求。</p>
-
-<blockquote>
-<p>All indexes other than the clustered index are known as secondary indexes. In InnoDB, each record in a secondary index contains the primary key columns for the row, as well as the columns specified for the secondary index. InnoDB uses this primary key value to search for the row in the clustered index. <strong>_If the primary key is long, the secondary indexes use more space, so it is advantageous to have a short primary key_</strong>.</p>
-</blockquote>
-
-<p>② 对MySQL索引不利：如果作为数据库主键，在InnoDB引擎下，UUID的无序性可能会引起数据位置频繁变动，严重影响性能。</p></li>
-</ul>
-
-<h3 id="toc_3">类snowflake方案</h3>
-
-<p>这种方案大致来说是一种以划分命名空间（UUID也算，由于比较常见，所以单独分析）来生成ID的一种算法，这种方案把64-bit分别划分成多段，分开来标示机器、时间等，比如在snowflake中的64-bit分别表示如下图（图片来自网络）所示：</p>
-
-<p><img src="media/15277850962764/15277851805055.png" alt=""/></p>
-
-<p>41-bit的时间可以表示（1L&lt;&lt;41）/(1000L<em>3600</em>24*365)=69年的时间，10-bit机器可以分别表示1024台机器。如果我们对IDC划分有需求，还可以将10-bit分5-bit给IDC，分5-bit给工作机器。这样就可以表示32个IDC，每个IDC下可以有32台机器，可以根据自身需求定义。12个自增序列号可以表示2<sup>12个ID，理论上snowflake方案的QPS约为409.6w/s，这种分配方式可以保证在任何一个IDC的任何一台机器在任意毫秒内生成的ID都是不同的。</sup></p>
-
-<p>这种方式的优缺点是：</p>
-
-<p>优点：</p>
-
-<ul>
-<li>  毫秒数在高位，自增序列在低位，整个ID都是趋势递增的。</li>
-<li>  不依赖数据库等第三方系统，以服务的方式部署，稳定性更高，生成ID的性能也是非常高的。</li>
-<li>  可以根据自身业务特性分配bit位，非常灵活。</li>
-</ul>
-
-<p>缺点：</p>
-
-<ul>
-<li>  强依赖机器时钟，如果机器上时钟回拨，会导致发号重复或者服务会处于不可用状态。</li>
-</ul>
-
-<h4 id="toc_4">应用举例Mongdb objectID</h4>
-
-<p><a href="https://docs.mongodb.com/manual/reference/method/ObjectId/#description">MongoDB官方文档 ObjectID</a>可以算作是和snowflake类似方法，通过“时间+机器码+pid+inc”共12个字节，通过4+3+2+3的方式最终标识成一个24长度的十六进制字符。</p>
-
-<h3 id="toc_5">数据库生成</h3>
-
-<p>以MySQL举例，利用给字段设置<code>auto_increment_increment</code>和<code>auto_increment_offset</code>来保证ID自增，每次业务使用下列SQL读写MySQL得到ID号。</p>
-
-<pre><code>begin;
-REPLACE INTO Tickets64 (stub) VALUES (&#39;a&#39;);
-SELECT LAST_INSERT_ID();
-commit;
-
+<pre><code>一刹那者为一念，二十念为一瞬，二十瞬为一弹指，二十弹指为一罗预，二十罗预为一须臾，一日一夜有三十须臾。
 </code></pre>
 
-<p><img src="media/15277850962764/15277851990427.png" alt=""/></p>
+<p>那么，经过周密的计算，一<strong>瞬间</strong>为 0.36 秒, 一<strong>刹那</strong>有 0.018 秒. 一<strong>弹指</strong>长达 7.2 秒。<br/>
+<strong>（二）并发</strong><br/>
+如下图所示，在大并发的情况下，所有的请求直接访问数据库，数据库会出现连接异常。这个时候，就需要使用 redis 做一个缓冲操作，让请求先访问到 redis，而不是直接访问数据库。<br/>
+<img src="https://images.cnblogs.com/cnblogs_com/rjzheng/1202350/o_redis2.png" alt=""/></p>
 
-<p>这种方案的优缺点如下：</p>
+<h3 id="toc_5">2、使用 redis 有什么缺点</h3>
 
-<p>优点：</p>
+<p><strong>分析</strong>: 大家用 redis 这么久，这个问题是必须要了解的，基本上使用 redis 都会碰到一些问题，常见的也就几个。<br/>
+<strong>回答</strong>: 主要是四个问题<br/>
+(一) 缓存和数据库双写一致性问题<br/>
+(二) 缓存雪崩问题<br/>
+(三) 缓存击穿问题<br/>
+(四) 缓存的并发竞争问题<br/>
+这四个问题，我个人是觉得在项目中，比较常遇见的，具体解决方案，后文给出。</p>
+
+<h3 id="toc_6">3、单线程的 redis 为什么这么快</h3>
+
+<p><strong>分析</strong>: 这个问题其实是对 redis 内部机制的一个考察。其实根据博主的面试经验，很多人其实都不知道 redis 是单线程工作模型。所以，这个问题还是应该要复习一下的。<br/>
+<strong>回答</strong>: 主要是以下三点<br/>
+(一) 纯内存操作<br/>
+(二) 单线程操作，避免了频繁的上下文切换<br/>
+(三) 采用了非阻塞 <strong>I/O 多路复用机制</strong></p>
+
+<p><strong>题外话：</strong>我们现在要仔细的说一说 I/O 多路复用机制，因为这个说法实在是太通俗了，通俗到一般人都不懂是什么意思。博主打一个比方：小曲在 S 城开了一家快递店，负责同城快送服务。小曲因为资金限制，雇佣了<strong>一批</strong>快递员，然后小曲发现资金不够了，只够买<strong>一辆</strong>车送快递。<br/>
+<strong>经营方式一</strong><br/>
+客户每送来一份快递，小曲就让一个快递员盯着，然后快递员开车去送快递。慢慢的小曲就发现了这种经营方式存在下述问题</p>
 
 <ul>
-<li>  非常简单，利用现有数据库系统的功能实现，成本小，有DBA专业维护。</li>
-<li>  ID号单调自增，可以实现一些对ID有特殊要求的业务。</li>
+<li>  几十个快递员基本上时间都花在了抢车上了，大部分快递员都处在闲置状态，谁抢到了车，谁就能去送快递</li>
+<li>  随着快递的增多，快递员也越来越多，小曲发现快递店里越来越挤，没办法雇佣新的快递员了</li>
+<li>  快递员之间的协调很花时间</li>
 </ul>
 
-<p>缺点：</p>
+<p>综合上述缺点，小曲痛定思痛，提出了下面的经营方式<br/>
+<strong>经营方式二</strong><br/>
+小曲只雇佣一个快递员。然后呢，客户送来的快递，小曲按<strong>送达地点</strong>标注好，然后<strong>依次</strong>放在一个地方。最后，那个快递员<strong>依次</strong>的去取快递，一次拿一个，然后开着车去送快递，送好了就回来拿下一个快递。</p>
+
+<p><strong>对比</strong><br/>
+上述两种经营方式对比，是不是明显觉得第二种，效率更高，更好呢。在上述比喻中:</p>
 
 <ul>
-<li>  强依赖DB，当DB异常时整个系统不可用，属于致命问题。配置主从复制可以尽可能的增加可用性，但是数据一致性在特殊情况下难以保证。主从切换时的不一致可能会导致重复发号。</li>
-<li>  ID发号性能瓶颈限制在单台MySQL的读写性能。</li>
+<li>  每个快递员 ------------------&gt; 每个线程</li>
+<li>  每个快递 --------------------&gt; 每个 socket(I/O 流)</li>
+<li>  快递的送达地点 --------------&gt;socket 的不同状态</li>
+<li>  客户送快递请求 --------------&gt; 来自客户端的请求</li>
+<li>  小曲的经营方式 --------------&gt; 服务端运行的代码</li>
+<li>  一辆车 ----------------------&gt;CPU 的核数</li>
 </ul>
 
-<p>对于MySQL性能问题，可用如下方案解决：在分布式系统中我们可以多部署几台机器，每台机器设置不同的初始值，且步长和机器数相等。比如有两台机器。设置步长step为2，TicketServer1的初始值为1（1，3，5，7，9，11...）、TicketServer2的初始值为2（2，4，6，8，10...）。这是Flickr团队在2010年撰文介绍的一种主键生成策略（<a href="http://code.flickr.net/2010/02/08/ticket-servers-distributed-unique-primary-keys-on-the-cheap/">Ticket Servers: Distributed Unique Primary Keys on the Cheap</a> ）。如下所示，为了实现上述方案分别设置两台机器对应的参数，TicketServer1从1开始发号，TicketServer2从2开始发号，两台机器每次发号之后都递增2。</p>
+<p>于是我们有如下结论<br/>
+1、经营方式一就是传统的并发模型，每个 I/O 流 (快递) 都有一个新的线程 (快递员) 管理。<br/>
+2、经营方式二就是 I/O 多路复用。只有单个线程 (一个快递员)，通过跟踪每个 I/O 流的状态 (每个快递的送达地点)，来管理多个 I/O 流。</p>
 
-<pre><code>TicketServer1:
-auto-increment-increment = 2
-auto-increment-offset = 1
+<p>下面类比到真实的 redis 线程模型，如图所示<br/>
+<img src="https://images.cnblogs.com/cnblogs_com/rjzheng/1202350/o_redis3.png" alt=""/><br/>
+参照上图，简单来说，就是。我们的 redis-client 在操作的时候，会产生具有不同事件类型的 socket。在服务端，有一段 I/0 多路复用程序，将其置入队列之中。然后，文件事件分派器，依次去队列中取，转发到不同的事件处理器中。<br/>
+需要说明的是，这个 I/O 多路复用机制，redis 还提供了 select、epoll、evport、kqueue 等多路复用函数库，大家可以自行去了解。</p>
 
-TicketServer2:
-auto-increment-increment = 2
-auto-increment-offset = 2
+<h3 id="toc_7">4、redis 的数据类型，以及每种数据类型的使用场景</h3>
 
+<p><strong>分析</strong>：是不是觉得这个问题很基础，其实我也这么觉得。然而根据面试经验发现，至少百分八十的人答不上这个问题。建议，在项目中用到后，再类比记忆，体会更深，不要硬记。基本上，一个合格的程序员，五种类型都会用到。<br/>
+<strong>回答</strong>：一共五种<br/>
+(一)String<br/>
+这个其实没啥好说的，最常规的 set/get 操作，value 可以是 String 也可以是数字。一般做<strong>一些复杂的计数功能的缓存。</strong><br/>
+(二)hash<br/>
+这里 value 存放的是结构化的对象，比较方便的就是操作其中的某个字段。博主在做<strong>单点登录</strong>的时候，就是用这种数据结构存储用户信息，以 cookieId 作为 key，设置 30 分钟为缓存过期时间，能很好的模拟出类似 session 的效果。<br/>
+(三)list<br/>
+使用 List 的数据结构，可以<strong>做简单的消息队列的功能</strong>。另外还有一个就是，可以利用 lrange 命令，<strong>做基于 redis 的分页功能</strong>，性能极佳，用户体验好。<br/>
+(四)set<br/>
+因为 set 堆放的是一堆不重复值的集合。所以可以做<strong>全局去重的功能</strong>。为什么不用 JVM 自带的 Set 进行去重？因为我们的系统一般都是集群部署，使用 JVM 自带的 Set，比较麻烦，难道为了一个做一个全局去重，再起一个公共服务，太麻烦了。<br/>
+另外，就是利用交集、并集、差集等操作，可以<strong>计算共同喜好，全部的喜好，自己独有的喜好等功能</strong>。<br/>
+(五)sorted set<br/>
+sorted set 多了一个权重参数 score, 集合中的元素能够按 score 进行排列。可以做<strong>排行榜应用，取 TOP N 操作</strong>。另外，参照另一篇<a href="https://www.cnblogs.com/rjzheng/p/8972725.html">《分布式之延时任务方案解析》</a>，该文指出了 sorted set 可以用来做<strong>延时任务</strong>。最后一个应用就是可以做<strong>范围查找</strong>。</p>
+
+<h3 id="toc_8">5、redis 的过期策略以及内存淘汰机制</h3>
+
+<p><strong>分析</strong>: 这个问题其实相当重要，到底 redis 有没用到家，这个问题就可以看出来。比如你 redis 只能存 5G 数据，可是你写了 10G，那会删 5G 的数据。怎么删的，这个问题思考过么？还有，你的数据已经设置了过期时间，但是时间到了，内存占用率还是比较高，有思考过原因么?<br/>
+<strong>回答</strong>:<br/>
+redis 采用的是定期删除 + 惰性删除策略。<br/>
+<strong>为什么不用定时删除策略?</strong><br/>
+定时删除, 用一个定时器来负责监视 key, 过期则自动删除。虽然内存及时释放，但是十分消耗 CPU 资源。在大并发请求下，CPU 要将时间应用在处理请求，而不是删除 key, 因此没有采用这一策略.<br/>
+<strong>定期删除 + 惰性删除是如何工作的呢?</strong><br/>
+定期删除，redis 默认每个 100ms 检查，是否有过期的 key, 有过期 key 则删除。需要说明的是，redis 不是每个 100ms 将所有的 key 检查一次，而是随机抽取进行检查 (如果每隔 100ms, 全部 key 进行检查，redis 岂不是卡死)。因此，如果只采用定期删除策略，会导致很多 key 到时间没有删除。<br/>
+于是，惰性删除派上用场。也就是说在你获取某个 key 的时候，redis 会检查一下，这个 key 如果设置了过期时间那么是否过期了？如果过期了此时就会删除。<br/>
+<strong>采用定期删除 + 惰性删除就没其他问题了么?</strong><br/>
+不是的，如果定期删除没删除 key。然后你也没即时去请求 key，也就是说惰性删除也没生效。这样，redis 的内存会越来越高。那么就应该采用<strong>内存淘汰机制</strong>。<br/>
+在 redis.conf 中有一行配置</p>
+
+<pre><code># maxmemory-policy volatile-lru
 </code></pre>
 
-<p>假设我们要部署N台机器，步长需设置为N，每台的初始值依次为0,1,2...N-1那么整个架构就变成了如下图所示：</p>
+<p>该配置就是配内存淘汰策略的 (什么，你没配过？好好反省一下自己)<br/>
+1）noeviction：当内存不足以容纳新写入数据时，新写入操作会报错。<strong>应该没人用吧。</strong><br/>
+2）allkeys-lru：当内存不足以容纳新写入数据时，在键空间中，移除最近最少使用的 key。<strong>推荐使用，目前项目在用这种。</strong><br/>
+3）allkeys-random：当内存不足以容纳新写入数据时，在键空间中，随机移除某个 key。<strong>应该也没人用吧，你不删最少使用 Key, 去随机删。</strong><br/>
+4）volatile-lru：当内存不足以容纳新写入数据时，在设置了过期时间的键空间中，移除最近最少使用的 key。<strong>这种情况一般是把 redis 既当缓存，又做持久化存储的时候才用。不推荐</strong><br/>
+5）volatile-random：当内存不足以容纳新写入数据时，在设置了过期时间的键空间中，随机移除某个 key。<strong>依然不推荐</strong><br/>
+6）volatile-ttl：当内存不足以容纳新写入数据时，在设置了过期时间的键空间中，有更早过期时间的 key 优先移除。<strong>不推荐</strong><br/>
+ps：如果没有设置 expire 的 key, 不满足先决条件 (prerequisites); 那么 volatile-lru, volatile-random 和 volatile-ttl 策略的行为, 和 noeviction(不删除) 基本上一致。</p>
 
-<p><img src="media/15277850962764/15277852102924.png" alt=""/></p>
+<h3 id="toc_9">6、redis 和数据库双写一致性问题</h3>
 
-<p>这种架构貌似能够满足性能的需求，但有以下几个缺点：</p>
+<p><strong>分析</strong>: 一致性问题是分布式常见问题，还可以再分为最终一致性和强一致性。数据库和缓存双写，就必然会存在不一致的问题。答这个问题，先明白一个前提。就是<strong>如果对数据有强一致性要求，不能放缓存。</strong>我们所做的一切，只能保证最终一致性。另外，我们所做的方案其实从根本上来说，只能说<strong>降低不一致发生的概率</strong>，无法完全避免。因此，有强一致性要求的数据，不能放缓存。<br/>
+<strong>回答</strong>:<a href="https://www.cnblogs.com/rjzheng/p/9041659.html">《分布式之数据库和缓存双写一致性方案解析》</a>给出了详细的分析，在这里简单的说一说。首先，采取正确更新策略，先更新数据库，再删缓存。其次，因为可能存在删除缓存失败的问题，提供一个补偿措施即可，例如利用消息队列。</p>
+
+<h3 id="toc_10">7、如何应对缓存穿透和缓存雪崩问题</h3>
+
+<p><strong>分析</strong>: 这两个问题，说句实在话，一般中小型传统软件企业，很难碰到这个问题。如果有大并发的项目，流量有几百万左右。这两个问题一定要深刻考虑。<br/>
+<strong>回答</strong>: 如下所示<br/>
+<strong>缓存穿透</strong>，即黑客故意去请求缓存中不存在的数据，导致所有的请求都怼到数据库上，从而数据库连接异常。<br/>
+<strong>解决方案</strong>:<br/>
+(一) 利用互斥锁，缓存失效的时候，先去获得锁，得到锁了，再去请求数据库。没得到锁，则休眠一段时间重试<br/>
+(二) 采用异步更新策略，无论 key 是否取到值，都直接返回。value 值中维护一个缓存失效时间，缓存如果过期，异步起一个线程去读数据库，更新缓存。需要做<strong>缓存预热</strong> (项目启动前，先加载缓存) 操作。<br/>
+(三) 提供一个能迅速判断请求是否有效的拦截机制，比如，利用布隆过滤器，内部维护一系列合法有效的 key。迅速判断出，请求所携带的 Key 是否合法有效。如果不合法，则直接返回。<br/>
+<strong>缓存雪崩</strong>，即缓存同一时间大面积的失效，这个时候又来了一波请求，结果请求都怼到数据库上，从而导致数据库连接异常。<br/>
+<strong>解决方案</strong>:<br/>
+(一) 给缓存的失效时间，加上一个随机值，避免集体失效。<br/>
+(二) 使用互斥锁，但是该方案吞吐量明显下降了。<br/>
+(三) 双缓存。我们有两个缓存，缓存 A 和缓存 B。缓存 A 的失效时间为 20 分钟，缓存 B 不设失效时间。自己做缓存预热操作。然后细分以下几个小点</p>
 
 <ul>
-<li>  系统水平扩展比较困难，比如定义好了步长和机器台数之后，如果要添加机器该怎么做？假设现在只有一台机器发号是1,2,3,4,5（步长是1），这个时候需要扩容机器一台。可以这样做：把第二台机器的初始值设置得比第一台超过很多，比如14（假设在扩容时间之内第一台不可能发到14），同时设置步长为2，那么这台机器下发的号码都是14以后的偶数。然后摘掉第一台，把ID值保留为奇数，比如7，然后修改第一台的步长为2。让它符合我们定义的号段标准，对于这个例子来说就是让第一台以后只能产生奇数。扩容方案看起来复杂吗？貌似还好，现在想象一下如果我们线上有100台机器，这个时候要扩容该怎么做？简直是噩梦。所以系统水平扩展方案复杂难以实现。</li>
-<li>  ID没有了单调递增的特性，只能趋势递增，这个缺点对于一般业务需求不是很重要，可以容忍。</li>
-<li>  数据库压力还是很大，每次获取ID都得读写一次数据库，只能靠堆机器来提高性能。</li>
+<li>  I 从缓存 A 读数据库，有则直接返回</li>
+<li>  II A 没有数据，直接从 B 读数据，直接返回，并且异步启动一个更新线程。</li>
+<li>  III 更新线程同时更新缓存 A 和缓存 B。</li>
 </ul>
 
-<h1 id="toc_6">Leaf方案实现</h1>
+<h3 id="toc_11">8、如何解决 redis 的并发竞争 key 问题</h3>
 
-<p>Leaf这个名字是来自德国哲学家、数学家莱布尼茨的一句话：</p>
+<p><strong>分析</strong>: 这个问题大致就是，同时有多个子系统去 set 一个 key。这个时候要注意什么呢？大家思考过么。需要说明一下，博主提前百度了一下，发现答案基本都是推荐用 redis 事务机制。博主<strong>不推荐使用 redis 的事务机制。</strong>因为我们的生产环境，基本都是 redis 集群环境，做了数据分片操作。你一个事务中有涉及到多个 key 操作的时候，这多个 key 不一定都存储在同一个 redis-server 上。因此，<strong>redis 的事务机制，十分鸡肋。</strong><br/>
+<strong>回答:</strong> 如下所示<br/>
+(1) 如果对这个 key 操作，<strong>不要求顺序</strong><br/>
+这种情况下，准备一个分布式锁，大家去抢锁，抢到锁就做 set 操作即可，比较简单。<br/>
+(2) 如果对这个 key 操作，<strong>要求顺序</strong><br/>
+假设有一个 key1, 系统 A 需要将 key1 设置为 valueA, 系统 B 需要将 key1 设置为 valueB, 系统 C 需要将 key1 设置为 valueC.<br/>
+期望按照 key1 的 value 值按照 valueA--&gt;valueB--&gt;valueC 的顺序变化。这种时候我们在数据写入数据库的时候，需要保存一个时间戳。假设时间戳如下</p>
 
-<blockquote>
-<p>There are no two identical leaves in the world</p>
-
-<p>&quot;世界上没有两片相同的树叶&quot;</p>
-</blockquote>
-
-<p>综合对比上述几种方案，每种方案都不完全符合我们的要求。所以Leaf分别在上述第二种和第三种方案上做了相应的优化，实现了Leaf-segment和Leaf-snowflake方案。</p>
-
-<h3 id="toc_7">Leaf-segment数据库方案</h3>
-
-<p>第一种Leaf-segment方案，在使用数据库的方案上，做了如下改变：</p>
-
-<ul>
-<li>  原方案每次获取ID都得读写一次数据库，造成数据库压力大。改为利用proxy server批量获取，每次获取一个segment(step决定大小)号段的值。用完之后再去数据库获取新的号段，可以大大的减轻数据库的压力。</li>
-<li>  各个业务不同的发号需求用biz_tag字段来区分，每个biz-tag的ID获取相互隔离，互不影响。如果以后有性能需求需要对数据库扩容，不需要上述描述的复杂的扩容操作，只需要对biz_tag分库分表就行。</li>
-</ul>
-
-<p>数据库表设计如下：</p>
-
-<pre><code>+-------------+--------------+------+-----+-------------------+-----------------------------+
-| Field       | Type         | Null | Key | Default           | Extra                       |
-+-------------+--------------+------+-----+-------------------+-----------------------------+
-| biz_tag     | varchar(128) | NO   | PRI |                   |                             |
-| max_id      | bigint(20)   | NO   |     | 1                 |                             |
-| step        | int(11)      | NO   |     | NULL              |                             |
-| desc        | varchar(256) | YES  |     | NULL              |                             |
-| update_time | timestamp    | NO   |     | CURRENT_TIMESTAMP | on update CURRENT_TIMESTAMP |
-+-------------+--------------+------+-----+-------------------+-----------------------------+
-
+<pre><code>系统A key 1 {valueA  3:00}
+系统B key 1 {valueB  3:05}
+系统C key 1 {valueC  3:10}
 </code></pre>
 
-<p>重要字段说明：biz_tag用来区分业务，max_id表示该biz_tag目前所被分配的ID号段的最大值，step表示每次分配的号段长度。原来获取ID每次都需要写数据库，现在只需要把step设置得足够大，比如1000。那么只有当1000个号被消耗完了之后才会去重新读写一次数据库。读写数据库的频率从1减小到了1/step，大致架构如下图所示：</p>
+<p>那么，假设这会系统 B 先抢到锁，将 key1 设置为 {valueB 3:05}。接下来系统 A 抢到锁，发现自己的 valueA 的时间戳早于缓存中的时间戳，那就不做 set 操作了。以此类推。</p>
 
-<p><img src="media/15277850962764/15277852227891.png" alt=""/></p>
+<p>其他方法，比如利用队列，将 set 方法变成串行访问也可以。总之，灵活变通。</p>
 
-<p>test_tag在第一台Leaf机器上是1~1000的号段，当这个号段用完时，会去加载另一个长度为step=1000的号段，假设另外两台号段都没有更新，这个时候第一台机器新加载的号段就应该是3001~4000。同时数据库对应的biz_tag这条数据的max_id会从3000被更新成4000，更新号段的SQL语句如下：</p>
+<h2 id="toc_12">总结</h2>
 
-<pre><code class="language-sql">Begin
-UPDATE table SET max_id=max_id+step WHERE biz_tag=xxx
-SELECT tag, max_id, step FROM table WHERE biz_tag=xxx
-COMMIT
-</code></pre>
-
-<p>这种模式有以下优缺点：</p>
-
-<p>优点：</p>
-
-<ul>
-<li>  Leaf服务可以很方便的线性扩展，性能完全能够支撑大多数业务场景。</li>
-<li>  ID号码是趋势递增的8byte的64位数字，满足上述数据库存储的主键要求。</li>
-<li>  容灾性高：Leaf服务内部有号段缓存，即使DB宕机，短时间内Leaf仍能正常对外提供服务。</li>
-<li>  可以自定义max_id的大小，非常方便业务从原有的ID方式上迁移过来。</li>
-</ul>
-
-<p>缺点：</p>
-
-<ul>
-<li>  ID号码不够随机，能够泄露发号数量的信息，不太安全。</li>
-<li>  TP999数据波动大，当号段使用完之后还是会hang在更新数据库的I/O上，tg999数据会出现偶尔的尖刺。</li>
-<li>  DB宕机会造成整个系统不可用。</li>
-</ul>
-
-<h3 id="toc_8">双buffer优化</h3>
-
-<p>对于第二个缺点，Leaf-segment做了一些优化，简单的说就是：</p>
-
-<p>Leaf 取号段的时机是在号段消耗完的时候进行的，也就意味着号段临界点的ID下发时间取决于下一次从DB取回号段的时间，并且在这期间进来的请求也会因为DB号段没有取回来，导致线程阻塞。如果请求DB的网络和DB的性能稳定，这种情况对系统的影响是不大的，但是假如取DB的时候网络发生抖动，或者DB发生慢查询就会导致整个系统的响应时间变慢。</p>
-
-<p>为此，我们希望DB取号段的过程能够做到无阻塞，不需要在DB取号段的时候阻塞请求线程，即当号段消费到某个点时就异步的把下一个号段加载到内存中。而不需要等到号段用尽的时候才去更新号段。这样做就可以很大程度上的降低系统的TP999指标。详细实现如下图所示：</p>
-
-<p><img src="media/15277850962764/15277852373915.png" alt=""/></p>
-
-<p>采用双buffer的方式，Leaf服务内部有两个号段缓存区segment。当前号段已下发10%时，如果下一个号段未更新，则另启一个更新线程去更新下一个号段。当前号段全部下发完后，如果下个号段准备好了则切换到下个号段为当前segment接着下发，循环往复。</p>
-
-<ul>
-<li><p>每个biz-tag都有消费速度监控，通常推荐segment长度设置为服务高峰期发号QPS的600倍（10分钟），这样即使DB宕机，Leaf仍能持续发号10-20分钟不受影响。</p></li>
-<li><p>每次请求来临时都会判断下个号段的状态，从而更新此号段，所以偶尔的网络抖动不会影响下个号段的更新。</p></li>
-</ul>
-
-<h3 id="toc_9">Leaf高可用容灾</h3>
-
-<p>对于第三点“DB可用性”问题，我们目前采用一主两从的方式，同时分机房部署，Master和Slave之间采用<strong>半同步方式[5]</strong>同步数据。同时使用公司Atlas数据库中间件(已开源，改名为<a href="http://tech.meituan.com/dbproxy-introduction.html">DBProxy</a>)做主从切换。当然这种方案在一些情况会退化成异步模式，甚至在<strong>非常极端</strong>情况下仍然会造成数据不一致的情况，但是出现的概率非常小。如果你的系统要保证100%的数据强一致，可以选择使用“类Paxos算法”实现的强一致MySQL方案，如MySQL 5.7前段时间刚刚GA的<a href="https://dev.mysql.com/doc/refman/5.7/en/group-replication.html">MySQL Group Replication</a>。但是运维成本和精力都会相应的增加，根据实际情况选型即可。</p>
-
-<p><img src="media/15277850962764/15277852467563.png" alt=""/></p>
-
-<p>同时Leaf服务分IDC部署，内部的服务化框架是“MTthrift RPC”。服务调用的时候，根据负载均衡算法会优先调用同机房的Leaf服务。在该IDC内Leaf服务不可用的时候才会选择其他机房的Leaf服务。同时服务治理平台OCTO还提供了针对服务的过载保护、一键截流、动态流量分配等对服务的保护措施。</p>
-
-<h1 id="toc_10">Leaf-snowflake方案</h1>
-
-<p>Leaf-segment方案可以生成趋势递增的ID，同时ID号是可计算的，不适用于订单ID生成场景，比如竞对在两天中午12点分别下单，通过订单id号相减就能大致计算出公司一天的订单量，这个是不能忍受的。面对这一问题，我们提供了 Leaf-snowflake方案。</p>
-
-<p><img src="media/15277850962764/15277852551504.png" alt=""/></p>
-
-<p>Leaf-snowflake方案完全沿用snowflake方案的bit位设计，即是“1+41+10+12”的方式组装ID号。对于workerID的分配，当服务集群数量较小的情况下，完全可以手动配置。Leaf服务规模较大，动手配置成本太高。所以使用Zookeeper持久顺序节点的特性自动对snowflake节点配置wokerID。Leaf-snowflake是按照下面几个步骤启动的：</p>
-
-<ol>
-<li> 启动Leaf-snowflake服务，连接Zookeeper，在leaf_forever父节点下检查自己是否已经注册过（是否有该顺序子节点）。</li>
-<li> 如果有注册过直接取回自己的workerID（zk顺序节点生成的int类型ID号），启动服务。</li>
-<li> 如果没有注册过，就在该父节点下面创建一个持久顺序节点，创建成功后取回顺序号当做自己的workerID号，启动服务。</li>
-</ol>
-
-<p><img src="media/15277850962764/15277852658209.png" alt=""/></p>
-
-<h3 id="toc_11">弱依赖ZooKeeper</h3>
-
-<p>除了每次会去ZK拿数据以外，也会在本机文件系统上缓存一个workerID文件。当ZooKeeper出现问题，恰好机器出现问题需要重启时，能保证服务能够正常启动。这样做到了对三方组件的弱依赖。一定程度上提高了SLA</p>
-
-<h3 id="toc_12">解决时钟问题</h3>
-
-<p>因为这种方案依赖时间，如果机器的时钟发生了回拨，那么就会有可能生成重复的ID号，需要解决时钟回退的问题。</p>
-
-<p><img src="media/15277850962764/15277852832400.png" alt=""/></p>
-
-<p>参见上图整个启动流程图，服务启动时首先检查自己是否写过ZooKeeper leaf_forever节点：</p>
-
-<ol>
-<li> 若写过，则用自身系统时间与leaf_forever/${self}节点记录时间做比较，若小于leaf_forever/${self}时间则认为机器时间发生了大步长回拨，服务启动失败并报警。</li>
-<li> 若未写过，证明是新服务节点，直接创建持久节点leaf_forever/${self}并写入自身系统时间，接下来综合对比其余Leaf节点的系统时间来判断自身系统时间是否准确，具体做法是取leaf_temporary下的所有临时节点(所有运行中的Leaf-snowflake节点)的服务IP：Port，然后通过RPC请求得到所有节点的系统时间，计算sum(time)/nodeSize。</li>
-<li> 若abs( 系统时间-sum(time)/nodeSize ) &lt; 阈值，认为当前系统时间准确，正常启动服务，同时写临时节点leaf_temporary/${self} 维持租约。</li>
-<li> 否则认为本机系统时间发生大步长偏移，启动失败并报警。</li>
-<li> 每隔一段时间(3s)上报自身系统时间写入leaf_forever/${self}。</li>
-</ol>
-
-<p>由于强依赖时钟，对时间的要求比较敏感，在机器工作时NTP同步也会造成秒级别的回退，建议可以直接关闭NTP同步。要么在时钟回拨的时候直接不提供服务直接返回ERROR_CODE，等时钟追上即可。<strong>或者做一层重试，然后上报报警系统，更或者是发现有时钟回拨之后自动摘除本身节点并报警</strong>，如下：</p>
-
-<pre><code class="language-java"> //发生了回拨，此刻时间小于上次发号时间
- if (timestamp &lt; lastTimestamp) {
-
-            long offset = lastTimestamp - timestamp;
-            if (offset &lt;= 5) {
-                try {
-                    //时间偏差大小小于5ms，则等待两倍时间
-                    wait(offset &lt;&lt; 1);//wait
-                    timestamp = timeGen();
-                    if (timestamp &lt; lastTimestamp) {
-                       //还是小于，抛异常并上报
-                        throwClockBackwardsEx(timestamp);
-                      }    
-                } catch (InterruptedException e) {  
-                   throw  e;
-                }
-            } else {
-                //throw
-                throwClockBackwardsEx(timestamp);
-            }
-        }
- //分配ID
-</code></pre>
-
-<p><strong>从上线情况来看，在2017年闰秒出现那一次出现过部分机器回拨，由于Leaf-snowflake的策略保证，成功避免了对业务造成的影响。</strong></p>
-
-<h1 id="toc_13">Leaf现状</h1>
-
-<p>Leaf在美团点评公司内部服务包含金融、支付交易、餐饮、外卖、酒店旅游、猫眼电影等众多业务线。目前Leaf的性能在4C8G的机器上QPS能压测到近5w/s，TP999 1ms，已经能够满足大部分的业务的需求。每天提供亿数量级的调用量，作为公司内部公共的基础技术设施，必须保证高SLA和高性能的服务，我们目前还仅仅达到了及格线，还有很多提高的空间。</p>
-
-<h1 id="toc_14">作者简介</h1>
-
-<p>照东，美团点评基础架构团队成员，主要参与<a href="http://tech.meituan.com/mt-mtrace.html">美团大型分布式链路跟踪系统Mtrace</a>和美团点评分布式ID生成系统Leaf的开发工作。曾就职于阿里巴巴，2016年7月加入美团。</p>
-
-<p>最后做一个招聘广告：如果你对大规模分布式环境下的服务治理、分布式会话链追踪等系统感兴趣，诚挚欢迎投递简历至：zhangjinlu#meituan.com。</p>
-
-<h1 id="toc_15">参考资料</h1>
-
-<ol>
-<li> 施瓦茨. 高性能MySQL[M]. 电子工业出版社, 2010:162-171.</li>
-<li> <a href="https://zh.wikipedia.org/wiki/%E9%80%9A%E7%94%A8%E5%94%AF%E4%B8%80%E8%AF%86%E5%88%AB%E7%A0%81">维基百科：UUID</a>.</li>
-<li> <a href="https://github.com/twitter/snowflake">snowflake</a>.</li>
-<li> <a href="https://dev.mysql.com/doc/refman/5.7/en/innodb-index-types.html">MySQL: Clustered and Secondary Indexes</a>.</li>
-<li> <a href="https://dev.mysql.com/doc/refman/5.5/en/replication-semisync.html">半同步复制 Semisynchronous Replication</a>.</li>
-</ol>
+<p>本文对 redis 的常见问题做了一个总结。大部分是博主自己在工作中遇到，以及以前面试别人的时候，爱问的一些问题。另外，<strong>不推荐大家临时抱佛脚</strong>，真正碰到一些有经验的工程师，其实几下就能把你问懵。最后，希望大家有所收获吧。</p>
 
                         
                       </div>
@@ -430,10 +307,10 @@ COMMIT
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/6/1</span>
+                    <span class="date">2018/6/5</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Persistence.html'>Persistence</a></span>
+          					    <span class="posted-in"><a href='Solution.html'>Solution</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -523,31 +400,31 @@ COMMIT
 	      
 		      
 			      <li class="post">
-			        <a href="15337171704262.html">Introduction to Testing with Spock and Groovy</a>
+			        <a href="15358820607055.html">Java 8 Concurrency Tutorial: Atomic Variables and ConcurrentMap</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15336595358049.html">10 Excellent Ways to Secure Your Spring Boot Application</a>
+			        <a href="15358774987730.html">Java 8 Concurrency Tutorial: Synchronization and Locks</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15336592302916.html">First MicroProfile.io application using Java Module System</a>
+			        <a href="15358757119900.html">Java 8 Concurrency Tutorial: Threads and Executors</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15332186142588.html">Jenkins 的 Pipeline 脚本在美团餐饮 SaaS 中的实践</a>
+			        <a href="15358756631902.html">Java 8 Stream Tutorial</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15331749691571.html">基于ZooKeeper的分布式锁和队列</a>
+			        <a href="15358753472382.html">Migrate Maven Projects to Java 11</a>
 			      </li>
 		     
 		  

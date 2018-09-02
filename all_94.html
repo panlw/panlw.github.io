@@ -105,244 +105,598 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15274395979385.html">
+                <a class="clearlink" href="15282771049157.html">
                 
-                  <h1>不理解Zookeeper一致性原理，谈何异地多活改造</h1>
+                  <h1>ELK: Using a Centralized Logging Architecture</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
-                        	<p>原创： 陈东明 DBAplus社群 <em>1周前</em></p>
+                        	<blockquote>
+<p>by Alexandre Lourenco  ·  Mar. 07, 15 · DevOps Zone · Tutorial<br/>
+<a href="https://dzone.com/articles/elk-using-centralized-logging">https://dzone.com/articles/elk-using-centralized-logging</a><br/>
+<a href="https://dzone.com/articles/elk-using-centralized-logging-0">https://dzone.com/articles/elk-using-centralized-logging-0</a></p>
+</blockquote>
 
-<p><strong>作者介绍</strong><br/>
-*<strong><em>陈东明</em></strong>*，饿了么北京技术中心架构组负责人，负责饿了么的产品线架构设计及基础架构研发工作。曾任百度架构师，负责百度即时通讯产品的架构设计。具有丰富的大规模系统构建和基础架构的研发经验，善于复杂业务需求下的大并发、分布式系统设计和持续优化。<br/>
-在2017年饿了么做异地多活建设之时，我的团队承担了Zookeeper的异地多活改造。在此期间，我听到了关于Zookeeper一致性的两种不同说法：</p>
+<p>Welcome, dear reader, to another post from my blog. On this new series, we will talk about a architecture specially designed to process data from log files coming from applications, with the junction of 3 tools, Logstash, ElasticSearch and Kibana. But after all, do we really need such a structure to process log files?</p>
+
+<p><strong>Stacks of log</strong></p>
+
+<p>On a company ecosystem, there is lots of systems, like the CRM, ERP, etc. On such environments, it is common for the systems to produce tons of logs, which provide not only a real-time analysis of the technical status of the software, but could also provide some business information too, like a log of a customer&#39;s behavior  on a  shopping cart, for example. To dive into this useful source of information, enters the ELK architecture, which name came from the initials of the software involved: ElasticSearch, LogStash and Kibana. The picture below shows in a macro vision the flow between the tools:</p>
+
+<p><img src="https://dl.dropboxusercontent.com/s/4kqrjggb1vqfqhq/architectureELKdzone.jpg?dl=0" alt=""/></p>
+
+<p>As we can see, there&#39;s a clear separation of concerns between the tools, where which one has his own individual part on the processing of the log data:</p>
 
 <ul>
-<li>一种说法是Zookeeper是最终一致性，由于多副本，以及保证大多数成功的Zab协议，当一个客户端进程写入一个新值，另一个客户端进程不能保证马上就会读到，但能保证最终会读到这个值；</li>
-<li>另一种说法是Zookeeper的Zab协议类似于Paxos协议，并且提供了强一致性。</li>
+<li>  <strong>Logstash</strong>: Responsible for collect the data, make transformations like parsing - using regular expressions - adding fields, formatting as structures like JSON, etc and finally sending the data to various destinations, like a ElasticSearch cluster. Later on this post we will see more detail about this useful tool;</li>
+<li>  <strong>ElasticSearch</strong>: RESTful data indexer, ElasticSearch provides a clustered solution to make searches and analysis on a set of data. On the second part of our series, we will see more about this tool;</li>
+<li>  <strong>Kibana</strong>: Web-based application, responsible for providing a light and easy-to-use dashboard tool. On the third and last part of our series, we will see more of this tool;</li>
 </ul>
 
-<p>每当听到这两种说法，我都想纠正一下——不对，Zookeeper是顺序一致性（sequential consistency）。但解释起来比较复杂，需要一篇长文来说明，于是就有了本文，下面就和大家一起讨论下我的看法。</p>
+<p>So, to begin our road in the ELK stack, let&#39;s begin by talking about the tool responsible for integrating our data: LogStash.</p>
+
+<p><strong>LogStash installation</strong></p>
+
+<p>To install, all we need to do is unzip the file we get from LogStash&#39;s site and run the binaries on the bin folder. The only pre-requisite for the tool is to have Java installed and configured in the environment. If the reader wants to follow my instructions with the same system then me, I am using Ubuntu 14.10 with Java 8, which can be downloaded from Oracle&#39;s site <a href="http://www.oracle.com/technetwork/java/javase/downloads/jdk8-downloads-2133151.html">here</a>.</p>
+
+<p>With Java installed and configured, we begin by downloading and unziping the file. To do this, we open a terminal and input:</p>
+
+<pre><code class="language-sh">curl https://download.elasticsearch.org/logstash/logstash/logstash-1.4.2.tar.gz | tar -xz
+</code></pre>
+
+<p>After the download, we will have LogStash on a folder on the same place we run our &#39;curl&#39; command. On the LogStash terminology, we have 4 types of configurations we can make for a stream, named:</p>
+
+<ul>
+<li>  <strong>input</strong>: On this configuration, we put the sources of our streams, that can range from polling files of a file system to more complex inputs such as a Amazon SQS queue and even Twitter;</li>
+<li>  <strong>codec</strong>: On this configuration we make transformations on the data, like turning into a JSON structure, or grouping together lines that are semantically related, like for example, a Java&#39;s stack trace;</li>
+<li>  <strong>filter</strong>: On this configuration we make operations such as parsing data from/to different formats, removal of special characters and checksums for deduplication;</li>
+<li>  <strong>output</strong>: On this configuration we define the destinations for the processed data, such as a ElasticSearch cluster, AWS SQS, Nagios etc;</li>
+</ul>
+
+<p>Now that we have established LogStash&#39;s configuration structure, let&#39;s begin with our first execution. In LogStash we have two ways to configure our execution, one way by providing the settings on the start command itself and the other one is by providing a configuration file for the command. The simplest way to boot a LogStash&#39;s stream is by setting the input and output as the console itself, to make this execution, we open a terminal, navigate to the bin folder of our LogStash&#39;s installation and execute the following command:</p>
+
+<pre>./logstash -e 'input { stdin { } } output { stdout {} }'</pre>
+
+<p>As we can see after we run the command, we booted LogStash, setting the console as the input and the output, without any transformation or filtering. To test, we simply input anything on the console, seeing that our message is displayed back by the tool:</p>
+
+<p><img src="https://dl.dropboxusercontent.com/s/c2s4wiuo585hxaj/ELKpart1image1.jpg?dl=0" alt=""/></p>
+
+<p>Now that we get the installation out of the way, let&#39;s begin with the actual lab. Unfortunately -or not, depending on the point of view -, it would take us a lot of time to show all the features of what we can do with the tool, so to make a short but illustrative example, we will start 2 logstash streams, to do the following:</p>
+
+<p>1st stream:</p>
+
+<ul>
+<li>  The input will be made by a java program, which will produce a log file with log4j, representing technical information;</li>
+<li>  For now, we will just print logstash&#39;s events on the console, using the rubydebug codec. On our next part on the series, we will return to this configuration and change the output to send the events to elasticsearch;</li>
+</ul>
+
+<p>2nd stream:</p>
+
+<ul>
+<li>  The input will be made by the same java program, which will produce a positional file, representing business information of costumers and orders;</li>
+<li>  We will then use the grok filter to parse the data of the positional file into separated fields, producing the data for the output step;</li>
+<li>  Finally, we use the mongodb output, to save our data - filtering to only persist the orders - on a  Mongodb collection;</li>
+</ul>
+
+<p>With the streams defined, we can begin our coding. First, let&#39;s create the java program which will generate the inputs for the streams. The code for the program can be seen bellow:</p>
+
+<pre><code class="language-java">package com.technology.alexandreesl;
+import java.io.FileWriter;
+import java.io.IOException;
+import java.io.PrintWriter;
+import java.util.ArrayList;
+import java.util.Date;
+import java.util.List;
+import org.apache.log4j.Logger;
+
+public class LogStashProvider {
+    private static Logger logger = Logger.getLogger(LogStashProvider.class);
+    public static void main(String[] args) throws IOException {
+        try {
+            logger.info(&quot;STARTING DATA COLLECTION&quot;);
+            List&lt;String&gt; data = new ArrayList&lt;String&gt;();
+            Customer customer = new Customer();
+            customer.setName(&quot;Alexandre&quot;);
+            customer.setAge(32);
+            customer.setSex(&#39;M&#39;);
+            customer.setIdentification(&quot;4434554567&quot;);
+            List&lt;Order&gt; orders = new ArrayList&lt;Order&gt;();
+            for (int counter = 1; counter &lt; 10; counter++) {
+                Order order = new Order();
+                order.setOrderId(counter);
+                order.setProductId(counter);
+                order.setCustomerId(customer.getIdentification());
+                order.setQuantity(counter);
+                orders.add(order);
+            }
+            logger.info(&quot;FETCHING RESULTS INTO DESTINATION&quot;);
+            PrintWriter file = new PrintWriter(new FileWriter(
+                &quot;/home/alexandreesl/logstashdataexample/data&quot;
+                    + new Date().getTime() + &quot;.txt&quot;));
+            file.println(&quot;1&quot; + customer.getName() + customer.getSex()
+                + customer.getAge() + customer.getIdentification());
+            for (Order order : orders) {
+                file.println(&quot;2&quot; + order.getOrderId() + order.getCustomerId()
+                    + order.getProductId() + order.getQuantity());
+            }
+            logger.info(&quot;CLEANING UP!&quot;);
+            file.flush();
+            file.close();
+// forcing a error to simulate stack traces
+            PrintWriter fileError = new PrintWriter(new FileWriter(
+                &quot;/etc/nopermission.txt&quot;));
+        } catch (Exception e) {
+            logger.error(&quot;ERROR!&quot;, e);
+        }
+    }
+}
+</code></pre>
+
+<p>As we can see, it is a very simple class, that uses log4j to generate some log and output a positional file representing data from customers and orders and at the end, try to create a file on a folder we don&#39;t have permission to write by default,&quot;forcing&quot; a error to produce a stack trace. The complete code for the program can be found <a href="https://github.com/alexandreesl/LogStashProvider.git">here</a>. Now that we have made our data generator, let&#39;s begin the configuration for logstash. The configuration for our first example is the following:</p>
+
+<pre><code class="language-conf">input {
+    log4j {
+        port =&gt; 1500
+        type =&gt; &quot;log4j&quot;
+        tags =&gt; [ &quot;technical&quot;, &quot;log&quot;]
+    }
+}
+output {
+    stdout { codec =&gt; rubydebug }
+}
+</code></pre>
 
-<p>*<strong><em>什么是sequetial consistency</em></strong>*</p>
+<p>To run the script, let&#39;s create a file called&quot;config1.conf&quot;and save the file with the script on the&quot;bin&quot;folder of logstash&#39;s installation folder. Finally, we run the script with the following command:</p>
 
-<p>*<strong><em>从Zookeeper的文档中我们可以看到，里面明确写出它的一致性是sequential consistency。</em></strong>*（详细参见Zookeeper官方文档[1]）</p>
+<pre><code class="language-sh">./logstash -f config1.conf
+</code></pre>
 
-<p>那么，什么是sequential consistency呢？</p>
+<p>This will start logstash process with the configurations we provided. To test, simply run the java program we coded earlier and we will see a sequence of message events in logstash&#39;s console window, generated by the rubydebug codec, like the one bellow, for example:</p>
 
-<p>sequential consistency是Lamport在1979年首次提出的。（详细参见他的这篇论文：<em>How to make a multiprocessor computer that correctly executes multiprocess programs</em>）</p>
+<pre><code class="language-log">{
+&quot;message&quot; =&gt; &quot;ERROR!&quot;,
+&quot;@version&quot; =&gt; &quot;1&quot;,
+&quot;@timestamp&quot; =&gt; &quot;2015-01-24T19:08:10.872Z&quot;,
+&quot;type&quot; =&gt; &quot;log4j&quot;,
+&quot;tags&quot; =&gt; [
+[0] &quot;technical&quot;,
+[1] &quot;log&quot;
+],
+&quot;host&quot; =&gt; &quot;127.0.0.1:34412&quot;,
+&quot;path&quot; =&gt; &quot;com.technology.alexandreesl.LogStashProvider&quot;,
+&quot;priority&quot; =&gt; &quot;ERROR&quot;,
+&quot;logger_name&quot; =&gt; &quot;com.technology.alexandreesl.LogStashProvider&quot;,
+&quot;thread&quot; =&gt; &quot;main&quot;,
+&quot;class&quot; =&gt; &quot;com.technology.alexandreesl.LogStashProvider&quot;,
+&quot;file&quot; =&gt; &quot;LogStashProvider.java:70&quot;,
+&quot;method&quot; =&gt; &quot;main&quot;,
+&quot;stack_trace&quot; =&gt; &quot;java.io.FileNotFoundException: /etc/nopermission.txt (Permission denied)\n\tat java.io.FileOutputStream.open(Native Method)\n\tat java.io.FileOutputStream.&lt;init&gt;(FileOutputStream.java:213)\n\tat java.io.FileOutputStream.&lt;init&gt;(FileOutputStream.java:101)\n\tat java.io.FileWriter.&lt;init&gt;(FileWriter.java:63)\n\tat com.technology.alexandreesl.LogStashProvider.main(LogStashProvider.java:66)&quot;
+}
+</code></pre>
 
-<p>论文中定义，当满足下面这个条件时就是sequential consistency：</p>
+<p>Now, let&#39;s move on to the next stream. First, we create another file, called&quot;config2.conf&quot;, on the same folder we created the first one. On this new file, we create the following configuration:</p>
 
-<p>“<br/>
-<em>the result of any execution is the same as if the operations of all the processors were executed in some sequential order, and the operations of each individual processor appear in this sequence in the order specified by its program.</em></p>
+<pre><code class="language-conf">input {
+    file {
+        path = &gt; &quot;/home/alexandreesl/logstashdataexample/data*.txt&quot;
+        start_position = &gt; &quot;beginning&quot;
+    }
+}
+filter {
+    grok {
+        match = &gt; [&quot;message&quot;, &quot;(?&lt;file_type&gt;.{1})(?&lt;name&gt;.{9})(?&lt;sex&gt;.{1})(?&lt;age&gt;.{2})(?&lt;identification&gt;.{10})&quot;, &quot;message&quot;, &quot;(?&lt;file_type&gt;.{1})(?&lt;order_id&gt;.{1})(?&lt;costumer_id&gt;.{10})(?&lt;product_id&gt;.{1})(?&lt;quantity&gt;.{1})&quot;]
+    }
+}
+output {
+    stdout {codec = &gt; rubydebug}
+    if [file_type] == &quot;2&quot; {
+        mongodb {
+            collection = &gt; &quot;testData&quot;
+            database = &gt; &quot;mydb&quot;
+            uri = &gt; &quot;mongodb://localhost&quot;
+        }
+    }
+}
+</code></pre>
 
-<p>这段英文定义很晦涩（这是Lamport大神的一贯风格，严谨但晦涩，Paxos协议也是如此），我第一次看到时的感觉是：“这是什么鬼？”为啥每个英文单词我都认识，但就是不知道他在说什么？第一次看到这句话和我有同感的小伙伴留个言吧~</p>
+<p>With the configuration created, we can run our second example. Before we do that, however, let&#39;s dive a little on the configuration we just made. First, we used the file input, which will make logstash keep monitoring the files on the folder and processing them as they appear on the input folder.</p>
 
-<p>后文我再把这段英文定义翻译成中文，现在我们先看看这篇论文的标题和定义中出现的一个关键词，来说明一下sequential consistency的应用范围。</p>
+<p>Next, we create a filter with the grok plugin. This filter uses combinations of regular expressions, that parses the data from the input. The plugin comes with more then 100 patterns pre-made that helps the development. Another useful tool in the use of grok is a site where we could test our expressions before use. Both links are available on the links section at the end of this post.</p>
 
-<p>论文的标题和定义中包含<strong>“multiprocessor</strong>”****这个词，multiprocessor是多核处理器的意思。从这个关键字来看，sequential consistency是用来定义多核处理器和跑在多核处理器上的程序的一个特性。Lamport这篇论文的标题可以翻译成：“如何让具有多核处理器的计算机正确执行多进程程序”，也就是说如果一个多核处理器具有sequential consistency的特性，这个多核处理器就可以正确运行，后面我会解释这个正确运行是什么意思（也就是本文后面讲到的sequential consistency的作用）。</p>
+<p>Finally, we use the mongodb plugin, where we reference our logstash for a database and collection of a mongodb instance, where we will insert the data from the file into mongodb&#39;s documents. We also used again the rubydebug codec, so we can also see the processing of the files on the console. The reader will note that we used a&quot;if&quot;statement before the configuration of the mongodb output. After we parse the data with grok, we can use the newly created fields to do some logic on our stream. In this case, we filter to only process data with the type&quot;2&quot;, so only the order&#39;s data goes to the collection on mongodb, instead of all the data. We could have expanded more on this example, like saving the data into two different collections, but for the idea of passing a general view of the structure of logstash for the reader, the present logic will suffice.</p>
 
-<p>从这个标题我们还可以看出，sequential consistency<strong>应该是个并发编程（concurrent programming）领域的概念</strong>。但我们现在常常在分布式系统领域讨论sequential consistency，比如本文主要讨论的Zookeeper（Zookeeper很明显是一个分布式系统）的一致性。实际上，多核处理器上运行的多个程序，其实也是一种分布式系统（Lamport在他的这篇 <em>Time, Clocks, and the Ordering of Events in a Distributed System</em> 分布式系统的开山之作中也阐述了这个观点）。所以虽然sequential consistency最早在并发编程中提出，但是它可以<strong>应用在分布式系统中</strong>，比如本文讨论的Zookeeper这种分布式存储系统。另外一个比较重要的Linearizability（线性一致性），也是在并发编程中最早提出的，目前也被广泛应用在分布式系统领域中。</p>
+<p><strong>PS:</strong> This example assumes the reader has mongodb installed and running on the default port of his environment, with a db &quot;mydb&quot; and a collection &quot;testData&quot; created. If the reader doesn&#39;t have mongodb, the instructions can be found on the <a href="http://docs.mongodb.org/manual/tutorial/getting-started/">official documentation</a>.</p>
 
-<p>接下来我们尝试翻译一下上文那段晦涩的定义。做这段翻译让我找到了上学时做阅读理解的感觉，我先不直接翻译，因为就算我把它翻译成中文，估计很多人还是会有“为啥每个中文字我都懂，还是不知道在说什么”的感觉。</p>
+<p>Finally, with everything installed and configured, we run the script, with the following command:</p>
 
-<p>首先，我来解释一下个别的词。首先，<strong>“any execution”</strong>是什么意思？你有多个程序（program）在多核处理器上运行，例如你有两个程序，第一个程序叫P1，它的代码如下： <br/>
-P1_write(x);<br/>
-P1_read(y);</p>
+<pre>./logstash -f config2.conf</pre>
 
-<p>第二个程序叫P2，代码如下：<br/>
-P2_write(u);<br/>
-P2_read(v);</p>
+<p>After logstash&#39;s start, if we run our program to generate a file, we will see logstash working the data, like the screen bellow:</p>
 
-<p>从理论上来讲，两个程序运行在两个独立处理器的核上，有多少种执行的可能？我列举其中几种来举例说明。</p>
+<p><img src="https://dl.dropboxusercontent.com/s/sjh61dwr5j50t1e/logstash2.png?dl=0" alt=""/></p>
 
-<p>第一种：<br/>
-P1---write(x)--------read(y)--------<br/>
-P2-----------write(u)-------read(v)-</p>
+<p>And finally, if we query the collection on mongodb, we see the data is persisted:</p>
 
-<p>第二种：</p>
+<p><img src="https://dl.dropboxusercontent.com/s/2rk8e45qly5glkf/logstash3.png?dl=0" alt=""/></p>
 
-<p>P1----------write(x)-read(y)--------<br/>
-P2--write(u)----------------read(v)-</p>
+<p><strong>Conclusion</strong></p>
 
-<p>第三种：<br/>
-P1---read(y)----------write(x)------<br/>
-P2-----------write(u)---------read(v)-</p>
+<p>And so we conclude the first part of our series. With a simple usage, logstash prove to be a useful tool in the integration of information from different formats and sources, specially log-related. In the next part of our series, we will dive in the next tool of our stack: ElasticSearch. Until next time</p>
 
-<p>我们有24种可能的执行顺序，也就是这四个操作任意的排列组合，也就是4!=24。类似第一种和第二种这样的可能性很好理解。为什么会出现像第三种这样的可能的执行呢？那是因为就算在同一个程序中，由于处理会有多级的缓存，以及处理器中coherence的存在，虽然你的程序中是先write后read，在内存中真正生效的顺序，也有可能是先read后write。</p>
+<p><a href="http://logstash.net/">logstash - official site</a></p>
 
-<p>其实还会出现类似下面这样的执行，两个操作在两个处理器上同时执行。<br/>
-P1--write(x)-read(y)--------<br/>
-P2--write(u)--------read(v)-</p>
+<p><a href="https://github.com/alexandreesl/LogStashProvider.git">Source-code (Github)</a></p>
 
-<p>如果加上同时运行的这种情况，那就有更多种可能性。我的算数不太好，这里就不继续算下去了，因为到底有多少个不重要，重要的是要知道有很多种可能性。那么定义中的“any execution”，就是指任意一种可能的执行，在定义中也可以理解为所有的这些可能的执行。</p>
+<p><a href="https://grokdebug.herokuapp.com/">Grok Debugger (online testing of grok expressions)</a></p>
 
-<p>接着我们再来解释一个词——<strong>“sequential order”</strong>。什么叫sequential order？我们来翻一下英语词典（感觉更像在做阅读理解了）。<br/>
-“<br/>
-<em>sequential：连续的；相继的；有顺序的</em><br/>
-<em>order：命令；顺序；规则；[贸易] 定单</em></p>
+<p><a href="https://github.com/elasticsearch/logstash/blob/v1.4.2/patterns/grok-patterns">Grok pre-made patterns</a></p>
 
-<p>sequential order——有顺序的顺序，这又是什么鬼？</p>
+<hr/>
 
-<p>其实sequential是有一个接一个的意思，在处理器的这种上下文中，sequential就是指操作（operartion）一个接一个地执行，也就是顺序执行，并且没有重叠。order是指经过一定的调整，让某样东西按照一定的规则变得有序。比如，在算法中的排序算法就是ordering，就是让数组这个东西按照从大到小或从小到大的规则变得有序。<strong>那么sequential order就是指让操作（operation）按照一个接一个这样的规则排列，并且没有重叠。</strong></p>
+<p>Welcome, dear reader, to another post of our series about the ELK stack for logging. On the last post, we talked about LogStash, a tool that allow us to integrate data from different sources to different destinations, using transformations along the way, in a stream-like form. On this post, we will talk about ElasticSearch, a indexer based on apache Lucene, which can allow us to organize our data and make textual searches on the data, in a scalable infrastructure. So, let&#39;s begin by understanding how ElasticSearch is organized on the inside</p>
 
-<p>再说回上文的例子，如果把四个操作，按一个接一个的规则排列，这时就可以得到4！的排列组合个可能的排列（order），同样的，有多少个不重要。</p>
+<p><strong>Indexes, documents and shards</strong></p>
 
-<p>比如：<br/>
-P1_write(x);P1_read(y);P2_write(u);P2_read(v);<br/>
-P1_read(y);P1_write(x);P2_write(u);P2:read(v);<br/>
-P2_write(u);P2_read(v);P1_read(y);P1:write(x);</p>
+<p>On ElasticSearch, we have the concept of indexes. A index is like a repository, where we can store our data in the format of documents. A document on ElasticSearch&#39;s terminology consists of a structure for the data to be stored, analysed and classified, following a mapping definition, composed of a series of fields - a important thing to note, is that a field on ElasticSearch has the same type across the whole index, meaning that we cant have a field&quot;phone&quot; with the type int on a document and the type string on another.</p>
 
-<p>我这里只列举其中三个，其他的大家可以自己排一下。</p>
+<p>In turn, we have our documents stored on shards, which divide the data on segments based on a rule - by default, the segmentation is made by hashing the data, but it can also be manually manipulated -, making the searches faster.</p>
 
-<p>重点来了，其实sequential order就是让这四个操作按照一个接一个的顺序执行，并且没有重叠。注意这个排列不是真实的执行，真实的执行是any execution，这里说的是逻辑上的假设，也就是为什么定义有一个as if。</p>
+<p>So, in a nutshell, we can say that the order of organization of ElasticSearch is as follows:</p>
 
-<p>做了这么多的铺垫，下面我们开始翻译定义中的第一句话：</p>
+<p>Index &gt;&gt; Document (mappings/type) &gt;&gt; shard</p>
 
-<p>“<br/>
-*任意一种可能的执行效果，与所有的处理器上的某一种操作按照顺序排列执行的效果是一样的。 *</p>
+<p>This organization is used by the user on the two basic operations of the cluster: indexing and searching.</p>
 
-<p>注意，some在这里是指“某一种”的意思，不是一些，因为order是单数（真的是在做阅读理解）。</p>
+<p>One last thing to say about documents is that they can not only be stored as independent , but also be mounted on a tree-like hierarchy, with links between them. This is useful in scenarios that we can make use of hierarchical searches, such as product&#39;s searches based on their categories.</p>
 
-<p>*<strong><em>这句话的意思就是说，一个处理器要满足这个条件，就只能允许满足这个条件的那些可能的执行存在，其他不满足的可能的执行都不会出现。</em></strong>*</p>
+<p><strong>Indexing</strong></p>
 
-<p>从第一句话中我们可以看出，一种多核处理器要想满足sequential consistency，那么多个程序在多个核运行效果“等同”于在一个核上顺序执行所有操作的效果是差不多的。如果这样的话，其实多核的威力基本就消失了。所以无论是从Lamport写这篇论文的1979年，还是现在，没有任何一个现实的多核处理器实现了sequential consistency。</p>
+<p>Indexing is the action of inputing the data from a external source to the cluster. ElasticSearch is a textual indexer, which means he can only analyse text on plain format, despite that we can use the cluster to store data in base64 format, using a plugin. Later on the post, we will see a example installation of a plugin, which are extensions we can aggregate to expand our cluster usability.</p>
 
-<p>那么，为什么Lamport大神提出这样一个不现实的概念呢？（要注意Lamport写这篇论文时，并没有把它引申到分布式系统领域，就是针对多核处理器、并发编程领域提出的）我们稍后再论述。</p>
+<p>When we index our data,  we define which fields are to be analysed, which analyser to use, if the default ones does not suffice and which fields we want to store the data on the cluster, so we can use as the result of our searches. One important thing to note about the indexing operations is that, despite it has CRUD-like operations, the data is not really updated or deleted on the cluster, instead a new version is generated and the old version is marked as deleted.</p>
 
-<p>这里还要注意的一点是，在我的翻译里用了“效果”一词，但实际上英文原文中用的是“result（结果）”一词。那效果和结果有什么区别吗？我们解释一下什么叫执行结果。</p>
+<p>This is a important thing to take note, because if not properly configured to make purges - which can be made with a configuration that break the shards into segments, and periodically make merges of the segments, phisically deleting the obsolet documents on the process -, the cluster will keep indefinitely expanding in size with the &quot;deleted&quot; older versions of our data, making specially the searches to became really slow.</p>
 
-<p>不管是任何真实的执行，还是某种经过顺序排序后的假设执行，程序会产生一定的结果，比如print出来的结果（result）。实际上定义中说的是结果一样。如果定义中用“效果”的话，那这个定义就只是一个定性的定义，如果用“结果”的话，那这个定义就是一个定量的定义。定量的，也就是说可以通过数学证明的。从这点我们可以看出，大神就是不一样，任何理论都是可以通过数学证明为正确的。本文后面还会提到证明的事情，我们这里再卖个关子。</p>
+<p>All the operations can be made with a REST API provided by ElasticSearch, that we will see later on this post.</p>
 
-<p>到这里，关于定义的第一句，更准确的翻译就是： </p>
+<p><strong>Searching</strong></p>
 
-<p>“<br/>
-*任意一种可能的执行的结果，与某一种所有的处理器上的操作按照顺序排列执行的结果是一样的。 *</p>
+<p>The other, and probably most important, action on ElasticSearch, is the searching of the data previously indexed. Like the indexing action, ElasticSearch also provide a REST API for the searches. The API provides a very rich range of possibilities of searching, from basic term searches to more complex searches such as hierarchical searches, searches by synonims, language detections, etc.</p>
 
-<p>这里我们还要注意一点，结果一样就意味着，如果有人真的要实现一种sequential consistency的多核处理器的话，因为要保证结果一样，所以他是有一定的空间来优化，而不会完全是一个核顺序执行的效果。但是估计这种优化也是非常有限的。</p>
+<p>All the searching is based on a score system, where formulas are applied to confront the accuracy of the documents founded versus the query supplied. This score system can also be customized.</p>
 
-<p>好了，终于把最难的第一句话解释完了，大家可以松口气，第二句就非常简单了。我们还是先解释第二句种出现的一个词——<strong>“sequence”</strong>。刚刚解释过的sequential order是顺序排序（就是按一个接一个排序），其实这是一个动作，动作会产生结果，它的结果产生了一个操作（operation）的队列。第二句中出现的sequence就是指这个操作（operation）的队列。</p>
+<p>By default, the searching on the cluster occurs in 2 phases:</p>
 
-<p>好，那第二句的翻译就是：</p>
+<ul>
+<li>  On the first phase, the master node sends the query for all the nodes, and subsequently shards , retrieving just the IDs and scores of the documents. Using a parameter called _size_ which defines the maximum results from a query, the master selects the more meaningful documents, based on the score;</li>
+<li>  On the second phase, the master send requests for the nodes to retrieve the documents selected on the previous phase. After receiving the documents, the master finally sends the result for the client;</li>
+</ul>
 
-<p>“<br/>
-*并且每个独立的处理器的操作，都会按照程序指定的顺序出现在操作队列中。 *</p>
+<p>Alongside this search type, there&#39;s also other modes, like the _query_and_fetch_. On this mode, the searching is made simultaneous on all shards, not only to retrieve the IDs and scores but also returning the data itself, limited only by the _size_ parameter, which is applied per shard. In turn, on this mode, the maximum of results returned will be the size parameter plus the number of shards.</p>
 
-<p>也就是说如果程序里是先write(x);后read(y);，那么只有满足这个顺序的操作队列是符合条件的。这样，我们刚刚说的很多可能的执行就少了很多，这里我也就不计算少了多少，还是那句话，数量不重要，反正是有，而且变少了。</p>
+<p>One interesting feature of ElasticSearch&#39;s configuration options is the ability to make some nodes exclusive to query operations, and others to make the storage part, called data nodes. This way, when we query, our query dont need to run  across all the cluster to formulate the results, making the searches faster. On the next section we will see a little more about cluster configurations.</p>
 
-<p>那么第二句话意味着什么？意味着如果一个多核处理器实现了sequential consistency，那这种多核处理器基本上就告别自（缓）行（存）车了。这里我还要继续卖关子，连缓存这种最有效提高处理器性能的优化都没了，大神为什么要提出这个概念？</p>
+<p><strong>Cluster capabilities</strong></p>
 
-<p>好了，到这里我们可以把两句翻译合起来，完整看一下：</p>
+<p>When we talk about a cluster, we talk about scalability, but we also talk about availability. On ElasticSearch, we can configure the replication of shards, where the data is replicated by a given factor, so we dont lose our data if a node is lost. The replication if also maintained by the cluster, so if we lost a replica, the cluster itself will distribute a new replica for another node.</p>
 
-<p>“<br/>
-*任意一种可能的执行的结果，与某一种所有的处理器上的操作按照顺序排列执行的结果是一样的，并且每个独立的处理器的操作，都会按照程序指定的顺序出现在操作队列中。 *</p>
+<p>Other interesting feature of the cluster are the ability to discover itself. By the default configuration, when we start a node he will use a discovery mode called Zen, which uses unicast and multicast to search for another instances on all the ports of the OS. If it founds another instance, and the name of the cluster is the same - this is another one of the cluster&#39;s configuration properties. All of this configurations can be made on the file _elasticsearch.yml_, on the config folder -, it will communicate with the instance and establish a new node for the already running cluster. There is another modes for this feature, including the discover of nodes from other servers.</p>
 
-<p>从这个定义中，我们可以看出，此概念的核心就是sequential order，这也就是为什么Lamport老爷子把这种一致性模型称之为sequential consistency。可以说这个命名是非常贴切的，不知道这种贴切对于以英语为母语的人来说是不是更好理解一些，应该不会出现“顺序的顺序是什么鬼”这种情况。如果你看完本文，也觉得sequential很贴切的话，那就说明我讲清楚了。</p>
+<p><strong>Logging</strong></p>
 
-<p>接下来我们举个具体的例子，再来说明一下： <br/>
-execution A<br/>
-P0 writex=1-------------------------------<br/>
-P1 -------write x=2----------------------<br/>
-P2 -----------------read x<mark>1--read x</mark>2<br/>
-P3 -----------------read x<mark>1--read x</mark>2</p>
+<p>The reader could be thinking: &quot;Lol, do I need all of this to run a logging stack?&quot;.</p>
 
-<p>sequetial order: P0_write x=1,P3_read x<mark>1,P4_read x</mark>1,P1_write x=2,P3_read x<mark>2,P4_read x</mark>2</p>
+<p>Of course that ElasticSearch is a very robust tool, that can be used on other solutions as well. However, on our case of making a centralized logging analysis solution, the core of ElasticSearch&#39;s capabilities serve us well for this task, after all, we are talking about the textual analysis of log texts, for use on dashboards, reports, or simply for real-time exploration of the data.</p>
 
-<p>execution B<br/>
-P0 write=1-------------------------------<br/>
-P1 -------write x=2----------------------<br/>
-P2 -----------------read x<mark>2--read x</mark>1<br/>
-P3 -----------------read x<mark>2--read x</mark>1</p>
+<p>Well, that concludes the conceptual part of our post. Now, let&#39;s move on to the practice.</p>
 
-<p>sequetial order: P1_write x=2,P3_read x<mark>2,P4_read x</mark>2,P0_write x=1,P3_read x<mark>1,P4_read x</mark>1</p>
+<p><strong>Hands-on</strong></p>
 
-<p>execution C<br/>
-P0 write=1-------------------------------<br/>
-P1 -------write x=2----------------------<br/>
-P2 -----------------read x<mark>1--read x</mark>2<br/>
-P3 -----------------read x<mark>2--read x</mark>1</p>
+<p>So, without further delay, let&#39;s begin the hands-on. For this, we will use the previous Java program we used on our lab about LogStash. The code can be found on GitHub, <a href="https://github.com/alexandreesl/LogStashProvider.git">on this link</a>. On this program, we used the _org.apache.log4j.net.SocketAppender_ from log4j to send all the logging we make to LogStash. However, on that point we just printed the messages on the console, instead of sending to ElasticSearch. Before we change this, let&#39;s first start our cluster.</p>
 
-<p>sequetial order: 你找不出一个符合定义中2个条件的一种order。</p>
+<p>To do this, first we need to download the last version from the site and unzip the tar. Let&#39;s open a terminal, and type the following command:</p>
 
-<p>所以说如果一个多核处理器只允许execution A和B出现，不允许C出现，那么这个多核处理器就是sequetial consistency的。如果它允许C出现，那它就不是sequetial consistency。</p>
+<pre>curl https://download.elasticsearch.org/elasticsearch/elasticsearch/elasticsearch-1.4.4.tar.gz | tar -zx</pre>
 
-<p>到这里，我们已经完整地解释完什么是sequetial consistency。但是，细心的朋友可能会问，如果你的program是多线程的程序怎么办？那我们再把定义中最后的一个细节解释一下：program这个词。</p>
+<p>After running the command, we will find a new folder called &quot;elasticsearch-1.4.4&quot; created on the same folder we run our command. To our example, we will create 2 copies of this folder on a folder we call &quot;elasticsearchcluster&quot;, where each one will represent one node of the cluster. To do this, we run the following commands:</p>
 
-<p>*<strong><em>program</em></strong>*是指可以直接运行在处理器上的指令序列。这个并不是program的严格定义，但是我要指出的是这个program是在操作系统都没有的远古时代就存在的概念，在上文的定义中prgram就是指那个时代的program。</p>
+<pre><code class="language-sh">mkdir elasticsearchcluster
+sudo cp -avr elasticsearch-1.4.4/ elasticsearchcluster/elasticsearch-1.4.4-node1/
+sudo cp -avr elasticsearch-1.4.4/ elasticsearchcluster/elasticsearch-1.4.4-node2/
+</code></pre>
 
-<p>这个program里没有进程、线程的概念，这些概念都是在有了操作系统之后才出现的。因为没有操作系统，也没有内存空间的概念。不像我们现在所说的程序（program），不同的程序有自己独立的内存地址空间。我们这里，内存（memory）对于不同的program来说是shared。另外，需要注意的是program可以用来说明各种程序，不管你是操作系统内核，还是应用程序，都适用。</p>
+<p>After we made our cluster structure, we dont need the original folder anymore, so we remove:</p>
 
-<p>*<strong><em>sequential consistency</em></strong>*<br/>
-*<strong><em>是分布式领域的概念</em></strong>*</p>
+<pre><code class="language-sh">rm -R elasticsearch-1.4.4/
+</code></pre>
 
-<p>刚刚我们说了，sequential consistency虽然是针对并发编程领域提出的，但实际上它是分布式领域的概念，特别是分布式存储系统。在 <em>Distributed system: Principles and Paradigms</em> （作者Andrew S.Tanenbaum, Maarten Van Steen），作者稍微修改了一下Lamport的定义，让这个定义更贴近分布式领域中的概念，我们来看一下作者是怎么改的： </p>
+<p>Now, let&#39;s finally start our cluster! To do this, we open a terminal, navigate to the bin folder of our first node (elasticsearch-1.4.4-node1) and type:<a href="#viewSource" title="view source">view sourc</a></p>
 
-<p>“<br/>
-*The result of any execution is the same as if the (read and write) operations by all processes on the data store were executed in some sequential order and the operations of-each individual process appear in this sequence in the order specified by its program. *</p>
+<pre><code class="language-sh">./elasticsearch
+</code></pre>
 
-<p>作者把processor换成了process，并且加了on the data store这个限定，在Lamport的定义里没有这个限定，其实默认指的是memory（内存）。process就是指进程，以Zookeeper为例，就是指访问Zookeeper的应用进程。program也不是那么底层概念，也是基于操作系统的应用程序了。</p>
+<p>After some seconds, we can see our first node is on:</p>
 
-<p>*<strong><em>sequential consistency的作用</em></strong>*</p>
+<p><img src="https://dl.dropboxusercontent.com/s/0mb9no6kee8oicq/elastic1.png?dl=0" alt=""/></p>
 
-<p>好了，下面该揭晓我上面卖的两个关子了。在Lamport的论文中，给出了一个小例子，如下： <br/>
-process 1<br/>
- a := 1;<br/>
- if b = 0 then critical section:<br/>
- a := 0<br/>
- else ... fi</p>
+<p>For curiosity sake, we can see the name &quot;Feral&quot; on the node&#39;s name on the log. All the names generated by the tool are based on Marvel Comic&#39;s characters. IT world sure has some sense of humor, heh?</p>
 
-<p>process 2<br/>
- b := 1;<br/>
- if a = 0 then critical section:<br/>
- b := 0<br/>
- else ... fi</p>
+<p>Now, let&#39;s start our second node. On a new terminal window, let&#39;s navigate to the folder of our second node (elasticsearch-1.4.4-node2) and type again the command &quot;./elasticsearch&quot;. After some seconds, we can see that the node is also started:</p>
 
-<p>Lamport在论文中说，如果一种多核处理满足sequential consistency的条件，<strong>那么最多只有一个程序能够进入critical section</strong>。在论文中，Lamport老爷子并没有解释为什么最多只有一个程序能够进入critical section。而是把这个证明留给了论文的读者，就像我们常见的教科书中的课后习题一样。</p>
+<p><img src="https://dl.dropboxusercontent.com/s/816wtb4ak0o1j3b/elastic2.png?dl=0" alt=""/></p>
 
-<p>Lamport老爷子应该是认为这个证明太简单了，不需要花费笔墨来证明它。sequential consistency这篇论文只有不到两页A4纸，是我见过的最短的论文。这是Lamport一贯的做事风格，他的Paxos论文中，有很多细节都是一笔带过的，给读者留下无尽的遐想（瞎想）。</p>
+<p>One interesting thing to notice is that our second node &quot;Ooze&quot;, has a mention of comunicating with our other node, &quot;Feral&quot;. That is the zen discover on the action, making the 2 nodes talk to each other and form a cluster. If we look again at the terminal of our first node, we can see another evidence of this bidirectional communication, as &quot;Feral&quot; has added &quot;Ooze&quot; to the cluster, as his role as a master node:</p>
 
-<p>假设现在我们已经证明这个是正确的（虽然我也没去证明，论文给出了两个参考文献用于证明），那这个例子说明了什么呢？</p>
+<p><img src="https://dl.dropboxusercontent.com/s/p15tuaw4qewmz2i/elastic3.png?dl=0" alt=""/></p>
 
-<p>大家也许注意到了，这个例子没有用到任何锁，但它实现了critical section，critical section是一种多线程synchronization 机制。如果多核处理器是sequential consistency的，那么你写的并发程序“天然就是正确的”。</p>
+<p> Now that we have our cluster set up, let&#39;s adjust our logstash script to send the messages to the cluster. To do this, let&#39;s change the output part of the script, to the following:</p>
 
-<p>但是处理器的设计者为了追求性能，将保证程序正确的任务丢给程序开发者。只在硬件级别提供了一些fence、cas等指令，基于这些指令操作内核和语言基础库实现了各种synchronization机制，用来保证操作系统的正确性和应用程序的正确性。程序员必须小心谨慎地使用线程和这些synchronization机制，否则就会出各种意想不到的问题。如果你没有debug一个多线程bug连续加班两天，那说明你是大神。</p>
+<pre><code class="language-conf">input {
+    log4j {
+        port = &gt; 1500
+        type = &gt; &quot;log4j&quot;
+        tags = &gt; [&quot;technical&quot;, &quot;log&quot;]
+    }
+}
 
-<p>这些指令都是具有更高一致性级别，也就是linearizability，（关于linearizability可以参见我的另外一篇文章《线性一致性（Linearizability）是并发控制的基础》[2]），虽然一致性级别高，但只是个别指令的，处理器整体只是实现了比sequential consistency低很多的一致性级别。所以实现难度大大降低了。</p>
+output {
+    stdout {codec = &gt; rubydebug}
+    elasticsearch_http {
+        host = &gt; &quot;localhost&quot;
+        port = &gt; 9200
+        index = &gt; &quot;log4jlogs&quot;
+    }
+}
+</code></pre>
 
-<p>虽然Lamport老爷子的sequential consistency概念在concurrent programming领域中还没有实际意义，但却给我们指出了程序员的天堂在哪里。在程序员的天堂里，没有多（车）线（来）程（车）编（往）程，只要写程序就行。你面试的时候不会再有人问你多线程编程，不会再问你各种锁。</p>
+<p>As we can see, we just included another output - we remained the console output just to check how logstash is receiving the data - including the ip and port where our ElasticSearch cluster will respond. We also defined the name of the index we want our logs to be stored. If this parameter is not defined, logstash will order elasticsearch to create a index with the pattern &quot;logstash-%{+YYYY.MM.dd}&quot;.</p>
 
-<p>在分布式领域中，sequential consistency更实际一些。Zookeeper就实现了sequential consistency。同理，这应该也是可以证明的，但目前还没发现有Zookeeper社区有任何论文来证明这个。如果你已经明白上面解释的定义，就可以想清楚Zookeeper是sequential consistency。欢迎大家一起来探讨。</p>
+<p>To execute this script, we do like we did on the <a href="https://alexandreesl.wordpress.com/2015/01/26/elk-using-a-centralized-logging-architecture-part-1/" title="ELK: using a centralized logging architecture – part 1">previous post</a>, we put the new script on a file called &quot;configelasticsearch.conf&quot; on the bin folder of logstash, and run with the command:</p>
 
-<p>*<strong><em>为何Zookeeper要实现</em></strong>*<br/>
-*<strong><em>sequential consistency</em></strong>*</p>
+<pre><code class="language-sh">./logstash -f configelasticsearch.conf
+</code></pre>
 
-<p>实际上，Zookeeper的一致性更复杂一些，Zookeeper的读操作是sequential consistency的，Zookeeper的写操作是linearizability的。关于这个说法，Zookeeper的官方文档中没有写出来，但在社区的邮件组有详细的讨论（邮件组的讨论参见[3]）。</p>
+<p><strong>PS1:</strong> On the<a href="https://github.com/alexandreesl/ElasticSearchConfigs.git"> GitHub repository</a>, it is possible to find this config file, alongside a file containing all the commands we will send to ElasticSearch from now on.</p>
 
-<p>另外，在 <em>Modular Composition of Coordination Services</em> 这篇关于Zookeeper的论文中也有提到这个观点（这篇论文不是Zookeeper的主流论文，但全面分析了Zookeeper的特性，以及Zookeeper跨机房方案，饿了么的Zookeeper异地多活改造也参考了这篇论文中的一些观点），我们可以这么理解Zookeeper，从整体（read操作+write操作）上来说是sequential consistency，写操作实现了linearizability。</p>
+<p><strong>PS2: </strong>For simplicity sake, we will use the default mappings logstash provide for us when sending messages to the cluster. It is also possible to pass a elasticsearch&#39;s mapping structure, which consists of a JSON model, that logstash will use as a template. We will see the mapping from our log messages later on our lab, but for satisfying the reader curiosity for now, this is what a elasticsearch&#39;s mapping structure look like, for example for a document type &quot;product&quot;:</p>
 
-<p>通过简单的推理，我们可以得出Lamport论文中的小例子，在Zookeeper中也是成立的。我们可以这样实现分布式锁。但Zookeeper官方推荐的分布式实现方法并没有采用这个方式，而是利用了Zookeeper的linearizability特性实现了分布式锁（关于Zookeeper官方是如何实现分布式锁的，请参见我这篇文章《Zookeeper实现分布式锁和选主》[4]）。</p>
+<pre><code class="language-json">&quot;mappings&quot;: {
+    &quot;product&quot;: {
+        &quot;properties&quot;: {
+            &quot;variation&quot;: {&quot;type&quot;: int}
+            &quot;color&quot;: {&quot;type&quot;: &quot;string&quot;}
+            &quot;code&quot;: {&quot;type&quot;: int}
+            &quot;quantity&quot;: {&quot;type&quot;: int}
+        }
+    }
+}
+</code></pre>
 
-<p>为什么Zookeeper要实现sequential consistency？Zookeeper最核心的功能是用来做coordination service，也就是用来做分布式锁服务，在分布式的环境下，Zookeeper本身怎么做到“天然正确”？没有其他的synchronization机制保证Zookeeper是正确的，所以只要Zookeeper实现了sequential consistency，那它自身就可以保证正确性，从而对外提供锁服务。 </p>
+<p>After some seconds, we can see that LogStash booted, so our configuration was a success. Now, let&#39;s begin sending our logs!</p>
 
-<p>*<strong><em>参考文章：</em></strong>*<br/>
-[1]<a href="http://zookeeper.apache.org/doc/r3.4.9/zookeeperProgrammers.html#ch_zkGuarantees">http://zookeeper.apache.org/doc/r3.4.9/zookeeperProgrammers.html#ch_zkGuarantees</a><br/>
-[2]<a href="https://blog.csdn.net/cadem/article/details/79932574">https://blog.csdn.net/cadem/article/details/79932574</a><br/>
-[3]<a href="http://comments.gmane.org/gmane.comp.java.hadoop.zookeeper.user/5221">http://comments.gmane.org/gmane.comp.java.hadoop.zookeeper.user/5221</a><br/>
-[4]<a href="https://blog.csdn.net/cadem/article/details/56289825">https://blog.csdn.net/cadem/article/details/56289825</a></p>
+<p>To do this, we run the program from our previous post, running the class _com.technology.alexandreesl.LogStashProvider ._ We can see on the console of logstash, after starting the program, that the messages are going through the stack:</p>
 
-<p><strong>近期热文</strong><br/>
-<a href="http://mp.weixin.qq.com/s?__biz=MzI4NTA1MDEwNg==&amp;mid=2650767616&amp;idx=1&amp;sn=5ef24be557292923c5ce8c0daa24f2cf&amp;chksm=f3f93495c48ebd83f9a0a70c67abcb5785362606ccdde8751fccd2ba1cf62b43913f2d5026df&amp;scene=21#wechat_redirect">_深入浅出分布式缓存的通用方法_</a><br/>
-<a href="http://mp.weixin.qq.com/s?__biz=MzI4NTA1MDEwNg==&amp;mid=2650767604&amp;idx=1&amp;sn=c3e41c1f9f645b1db91e90d87cbd6953&amp;chksm=f3f93561c48ebc77bf04cf44c22710d487f16a3e43bb75e4c2d0fe380a80606a3e97f5948b79&amp;scene=21#wechat_redirect">_一文详解消息队列的常见功能场景与使用精髓_</a><br/>
-<a href="http://mp.weixin.qq.com/s?__biz=MzI4NTA1MDEwNg==&amp;mid=2650767596&amp;idx=1&amp;sn=4c438f4bd2e65d0b9cd92150380d8b18&amp;chksm=f3f93579c48ebc6f7a306c84bdaa9e2b038ed82ccb37440eafb2f5ff99aa1db06bf97f4e71a5&amp;scene=21#wechat_redirect">_MySQL上云后引发的雪崩_</a><br/>
-<a href="http://mp.weixin.qq.com/s?__biz=MzI4NTA1MDEwNg==&amp;mid=2650767592&amp;idx=1&amp;sn=d2c79676981c63d70d7275486c88abdf&amp;chksm=f3f9357dc48ebc6b50f01ee6c4329df0ea1c4b0d416969911f52805dc3b44ec408f75d250b37&amp;scene=21#wechat_redirect">_方法论与技术栈双管齐下的运维可用性能力建设_</a><br/>
-<a href="http://mp.weixin.qq.com/s?__biz=MzI4NTA1MDEwNg==&amp;mid=2650767557&amp;idx=1&amp;sn=9a1935096cbe2fbd658dc28c8f52a402&amp;chksm=f3f93550c48ebc462c16e23d3e6941b28fd71ce50c790d8e39188e20f57f4a34b3e01ef22409&amp;scene=21#wechat_redirect">_中小型企业大数据体系建设的核心技术选型_</a></p>
+<p><img src="https://dl.dropboxusercontent.com/s/avoh8yu98u5oqbj/elastic4.png?dl=0" alt=""/></p>
 
-<p><strong>近期活动</strong><br/>
-<a href="http://mp.weixin.qq.com/s?__biz=MzI4NTA1MDEwNg==&amp;mid=2650767615&amp;idx=1&amp;sn=243dd45953cad2716f389bf25f99a01d&amp;chksm=f3f9356ac48ebc7c4ed927bfa23def9a14f927d08e4e255c026c9587de83a69062cfc4b057ad&amp;scene=21#wechat_redirect">_2018 DAMS中国数据资产管理峰会_</a><br/>
-微信扫一扫<br/>
-关注该公众号</p>
+<p>Now that we have our cluster up and running, let&#39;s start to use it. First, let&#39;s see the mappings of the index that ElasticSearch created for us, based on the configuration we made on LogStash. Let&#39;s open a terminal and run the following command:</p>
+
+<p>curl -XGET &#39;localhost:9200/log4jlogs/_mapping?pretty&#39;</p>
+
+<p>On the command above, we are using ElasticSearch&#39;s REST API. The reader will notice that, after the ip and port, the URL contains the name of the index we configured. This pattern for calls of the API is applied to most of the actions, as we can see below:</p>
+
+<p><ip>:<port>/<index>/<doc type>/<action>?<attributes></p>
+
+<p>So, after this explanation, let&#39;s see the result from our call:</p>
+
+<pre><code class="language-json">{
+    &quot;log4jlogs&quot;: {
+        &quot;mappings&quot;: {
+            &quot;log4j&quot;: {
+                &quot;properties&quot;: {
+                    &quot;@timestamp&quot;: {
+                        &quot;type&quot;: &quot;date&quot;,
+                        &quot;format&quot;: &quot;dateOptionalTime&quot;
+                    },
+                    &quot;@version&quot;: {
+                        &quot;type&quot;: &quot;string&quot;
+                    },
+                    &quot;class&quot;: {
+                        &quot;type&quot;: &quot;string&quot;
+                    },
+                    &quot;file&quot;: {
+                        &quot;type&quot;: &quot;string&quot;
+                    },
+                    &quot;host&quot;: {
+                        &quot;type&quot;: &quot;string&quot;
+                    },
+                    &quot;logger_name&quot;: {
+                        &quot;type&quot;: &quot;string&quot;
+                    },
+                    &quot;message&quot;: {
+                        &quot;type&quot;: &quot;string&quot;
+                    },
+                    &quot;method&quot;: {
+                        &quot;type&quot;: &quot;string&quot;
+                    },
+                    &quot;path&quot;: {
+                        &quot;type&quot;: &quot;string&quot;
+                    },
+                    &quot;priority&quot;: {
+                        &quot;type&quot;: &quot;string&quot;
+                    },
+                    &quot;stack_trace&quot;: {
+                        &quot;type&quot;: &quot;string&quot;
+                    },
+                    &quot;tags&quot;: {
+                        &quot;type&quot;: &quot;string&quot;
+                    },
+                    &quot;thread&quot;: {
+                        &quot;type&quot;: &quot;string&quot;
+                    },
+                    &quot;type&quot;: {
+                        &quot;type&quot;: &quot;string&quot;
+                    }
+                }
+            }
+        }
+    }
+}
+</code></pre>
+
+<p>As we can see, the index &quot;log4jlogs&quot; was created, alongside the document type &quot;log4j&quot;. Also, a series of fields were created, representing information from the log messages, like the thread that generated the log, the class, the log level and the log message itself.</p>
+
+<p>Now, let&#39;s begin to make some searches.</p>
+
+<p>Let&#39;s begin by searching all log messages which the priority was&quot;INFO&quot;. We make this searching by running:</p>
+
+<p>curl -XGET &#39;localhost:9200/log4jlogs/log4j/_search?q=priority:info&amp;pretty=true&#39;</p>
+
+<p>A fragment of the result of the query would be something like the following:</p>
+
+<pre><code class="language-json">{
+    &quot;took&quot;: 12,
+    &quot;timed_out&quot;: false,
+    &quot;_shards&quot;: {
+        &quot;total&quot;: 5,
+        &quot;successful&quot;: 5,
+        &quot;failed&quot;: 0
+    },
+    &quot;hits&quot;: {
+        &quot;total&quot;: 18,
+        &quot;max_score&quot;: 1.1823215,
+        &quot;hits&quot;: [{
+        &quot;_index&quot;: &quot;log4jlogs&quot;,
+        &quot;_type&quot;: &quot;log4j&quot;,
+        &quot;_id&quot;: &quot;AUuxkDTk8qbJts0_16ph&quot;,
+        &quot;_score&quot;: 1.1823215,
+        &quot;_source&quot;: {&quot;message&quot;: &quot;STARTING DATA COLLECTION&quot;, &quot;@version&quot;: &quot;1&quot;, &quot;@timestamp&quot;: &quot;2015-02-22T13:53:12.907Z&quot;, &quot;type&quot;: &quot;log4j&quot;, &quot;tags&quot;: [&quot;technical&quot;, &quot;log&quot;], &quot;host&quot;:&quot;127.0.0.1:32942&quot;, &quot;path&quot;:&quot;com.technology.alexandreesl.LogStashProvider&quot;, &quot;priority&quot;:&quot;INFO&quot;, &quot;logger_name&quot;:&quot;com.technology.alexandreesl.LogStashProvider&quot;, &quot;thread&quot;:&quot;main&quot;, &quot;class&quot;:&quot;com.technology.alexandreesl.LogStashProvider&quot;, &quot;file&quot;:&quot;LogStashProvider.java:20&quot;, &quot;method&quot;:&quot;main&quot;}
+    }
+.
+.
+.
+</code></pre>
+
+<p>As we can see, the result is a JSON structure, with the documents that met our search. The beginning information of the result is not the documents themselves, but instead information about the search itself, such as the number of shards used, the seconds the search took to execute, etc. This kind of information is useful when we need to make a tuning of our searches, like manually defining the shards we which to use on the search, for example.</p>
+
+<p>Let&#39;s see another example. On our previous search, we received all the fields from the document on the result, which is not always the desired result, since we will not always use the whole information. To limit the fields we want to receive, we make our query like the following:</p>
+
+<pre><code class="language-sh">curl -XGET &#39;localhost:9200/log4jlogs/log4j/_search?pretty=true&#39; -d &#39;
+{
+    &quot;fields&quot; : [&quot;priority&quot;, &quot;message&quot;,&quot;class&quot;],
+    &quot;query&quot; : {
+        &quot;query_string&quot; : {&quot;query&quot; : &quot;priority:info&quot;}
+    }
+}&#39;
+</code></pre>
+
+<p>On the query above, we asked ElasticSearch to limit the return to only return the priority, message and class fields. A fragment of the result can be seen bellow:</p>
+
+<pre><code class="language-json">.
+.
+.
+{
+    &quot;_index&quot; : &quot;log4jlogs&quot;,
+    &quot;_type&quot; : &quot;log4j&quot;,
+    &quot;_id&quot; : &quot;AUuxkECZ8qbJts0_16pr&quot;,
+    &quot;_score&quot; : 1.1823215,
+    &quot;fields&quot; : {
+        &quot;priority&quot; : [ &quot;INFO&quot; ],
+        &quot;message&quot; : [ &quot;CLEANING UP!&quot; ],
+        &quot;class&quot; : [ &quot;com.technology.alexandreesl.LogStashProvider&quot; ]
+    }
+}
+.
+.
+.
+</code></pre>
+
+<p>Now, let&#39;s use the term search. On the term searches, we use ElasticSearch&#39;s textual analysis to find a term inside the text of a field. Let&#39;s run the following command:</p>
+
+<pre><code class="language-sh">curl -XGET &#39;localhost:9200/log4jlogs/log4j/_search?pretty=true&#39; -d &#39;
+{
+    &quot;fields&quot; : [&quot;priority&quot;, &quot;message&quot;,&quot;class&quot;],
+    &quot;query&quot; : {
+        &quot;term&quot; : {
+            &quot;message&quot; : &quot;up&quot;
+        }
+    }
+}&#39;
+</code></pre>
+
+<p>If we see the result, it would be all the log messages that contains the word &quot;up&quot;. A fragment of the result can be seen bellow:</p>
+
+<pre><code class="language-json">{
+    &quot;_index&quot; : &quot;log4jlogs&quot;,
+    &quot;_type&quot; : &quot;log4j&quot;,
+    &quot;_id&quot; : &quot;AUuxkESc8qbJts0_16pv&quot;,
+    &quot;_score&quot; : 1.1545612,
+    &quot;fields&quot; : {
+        &quot;priority&quot; : [ &quot;INFO&quot; ],
+        &quot;message&quot; : [ &quot;CLEANING UP!&quot; ],
+        &quot;class&quot; : [ &quot;com.technology.alexandreesl.LogStashProvider&quot; ]
+    }
+}
+</code></pre>
+
+<p>Of course, there is a lot more of searching options on ElasticSearch, but the examples provided on this post are enough to make a good starting point for the reader. To make a final example, we will use the &quot;prefix&quot; search. On this type of search, ElasticSearch will search for terms that start with our given text, on a given field. For example, to search for log messages that have words starting with &quot;clea&quot;, part of the word &quot;cleaning&quot;, we run the following:</p>
+
+<pre><code class="language-sh">curl -XGET &#39;localhost:9200/log4jlogs/log4j/_search?pretty=true&#39; -d &#39;
+{
+    &quot;fields&quot; : [&quot;priority&quot;, &quot;message&quot;,&quot;class&quot;],
+    &quot;query&quot; : {
+        &quot;prefix&quot; : {
+            &quot;message&quot; : &quot;clea&quot;
+        }
+    }
+}&#39;
+</code></pre>
+
+<p>If we see the results, we will see that are the same from the previous search, proving that our search worked correctly.</p>
+
+<p><strong>Kopf</strong></p>
+
+<p>The reader possibly could ask &quot;Is there another way to send my queries without using the terminal?&quot; or &quot;Is there any graphical tool that I can use to monitor the status of my cluster?&quot;. As a matter of fact, there is a answer for both of this questions, and the answer is the kopf plugin.</p>
+
+<p>As we said before, plugins are extensions that we can install to improve the capacities of our cluster. In order to install the plugin, first let&#39;s stop both the nodes of the cluster - press ctrl+c on both terminal windows to stop - then, navigate to the nodes root folder and type the following:</p>
+
+<pre><code class="language-sh">bin/plugin -install lmenezes/elasticsearch-kopf
+</code></pre>
+
+<p>If the plugin was installed correctly, we should see a message like the one bellow on the console:</p>
+
+<pre><code class="language-log">.
+.
+.
+-&gt; Installing lmenezes/elasticsearch-kopf...
+Trying [https://github.com/lmenezes/elasticsearch-kopf/archive/master.zip...](https://github.com/lmenezes/elasticsearch-kopf/archive/master.zip...)
+Downloading .....................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................DONE
+Installed lmenezes/elasticsearch-kopf into....
+</code></pre>
+
+<p>After installing on both nodes, we can start again the nodes, just as we did before. After the booting of the cluster, let&#39;s open a browser and type the following URL:</p>
+
+<p><a href="http://localhost:9200/_plugin/kopf">http://localhost:9200/_plugin/kopf</a></p>
+
+<p>We will see the following web page of the kopf plugin, showing the status of our cluster, such as the nodes, the indexes, shard information, etc</p>
+
+<p><img src="https://dl.dropboxusercontent.com/s/v1gevf01knh4efo/elastic5.png?dl=0" alt=""/></p>
+
+<p>Now, let&#39;s run our last example from the search queries on kopf. First, we select the&quot;rest&quot;option on the top menu. On the next screen, we select&quot;POST&quot; as the http method, include on the URL field the index and document type to narrow the results and on the textarea bellow we include our JSON query filters. The print bellow shows the query made on the interface:</p>
+
+<p><img src="https://dl.dropboxusercontent.com/s/qpc23126qwkakpy/elastic6.png?dl=0" alt=""/></p>
+
+<p><strong> Conclusion</strong></p>
+
+<p>And so we conclude our post about ElasticSearch. A very powerful tool on the indexing and analysis of textual information, the central stone on our ELK stack for logging is a tool to be used, not only on a logging analysis system, but on other solutions that his features can be useful as well.</p>
+
+<p>So, our stack is almost complete. We can gather our log information, and the information is indexed on our cluster. However, a final piece remains: we need a place where we can have a more friendly interface, that allow us not only to search the information, but also to make rich presentations of the data, such as dashboards. That&#39;s when it enters our last part of our ELK series and the last tool we will see, Kibana. Thank you for following me on another post, until next time.</p>
+
+<p><a href="https://github.com/alexandreesl/ElasticSearchConfigs">GitHub code (ElasticSearch)</a></p>
+
+<p><a href="https://github.com/alexandreesl/LogStashProvider">GitHub code (LogStash)</a></p>
+
+<p><a href="http://www.elasticsearch.org/">ElasticSearch (Official site)</a></p>
 
                         
                       </div>
@@ -351,10 +705,10 @@ process 1<br/>
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/5/28</span>
+                    <span class="date">2018/6/6</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Microservice.html'>Microservice</a></span>
+          					    <span class="posted-in"><a href='Logging.html'>Logging</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -444,31 +798,31 @@ process 1<br/>
 	      
 		      
 			      <li class="post">
-			        <a href="15337171704262.html">Introduction to Testing with Spock and Groovy</a>
+			        <a href="15358820607055.html">Java 8 Concurrency Tutorial: Atomic Variables and ConcurrentMap</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15336595358049.html">10 Excellent Ways to Secure Your Spring Boot Application</a>
+			        <a href="15358774987730.html">Java 8 Concurrency Tutorial: Synchronization and Locks</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15336592302916.html">First MicroProfile.io application using Java Module System</a>
+			        <a href="15358757119900.html">Java 8 Concurrency Tutorial: Threads and Executors</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15332186142588.html">Jenkins 的 Pipeline 脚本在美团餐饮 SaaS 中的实践</a>
+			        <a href="15358756631902.html">Java 8 Stream Tutorial</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15331749691571.html">基于ZooKeeper的分布式锁和队列</a>
+			        <a href="15358753472382.html">Migrate Maven Projects to Java 11</a>
 			      </li>
 		     
 		  

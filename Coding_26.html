@@ -105,213 +105,90 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15262240665064.html">
+                <a class="clearlink" href="15309354381443.html">
                 
-                  <h1>Spring Boot で WebSocket (STOMPではなく、TextWebSocketHandler)を試してみる</h1>
+                  <h1>Intersection Types: Java Generics’ most underused feature</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p>2017-05-10<br/>
-<a href="http://blog.enjoyxstudy.com/entry/2017/05/10/000000">http://blog.enjoyxstudy.com/entry/2017/05/10/000000</a></p>
+<p><a href="http://iteratrlearning.com/java/generics/2016/05/12/intersection-types-java-generics.html">http://iteratrlearning.com/java/generics/2016/05/12/intersection-types-java-generics.html</a></p>
 </blockquote>
 
-<p>こないだSTOMP over WebSocketを試してみましたが、今度はSTOMPを使わずに、<code>TextWebSocketHandler</code>を使ったWebSocketを試してみます。題材も同じくチャットです。</p>
+<p><u>Written on May 12, 2016</u></p>
 
-<ul>
-<li>  <a href="https://github.com/onozaty/sandbox-spring-boot/tree/master/spring-boot-websocket">sandbox-spring-boot/spring-boot-websocket at master · onozaty/sandbox-spring-boot · GitHub</a></li>
-</ul>
+<p>Generic types were added to java way back in 2004 and have had extensive usage by different libraries and application developers ever since. Not all generics features have had equal usage though. In this blog post we’re going to explore Intersection Types: which are both one of the lesser-known features that Java Generics offers.</p>
 
-<p>ルームの情報をどのように渡そうか悩みました。コードを書き始めるまでは、WebSocketで接続する先にヘッダとかで渡せばいいかなと思っていましたが、調べてみたら渡せなかったので、やもえずURLのクエリパラメータとして渡すようにしました。</p>
+<p>Intersection types are a form of generic type that look a bit like <code>&lt;T extends A &amp; B&gt;</code>, where <code>T</code> is a type parameter and <code>A</code> and <code>B</code> are two types. In order to understand intersection types we first need to talk about how the extends keyword is used in generics. If you see a generic type parameter like <code>&lt;T extends Comparable&gt;</code> then it means that you are going to require our generic type (T) to only be those classes that implement the interface <code>Comparable</code>. Remember when we say “extends” in generic types that could refer to either extending a class or also implementing an interface.</p>
 
-<h2 id="toc_0">コード</h2>
+<p>Intersection types are for situations where we want to be really greedy with our requirements! We want to say only allow classes that extend both classes in the case of our intersection types. But, why on earth would we want to do this? Let’s walk through a worked example to understand intersection types properly.</p>
 
-<p>テキストでのやり取りを行うので、<code>TextWebSocketHandler</code> を利用します。<code>TextWebSocketHandler</code>の各メソッドをoverrideして必要な処理を実装するだけです。</p>
+<h2 id="toc_0">Deserializing DataInputStream and RandomAccessFile objects</h2>
 
-<p>ルームの情報は、URLのクエリとしてクライアントから送っているので、接続が確立したタイミング(<code>afterConnectionEstablished</code>)にて、ルーム毎に<code>WebSocketSession</code>を保持するようにします。 メッセージを受け取ったら、自分のルームと同じ<code>WebSocketSession</code>に対して、メッセージを送るだけです。</p>
+<p>Let’s suppose we’ve got a <code>Person</code> class and every Person has a name and an age that are instantiated in the constructor.</p>
 
-<pre><code class="language-java">package com.example;
+<p><code>public Person(String name, int age)</code></p>
 
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.CopyOnWriteArraySet;
+<p>Our system is trying to de-serialise person instances from an input stream, like a storage file or a network connection. In order to do this we’ve got a read method that takes a DataInputStream. It reads out the name as a Unicode string and the age as an int. After the Person instance has been read out the DataInputStream gets closed.</p>
 
-import org.springframework.stereotype.Component;
-import org.springframework.web.socket.CloseStatus;
-import org.springframework.web.socket.TextMessage;
-import org.springframework.web.socket.WebSocketSession;
-import org.springframework.web.socket.handler.TextWebSocketHandler;
-
-@Component
-public class ChatHandler extends TextWebSocketHandler {
-
-    private ConcurrentHashMap&lt;String, Set&lt;WebSocketSession&gt;&gt; roomSessionPool = new ConcurrentHashMap&lt;&gt;();
-
-    @Override
-    public void afterConnectionEstablished(WebSocketSession session) throws Exception {
-
-        String roomName = session.getUri().getQuery();
-
-        roomSessionPool.compute(roomName, (key, sessions) -&gt; {
-
-            if (sessions == null) {
-                sessions = new CopyOnWriteArraySet&lt;&gt;();
-            }
-            sessions.add(session);
-
-            return sessions;
-        });
-    }
-
-    @Override
-    protected void handleTextMessage(WebSocketSession session, TextMessage message) throws Exception {
-
-        String roomName = session.getUri().getQuery();
-
-        for (WebSocketSession roomSession : roomSessionPool.get(roomName)) {
-            roomSession.sendMessage(message);
-        }
-    }
-
-    @Override
-    public void afterConnectionClosed(WebSocketSession session, CloseStatus status) throws Exception {
-
-        String roomName = session.getUri().getQuery();
-
-        roomSessionPool.compute(roomName, (key, sessions) -&gt; {
-
-            sessions.remove(session);
-            if (sessions.isEmpty()) {
-                // 1件もない場合はMapからクリア
-                sessions = null;
-            }
-
-            return sessions;
-        });
+<pre><code class="language-java">private static Person read(DataInputStream source) {
+   try(DataInputStream input = source) {
+       return new Person(input.readUTF(), input.readInt());
+   }
+   catch (IOException e) {
+       e.printStackTrace();
+       return null;
     }
 }
 </code></pre>
 
-<p>WebSocketの設定として、URLとHandlerを紐付けます。</p>
+<p>After this code has been deployed in production for a while a new requirement appears. Software development is a job never done. The new requirement requires the code to de-serialise the data from a RandomAccessFile object. Ideally you would like to re-use the logic of the read method which accepts a source of type DataInputStream. Unfortunately, an object of type <code>RandomAccessFile</code> is not a subtype of <code>DataInputStream</code> so this won’t work.</p>
 
-<pre><code class="language-java">package com.example;
+<h2 id="toc_1">Dummy interfaces</h2>
 
-import org.springframework.context.annotation.Configuration;
-import org.springframework.web.socket.config.annotation.EnableWebSocket;
-import org.springframework.web.socket.config.annotation.WebSocketConfigurer;
-import org.springframework.web.socket.config.annotation.WebSocketHandlerRegistry;
+<p>What can you do? You can notice that both DataInputStream and RandomAccessFile implement the interfaces DataInput and Closeable. Consequently, you could refactor the method read by introducing a “dummy” interface whose only purpose is to create a type that extends both DataInput and Closeable:</p>
 
-import lombok.AllArgsConstructor;
+<pre><code class="language-java">interface DataInputCloseable extends DataInput, Closeable {}
+</code></pre>
 
-@Configuration
-@EnableWebSocket
-@AllArgsConstructor
-public class WebSocketConfig implements WebSocketConfigurer {
+<p>You can now refactor the method read to use this interface as follows:</p>
 
-    private final ChatHandler chatHandler;
-
-    @Override
-    public void registerWebSocketHandlers(WebSocketHandlerRegistry registry) {
-        registry.addHandler(chatHandler, &quot;/endpoint&quot;);
-    }
-
+<pre><code class="language-java">private static Person read(DataInputCloseable source) {
+   try(DataInputStream input = source) {
+       return new Person(input.readUTF(), input.readInt());
+   }
+   catch (IOException e) {
+       e.printStackTrace();
+       return null;
+   }
 }
 </code></pre>
 
-<p>クライアント側では、下記のようなコードになりました。</p>
+<p>Thanks to this refactoring, you have gained both code re-use and flexibility. You are now able to re-use the same implementation of the method read but pass DataInputStream objects and RandomAccessFile objects.</p>
 
-<pre><code class="language-html">&lt;!DOCTYPE html&gt;
-&lt;html lang=&quot;ja&quot;&gt;
-&lt;head&gt;
-&lt;meta charset=&quot;UTF-8&quot; /&gt;
-&lt;title&gt;チャット&lt;/title&gt;
-&lt;link rel=&quot;stylesheet&quot; href=&quot;/webjars/bootstrap/3.3.7/css/bootstrap.min.css&quot; /&gt;
-&lt;link rel=&quot;stylesheet&quot; href=&quot;/webjars/bootstrap/3.3.7/css/bootstrap-theme.min.css&quot; /&gt;
-&lt;/head&gt;
-&lt;body&gt;
-  &lt;div class=&quot;container&quot;&gt;
-    &lt;h2&gt;チャット&lt;/h2&gt;
-    &lt;div class=&quot;form-horizontal&quot;&gt;
-      &lt;div class=&quot;form-group&quot;&gt;
-        &lt;label for=&quot;roomName&quot; class=&quot;col-sm-2 control-label&quot;&gt;ルーム&lt;/label&gt;
-        &lt;div class=&quot;col-sm-2&quot;&gt;
-          &lt;input id=&quot;roomName&quot; type=&quot;text&quot; class=&quot;form-control&quot; value=&quot;example&quot; /&gt;
-        &lt;/div&gt;
-        &lt;div class=&quot;col-sm-3&quot;&gt;
-          &lt;button id=&quot;connectButton&quot; type=&quot;button&quot; class=&quot;btn btn-default&quot;&gt;接続&lt;/button&gt;
-          &lt;button id=&quot;disconnectButton&quot; class=&quot;btn btn-default&quot;&gt;切断&lt;/button&gt;
-        &lt;/div&gt;
-      &lt;/div&gt;
-      &lt;div class=&quot;form-group&quot;&gt;
-        &lt;label for=&quot;message&quot; class=&quot;col-sm-2 control-label&quot;&gt;メッセージ&lt;/label&gt;
-        &lt;div class=&quot;col-sm-4&quot;&gt;
-          &lt;input id=&quot;message&quot; type=&quot;text&quot; class=&quot;form-control&quot; /&gt;
-        &lt;/div&gt;
-        &lt;div class=&quot;col-sm-2&quot;&gt;
-          &lt;button id=&quot;sendButton&quot; type=&quot;button&quot; class=&quot;btn btn-default&quot;&gt;送信&lt;/button&gt;
-        &lt;/div&gt;
-      &lt;/div&gt;
-      &lt;div class=&quot;row&quot;&gt;
-        &lt;div class=&quot;col-sm-4 col-sm-offset-2&quot;&gt;
-          &lt;ul id=&quot;messageList&quot; class=&quot;list-unstyled&quot;&gt;
-          &lt;/ul&gt;
-        &lt;/div&gt;
-      &lt;/div&gt;
-    &lt;/div&gt;
-  &lt;/div&gt;
-  &lt;script src=&quot;/webjars/jquery/1.12.4/jquery.min.js&quot;&gt;&lt;/script&gt;
-  &lt;script src=&quot;/webjars/bootstrap/3.3.7/js/bootstrap.min.js&quot;&gt;&lt;/script&gt;
-  &lt;script&gt;
-    $(function() {
-      var endpoint = &#39;ws://&#39; + location.host + &#39;/endpoint&#39;;
-      var webSocket = null;
+<h2 id="toc_2">Using intersection types</h2>
 
-      $(&#39;#connectButton&#39;).click(function() {
+<p>Nonetheless, you had to introduce a kind of “dummy” interface whose only purpose is to create a new type which extends two types (DataInput and Closeable). Not only that, but because you were depending upon classes in the core JDK libraries you couldn’t retrofit that interface to the actual implementing classes. This is a situation where intersection types can be convenient. They let you do just that without introducing an unnecessary interface or class in your code. You can refactor the method read as follows:</p>
 
-        $(&quot;#messageList&quot;).empty();
-
-        webSocket = new WebSocket(endpoint + &#39;?&#39; + encodeURIComponent($(&#39;#roomName&#39;).val()));
-        webSocket.onopen = function() {
-          $(&#39;#roomName&#39;).prop(&#39;disabled&#39;, true);
-          $(&#39;#connectButton&#39;).prop(&#39;disabled&#39;, true);
-          $(&#39;#disconnectButton&#39;).prop(&#39;disabled&#39;, false);
-        };
-        webSocket.onclose = function() {
-        };
-        webSocket.onmessage = function(message) {
-          $(&#39;#messageList&#39;).prepend($(&#39;&lt;li&gt;&#39;).text(message.data));
-        };
-        webSocket.onerror = function() {
-          alert(&#39;エラーが発生しました。&#39;);
-        };
-      });
-
-      $(&#39;#disconnectButton&#39;).click(function() {
-
-        webSocket.close();
-        webSocket = null;
-
-        $(&#39;#roomName&#39;).prop(&#39;disabled&#39;, false);
-        $(&#39;#connectButton&#39;).prop(&#39;disabled&#39;, false);
-        $(&#39;#disconnectButton&#39;).prop(&#39;disabled&#39;, true);
-      });
-
-      $(&#39;#sendButton&#39;).click(function() {
-        if (!webSocket) {
-          alert(&#39;未接続です。&#39;);
-          return;
-        }
-
-        webSocket.send($(&#39;#message&#39;).val());
-      });
-    });
-  &lt;/script&gt;
-&lt;/body&gt;
-&lt;/html&gt;
+<pre><code class="language-java">private static &lt;I extends DataInput &amp; Closeable&gt; Person read(I source) {
+    try(I input = source) {
+        return new Person(input.readUTF(), input.readInt());
+    }
+    catch (IOException e) {
+       e.printStackTrace();
+       return null;
+    }
+}
 </code></pre>
 
-<p>STOMPの時のほうが、いろいろシンプルに書けるので、ブラウザがクライアントならば、STOMPを使わない理由はないかなと思っています。</p>
+<p>In the code above, you introduced an intersection type <code>&lt;I extends DataInput &amp; Closeable&gt;</code> which says the type parameter <code>I</code> extends both <code>DataInput</code> and <code>Closeable</code>. You can then use this type parameter as argument to the method to indicate the input should extends both <code>DataInput</code> and <code>Closeable</code>.</p>
+
+<h2 id="toc_3">Conclusion</h2>
+
+<p>In this blog post, we showed that intersection types can be convenient in situations where you need “to extend from” two, or more, types in an existing library but you don’t have an existing interface or class to model that. In many cases this is unnecessary. Often introducing new types via an interface or class gives us an explicit name which helps the readability of your code. If the concept and name makes sense then that’s what we would recommend doing. In this case that wasn’t possible and intersection types helped save the day.</p>
+
+<p>If you are interested in improving your Java skills, check out our <a href="http://iteratrlearning.com/javabootcamp">Java Software Development Bootcamp</a></p>
 
                         
                       </div>
@@ -320,7 +197,7 @@ public class WebSocketConfig implements WebSocketConfigurer {
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/5/13</span>
+                    <span class="date">2018/7/7</span>
                     <span>posted in&nbsp;</span> 
           				  
           					    <span class="posted-in"><a href='Java.html'>Java</a></span>
@@ -413,31 +290,31 @@ public class WebSocketConfig implements WebSocketConfigurer {
 	      
 		      
 			      <li class="post">
-			        <a href="15337171704262.html">Introduction to Testing with Spock and Groovy</a>
+			        <a href="15358820607055.html">Java 8 Concurrency Tutorial: Atomic Variables and ConcurrentMap</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15336595358049.html">10 Excellent Ways to Secure Your Spring Boot Application</a>
+			        <a href="15358774987730.html">Java 8 Concurrency Tutorial: Synchronization and Locks</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15336592302916.html">First MicroProfile.io application using Java Module System</a>
+			        <a href="15358757119900.html">Java 8 Concurrency Tutorial: Threads and Executors</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15332186142588.html">Jenkins 的 Pipeline 脚本在美团餐饮 SaaS 中的实践</a>
+			        <a href="15358756631902.html">Java 8 Stream Tutorial</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15331749691571.html">基于ZooKeeper的分布式锁和队列</a>
+			        <a href="15358753472382.html">Migrate Maven Projects to Java 11</a>
 			      </li>
 		     
 		  

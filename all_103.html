@@ -105,378 +105,357 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15264401346282.html">
+                <a class="clearlink" href="15281293926383.html">
                 
-                  <h1>权限系统设计模型分析（DAC，MAC，RBAC，ABAC）</h1>
+                  <h1>在 Spring Boot 中集成 SOFABoot 类隔离能力</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
-                        	<pre><code>作者：https://www.jianshu.com/u/11c0ebe856b8
-发表：2017.12.10 23:16
-原文：https://www.jianshu.com/p/ce0944b4a903
-</code></pre>
+                        	<blockquote>
+<p>张奇龙 <a href="https://zhuanlan.zhihu.com/p/36909393">https://zhuanlan.zhihu.com/p/36909393</a></p>
 
-<blockquote>
-<p>好久没有更新文章了…… 这一年过得太忙。<br/>
-准备一篇个人认为值得拿出来分享的文章真的需要很多时间，如果你喜欢，请评论、点赞让我知道，我会抽更多的时间来更新一些分享给大家，谢谢！</p>
+<h2 id="toc_0">SOFABoot 类隔离能力简介</h2>
 </blockquote>
 
-<p>此篇文章主要尝试将世面上现有的一些权限系统设计做一下简单的总结分析，个人水平有限，如有错误请不吝指出。</p>
+<p>SOFABoot 是蚂蚁金服中间件团队开源的基于 Spring Boot 的一个开发框架，其在 Spring Boot 基础能力之上，增加了类隔离能力。蚂蚁金服内部丰富的实践场景表明，类隔离能力对解决类冲突、版本管控有其特殊的优势。</p>
 
-<h2 id="toc_0">术语</h2>
+<p>SOFABoot 的类隔离能力由单独的组件 SOFAArk 实现，相比业界遵循 OSGi（<a href="https://link.zhihu.com/?target=https%3A//www.osgi.org/">https://www.osgi.org</a>） 规范的 Equinox 或者 Felix，SOFAArk 专注于类隔离，简化了类加载模型，是一款更加轻量的类隔离框架。</p>
 
-<p>这里对后面会用到的词汇做一个说明，老司机请直接翻到<strong>常见设计模式</strong>。</p>
+<p>本文将介绍 SOFABoot 类隔离能力的背景及其使用方式。</p>
 
-<h3 id="toc_1">用户</h3>
+<h2 id="toc_1">1. 背景</h2>
 
-<p>发起操作的主体。</p>
+<p>在 Java 世界中，依赖的 JAR 包之间相互冲突永远是一个痛，Spring Boot 采用统一的依赖管理机制规避了大部分依赖冲突问题。理想很美好，现实却很骨感，作为蚂蚁金服这类大体量的公司，各业务线纷繁复杂、基础服务组件繁多，很难做到对所有 JAR 包做统一管控，尤其涉及到多个跨团队模块组件相互依赖时，因为各自技术栈历史包袱的存在，难以有效统一冲突包版本。</p>
 
-<h3 id="toc_2">对象（Subject）</h3>
+<p>假设如下场景，工程需要引入两个三方组件：A 和 B，组件 A 需要依赖 Hessian 3，组件 B 需要依赖 Hessian 4，因为 Hessian 3 和 Hessian 4 是不兼容的。作为开发者，遇到这种包冲突问题，如果不借助类隔离框架，只能耗费精力升级到统一版本。</p>
 
-<p>指操作所针对的客体对象，比如订单数据或图片文件。</p>
+<p><img src="https://pic2.zhimg.com/v2-523ebc71ae694f6bbe1196b458711c38_b.jpg" alt=""/><img src="https://pic2.zhimg.com/v2-523ebc71ae694f6bbe1196b458711c38_r.jpg" alt=""/></p>
 
-<h3 id="toc_3">权限控制表 (ACL: Access Control List)</h3>
+<p>为了彻底解决类似的包冲突问题，我们需要借助类隔离机制，使用不同的类加载器加载冲突的三方依赖包，进而做到在同一个应用运行时共存。</p>
 
-<p>用来描述权限规则或用户和权限之间关系的数据表。</p>
+<p>基于此背景，SOFABoot 提供了一个轻量级的类隔离框架，也是本文的主角，SOFAArk。</p>
 
-<h3 id="toc_4">权限 (Permission)</h3>
+<h2 id="toc_2">2. 基本原理</h2>
 
-<p>用来指代对某种对象的某一种操作，例如 “添加文章的操作”。</p>
+<p>在介绍 SOFAArk 类隔离框架使用之前，我们简单了解下其背后的实现原理。正如前文中描述，SOFAArk 是通过独立的类加载器加载相互冲突的三方依赖包，从而做到隔离包冲突。那么我们不禁要问，SOFAArk 是如何区分应用中哪些依赖包是需要单独的类加载器加载呢？原因是 Ark Plugin，它是 SOFAArk 框架定义的一种特殊的 JAR 包文件格式，SOFAArk 框架会自动识别 Ark Plugin 这种特殊依赖。</p>
 
-<h3 id="toc_5">权限标识</h3>
+<p>何为 Ark Plugin ? Ark Plugin 本质上是一个 FatJar，借助 SOFABoot 官方提供的 maven 打包插件，开发者可以把若干普通的 JAR 包打包成 Ark Plugin 供应用依赖或者把普通的 Java 模块改造成 Ark Plugin。通常来说，如果把一个普通 JAR 打包成 Ark Plugin，那么该 JAR 包依赖的其他三方包也会被打入同一个 Ark Plugin，默认情况下 SOFABoot 官方打包插件会自动把间接依赖也打入到 Ark Plugin。</p>
 
-<p>权限的代号，例如用 “ARTICLE_ADD” 来指代 “添加文章的操作” 权限。</p>
+<p>应用使用添加 maven 依赖的方式引入 Ark Plugin，运行时，SOFAArk 框架会自动识别应用的三方依赖包中是否含有 Ark Plugin，进而使用单独的类加载器加载。为了更加直观，下图是应用运行时逻辑分层图：</p>
 
-<h2 id="toc_6">常见设计模式</h2>
+<p><img src="https://pic3.zhimg.com/v2-af38a66b654feefe65e91996a60a2700_b.jpg" alt=""/><img src="https://pic3.zhimg.com/v2-af38a66b654feefe65e91996a60a2700_r.jpg" alt=""/></p>
 
-<h3 id="toc_7">自主访问控制（DAC: Discretionary Access Control）</h3>
+<p>可以看到，在应用运行时，SOFAArk 容器处于最底层，负责启动应用。应用依赖的所有 Ark Plugin 处于中间层，每个 Ark Plugin 都由 SOFAArk 容器使用独立的类加载器加载，相互隔离。应用业务代码及其他非 Ark Plugin 的普通三方依赖包，为了描述简单，统称为 Ark Biz，它运行在最上层，需要依赖中间层的 Ark Plugin。</p>
 
-<p>系统会识别用户，然后根据被操作对象（Subject）的权限控制列表（ACL: Access Control List）或者权限控制矩阵（ACL: Access Control Matrix）的信息来决定用户的是否能对其进行哪些操作，例如读取或修改。</p>
+<p>一个标准 Ark Plugin 会包含一些配置文件，主要包含导出类和导入类配置。导出类即把 Ark Plugin 中的类导出给 Ark Biz 和其他 Ark Plugin 可见。默认情况下，所有 Ark Plugin 的导出类对于 Ark Biz 来说都是可见的，即 Ark Biz 可以使用 Ark Plugin 的导出类。对于 Ark Plugin 来说，如果需要使用其他 Ark Plugin 的导出类，必须声明为自身的导入类。关于 Ark Plugin 详细说明可以参考文末相关链接。</p>
 
-<p>而拥有对象权限的用户，又可以将该对象的权限分配给其他用户，所以称之为 “自主（Discretionary）” 控制。</p>
+<p>下面我们来演示如何开发一个简单的 Ark Plugin。</p>
 
-<p>这种设计最常见的应用就是文件系统的权限设计，如微软的 NTFS。</p>
+<h2 id="toc_3">3. Java 模块改造成 Ark Plugin</h2>
 
-<p>DAC 最大缺陷就是对权限控制比较分散，不便于管理，比如无法简单地将一组文件设置统一的权限开放给指定的一群用户。</p>
+<h2 id="toc_4">3.1 新建工程</h2>
 
-<p><img src="https://upload-images.jianshu.io/upload_images/594774-6d77f13cc568797f.png" alt=""/></p>
+<p>Demo <a href="https://link.zhihu.com/?target=https%3A//github.com/QilongZhang/ark-plugin-demo">工程地址</a></p>
 
-<h3 id="toc_8">强制访问控制（MAC: Mandatory Access Control）</h3>
+<p>运行需要 JDK 6 及以上、 Maven 3.2.5 以上。</p>
 
-<p>MAC 是为了弥补 DAC 权限控制过于分散的问题而诞生的。在 MAC 的设计中，每一个对象都都有一些权限标识，每个用户同样也会有一些权限标识，而用户能否对该对象进行操作取决于双方的权限标识的关系，这个限制判断通常是由系统硬性限制的。比如在影视作品中我们经常能看到特工在查询机密文件时，屏幕提示需要 “无法访问，需要一级安全许可”，这个例子中，文件上就有“一级安全许可” 的权限标识，而用户并不具有。</p>
-
-<p>MAC 非常适合机密机构或者其他等级观念强烈的行业，但对于类似商业服务系统，则因为不够灵活而不能适用。</p>
-
-<p><img src="https://upload-images.jianshu.io/upload_images/594774-f9ce520635dc31b2.png" alt=""/></p>
-
-<blockquote>
-<p><a href="https://link.jianshu.com?t=https://www.centos.org/docs/5/html/Deployment_Guide-en-US/sec-mls-ov.html">Red Hat: MLS</a></p>
-</blockquote>
-
-<h3 id="toc_9">基于角色的访问控制（RBAC: Role-Based Access Control)</h3>
-
-<p>因为 DAC 和 MAC 的诸多限制，于是诞生了 RBAC，并且成为了迄今为止最为普及的权限设计模型。</p>
-
-<p>RBAC 在用户和权限之间引入了 “角色（Role）” 的概念（暂时忽略 Session 这个概念）：</p>
-
-<p><img src="https://upload-images.jianshu.io/upload_images/594774-b220fc093138a2c7.png" alt=""/></p>
-
-<blockquote>
-<p>图片来自 <a href="https://link.jianshu.com?t=http://directory.apache.org/fortress/user-guide/1.3-what-rbac-is.html">Apache Directory</a></p>
-</blockquote>
-
-<p>如图所示，每个用户关联一个或多个角色，每个角色关联一个或多个权限，从而可以实现了非常灵活的权限管理。角色可以根据实际业务需求灵活创建，这样就省去了每新增一个用户就要关联一遍所有权限的麻烦。简单来说 RBAC 就是：用户关联角色，角色关联权限。另外，RBAC 是可以模拟出 DAC 和 MAC 的效果的。</p>
-
-<p>例如数据库软件 MongoDB 便是采用 RBAC 模型，对数据库的操作都划分成了权限（<a href="https://link.jianshu.com?t=https://docs.mongodb.com/manual/reference/privilege-actions/">MongoDB 权限文档</a>）：</p>
-
-<table>
-<thead>
-<tr>
-<th>权限标识</th>
-<th>说明</th>
-</tr>
-</thead>
-
-<tbody>
-<tr>
-<td>find</td>
-<td>具有此权限的用户可以运行所有和查询有关的命令，如：aggregate、checkShardingIndex、count 等。</td>
-</tr>
-<tr>
-<td>insert</td>
-<td>具有此权限的用户可以运行所有和新建数据有关的命令：insert 和 create 等。</td>
-</tr>
-<tr>
-<td>collStats</td>
-<td>具有此权限的用户可以对指定 database 或 collection 执行 collStats 命令。</td>
-</tr>
-<tr>
-<td>viewRole</td>
-<td>具有此权限的用户可以查看指定 database 的角色信息。</td>
-</tr>
-<tr>
-<td>…</td>
-<td></td>
-</tr>
-</tbody>
-</table>
-
-<p>基于这些权限，MongoDB 提供了一些预定义的角色（<a href="https://link.jianshu.com?t=https://docs.mongodb.com/manual/reference/built-in-roles/">MongoDB 预定义角色文档</a>，用户也可以自己定义角色）：</p>
-
-<table>
-<thead>
-<tr>
-<th>角色</th>
-<th>find</th>
-<th>insert</th>
-<th>collStats</th>
-<th>viewRole</th>
-<th>…</th>
-</tr>
-</thead>
-
-<tbody>
-<tr>
-<td>read</td>
-<td>✔</td>
-<td></td>
-<td>✔</td>
-<td></td>
-<td>…</td>
-</tr>
-<tr>
-<td>readWrite</td>
-<td>✔</td>
-<td>✔</td>
-<td>✔</td>
-<td></td>
-<td>…</td>
-</tr>
-<tr>
-<td>dbAdmin</td>
-<td>✔</td>
-<td></td>
-<td>✔</td>
-<td></td>
-<td>…</td>
-</tr>
-<tr>
-<td>userAdmin</td>
-<td></td>
-<td></td>
-<td></td>
-<td>✔</td>
-<td>…</td>
-</tr>
-</tbody>
-</table>
-
-<p>最后授予用户不同的角色，就可以实现不同粒度的权限分配了。</p>
-
-<p>目前市面上绝大部分系统在设计权限系统时都采用 RBAC 模型。然而也有的系统错误地实现了 RBAC，他们采用的是判断用户是否具有某个角色而不是判断权限，例如以下代码：</p>
-
-<pre><code>&lt;?php
-
-if ($user-&gt;hasRole(&#39;hr&#39;)) {
-    // 执行某种只有“HR”角色才能做的功能，例如给员工涨薪…
-    // ...
-}
-
-</code></pre>
-
-<p>如果后期公司规定部门经理也可以给员工涨薪，这时就不得不修改代码了。</p>
-
-<p>以上基本就是 RBAC 的核心设计（RBAC Core）。而基于核心概念之上，RBAC 规范还提供了扩展模式。</p>
-
-<h4 id="toc_10">角色继承 (Hierarchical Role)</h4>
-
-<p><img src="https://upload-images.jianshu.io/upload_images/594774-386977fee82f6152.png" alt=""/></p>
-
-<blockquote>
-<p>带有角色继承的 RBAC。图片来自 <a href="https://link.jianshu.com?t=http://directory.apache.org/fortress/user-guide/1.3-what-rbac-is.html">Apache Directory</a></p>
-</blockquote>
-
-<p>顾名思义，角色继承就是指角色可以继承于其他角色，在拥有其他角色权限的同时，自己还可以关联额外的权限。这种设计可以给角色分组和分层，一定程度简化了权限管理工作。</p>
-
-<h4 id="toc_11">职责分离 (Separation of Duty)</h4>
-
-<p>为了避免用户拥有过多权限而产生利益冲突，例如一个篮球运动员同时拥有裁判的权限（看一眼就给你判犯规狠不狠？），另一种职责分离扩展版的 RBAC 被提出。</p>
-
-<p>职责分离有两种模式：</p>
+<p>首先我们在 IDE 里新建一个普通 Maven 工程，并创建三个普通的 Java 模块。以前文描述的 Hessian 冲突为例，在演示工程中定义了三个模快：</p>
 
 <ul>
-<li>  静态职责分离 (Static Separation of Duty)：用户无法同时被赋予有冲突的角色。</li>
-<li>  动态职责分离 (Dynamic Separation of Duty)：用户在一次会话（Session）中不能同时激活自身所拥有的、互相有冲突的角色，只能选择其一。</li>
+<li>  pojo-module: 定义了一个简单的 PoJo 类 SamplePoJo，并设置为导出类，打包成 <code>pojo-ark-plugin</code> 。</li>
+<li>  hessian3-module：定义了一个服务类 Hessian3Service，实现了简单的序列化和反序列逻辑，使用的版本是 Hessian 3，并导入了 SamplePoJo，打包成 <code>hessian3-ark-plugin</code> 。</li>
+<li>  hessian4-module：定义了一个服务类 Hessian4Service，和 Hessian3Service 功能类似，使用的版本是 Hessian 4，并导入了 SamplePoJo，打包成 <code>hessian4-ark-plugin</code> 。</li>
 </ul>
 
-<p><img src="https://upload-images.jianshu.io/upload_images/594774-feb7c1074d151113.png" alt=""/></p>
+<p>该用例是为了演示如何将普通的 Java 模块及其三方依赖包打包成 Ark Plugin，以 <code>hessian3-module</code> 模块为例来讲解打包流程。</p>
 
-<blockquote>
-<p>静态职责分离。图片来自 <a href="https://link.jianshu.com?t=http://directory.apache.org/fortress/user-guide/1.3-what-rbac-is.html">Apache Directory</a></p>
-</blockquote>
+<h2 id="toc_5">3.2 编写服务类</h2>
 
-<p><img src="https://upload-images.jianshu.io/upload_images/594774-059b93e4209e8fa6.png" alt=""/></p>
+<p>在 <code>hessian3-module</code>中，提供了一个简单的序列化和反序列化功能类 Hessian3Service：</p>
 
-<blockquote>
-<p>动态职责分离。图片来自 <a href="https://link.jianshu.com?t=http://directory.apache.org/fortress/user-guide/1.3-what-rbac-is.html">Apache Directory</a></p>
-</blockquote>
+<pre><code>package com.alipay.sofa.demo.hessian3;
 
-<p>讲了这么多 RBAC，都还只是在用户和权限之间进行设计，并没有涉及到用户和对象之间的权限判断，而在实际业务系统中限制用户能够使用的对象是很常见的需求。例如华中区域的销售没有权限查询华南区域的客户数据，虽然他们都具有销售的角色，而销售的角色拥有查询客户信息的权限。</p>
+import com.caucho.hessian.io.HessianInput;
+import com.caucho.hessian.io.HessianOutput;
 
-<p>那么我们应该怎么办呢？</p>
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 
-<h4 id="toc_12">用户和对象的权限控制</h4>
+/**
+ * @author qilong.zql
+ */
+public class Hessian3Service {
+    public byte[] serialize(Object obj) throws IOException {
+        if(obj==null) throw new NullPointerException();
 
-<p>在 RBAC 标准中并没有涉及到这个内容（RBAC 基本只能做到对一类对象的控制），但是这里讲几种基于 RBAC 的实现方式。</p>
+        ByteArrayOutputStream os = new ByteArrayOutputStream();
+        HessianOutput ho = new HessianOutput(os);
+        ho.writeObject(obj);
+        return os.toByteArray();
+    }
 
-<p>首先我们看看 PHP 框架 <a href="https://link.jianshu.com?t=http://www.yiiframework.com/wiki/136/getting-to-understand-hierarchical-rbac-scheme/">Yii 1.X 的解决方案</a>（2.X 中代码更为优雅，但 1.X 的示例代码更容易看明白）：</p>
+    public Object deserialize(byte[] by) throws IOException {
+        if(by==null) throw new NullPointerException();
 
-<pre><code>&lt;?php
-$auth=Yii::app()-&gt;authManager;
-
-// command-permission
-$auth-&gt;createOperation(&#39;listPosts&#39;,&#39;list posts&#39;);     // define a perm: listPosts
-$auth-&gt;createOperation(&#39;createPost&#39;,&#39;create a post&#39;); // define a perm: createPost
-$auth-&gt;createOperation(&#39;readPost&#39;,&#39;read a post&#39;);     // define a perm: readPost
-$auth-&gt;createOperation(&#39;updatePost&#39;,&#39;update a post&#39;); // define a perm: updatePost
-$auth-&gt;createOperation(&#39;deletePost&#39;,&#39;delete a post&#39;); // define a perm: deletePost
-
-// qualifier-permission
-// define a qualifier on domain(user)
-$bizRule=&#39;return Yii::app()-&gt;user-&gt;id==$params[&quot;post&quot;]-&gt;authID;&#39;;
-
-// define a perm with qualifier: listOwnPosts
-$perm=$auth-&gt;createTask(&#39;listOwnPosts&#39;, &#39;list posts by author himself&#39;, $bizRule);
-$perm-&gt;addChild(&#39;listPosts&#39;); // sub perm
-
-// define a perm with qualifier: updateOwnPost
-$perm=$auth-&gt;createTask(&#39;updateOwnPost&#39;,&#39;update a post by author himself&#39;,$bizRule);
-$perm-&gt;addChild(&#39;updatePost&#39;); // sub perm
-
-// define a role: reader
-$role=$auth-&gt;createRole(&#39;reader&#39;);
-$role-&gt;addChild(&#39;readPost&#39;); // sub perm
-
-// define a role: author
-$role=$auth-&gt;createRole(&#39;author&#39;);
-$role-&gt;addChild(&#39;reader&#39;); // sub role
-$role-&gt;addChild(&#39;createPost&#39;); // sub perm
-$role-&gt;addChild(&#39;updateOwnPost&#39;); // sub perm
-
-// define a role: editor
-$role=$auth-&gt;createRole(&#39;editor&#39;);
-$role-&gt;addChild(&#39;reader&#39;); // sub role
-$role-&gt;addChild(&#39;updatePost&#39;); // sub perm
-
-// define a role: admin
-$role=$auth-&gt;createRole(&#39;admin&#39;);
-$role-&gt;addChild(&#39;editor&#39;); // sub role
-$role-&gt;addChild(&#39;author&#39;); // sub role
-$role-&gt;addChild(&#39;deletePost&#39;); // sub perm
-</code></pre>
-
-<p>实现效果：</p>
-
-<p><img src="https://upload-images.jianshu.io/upload_images/594774-fb67d571497fb0b2.gif" alt=""/></p>
-
-<blockquote>
-<p>图片来自 <a href="https://link.jianshu.com?t=http://www.yiiframework.com/wiki/136/getting-to-understand-hierarchical-rbac-scheme/">Yii 官方 WiKi</a></p>
-</blockquote>
-
-<p>在这个 Yii 的官方例子中，<code>updateOwnPost</code>在判断用户是否具有<code>updatePost</code>权限的基础上更进一步判断了用户是否有权限操作这个特定的对象，并且这个判断逻辑是通过代码设置的，非常灵活。</p>
-
-<p>不过大部分时候我们并不需要这样的灵活程度，会带来额外的开发和维护成本，而另一种基于模式匹配规则的对象权限控制可能更适合。例如判断用户是否对 Id 为 123 的文章具有编辑的权限，代码可能是这样的：</p>
-
-<pre><code>&lt;?php
-
-// 假设articleId是动态获取的
-$articleId = 123;
-
-if ($user-&gt;can(&quot;article:edit:{$articleId}&quot;)) {
-    // ...
+        ByteArrayInputStream is = new ByteArrayInputStream(by);
+        HessianInput hi = new HessianInput(is);
+        return hi.readObject();
+    }
 }
 
 </code></pre>
 
-<p>而给用户授权则有多种方式可以选择：</p>
+<p>该功能类非常简单，提供了两个方法调用，分别实现对象的序列化和发序列化。</p>
 
-<pre><code>&lt;?php
+<h2 id="toc_6">3.3 Ark Plugin 配置</h2>
 
-// 允许用户编辑Id为123的文章
-$user-&gt;grant(&#39;article:edit:123&#39;);
+<p>因为 Ark Plugin 的配置大同小异，在这里以普通的 Java 模块 <code>hessian3-module</code> 打包成 <code>hessian3-ark-plugin</code> 为例，介绍 Ark Plugin 的一般配置。</p>
 
-// 使用通配符，允许用户编辑所有文章
-$user-&gt;grant(&#39;article:edit:*&#39;);
+<p>首先，我们需要添加 SOFABoot 官方提供的 maven 打包插件：</p>
+
+<pre><code>&lt;plugin&gt;
+    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
+    &lt;artifactId&gt;sofa-ark-plugin-maven-plugin&lt;/artifactId&gt;
+    &lt;version&gt;0.2.0&lt;version&gt;
+&lt;/plugin&gt;
 
 </code></pre>
 
-<p>虽然不及 Yii 方案的灵活，但某些场景下这样就够用了。</p>
+<p>然后在<code>hessian3-module</code> 演示用例中，只需要在模块 <code>pom.xml</code> 文件中添加一个导出类和一个导入类配置，配置如下：</p>
 
-<p>如果大家还有更好的方案，欢迎在评论中提出。</p>
+<pre><code>&lt;build&gt;
+    &lt;plugins&gt;
+        &lt;plugin&gt;
+            &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
+            &lt;artifactId&gt;sofa-ark-plugin-maven-plugin&lt;/artifactId&gt;
+            &lt;version&gt;0.2.0&lt;/version&gt;
+            &lt;executions&gt;
+                &lt;execution&gt;
+                    &lt;id&gt;default-cli&lt;/id&gt;
+                    &lt;goals&gt;
+                        &lt;goal&gt;ark-plugin&lt;/goal&gt;
+                    &lt;/goals&gt;
 
-<h3 id="toc_13">基于属性的权限验证（ABAC: Attribute-Based Access Control）</h3>
+                    &lt;configuration&gt;
+                        &lt;!-- configure imported class --&gt;
+                        &lt;imported&gt;
+                            &lt;!-- configure class-level imported class --&gt;
+                            &lt;classes&gt;
+                                &lt;class&gt;com.alipay.sofa.demo.pojo.SamplePoJo&lt;/class&gt;
+                            &lt;/classes&gt;
+                        &lt;/imported&gt;
 
-<p>ABAC 被一些人称为是权限系统设计的未来。</p>
+                        &lt;!-- configure exported class --&gt;
+                        &lt;exported&gt;
+                            &lt;!-- configure class-level exported class --&gt;
+                            &lt;classes&gt;
+                                &lt;class&gt;com.alipay.sofa.demo.hessian3.Hessian3Service&lt;/class&gt;
+                            &lt;/classes&gt;
+                        &lt;/exported&gt;
+                    &lt;/configuration&gt;
+                &lt;/execution&gt;
+            &lt;/executions&gt;
+        &lt;/plugin&gt;
+    &lt;/plugins&gt;
+&lt;/build&gt;
 
-<p>不同于常见的将用户通过某种方式关联到权限的方式，ABAC 则是通过动态计算一个或一组属性来是否满足某种条件来进行授权判断（可以编写简单的逻辑）。属性通常来说分为四类：用户属性（如用户年龄），环境属性（如当前时间），操作属性（如读取）和对象属性（如一篇文章，又称资源属性），所以理论上能够实现非常灵活的权限控制，几乎能满足所有类型的需求。</p>
+</code></pre>
 
-<p>例如规则：“允许所有班主任在上课时间自由进出校门”这条规则，其中，“班主任”是用户的角色属性，“上课时间”是环境属性，“进出”是操作属性，而 “校门” 就是对象属性了。为了实现便捷的规则设置和规则判断执行，ABAC 通常有配置文件（XML、YAML 等）或 DSL 配合规则解析引擎使用。XACML（eXtensible Access Control Markup Language）是 ABAC 的一个实现，但是该设计过于复杂，我还没有完全理解，故不做介绍。</p>
+<p>可以看到，<code>hessian3-ark-plugin</code> 导入基础实体类 <code>com.alipay.sofa.demo.pojo.SamplePoJo</code>，导出服务类 <code>com.alipay.sofa.demo.hessian3.Hessian3Service</code> 供 Ark Biz 使用。</p>
 
-<p>总结一下，ABAC 有如下特点：</p>
+<p>使用 maven 打包命令 <code>maven package</code> 即可将 <code>hessian3-module</code> 打包成 Ark Plugin，该插件包含模块代码及其依赖包，其 maven 坐标为：</p>
 
-<ol>
-<li> 集中化管理</li>
-<li> 可以按需实现不同颗粒度的权限控制</li>
-<li> 不需要预定义判断逻辑，减轻了权限系统的维护成本，特别是在需求经常变化的系统中</li>
-<li> 定义权限时，不能直观看出用户和对象间的关系</li>
-<li> 规则如果稍微复杂一点，或者设计混乱，会给管理者维护和追查带来麻烦</li>
-<li> 权限判断需要实时执行，规则过多会导致性能问题</li>
-</ol>
+<pre><code>&lt;dependency&gt;
+    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
+    &lt;artifactId&gt;hessian3-ark-plugin&lt;/artifactId&gt;
+    &lt;classifier&gt;ark-plugin&lt;/classifier&gt;
+    &lt;version&gt;1.0.0&lt;/version&gt;
+&lt;/dependency&gt;
 
-<p>既然 ABAC 这么好，那最流行的为什么还是 RBAC 呢？</p>
+</code></pre>
 
-<p>我认为主要还是因为大部分系统对权限控制并没有过多的需求，而且 ABAC 的管理相对来说太复杂了。<a href="https://link.jianshu.com?t=http://blog.kubernetes.io/2017/04/rbac-support-in-kubernetes.html">Kubernetes 便因为 ABAC 太难用，在<code>1.8</code>版本里引入了 RBAC 的方案</a>。</p>
+<p>关于 Ark Plugin 的导入、导出类，这里强调一下，在实际开发中，和业务本身无关的实体类或者基础服务类，如果多个 Ark Plugin 和 Ark Biz 都需要统一版本时，可以把这类基础 Jar 统一打包成 Ark Plugin 设置为导出类。在该演示用例中，我们假设 <code>SamplePoJo</code> 是一个基础实体类，和业务逻辑无关，而 <code>hessian3-ark-plugin</code> 和 <code>hessian4-ark-plugin</code> 都需要使用，于是单独打包成了一个 Ark Plugin。</p>
 
-<blockquote>
-<p>ABAC 有时也被称为 PBAC（Policy-Based Access Control）或 CBAC（Claims-Based Access Control）。</p>
-</blockquote>
+<p>到此为止，这就是一个简单的 Ark Plugin 从开发的步骤，看起来是不是很简单呢？</p>
 
-<h2 id="toc_14">结语</h2>
+<p>下面，我们演示下如何在 Spring Boot 工程中，快速集成 SOFABoot 的类隔离能力，并使用这三个 Ark Plugin。</p>
 
-<p>权限系统设计可谓博大精深，这篇文章只是介绍了一点皮毛。</p>
+<h2 id="toc_7">4. Spring Boot 工程集成 SOFAArk 组件</h2>
 
-<p>随着人类在信息化道路上越走越远，权限系统的设计也在不断创新，但目前好像处在了平台期。</p>
+<p>Demo <a href="https://link.zhihu.com/?target=https%3A//github.com/QilongZhang/springboot-ark-demo">工程地址</a></p>
 
-<p>可能因为在 RBAC 到 ABAC 之间有着巨大的鸿沟，无法轻易跨越，也可能是一些基于 RBAC 的微创新方案还不够规范化从而做到普及。不过在服务化架构的浪潮下，未来这一块必然有极高的需求，也许巨头们已经开始布局了。</p>
+<p>运行需要 JDK 6 及以上、 Maven 3.2.5 以上。Spring Boot 版本要求 1.4.2.RELEASE 以上，目前还不兼容 2.0.0 及以上版本。</p>
 
-<h2 id="toc_15">参考文档</h2>
+<p>该用例工程主要为了演示如何在 Spring Boot 工程中集成 SOFABoot 类隔离能力并使用 Ark Plugin。这里以前文提到的 Ark Plugin 为例，示例工程将会引入三个 Ark Plugin:<code>pojo-ark-plugin</code>，<code>hessian3-ark-plugin</code> 和 <code>hessian4-ark-plugin</code>，并使用后两者的导出类 <code>Hessian3Service</code> 和 <code>Hessian4Service</code>。</p>
 
-<p><a href="https://link.jianshu.com?t=https://support.microsoft.com/en-us/help/949608/changes-to-the-default-ntfs-discretionary-access-control-list-dacl-set">NTFS 文件系统权限</a></p>
+<h2 id="toc_8">4.1 新建工程</h2>
 
-<p><a href="https://link.jianshu.com?t=https://docs.oracle.com/cd/E56344_01/html/E53956/rbac-28.html#scrolltoc">Solaris 权限模型</a></p>
+<p>在 Spring Boot 官网 <a href="https://link.zhihu.com/?target=https%3A//start.spring.io/">https://start.spring.io</a> 新建一个 web 工程，并设置 Spring Boot 版本号为 1.4.2.RELEASE。在 Spring Boot 工程中集成 SOFABoot 类隔离能力，只需要添加 SOFABoot 提供的类隔离框架 starter。修改 maven 项目的配置文件 <code>pom.xml</code>，将</p>
 
-<p><a href="https://link.jianshu.com?t=https://baike.baidu.com/item/%E8%AE%BF%E9%97%AE%E6%8E%A7%E5%88%B6/8545517">百度百科：访问控制</a></p>
+<pre><code>&lt;parent&gt;
+    &lt;groupId&gt;org.springframework.boot&lt;/groupId&gt;
+    &lt;artifactId&gt;spring-boot-starter-parent&lt;/artifactId&gt;
+    &lt;version&gt;1.4.2.RELEASE&lt;/version&gt;
+    &lt;relativePath/&gt; 
+&lt;/parent&gt;
 
-<p><a href="https://link.jianshu.com?t=https://www.centos.org/docs/5/html/Deployment_Guide-en-US/sec-mls-ov.html">Red Hat: Multi-Level Security (MLS)</a></p>
+</code></pre>
 
-<p><a href="https://link.jianshu.com?t=http://files.cnblogs.com/files/Wenzy/an_introduction_to_rbac.pdf">冰云：An Introduction To Role-Based Access Control</a></p>
+<p>替换为：</p>
 
-<p><a href="https://link.jianshu.com?t=https://csrc.nist.gov/projects/role-based-access-control">NIST: Role-Based Access Control</a></p>
+<pre><code>&lt;parent&gt;
+    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
+    &lt;artifactId&gt;sofaboot-dependencies&lt;/artifactId&gt;
+    &lt;version&gt;2.3.1&lt;/version&gt;
+&lt;/parent&gt;
 
-<p><a href="https://link.jianshu.com?t=https://docs.mongodb.com/manual/core/authorization/">MongoDB RBAC</a></p>
+</code></pre>
 
-<p><a href="https://link.jianshu.com?t=https://stackoverflow.com/questions/7770728/group-vs-role-any-real-difference">Stackoverflow: Group vs role Any real difference?</a></p>
+<p>并添加如下 SOFAArk Starter 依赖：</p>
 
-<p><a href="https://link.jianshu.com?t=http://www.yiiframework.com/wiki/136/getting-to-understand-hierarchical-rbac-scheme/">Yii: Getting to Understand Hierarchical RBAC Scheme</a></p>
+<pre><code>&lt;!--ark spring boot starter--&gt;
+&lt;dependency&gt;
+    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
+    &lt;artifactId&gt;sofa-ark-springboot-starter&lt;/artifactId&gt;
+&lt;/dependency&gt;
 
-<p><a href="https://link.jianshu.com?t=http://www.informit.com/articles/article.aspx?p=782116">Role-Based Access Control in Computer Security</a></p>
+</code></pre>
 
-<p><a href="https://link.jianshu.com?t=http://www.cis.syr.edu/%7Ewedu/Teaching/cis643/LectureNotes_New/RBAC.pdf">(Syracuse University: Role-Based Access Control (RBAC)</a></p>
+<p>如此，一个 Spring Boot 工程便集成了 SOFABoot 提供的类隔离能力。</p>
 
-<p><a href="https://link.jianshu.com?t=http://www.yiiframework.com/doc-2.0/guide-security-authorization.html">Yii 2.0 Guide</a></p>
+<h2 id="toc_9">4.2 添加 Ark Plugin 依赖</h2>
 
-<p><a href="https://link.jianshu.com?t=https://en.wikipedia.org/wiki/Computer_access_control">WIKIPEDIA: Computer access control</a></p>
+<p>前文中提到，将普通 Java 模块打包成 Ark Plugin，其 maven 坐标不会发生变化，但是需要添加 <code>classifier=ark-plugin</code> 标志，因此如下添加三个 Ark Plugin 的依赖：</p>
+
+<pre><code>&lt;!--ark plugin--&gt;
+&lt;dependency&gt;
+    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
+    &lt;artifactId&gt;pojo-ark-plugin&lt;/artifactId&gt;
+    &lt;classifier&gt;ark-plugin&lt;/classifier&gt;
+    &lt;version&gt;1.0.0&lt;/version&gt;
+&lt;/dependency&gt;
+
+&lt;dependency&gt;
+    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
+    &lt;artifactId&gt;hessian3-ark-plugin&lt;/artifactId&gt;
+    &lt;classifier&gt;ark-plugin&lt;/classifier&gt;
+    &lt;version&gt;1.0.0&lt;/version&gt;
+&lt;/dependency&gt;
+
+&lt;dependency&gt;
+    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
+    &lt;artifactId&gt;hessian4-ark-plugin&lt;/artifactId&gt;
+    &lt;classifier&gt;ark-plugin&lt;/classifier&gt;
+    &lt;version&gt;1.0.0&lt;/version&gt;
+&lt;/dependency&gt;
+
+</code></pre>
+
+<p>需要指出的是，因为 ark plugin 是一个 FatJar，为了让应用编译期通过，需要在工程主 <code>pom.xml</code> 中增加如下依赖：</p>
+
+<pre><code>&lt;!--just for compile success--&gt;
+&lt;dependency&gt;
+    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
+    &lt;artifactId&gt;pojo-ark-plugin&lt;/artifactId&gt;
+    &lt;version&gt;1.0.0&lt;/version&gt;
+    &lt;scope&gt;provided&lt;/scope&gt;
+&lt;/dependency&gt;
+
+&lt;dependency&gt;
+    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
+    &lt;artifactId&gt;hessian3-ark-plugin&lt;/artifactId&gt;
+    &lt;version&gt;1.0.0&lt;/version&gt;
+    &lt;scope&gt;provided&lt;/scope&gt;
+&lt;/dependency&gt;
+
+&lt;dependency&gt;
+    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
+    &lt;artifactId&gt;hessian4-ark-plugin&lt;/artifactId&gt;
+    &lt;version&gt;1.0.0&lt;/version&gt;
+    &lt;scope&gt;provided&lt;/scope&gt;
+&lt;/dependency&gt;
+
+</code></pre>
+
+<p>4.3 编写 Rest 接口</p>
+
+<p>为了演示更加直观，编写如下 Rest 接口：</p>
+
+<pre><code>package com.alipay.sofa.springbootarkdemo.controller;
+
+import com.alipay.sofa.demo.hessian3.Hessian3Service;
+import com.alipay.sofa.demo.hessian4.Hessian4Service;
+import com.alipay.sofa.demo.pojo.SamplePoJo;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+import java.io.IOException;
+
+/**
+ * @author qilong.zql
+ */
+@RestController
+public class HelloController {
+
+    @RequestMapping(&quot;/hello-hessian3&quot;)
+    public String hessian3() throws IOException {
+        SamplePoJo samplePoJo = new SamplePoJo(&quot;Hello, hessian3.&quot;);
+        Hessian3Service hessian3Service = new Hessian3Service();
+        byte[] bytes = hessian3Service.serialize(samplePoJo);
+        Object pojo = hessian3Service.deserialize(bytes);
+        return pojo.toString();
+    }
+
+    @RequestMapping(&quot;/hello-hessian4&quot;)
+    public String hessian4() throws IOException {
+        SamplePoJo samplePoJo = new SamplePoJo(&quot;Hello, hessian4.&quot;);
+        Hessian4Service hessian4Service = new Hessian4Service();
+        byte[] bytes = hessian4Service.serialize(samplePoJo);
+        Object pojo = hessian4Service.deserialize(bytes);
+        return pojo.toString();
+    }
+
+}
+
+</code></pre>
+
+<p>该 Rest 接口主要为了本地启动应用后，能够直观演示 Ark Plugin 使用结果。启动该 Web Spring 工程，可以看到控制台打印结果：</p>
+
+<pre><code>...
+2018-05-14 10:04:06.573  INFO 85393 --- [           main] s.b.c.e.t.TomcatEmbeddedServletContainer : Tomcat started on port(s): 8080 (http)
+2018-05-14 10:04:06.577  INFO 85393 --- [           main] c.a.s.s.SpringbootArkDemoApplication     : Started SpringbootArkDemoApplication in 2.111 seconds (JVM running for 3.562)
+2018-05-14 10:04:06,578 INFO  main                             - Finish to start biz: Startup In IDE
+2018-05-14 10:04:06,578 INFO  main                             - Finish to process pipeline stage: com.alipay.sofa.ark.container.pipeline.DeployBizStage
+Ark container started in 2720 ms.
+
+</code></pre>
+
+<p>可以看到类似 <code>Ark container started in XXXXms</code> 字样，即表示该工程运行在 SOFABoot 类隔离框架之上。访问如下两个请求即可看到工程调用 <code>Hessian3Service</code> 和 <code>Hessian4Service</code> 的调用结果</p>
+
+<ul>
+<li>  <code>http://localhost:8080/hello-hessian3</code></li>
+<li>  <code>http://localhost:8080/hello-hessian4</code></li>
+</ul>
+
+<p>以上就是 Spring Boot 集成 SOFABoot 类隔离框架的一般步骤。可以看到，作为开发者，基本上无需过多关心自身应用是否使用类隔离框架，只需要引入 SOFABoot 提供的类隔离框架 Starter，即可快速完成类隔离能力的集成。</p>
+
+<h2 id="toc_10">5. 总结</h2>
+
+<p>本文主要介绍了 SOFABoot 基于 Spring Boot 开发的类隔离框架组件 SOFAArk。通过两个简单的用例工程，分别介绍了如何开发一个自己的 Ark Plugin 以及在 Spring Boot 快速集成 SOFABoot 的类隔离能力。SOFABoot 官方提供了 SOFARPC 打包的 Ark Plugin，开发者可以按需隔离 SOFARPC 和自身应用。另外，在 SOFAArk 类隔离容器之上，SOFABoot 提供了一整套兼容 JUnit 和 TestNG 测试框架的方案，感兴趣的读者可以下载文末给出的 Demo 工程，并按照官方文档学习。</p>
+
+<h2 id="toc_11">6. 相关资源</h2>
+
+<ul>
+<li>  <a href="https://link.zhihu.com/?target=https%3A//github.com/QilongZhang/ark-plugin-demo">ark-plugin-demo</a></li>
+<li>  <a href="https://link.zhihu.com/?target=https%3A//github.com/QilongZhang/springboot-ark-demo">springboot-ark-demo</a></li>
+<li>  <a href="https://link.zhihu.com/?target=https%3A//github.com/alipay/sofa-boot">SOFABoot 源码</a></li>
+<li>  <a href="https://link.zhihu.com/?target=https%3A//github.com/alipay/sofa-rpc">SOFARPC 源码</a></li>
+<li>  <a href="https://link.zhihu.com/?target=https%3A//github.com/alipay/sofa-rpc-boot-projects">SOFARPC Ark Plugin</a></li>
+<li>  <a href="https://link.zhihu.com/?target=https%3A//github.com/alipay/sofa-ark">SOFAArk 源码</a></li>
+<li>  <a href="https://link.zhihu.com/?target=https%3A//alipay.github.io/sofastack.github.io/docs/ark-plugin.html">Ark Plugin 文档</a></li>
+</ul>
 
                         
                       </div>
@@ -485,10 +464,10 @@ $user-&gt;grant(&#39;article:edit:*&#39;);
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/5/16</span>
+                    <span class="date">2018/6/5</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Authc&Authz.html'>Authc&Authz</a></span>
+          					    <span class="posted-in"><a href='Microservice.html'>Microservice</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -578,31 +557,31 @@ $user-&gt;grant(&#39;article:edit:*&#39;);
 	      
 		      
 			      <li class="post">
-			        <a href="15337171704262.html">Introduction to Testing with Spock and Groovy</a>
+			        <a href="15358820607055.html">Java 8 Concurrency Tutorial: Atomic Variables and ConcurrentMap</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15336595358049.html">10 Excellent Ways to Secure Your Spring Boot Application</a>
+			        <a href="15358774987730.html">Java 8 Concurrency Tutorial: Synchronization and Locks</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15336592302916.html">First MicroProfile.io application using Java Module System</a>
+			        <a href="15358757119900.html">Java 8 Concurrency Tutorial: Threads and Executors</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15332186142588.html">Jenkins 的 Pipeline 脚本在美团餐饮 SaaS 中的实践</a>
+			        <a href="15358756631902.html">Java 8 Stream Tutorial</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15331749691571.html">基于ZooKeeper的分布式锁和队列</a>
+			        <a href="15358753472382.html">Migrate Maven Projects to Java 11</a>
 			      </li>
 		     
 		  

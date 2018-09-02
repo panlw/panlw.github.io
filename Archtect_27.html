@@ -105,357 +105,102 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15281293926383.html">
+                <a class="clearlink" href="15287695232052.html">
                 
-                  <h1>在 Spring Boot 中集成 SOFABoot 类隔离能力</h1>
+                  <h1>开篇：RPC 要解决的核心问题和在企业服务中的地位</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p>张奇龙 <a href="https://zhuanlan.zhihu.com/p/36909393">https://zhuanlan.zhihu.com/p/36909393</a></p>
-
-<h2 id="toc_0">SOFABoot 类隔离能力简介</h2>
+<p><a href="https://juejin.im/book/5af56a3c518825426642e004/section/5af56a3c5188254267261e03">https://juejin.im/book/5af56a3c518825426642e004/section/5af56a3c5188254267261e03</a></p>
 </blockquote>
 
-<p>SOFABoot 是蚂蚁金服中间件团队开源的基于 Spring Boot 的一个开发框架，其在 Spring Boot 基础能力之上，增加了类隔离能力。蚂蚁金服内部丰富的实践场景表明，类隔离能力对解决类冲突、版本管控有其特殊的优势。</p>
+<p>随着企业 IT 服务的不断发展，单台服务器逐渐无法承受用户日益增长的请求压力时，就需要多台服务器联合起来构成「服务集群」共同对外提供服务。同时业务服务会随着产品需求的增多越来越肿，架构上必须进行服务拆分，一个完整的大型服务会被打散成很多很多独立的小服务，每个小服务会由独立的进程去管理来对外提供服务，这就是「微服务」。</p>
 
-<p>SOFABoot 的类隔离能力由单独的组件 SOFAArk 实现，相比业界遵循 OSGi（<a href="https://link.zhihu.com/?target=https%3A//www.osgi.org/">https://www.osgi.org</a>） 规范的 Equinox 或者 Felix，SOFAArk 专注于类隔离，简化了类加载模型，是一款更加轻量的类隔离框架。</p>
+<p>当用户的请求到来时，我们需要将用户的请求分散到多个服务去各自处理，然后又需要将这些子服务的结果汇总起来呈现给用户。那么服务之间该使用何种方式进行交互就是需要解决的核心问题。RPC 就是为解决服务之间信息交互而发明和存在的。</p>
 
-<p>本文将介绍 SOFABoot 类隔离能力的背景及其使用方式。</p>
+<h2 id="toc_0">什么是 RPC ？</h2>
 
-<h2 id="toc_1">1. 背景</h2>
+<p>RPC (Remote Procedure Call) 即远程过程调用，是分布式系统常见的一种通信方法，已经有 40 多年历史。当两个物理分离的子系统需要建立逻辑上的关联时，RPC 是牵线搭桥的常见技术手段之一。除 RPC 之外，常见的多系统数据交互方案还有分布式消息队列、HTTP 请求调用、数据库和分布式缓存等。</p>
 
-<p>在 Java 世界中，依赖的 JAR 包之间相互冲突永远是一个痛，Spring Boot 采用统一的依赖管理机制规避了大部分依赖冲突问题。理想很美好，现实却很骨感，作为蚂蚁金服这类大体量的公司，各业务线纷繁复杂、基础服务组件繁多，很难做到对所有 JAR 包做统一管控，尤其涉及到多个跨团队模块组件相互依赖时，因为各自技术栈历史包袱的存在，难以有效统一冲突包版本。</p>
+<p><img src="media/15287695232052/15287696181925.jpg" alt=""/></p>
 
-<p>假设如下场景，工程需要引入两个三方组件：A 和 B，组件 A 需要依赖 Hessian 3，组件 B 需要依赖 Hessian 4，因为 Hessian 3 和 Hessian 4 是不兼容的。作为开发者，遇到这种包冲突问题，如果不借助类隔离框架，只能耗费精力升级到统一版本。</p>
+<p>其中 RPC 和 HTTP 调用是没有经过中间件的，它们是端到端系统的直接数据交互。HTTP 调用其实也可以看成是一种特殊的 RPC，只不过传统意义上的 RPC 是指长连接数据交互，而 HTTP 一般是指即用即走的短链接。</p>
 
-<p><img src="https://pic2.zhimg.com/v2-523ebc71ae694f6bbe1196b458711c38_b.jpg" alt=""/><img src="https://pic2.zhimg.com/v2-523ebc71ae694f6bbe1196b458711c38_r.jpg" alt=""/></p>
+<p>RPC 在我们熟知的各种中间件中都有它的身影。Nginx/Redis/MySQL/Dubbo/Hadoop/Spark/Tensorflow 等重量级开源产品都是在 RPC 技术的基础上构建出来的，我们这里说的 RPC 指的是广义的 RPC，也就是分布式系统的通信技术。RPC 在技术中的地位好比我们身边的空气，它无处不在，但是又有很多人根本不知道它的存在。</p>
 
-<p>为了彻底解决类似的包冲突问题，我们需要借助类隔离机制，使用不同的类加载器加载冲突的三方依赖包，进而做到在同一个应用运行时共存。</p>
+<h2 id="toc_1">Nginx 与 RPC</h2>
 
-<p>基于此背景，SOFABoot 提供了一个轻量级的类隔离框架，也是本文的主角，SOFAArk。</p>
+<p>Ngnix 是互联网企业使用最为广泛的代理服务器。它可以为后端分布式服务提供负载均衡的功能，它可以将后端多个服务地址聚合为单个地址来对外提供服务。如图，Django 是 Python 技术栈最流行的 Web 框架。</p>
 
-<h2 id="toc_2">2. 基本原理</h2>
+<p><img src="media/15287695232052/15287697416634.jpg" alt=""/></p>
 
-<p>在介绍 SOFAArk 类隔离框架使用之前，我们简单了解下其背后的实现原理。正如前文中描述，SOFAArk 是通过独立的类加载器加载相互冲突的三方依赖包，从而做到隔离包冲突。那么我们不禁要问，SOFAArk 是如何区分应用中哪些依赖包是需要单独的类加载器加载呢？原因是 Ark Plugin，它是 SOFAArk 框架定义的一种特殊的 JAR 包文件格式，SOFAArk 框架会自动识别 Ark Plugin 这种特殊依赖。</p>
+<p>Nginx 和后端服务之间的交互在本质上也可以理解为 RPC 数据交互。也许你会争辩说 Nginx 和后端服务之间使用的是 HTTP 协议，走的是短连接，严格上不能算是 RPC 调用。</p>
 
-<p>何为 Ark Plugin ? Ark Plugin 本质上是一个 FatJar，借助 SOFABoot 官方提供的 maven 打包插件，开发者可以把若干普通的 JAR 包打包成 Ark Plugin 供应用依赖或者把普通的 Java 模块改造成 Ark Plugin。通常来说，如果把一个普通 JAR 打包成 Ark Plugin，那么该 JAR 包依赖的其他三方包也会被打入同一个 Ark Plugin，默认情况下 SOFABoot 官方打包插件会自动把间接依赖也打入到 Ark Plugin。</p>
+<p><img src="media/15287695232052/15287696652409.jpg" alt=""/></p>
 
-<p>应用使用添加 maven 依赖的方式引入 Ark Plugin，运行时，SOFAArk 框架会自动识别应用的三方依赖包中是否含有 Ark Plugin，进而使用单独的类加载器加载。为了更加直观，下图是应用运行时逻辑分层图：</p>
+<p>你说的没错，不过 Nginx 和后端服务之间还可以走其它的协议，比如 uwsgi 协议、fastcgi 协议等，这两个协议都是通过长连接进行通信的，通信协议也是采用了比 HTTP 协议更加节省流量的二进制协议。如上图所示，Gunicorn 是著名的 Python 容器，使用它可以启动 uwsgi 协议的服务器对外提供服务。</p>
 
-<p><img src="https://pic3.zhimg.com/v2-af38a66b654feefe65e91996a60a2700_b.jpg" alt=""/><img src="https://pic3.zhimg.com/v2-af38a66b654feefe65e91996a60a2700_r.jpg" alt=""/></p>
+<p>uwsgi 通讯协议在 Python 语言体系里使用非常普遍，如果一个企业内部使用 Python 语言栈搭建 Web 服务，那么他们在生产环境部署 Python 应用的时候不是在使用 HTTP 协议就是在使用 uwsgi 协议来和 Nginx 之间建立通讯。</p>
 
-<p>可以看到，在应用运行时，SOFAArk 容器处于最底层，负责启动应用。应用依赖的所有 Ark Plugin 处于中间层，每个 Ark Plugin 都由 SOFAArk 容器使用独立的类加载器加载，相互隔离。应用业务代码及其他非 Ark Plugin 的普通三方依赖包，为了描述简单，统称为 Ark Biz，它运行在最上层，需要依赖中间层的 Ark Plugin。</p>
+<p><img src="media/15287695232052/15287697201965.jpg" alt=""/></p>
 
-<p>一个标准 Ark Plugin 会包含一些配置文件，主要包含导出类和导入类配置。导出类即把 Ark Plugin 中的类导出给 Ark Biz 和其他 Ark Plugin 可见。默认情况下，所有 Ark Plugin 的导出类对于 Ark Biz 来说都是可见的，即 Ark Biz 可以使用 Ark Plugin 的导出类。对于 Ark Plugin 来说，如果需要使用其他 Ark Plugin 的导出类，必须声明为自身的导入类。关于 Ark Plugin 详细说明可以参考文末相关链接。</p>
+<p>Fastcgi 协议在 PHP 语言体系里非常常见，Nginx 和 PHP-fpm 进程之间一般较常使用 Fastcgi 协议进行通讯。</p>
 
-<p>下面我们来演示如何开发一个简单的 Ark Plugin。</p>
+<h2 id="toc_2">Hadoop 与 RPC</h2>
 
-<h2 id="toc_3">3. Java 模块改造成 Ark Plugin</h2>
+<p>在大数据技术领域，RPC 也占据了非常重要的地位。大数据领域广泛应用了非常多的分布式技术，分布式意味着节点的物理隔离，隔离意味着需要通信，通信意味着 RPC 的存在。大数据需要通信的量比业务系统更加庞大，所以在数据通信优化上做的更深。</p>
 
-<h2 id="toc_4">3.1 新建工程</h2>
+<p><img src="media/15287695232052/15287697024359.jpg" alt=""/></p>
 
-<p>Demo <a href="https://link.zhihu.com/?target=https%3A//github.com/QilongZhang/ark-plugin-demo">工程地址</a></p>
+<p>比如最常见的 Hadoop 文件系统 hdfs，一般包括一个 NameNode 和多个 DataNode，NameNode 和 DataNode 之间就是通过一种称为 Hadoop RPC 的二进制协议进行通讯。</p>
 
-<p>运行需要 JDK 6 及以上、 Maven 3.2.5 以上。</p>
+<h2 id="toc_3">TensorFlow 与 RPC</h2>
 
-<p>首先我们在 IDE 里新建一个普通 Maven 工程，并创建三个普通的 Java 模块。以前文描述的 Hessian 冲突为例，在演示工程中定义了三个模快：</p>
+<p>在人工智能领域的 RPC 也很重要，著名的 TensorFlow 架如果需要处理上亿的数据，就需要依靠分布式计算力，需要集群化，当多个分布式节点需要集体智慧时，就必须引入 RPC 技术进行通讯。Tensorflow Cluster 的 RPC 通讯框架使用了 Google 内部自研的 gRPC 框架。</p>
 
-<ul>
-<li>  pojo-module: 定义了一个简单的 PoJo 类 SamplePoJo，并设置为导出类，打包成 <code>pojo-ark-plugin</code> 。</li>
-<li>  hessian3-module：定义了一个服务类 Hessian3Service，实现了简单的序列化和反序列逻辑，使用的版本是 Hessian 3，并导入了 SamplePoJo，打包成 <code>hessian3-ark-plugin</code> 。</li>
-<li>  hessian4-module：定义了一个服务类 Hessian4Service，和 Hessian3Service 功能类似，使用的版本是 Hessian 4，并导入了 SamplePoJo，打包成 <code>hessian4-ark-plugin</code> 。</li>
-</ul>
+<p><img src="media/15287695232052/15287696915115.jpg" alt=""/></p>
 
-<p>该用例是为了演示如何将普通的 Java 模块及其三方依赖包打包成 Ark Plugin，以 <code>hessian3-module</code> 模块为例来讲解打包流程。</p>
+<h2 id="toc_4">HTTP 调用其实也是一种特殊的 RPC</h2>
 
-<h2 id="toc_5">3.2 编写服务类</h2>
+<p>HTTP1.0 协议时，HTTP 调用还只能是短链接调用，一个请求来回之后连接就会关闭。HTTP1.1 在 HTTP1.0 协议的基础上进行了改进，引入了 KeepAlive 特性可以保持 HTTP 连接长时间不断开，以便在同一个连接之上进行多次连续的请求，进一步拉近了 HTTP 和 RPC 之间的距离。</p>
 
-<p>在 <code>hessian3-module</code>中，提供了一个简单的序列化和反序列化功能类 Hessian3Service：</p>
+<p><img src="media/15287695232052/15287697798801.jpg" alt=""/></p>
 
-<pre><code>package com.alipay.sofa.demo.hessian3;
+<p>当 HTTP 协议进化到 2.0 之后，Google 开源了一个建立在 HTTP2.0 协议之上的通信框架直接取名为 gRPC，也就是 Google RPC，这时 HTTP 和 RPC 之间已经没有非常明显的界限了。所以在后文我们不再明确强调 RPC 和 HTTP 请求调用之间的细微区别了，直接统一称之为 RPC。</p>
 
-import com.caucho.hessian.io.HessianInput;
-import com.caucho.hessian.io.HessianOutput;
+<p><img src="media/15287695232052/15287698019397.jpg" alt=""/></p>
 
-import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
+<h2 id="toc_5">HTTP VS RPC （普通话 VS 方言）</h2>
 
-/**
- * @author qilong.zql
- */
-public class Hessian3Service {
-    public byte[] serialize(Object obj) throws IOException {
-        if(obj==null) throw new NullPointerException();
+<p>HTTP 与 RPC 的关系就好比普通话与方言的关系。要进行跨企业服务调用时，往往都是通过 HTTP API，也就是普通话，虽然效率不高，但是通用，没有太多沟通的学习成本。但是在企业内部还是 RPC 更加高效，同一个企业公用一套方言进行高效率的交流，要比通用的 HTTP 协议来交流更加节省资源。整个中国有非常多的方言，正如有很多的企业内部服务各有自己的一套交互协议一样。虽然国家一直在提倡使用普通话交流，但是这么多年过去了，你回一趟家乡探个亲什么的就会发现身边的人还是流行说方言。</p>
 
-        ByteArrayOutputStream os = new ByteArrayOutputStream();
-        HessianOutput ho = new HessianOutput(os);
-        ho.writeObject(obj);
-        return os.toByteArray();
-    }
+<p>如果再深入一点说，普通话本质上也是一种方言，只不过它是官方的方言，使用最为广泛的方言，相比而言其它方言都是小语种，小语种之中也会有几个使用比较广泛比较特色的方言占比也会比较大。这就好比开源 RPC 协议中 Protobuf 和 Thrift 一样，它们两应该是 RPC 协议中使用最为广泛的两个。</p>
 
-    public Object deserialize(byte[] by) throws IOException {
-        if(by==null) throw new NullPointerException();
+<h2 id="toc_6">RPC 与分布式系统交互方案</h2>
 
-        ByteArrayInputStream is = new ByteArrayInputStream(by);
-        HessianInput hi = new HessianInput(is);
-        return hi.readObject();
-    }
-}
+<p>如果两个子系统没有在网络上进行分离，而是运行在同一个操作系统实例之上的两个进程时，它们之间的通信手段还可以更加丰富。除了以上提到的几种分布式解决方案之外，还有共享内存、信号量、文件系统、内核消息队列、管道等，本质上都是通过操作系统内核机制来进行数据和消息的交互而无须经过网络协议栈。</p>
 
-</code></pre>
+<p>但在现代企业服务中，这种单机应用已经非常少见了，因为单机应用意味着单点故障 —— “一人摔跤全家跌倒”。业务子系统往往都需要经物理网络栈进行隔离，因此分布式解决方案在要求高可用无间断服务的企业环境里便大有作为，这也让 RPC 迎来自己大放异彩的时代。</p>
 
-<p>该功能类非常简单，提供了两个方法调用，分别实现对象的序列化和发序列化。</p>
+<p>前文提到的分布式子系统交互方案，除了 RPC 技术之外还有数据库、消息队列和缓存。但其实这三者本质上是 RPC 技术的一个应用组合。我们可以将数据库服务理解为下面这张图：</p>
 
-<h2 id="toc_6">3.3 Ark Plugin 配置</h2>
+<p><img src="media/15287695232052/15287698192705.jpg" alt=""/></p>
 
-<p>因为 Ark Plugin 的配置大同小异，在这里以普通的 Java 模块 <code>hessian3-module</code> 打包成 <code>hessian3-ark-plugin</code> 为例，介绍 Ark Plugin 的一般配置。</p>
+<p>可以看出，子系统和数据库之间的交互也是通过 RPC 进行的，只不过这里是三个子系统之间复杂的组合消息交互罢了。如果再深入进去，你会发现，这里的数据库不是那种单机数据库，而是具备主从复制功能的数据库，比如 MySQL。在互联网企业里一般都会使用这种主从读写分离的数据库。一个业务子系统将数据写往主库，主库再将数据同步到从库，然后另一个业务子系统又从库里将数据取出来。这时又可以进一步将它们看成是四个子系统之间进行的更加复杂的 RPC 数据交互。</p>
 
-<p>首先，我们需要添加 SOFABoot 官方提供的 maven 打包插件：</p>
+<p><img src="media/15287695232052/15287698320268.jpg" alt=""/></p>
 
-<pre><code>&lt;plugin&gt;
-    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
-    &lt;artifactId&gt;sofa-ark-plugin-maven-plugin&lt;/artifactId&gt;
-    &lt;version&gt;0.2.0&lt;version&gt;
-&lt;/plugin&gt;
+<h2 id="toc_7">小结</h2>
 
-</code></pre>
+<p>现在，读者应该可以深刻理解 RPC 在互联网企业技术中的重要地位。从技术复杂性角度，也应该可以明白为什么说对 RPC 技术的理解水平是评判一个程序员是不是高级程序员的重要标准之一。</p>
 
-<p>然后在<code>hessian3-module</code> 演示用例中，只需要在模块 <code>pom.xml</code> 文件中添加一个导出类和一个导入类配置，配置如下：</p>
+<p>在下一节，我们将对 RPC 的交互原理进行深入的学习，先把地基打牢，再开始实战开发。</p>
 
-<pre><code>&lt;build&gt;
-    &lt;plugins&gt;
-        &lt;plugin&gt;
-            &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
-            &lt;artifactId&gt;sofa-ark-plugin-maven-plugin&lt;/artifactId&gt;
-            &lt;version&gt;0.2.0&lt;/version&gt;
-            &lt;executions&gt;
-                &lt;execution&gt;
-                    &lt;id&gt;default-cli&lt;/id&gt;
-                    &lt;goals&gt;
-                        &lt;goal&gt;ark-plugin&lt;/goal&gt;
-                    &lt;/goals&gt;
+<h2 id="toc_8">思考题</h2>
 
-                    &lt;configuration&gt;
-                        &lt;!-- configure imported class --&gt;
-                        &lt;imported&gt;
-                            &lt;!-- configure class-level imported class --&gt;
-                            &lt;classes&gt;
-                                &lt;class&gt;com.alipay.sofa.demo.pojo.SamplePoJo&lt;/class&gt;
-                            &lt;/classes&gt;
-                        &lt;/imported&gt;
-
-                        &lt;!-- configure exported class --&gt;
-                        &lt;exported&gt;
-                            &lt;!-- configure class-level exported class --&gt;
-                            &lt;classes&gt;
-                                &lt;class&gt;com.alipay.sofa.demo.hessian3.Hessian3Service&lt;/class&gt;
-                            &lt;/classes&gt;
-                        &lt;/exported&gt;
-                    &lt;/configuration&gt;
-                &lt;/execution&gt;
-            &lt;/executions&gt;
-        &lt;/plugin&gt;
-    &lt;/plugins&gt;
-&lt;/build&gt;
-
-</code></pre>
-
-<p>可以看到，<code>hessian3-ark-plugin</code> 导入基础实体类 <code>com.alipay.sofa.demo.pojo.SamplePoJo</code>，导出服务类 <code>com.alipay.sofa.demo.hessian3.Hessian3Service</code> 供 Ark Biz 使用。</p>
-
-<p>使用 maven 打包命令 <code>maven package</code> 即可将 <code>hessian3-module</code> 打包成 Ark Plugin，该插件包含模块代码及其依赖包，其 maven 坐标为：</p>
-
-<pre><code>&lt;dependency&gt;
-    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
-    &lt;artifactId&gt;hessian3-ark-plugin&lt;/artifactId&gt;
-    &lt;classifier&gt;ark-plugin&lt;/classifier&gt;
-    &lt;version&gt;1.0.0&lt;/version&gt;
-&lt;/dependency&gt;
-
-</code></pre>
-
-<p>关于 Ark Plugin 的导入、导出类，这里强调一下，在实际开发中，和业务本身无关的实体类或者基础服务类，如果多个 Ark Plugin 和 Ark Biz 都需要统一版本时，可以把这类基础 Jar 统一打包成 Ark Plugin 设置为导出类。在该演示用例中，我们假设 <code>SamplePoJo</code> 是一个基础实体类，和业务逻辑无关，而 <code>hessian3-ark-plugin</code> 和 <code>hessian4-ark-plugin</code> 都需要使用，于是单独打包成了一个 Ark Plugin。</p>
-
-<p>到此为止，这就是一个简单的 Ark Plugin 从开发的步骤，看起来是不是很简单呢？</p>
-
-<p>下面，我们演示下如何在 Spring Boot 工程中，快速集成 SOFABoot 的类隔离能力，并使用这三个 Ark Plugin。</p>
-
-<h2 id="toc_7">4. Spring Boot 工程集成 SOFAArk 组件</h2>
-
-<p>Demo <a href="https://link.zhihu.com/?target=https%3A//github.com/QilongZhang/springboot-ark-demo">工程地址</a></p>
-
-<p>运行需要 JDK 6 及以上、 Maven 3.2.5 以上。Spring Boot 版本要求 1.4.2.RELEASE 以上，目前还不兼容 2.0.0 及以上版本。</p>
-
-<p>该用例工程主要为了演示如何在 Spring Boot 工程中集成 SOFABoot 类隔离能力并使用 Ark Plugin。这里以前文提到的 Ark Plugin 为例，示例工程将会引入三个 Ark Plugin:<code>pojo-ark-plugin</code>，<code>hessian3-ark-plugin</code> 和 <code>hessian4-ark-plugin</code>，并使用后两者的导出类 <code>Hessian3Service</code> 和 <code>Hessian4Service</code>。</p>
-
-<h2 id="toc_8">4.1 新建工程</h2>
-
-<p>在 Spring Boot 官网 <a href="https://link.zhihu.com/?target=https%3A//start.spring.io/">https://start.spring.io</a> 新建一个 web 工程，并设置 Spring Boot 版本号为 1.4.2.RELEASE。在 Spring Boot 工程中集成 SOFABoot 类隔离能力，只需要添加 SOFABoot 提供的类隔离框架 starter。修改 maven 项目的配置文件 <code>pom.xml</code>，将</p>
-
-<pre><code>&lt;parent&gt;
-    &lt;groupId&gt;org.springframework.boot&lt;/groupId&gt;
-    &lt;artifactId&gt;spring-boot-starter-parent&lt;/artifactId&gt;
-    &lt;version&gt;1.4.2.RELEASE&lt;/version&gt;
-    &lt;relativePath/&gt; 
-&lt;/parent&gt;
-
-</code></pre>
-
-<p>替换为：</p>
-
-<pre><code>&lt;parent&gt;
-    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
-    &lt;artifactId&gt;sofaboot-dependencies&lt;/artifactId&gt;
-    &lt;version&gt;2.3.1&lt;/version&gt;
-&lt;/parent&gt;
-
-</code></pre>
-
-<p>并添加如下 SOFAArk Starter 依赖：</p>
-
-<pre><code>&lt;!--ark spring boot starter--&gt;
-&lt;dependency&gt;
-    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
-    &lt;artifactId&gt;sofa-ark-springboot-starter&lt;/artifactId&gt;
-&lt;/dependency&gt;
-
-</code></pre>
-
-<p>如此，一个 Spring Boot 工程便集成了 SOFABoot 提供的类隔离能力。</p>
-
-<h2 id="toc_9">4.2 添加 Ark Plugin 依赖</h2>
-
-<p>前文中提到，将普通 Java 模块打包成 Ark Plugin，其 maven 坐标不会发生变化，但是需要添加 <code>classifier=ark-plugin</code> 标志，因此如下添加三个 Ark Plugin 的依赖：</p>
-
-<pre><code>&lt;!--ark plugin--&gt;
-&lt;dependency&gt;
-    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
-    &lt;artifactId&gt;pojo-ark-plugin&lt;/artifactId&gt;
-    &lt;classifier&gt;ark-plugin&lt;/classifier&gt;
-    &lt;version&gt;1.0.0&lt;/version&gt;
-&lt;/dependency&gt;
-
-&lt;dependency&gt;
-    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
-    &lt;artifactId&gt;hessian3-ark-plugin&lt;/artifactId&gt;
-    &lt;classifier&gt;ark-plugin&lt;/classifier&gt;
-    &lt;version&gt;1.0.0&lt;/version&gt;
-&lt;/dependency&gt;
-
-&lt;dependency&gt;
-    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
-    &lt;artifactId&gt;hessian4-ark-plugin&lt;/artifactId&gt;
-    &lt;classifier&gt;ark-plugin&lt;/classifier&gt;
-    &lt;version&gt;1.0.0&lt;/version&gt;
-&lt;/dependency&gt;
-
-</code></pre>
-
-<p>需要指出的是，因为 ark plugin 是一个 FatJar，为了让应用编译期通过，需要在工程主 <code>pom.xml</code> 中增加如下依赖：</p>
-
-<pre><code>&lt;!--just for compile success--&gt;
-&lt;dependency&gt;
-    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
-    &lt;artifactId&gt;pojo-ark-plugin&lt;/artifactId&gt;
-    &lt;version&gt;1.0.0&lt;/version&gt;
-    &lt;scope&gt;provided&lt;/scope&gt;
-&lt;/dependency&gt;
-
-&lt;dependency&gt;
-    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
-    &lt;artifactId&gt;hessian3-ark-plugin&lt;/artifactId&gt;
-    &lt;version&gt;1.0.0&lt;/version&gt;
-    &lt;scope&gt;provided&lt;/scope&gt;
-&lt;/dependency&gt;
-
-&lt;dependency&gt;
-    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
-    &lt;artifactId&gt;hessian4-ark-plugin&lt;/artifactId&gt;
-    &lt;version&gt;1.0.0&lt;/version&gt;
-    &lt;scope&gt;provided&lt;/scope&gt;
-&lt;/dependency&gt;
-
-</code></pre>
-
-<p>4.3 编写 Rest 接口</p>
-
-<p>为了演示更加直观，编写如下 Rest 接口：</p>
-
-<pre><code>package com.alipay.sofa.springbootarkdemo.controller;
-
-import com.alipay.sofa.demo.hessian3.Hessian3Service;
-import com.alipay.sofa.demo.hessian4.Hessian4Service;
-import com.alipay.sofa.demo.pojo.SamplePoJo;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RestController;
-
-import java.io.IOException;
-
-/**
- * @author qilong.zql
- */
-@RestController
-public class HelloController {
-
-    @RequestMapping(&quot;/hello-hessian3&quot;)
-    public String hessian3() throws IOException {
-        SamplePoJo samplePoJo = new SamplePoJo(&quot;Hello, hessian3.&quot;);
-        Hessian3Service hessian3Service = new Hessian3Service();
-        byte[] bytes = hessian3Service.serialize(samplePoJo);
-        Object pojo = hessian3Service.deserialize(bytes);
-        return pojo.toString();
-    }
-
-    @RequestMapping(&quot;/hello-hessian4&quot;)
-    public String hessian4() throws IOException {
-        SamplePoJo samplePoJo = new SamplePoJo(&quot;Hello, hessian4.&quot;);
-        Hessian4Service hessian4Service = new Hessian4Service();
-        byte[] bytes = hessian4Service.serialize(samplePoJo);
-        Object pojo = hessian4Service.deserialize(bytes);
-        return pojo.toString();
-    }
-
-}
-
-</code></pre>
-
-<p>该 Rest 接口主要为了本地启动应用后，能够直观演示 Ark Plugin 使用结果。启动该 Web Spring 工程，可以看到控制台打印结果：</p>
-
-<pre><code>...
-2018-05-14 10:04:06.573  INFO 85393 --- [           main] s.b.c.e.t.TomcatEmbeddedServletContainer : Tomcat started on port(s): 8080 (http)
-2018-05-14 10:04:06.577  INFO 85393 --- [           main] c.a.s.s.SpringbootArkDemoApplication     : Started SpringbootArkDemoApplication in 2.111 seconds (JVM running for 3.562)
-2018-05-14 10:04:06,578 INFO  main                             - Finish to start biz: Startup In IDE
-2018-05-14 10:04:06,578 INFO  main                             - Finish to process pipeline stage: com.alipay.sofa.ark.container.pipeline.DeployBizStage
-Ark container started in 2720 ms.
-
-</code></pre>
-
-<p>可以看到类似 <code>Ark container started in XXXXms</code> 字样，即表示该工程运行在 SOFABoot 类隔离框架之上。访问如下两个请求即可看到工程调用 <code>Hessian3Service</code> 和 <code>Hessian4Service</code> 的调用结果</p>
-
-<ul>
-<li>  <code>http://localhost:8080/hello-hessian3</code></li>
-<li>  <code>http://localhost:8080/hello-hessian4</code></li>
-</ul>
-
-<p>以上就是 Spring Boot 集成 SOFABoot 类隔离框架的一般步骤。可以看到，作为开发者，基本上无需过多关心自身应用是否使用类隔离框架，只需要引入 SOFABoot 提供的类隔离框架 Starter，即可快速完成类隔离能力的集成。</p>
-
-<h2 id="toc_10">5. 总结</h2>
-
-<p>本文主要介绍了 SOFABoot 基于 Spring Boot 开发的类隔离框架组件 SOFAArk。通过两个简单的用例工程，分别介绍了如何开发一个自己的 Ark Plugin 以及在 Spring Boot 快速集成 SOFABoot 的类隔离能力。SOFABoot 官方提供了 SOFARPC 打包的 Ark Plugin，开发者可以按需隔离 SOFARPC 和自身应用。另外，在 SOFAArk 类隔离容器之上，SOFABoot 提供了一整套兼容 JUnit 和 TestNG 测试框架的方案，感兴趣的读者可以下载文末给出的 Demo 工程，并按照官方文档学习。</p>
-
-<h2 id="toc_11">6. 相关资源</h2>
-
-<ul>
-<li>  <a href="https://link.zhihu.com/?target=https%3A//github.com/QilongZhang/ark-plugin-demo">ark-plugin-demo</a></li>
-<li>  <a href="https://link.zhihu.com/?target=https%3A//github.com/QilongZhang/springboot-ark-demo">springboot-ark-demo</a></li>
-<li>  <a href="https://link.zhihu.com/?target=https%3A//github.com/alipay/sofa-boot">SOFABoot 源码</a></li>
-<li>  <a href="https://link.zhihu.com/?target=https%3A//github.com/alipay/sofa-rpc">SOFARPC 源码</a></li>
-<li>  <a href="https://link.zhihu.com/?target=https%3A//github.com/alipay/sofa-rpc-boot-projects">SOFARPC Ark Plugin</a></li>
-<li>  <a href="https://link.zhihu.com/?target=https%3A//github.com/alipay/sofa-ark">SOFAArk 源码</a></li>
-<li>  <a href="https://link.zhihu.com/?target=https%3A//alipay.github.io/sofastack.github.io/docs/ark-plugin.html">Ark Plugin 文档</a></li>
-</ul>
+<p>请读者思考一下，在平时的后端开发中，还有哪些地方用到了「类 RPC」技术？</p>
 
                         
                       </div>
@@ -464,10 +209,10 @@ Ark container started in 2720 ms.
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/6/5</span>
+                    <span class="date">2018/6/12</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Microservice.html'>Microservice</a></span>
+          					    <span class="posted-in"><a href='RPC.html'>RPC</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -557,31 +302,31 @@ Ark container started in 2720 ms.
 	      
 		      
 			      <li class="post">
-			        <a href="15337171704262.html">Introduction to Testing with Spock and Groovy</a>
+			        <a href="15358820607055.html">Java 8 Concurrency Tutorial: Atomic Variables and ConcurrentMap</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15336595358049.html">10 Excellent Ways to Secure Your Spring Boot Application</a>
+			        <a href="15358774987730.html">Java 8 Concurrency Tutorial: Synchronization and Locks</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15336592302916.html">First MicroProfile.io application using Java Module System</a>
+			        <a href="15358757119900.html">Java 8 Concurrency Tutorial: Threads and Executors</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15332186142588.html">Jenkins 的 Pipeline 脚本在美团餐饮 SaaS 中的实践</a>
+			        <a href="15358756631902.html">Java 8 Stream Tutorial</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15331749691571.html">基于ZooKeeper的分布式锁和队列</a>
+			        <a href="15358753472382.html">Migrate Maven Projects to Java 11</a>
 			      </li>
 		     
 		  

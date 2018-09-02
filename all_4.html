@@ -105,1024 +105,230 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15331749691571.html">
+                <a class="clearlink" href="15358753472382.html">
                 
-                  <h1>基于ZooKeeper的分布式锁和队列</h1>
+                  <h1>Migrate Maven Projects to Java 11</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="http://www.cnblogs.com/luxiaoxun/p/4889764.html">http://www.cnblogs.com/luxiaoxun/p/4889764.html</a></p>
+<p><a href="https://winterbe.com/posts/2018/08/29/migrate-maven-projects-to-java-11-jigsaw/">https://winterbe.com/posts/2018/08/29/migrate-maven-projects-to-java-11-jigsaw/</a></p>
 </blockquote>
 
-<p>在分布式系统中，往往需要一些分布式同步原语来做一些协同工作，<a href="http://www.cnblogs.com/luxiaoxun/p/4887452.html">上一篇</a>文章介绍了 Zookeeper 的基本原理，本文介绍下基于 Zookeeper 的 Lock 和 Queue 的实现，主要代码都来自 Zookeeper 的官方 recipe。</p>
+<p>So you want to migrate to Java 11 but your Maven project is still sitting on Java 8? You don&#39;t care much about the new <a href="https://www.oracle.com/corporate/features/understanding-java-9-modules.html">module system</a> (Jigsaw) introduced in Java 9, you just want your application to run on the latest JDK version? Then this guide is for you. It includes everything I&#39;ve learned while migrating our product to Java 11.</p>
 
-<h3 id="toc_0">锁（Lock）</h3>
+<blockquote>
+<p>As of 2019 Oracle Java 8 will no longer receive free security updates. So now is the time to migrate to <a href="http://jdk.java.net/11/">JDK 11</a>.</p>
+</blockquote>
 
-<p>完全分布式锁是全局同步的，这意味着在任何时刻没有两个客户端会同时认为它们都拥有相同的锁，使用 Zookeeper 可以实现分布式锁，需要首先定义一个锁节点（lock root node）。</p>
+<h3 id="toc_0">Clean up your <code>pom.xml</code> files<a href="#clean-up-your-pom-xml-files" title="Permalink to this section">#</a></h3>
 
-<p>需要获得锁的客户端按照以下步骤来获取锁：</p>
+<p>The first thing you should do before even thinking about upgrading the Java version is to clean up your <code>pom.xml</code> files. If your project is a multi-module Maven project then it helps to establish a parent POM and maintain <code>dependencyManagement</code> und <code>pluginManagement</code> in this file. That way all your plugins and dependencies are defined in a single file and are not spread across multiple POM files what makes managing versions easier.</p>
 
-<ol>
-<li> 保证锁节点（lock root node）这个父根节点的存在，这个节点是每个要获取 lock 客户端共用的，这个节点是 PERSISTENT 的。</li>
-<li><p>第一次需要创建本客户端要获取 lock 的节点，调用 create( )，并设置 节点为 EPHEMERAL_SEQUENTIAL 类型，表示该节点为临时的和顺序的。如果获取锁的节点挂掉，则该节点自动失效，可以让其他节点获取锁。</p></li>
-<li><p>在父锁节点（lock root node）上调用 getChildren() ，不需要设置监视标志。 (为了避免 “羊群效应”).</p></li>
-<li><p>按照 Fair 竞争的原则，将步骤 3 中的子节点（要获取锁的节点）按照节点顺序的大小做排序，取出编号最小的一个节点做为 lock 的 owner，判断自己的节点 id<br/>
-是否就为 owner id，如果是则返回，lock 成功。如果不是则调用 exists( ) 监听比自己小的前一位的 id，关注它锁释放的操作（也就是 exist watch）。</p></li>
-<li><p>如果第 4 步监听 exist 的 watch 被触发，则继续按 4 中的原则判断自己是否能获取到 lock。</p></li>
-</ol>
+<p>In order to migrate your project to the latest Java version 11 it&#39;s highly recommended to update as much plugins and dependencies to the latest stable version as possible. Many plugins such as the compiler plugin, surefire or failsafe are not compatible with Java 9 if you use older versions. Also a lot of libraries are incompatible without migrating to the latest version.</p>
 
-<p>释放锁：需要释放锁的客户端只需要删除在第 2 步中创建的节点即可。</p>
+<p>Make sure you have the versions plugin configured in your master POM:</p>
 
-<p>注意事项：</p>
+<pre><code>&lt;plugin&gt;
+    &lt;groupId&gt;org.codehaus.mojo&lt;/groupId&gt;
+    &lt;artifactId&gt;versions-maven-plugin&lt;/artifactId&gt;
+    &lt;version&gt;2.5&lt;/version&gt;
+    &lt;configuration&gt;
+        &lt;generateBackupPoms&gt;false&lt;/generateBackupPoms&gt;
+    &lt;/configuration&gt;
+&lt;/plugin&gt;
 
-<p>一个节点的删除只会导致一个客户端被唤醒，因为每个节点只被一个客户端 watch，这避免了 “羊群效应”。</p>
-
-<p>一个分布式 lock 的实现：</p>
-
-<pre><code class="language-java">package org.apache.zookeeper.recipes.lock;
-
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.apache.zookeeper.KeeperException;
-import org.apache.zookeeper.WatchedEvent;
-import org.apache.zookeeper.Watcher;
-import static org.apache.zookeeper.CreateMode.EPHEMERAL_SEQUENTIAL;
-import org.apache.zookeeper.ZooKeeper;
-import org.apache.zookeeper.data.ACL;
-import org.apache.zookeeper.data.Stat;
-
-import java.util.List;
-import java.util.SortedSet;
-import java.util.TreeSet;
-
-/**
- * A &lt;a href=&quot;package.html&quot;&gt;protocol to implement an exclusive
- *  write lock or to elect a leader&lt;/a&gt;. &lt;p/&gt; You invoke {@link #lock()} to 
- *  start the process of grabbing the lock; you may get the lock then or it may be 
- *  some time later. &lt;p/&gt; You can register a listener so that you are invoked 
- *  when you get the lock; otherwise you can ask if you have the lock
- *  by calling {@link #isOwner()}
- *
- */
-public class WriteLock extends ProtocolSupport {
-    private static final Logger LOG = LoggerFactory.getLogger(WriteLock.class);
-
-    private final String dir;
-    private String id;
-    private ZNodeName idName;
-    private String ownerId;
-    private String lastChildId;
-    private byte[] data = {0x12, 0x34};
-    private LockListener callback;
-    private LockZooKeeperOperation zop;
-
-    /**
-     * zookeeper contructor for writelock
-     * @param zookeeper zookeeper client instance
-     * @param dir the parent path you want to use for locking
-     * @param acls the acls that you want to use for all the paths, 
-     * if null world read/write is used.
-     */
-    public WriteLock(ZooKeeper zookeeper, String dir, List&lt;ACL&gt; acl) {
-        super(zookeeper);
-        this.dir = dir;
-        if (acl != null) {
-            setAcl(acl);
-        }
-        this.zop = new LockZooKeeperOperation();
-    }
-
-    /**
-     * zookeeper contructor for writelock with callback
-     * @param zookeeper the zookeeper client instance
-     * @param dir the parent path you want to use for locking
-     * @param acl the acls that you want to use for all the paths
-     * @param callback the call back instance
-     */
-    public WriteLock(ZooKeeper zookeeper, String dir, List&lt;ACL&gt; acl, 
-            LockListener callback) {
-        this(zookeeper, dir, acl);
-        this.callback = callback;
-    }
-
-    /**
-     * return the current locklistener
-     * @return the locklistener
-     */
-    public LockListener getLockListener() {
-        return this.callback;
-    }
-
-    /**
-     * register a different call back listener
-     * @param callback the call back instance
-     */
-    public void setLockListener(LockListener callback) {
-        this.callback = callback;
-    }
-
-    /**
-     * Removes the lock or associated znode if 
-     * you no longer require the lock. this also 
-     * removes your request in the queue for locking
-     * in case you do not already hold the lock.
-     * @throws RuntimeException throws a runtime exception
-     * if it cannot connect to zookeeper.
-     */
-    public synchronized void unlock() throws RuntimeException {
-
-        if (!isClosed() &amp;&amp; id != null) {
-            // we don&#39;t need to retry this operation in the case of failure
-            // as ZK will remove ephemeral files and we don&#39;t wanna hang
-            // this process when closing if we cannot reconnect to ZK
-            try {
-                ZooKeeperOperation zopdel = new ZooKeeperOperation() {
-                    public boolean execute() throws KeeperException,
-                        InterruptedException {
-                        zookeeper.delete(id, -1);   
-                        return Boolean.TRUE;
-                    }
-                };
-                zopdel.execute();
-            } catch (InterruptedException e) {
-                LOG.warn(&quot;Caught: &quot; + e, e);
-                //set that we have been interrupted.
-               Thread.currentThread().interrupt();
-            } catch (KeeperException.NoNodeException e) {
-                // do nothing
-            } catch (KeeperException e) {
-                LOG.warn(&quot;Caught: &quot; + e, e);
-                throw (RuntimeException) new RuntimeException(e.getMessage()).
-                    initCause(e);
-            }
-            finally {
-                if (callback != null) {
-                    callback.lockReleased();
-                }
-                id = null;
-            }
-        }
-    }
-
-    /** 
-     * the watcher called on  
-     * getting watch while watching 
-     * my predecessor
-     */
-    private class LockWatcher implements Watcher {
-        public void process(WatchedEvent event) {
-            // lets either become the leader or watch the new/updated node
-            LOG.debug(&quot;Watcher fired on path: &quot; + event.getPath() + &quot; state: &quot; + 
-                    event.getState() + &quot; type &quot; + event.getType());
-            try {
-                lock();
-            } catch (Exception e) {
-                LOG.warn(&quot;Failed to acquire lock: &quot; + e, e);
-            }
-        }
-    }
-
-    /**
-     * a zoookeeper operation that is mainly responsible
-     * for all the magic required for locking.
-     */
-    private  class LockZooKeeperOperation implements ZooKeeperOperation {
-
-        /** find if we have been created earler if not create our node
-         * 
-         * @param prefix the prefix node
-         * @param zookeeper teh zookeeper client
-         * @param dir the dir paretn
-         * @throws KeeperException
-         * @throws InterruptedException
-         */
-        private void findPrefixInChildren(String prefix, ZooKeeper zookeeper, String dir) 
-            throws KeeperException, InterruptedException {
-            List&lt;String&gt; names = zookeeper.getChildren(dir, false);
-            for (String name : names) {
-                if (name.startsWith(prefix)) {
-                    id = dir + &quot;/&quot; + name;
-                    if (LOG.isDebugEnabled()) {
-                        LOG.debug(&quot;Found id created last time: &quot; + id);
-                    }
-                    break;
-                }
-            }
-            if (id == null) {
-                id = zookeeper.create(dir + &quot;/&quot; + prefix, data, 
-                        getAcl(), EPHEMERAL_SEQUENTIAL);
-
-                if (LOG.isDebugEnabled()) {
-                    LOG.debug(&quot;Created id: &quot; + id);
-                }
-            }
-
-        }
-
-        /**
-         * the command that is run and retried for actually 
-         * obtaining the lock
-         * @return if the command was successful or not
-         */
-        public boolean execute() throws KeeperException, InterruptedException {
-            do {
-                if (id == null) {
-                    long sessionId = zookeeper.getSessionId();
-                    String prefix = &quot;x-&quot; + sessionId + &quot;-&quot;;
-                    // lets try look up the current ID if we failed 
-                    // in the middle of creating the znode
-                    findPrefixInChildren(prefix, zookeeper, dir);
-                    idName = new ZNodeName(id);
-                }
-                if (id != null) {
-                    List&lt;String&gt; names = zookeeper.getChildren(dir, false);
-                    if (names.isEmpty()) {
-                        LOG.warn(&quot;No children in: &quot; + dir + &quot; when we&#39;ve just &quot; +
-                        &quot;created one! Lets recreate it...&quot;);
-                        // lets force the recreation of the id
-                        id = null;
-                    } else {
-                        // lets sort them explicitly (though they do seem to come back in order ususally :)
-                        SortedSet&lt;ZNodeName&gt; sortedNames = new TreeSet&lt;ZNodeName&gt;();
-                        for (String name : names) {
-                            sortedNames.add(new ZNodeName(dir + &quot;/&quot; + name));
-                        }
-                        ownerId = sortedNames.first().getName();
-                        SortedSet&lt;ZNodeName&gt; lessThanMe = sortedNames.headSet(idName);
-                        if (!lessThanMe.isEmpty()) {
-                            ZNodeName lastChildName = lessThanMe.last();
-                            lastChildId = lastChildName.getName();
-                            if (LOG.isDebugEnabled()) {
-                                LOG.debug(&quot;watching less than me node: &quot; + lastChildId);
-                            }
-                            Stat stat = zookeeper.exists(lastChildId, new LockWatcher());
-                            if (stat != null) {
-                                return Boolean.FALSE;
-                            } else {
-                                LOG.warn(&quot;Could not find the&quot; +
-                                        &quot; stats for less than me: &quot; + lastChildName.getName());
-                            }
-                        } else {
-                            if (isOwner()) {
-                                if (callback != null) {
-                                    callback.lockAcquired();
-                                }
-                                return Boolean.TRUE;
-                            }
-                        }
-                    }
-                }
-            }
-            while (id == null);
-            return Boolean.FALSE;
-        }
-    };
-
-    /**
-     * Attempts to acquire the exclusive write lock returning whether or not it was
-     * acquired. Note that the exclusive lock may be acquired some time later after
-     * this method has been invoked due to the current lock owner going away.
-     */
-    public synchronized boolean lock() throws KeeperException, InterruptedException {
-        if (isClosed()) {
-            return false;
-        }
-        ensurePathExists(dir);
-
-        return (Boolean) retryOperation(zop);
-    }
-
-    /**
-     * return the parent dir for lock
-     * @return the parent dir used for locks.
-     */
-    public String getDir() {
-        return dir;
-    }
-
-    /**
-     * Returns true if this node is the owner of the
-     *  lock (or the leader)
-     */
-    public boolean isOwner() {
-        return id != null &amp;&amp; ownerId != null &amp;&amp; id.equals(ownerId);
-    }
-
-    /**
-     * return the id for this lock
-     * @return the id for this lock
-     */
-    public String getId() {
-       return this.id;
-    }
-}
 </code></pre>
 
-<p>注意这里的 lock，可能会失败，会尝试多次，每次失败后会 Sleep 一段时间。</p>
+<p>This plugin helps finding the latest plugin or dependency versions for your modules. Open up the terminal and execute this command to find the plugin versions you have to update:</p>
 
-<p>PS：官方的代码有个小 bug，id 和 ownerId 应该都是全路径，即 id = dir + &quot;/&quot; + name; 原代码在 findPrefixInChildren 里有问题。</p>
+<pre><code>mvn versions:display-plugin-updates
 
-<p>用于辅助节点大小顺序排序的类：</p>
-
-<pre><code class="language-java">package org.apache.zookeeper.recipes.lock;
-
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
-/**
- * Represents an ephemeral znode name which has an ordered sequence number and
- * can be sorted in order
- * 
- */
-class ZNodeName implements Comparable&lt;ZNodeName&gt; {
-    private final String name;
-    private String prefix;
-    private int sequence = -1;
-    private static final Logger LOG = LoggerFactory.getLogger(ZNodeName.class);
-
-    public ZNodeName(String name) {
-        if (name == null) {
-            throw new NullPointerException(&quot;id cannot be null&quot;);
-        }
-        this.name = name;
-        this.prefix = name;
-        int idx = name.lastIndexOf(&#39;-&#39;);
-        if (idx &gt;= 0) {
-            this.prefix = name.substring(0, idx);
-            try {
-                this.sequence = Integer.parseInt(name.substring(idx + 1));
-                // If an exception occurred we misdetected a sequence suffix,
-                // so return -1.
-            } catch (NumberFormatException e) {
-                LOG.info(&quot;Number format exception for &quot; + idx, e);
-            } catch (ArrayIndexOutOfBoundsException e) {
-                LOG.info(&quot;Array out of bounds for &quot; + idx, e);
-            }
-        }
-    }
-
-    @Override
-    public String toString() {
-        return name.toString();
-    }
-
-    @Override
-    public boolean equals(Object o) {
-        if (this == o)
-            return true;
-        if (o == null || getClass() != o.getClass())
-            return false;
-
-        ZNodeName sequence = (ZNodeName) o;
-
-        if (!name.equals(sequence.name))
-            return false;
-
-        return true;
-    }
-
-    @Override
-    public int hashCode() {
-        return name.hashCode() + 37;
-    }
-
-    public int compareTo(ZNodeName that) {
-        int s1 = this.sequence;
-        int s2 = that.sequence;
-        if (s1 == -1 &amp;&amp; s2 == -1) {
-            return this.name.compareTo(that.name);
-        }
-        if (s1 == -1) {
-            return -1;
-        } else if (s2 == -1) {
-            return 1;
-        } else {
-            return s1 - s2;
-        }
-    }
-
-    /**
-     * Returns the name of the znode
-     */
-    public String getName() {
-        return name;
-    }
-
-    /**
-     * Returns the sequence number
-     */
-    public int getZNodeName() {
-        return sequence;
-    }
-
-    /**
-     * Returns the text prefix before the sequence number
-     */
-    public String getPrefix() {
-        return prefix;
-    }
-}
 </code></pre>
 
-<p>PS：这个 ZNodeName 类是被我修改过的，官方的代码比较有问题，官方的先用了节点路径的前缀 prefix 比较，再去比较 sequence 序号是不对的，这样会导致 sessionid 小的总是能拿到锁。应该直接比较全局有序的 sequence 序号，小的先拿到锁，先到先得。</p>
+<p>You will see a list of plugins used in your project with newer versions available. Update all of those plugins to the lastest stable version. After you&#39;ve updated your plugin versions make sure that your project still compiles and runs properly.</p>
 
-<p>Zookeeper 统一操作 ZooKeeperOperation 接口：</p>
+<blockquote>
+<p>You can use <code>mvn -N ...</code> from your projects root directory to just check your parent POM in case of multi-module projects.</p>
+</blockquote>
 
-<pre><code class="language-java">public interface ZooKeeperOperation {
+<h3 id="toc_1">Configure plugins for Java 11<a href="#configure-plugins-for-java-11" title="Permalink to this section">#</a></h3>
 
-    /**
-     * Performs the operation - which may be involved multiple times if the connection
-     * to ZooKeeper closes during this operation
-     *
-     * @return the result of the operation or null
-     * @throws KeeperException
-     * @throws InterruptedException
-     */
-    public boolean execute() throws KeeperException, InterruptedException;
-}
+<p>The most important plugins for Java 11 are the compiler plugin, surefire (for unit-tests) and failsafe (for integration-tests).</p>
+
+<p>In order to compile your project for Java 11 add the <code>release</code> configuration to the compiler plugin, a new compiler parameter to replace the <code>source</code> and <code>target</code> version parameters:</p>
+
+<pre><code>&lt;plugin&gt;
+    &lt;groupId&gt;org.apache.maven.plugins&lt;/groupId&gt;
+    &lt;artifactId&gt;maven-compiler-plugin&lt;/artifactId&gt;
+    &lt;version&gt;3.8.0&lt;/version&gt;
+    &lt;configuration&gt;
+        &lt;release&gt;11&lt;/release&gt;
+    &lt;/configuration&gt;
+&lt;/plugin&gt;
+
 </code></pre>
 
-<p>因为 Zookeeper 的操作会失败，这个类封装了多次尝试：</p>
+<blockquote>
+<p>Also don&#39;t forget to set your IDEs project SDK to same JDK version. In Intellij IDEA go to Module Settings -&gt; Project -&gt; SDK.</p>
+</blockquote>
 
-<pre><code class="language-java">/**
- *
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the &quot;License&quot;); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- * http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-package org.apache.zookeeper.recipes.lock;
+<p>For surefire and failsafe plugins we add an additional argument <code>--illegal-access=permit</code> to allow all reflection access for third party libraries:</p>
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.apache.zookeeper.CreateMode;
-import org.apache.zookeeper.KeeperException;
-import org.apache.zookeeper.ZooDefs;
-import org.apache.zookeeper.ZooKeeper;
-import org.apache.zookeeper.data.ACL;
-import org.apache.zookeeper.data.Stat;
-import org.apache.zookeeper.recipes.lock.ZooKeeperOperation;
+<pre><code>&lt;plugin&gt;
+    &lt;groupId&gt;org.apache.maven.plugins&lt;/groupId&gt;
+    &lt;artifactId&gt;maven-surefire-plugin&lt;/artifactId&gt;
+    &lt;version&gt;2.22.0&lt;/version&gt;
+    &lt;configuration&gt;
+        &lt;argLine&gt;
+            --illegal-access=permit
+        &lt;/argLine&gt;
+    &lt;/configuration&gt;
+&lt;/plugin&gt;
+&lt;plugin&gt;
+    &lt;groupId&gt;org.apache.maven.plugins&lt;/groupId&gt;
+    &lt;artifactId&gt;maven-failsafe-plugin&lt;/artifactId&gt;
+    &lt;version&gt;2.22.0&lt;/version&gt;
+    &lt;configuration&gt;
+        &lt;argLine&gt;
+            --illegal-access=permit
+        &lt;/argLine&gt;
+    &lt;/configuration&gt;
+&lt;/plugin&gt;
 
-import java.util.List;
-import java.util.concurrent.atomic.AtomicBoolean;
-
-/**
- * A base class for protocol implementations which provides a number of higher 
- * level helper methods for working with ZooKeeper along with retrying synchronous
- *  operations if the connection to ZooKeeper closes such as 
- *  {@link #retryOperation(ZooKeeperOperation)}
- *
- */
-class ProtocolSupport {
-    private static final Logger LOG = LoggerFactory.getLogger(ProtocolSupport.class);
-
-    protected final ZooKeeper zookeeper;
-    private AtomicBoolean closed = new AtomicBoolean(false);
-    private long retryDelay = 500L;
-    private int retryCount = 10;
-    private List&lt;ACL&gt; acl = ZooDefs.Ids.OPEN_ACL_UNSAFE;
-
-    public ProtocolSupport(ZooKeeper zookeeper) {
-        this.zookeeper = zookeeper;
-    }
-
-    /**
-     * Closes this strategy and releases any ZooKeeper resources; but keeps the
-     *  ZooKeeper instance open
-     */
-    public void close() {
-        if (closed.compareAndSet(false, true)) {
-            doClose();
-        }
-    }
-
-    /**
-     * return zookeeper client instance
-     * @return zookeeper client instance
-     */
-    public ZooKeeper getZookeeper() {
-        return zookeeper;
-    }
-
-    /**
-     * return the acl its using
-     * @return the acl.
-     */
-    public List&lt;ACL&gt; getAcl() {
-        return acl;
-    }
-
-    /**
-     * set the acl 
-     * @param acl the acl to set to
-     */
-    public void setAcl(List&lt;ACL&gt; acl) {
-        this.acl = acl;
-    }
-
-    /**
-     * get the retry delay in milliseconds
-     * @return the retry delay
-     */
-    public long getRetryDelay() {
-        return retryDelay;
-    }
-
-    /**
-     * Sets the time waited between retry delays
-     * @param retryDelay the retry delay
-     */
-    public void setRetryDelay(long retryDelay) {
-        this.retryDelay = retryDelay;
-    }
-
-    /**
-     * Allow derived classes to perform 
-     * some custom closing operations to release resources
-     */
-    protected void doClose() {
-    }
-
-    /**
-     * Perform the given operation, retrying if the connection fails
-     * @return object. it needs to be cast to the callee&#39;s expected 
-     * return type.
-     */
-    protected Object retryOperation(ZooKeeperOperation operation) 
-        throws KeeperException, InterruptedException {
-        KeeperException exception = null;
-        for (int i = 0; i &lt; retryCount; i++) {
-            try {
-                return operation.execute();
-            } catch (KeeperException.SessionExpiredException e) {
-                LOG.warn(&quot;Session expired for: &quot; + zookeeper + &quot; so reconnecting due to: &quot; + e, e);
-                throw e;
-            } catch (KeeperException.ConnectionLossException e) {
-                if (exception == null) {
-                    exception = e;
-                }
-                LOG.debug(&quot;Attempt &quot; + i + &quot; failed with connection loss so &quot; +
-                        &quot;attempting to reconnect: &quot; + e, e);
-                retryDelay(i);
-            }
-        }
-        throw exception;
-    }
-
-    /**
-     * Ensures that the given path exists with no data, the current
-     * ACL and no flags
-     * @param path
-     */
-    protected void ensurePathExists(String path) {
-        ensureExists(path, null, acl, CreateMode.PERSISTENT);
-    }
-
-    /**
-     * Ensures that the given path exists with the given data, ACL and flags
-     * @param path
-     * @param acl
-     * @param flags
-     */
-    protected void ensureExists(final String path, final byte[] data,
-            final List&lt;ACL&gt; acl, final CreateMode flags) {
-        try {
-            retryOperation(new ZooKeeperOperation() {
-                public boolean execute() throws KeeperException, InterruptedException {
-                    Stat stat = zookeeper.exists(path, false);
-                    if (stat != null) {
-                        return true;
-                    }
-                    zookeeper.create(path, data, acl, flags);
-                    return true;
-                }
-            });
-        } catch (KeeperException e) {
-            LOG.warn(&quot;Caught: &quot; + e, e);
-        } catch (InterruptedException e) {
-            LOG.warn(&quot;Caught: &quot; + e, e);
-        }
-    }
-
-    /**
-     * Returns true if this protocol has been closed
-     * @return true if this protocol is closed
-     */
-    protected boolean isClosed() {
-        return closed.get();
-    }
-
-    /**
-     * Performs a retry delay if this is not the first attempt
-     * @param attemptCount the number of the attempts performed so far
-     */
-    protected void retryDelay(int attemptCount) {
-        if (attemptCount &gt; 0) {
-            try {
-                Thread.sleep(attemptCount * retryDelay);
-            } catch (InterruptedException e) {
-                LOG.debug(&quot;Failed to sleep: &quot; + e, e);
-            }
-        }
-    }
-}
 </code></pre>
 
-<p>这个类是本客户端获取到 lock 和释放 lock 的时候触发操作的接口：</p>
+<p>This is only needed if your dependencies make heavy use of reflection. If you&#39;re unsure whether you need this you can add the <code>argLine</code> later if your tests run into trouble.</p>
 
-<pre><code class="language-java">public interface LockListener {
-    /**
-     * call back called when the lock 
-     * is acquired
-     */
-    public void lockAcquired();
+<p>You&#39;ll see warnings like this when a library tries to illegally access classes via <code>setAccessible(true)</code>:</p>
 
-    /**
-     * call back called when the lock is 
-     * released.
-     */
-    public void lockReleased();
-}
+<pre><code>WARNING: Please consider reporting this to the maintainers of org.codehaus.groovy.reflection.CachedClass
+WARNING: Use --illegal-access=warn to enable warnings of further illegal reflective access operations
+WARNING: All illegal access operations will be denied in a future release
+
 </code></pre>
 
-<h3 id="toc_1">队列（Queue）</h3>
+<blockquote>
+<p>Keep in mind that later you probably also have to pass the <code>--illegal-access=permit</code> parameter when starting your application.</p>
+</blockquote>
 
-<p>分布式队列是通用的数据结构，为了在 Zookeeper 中实现分布式队列，首先需要指定一个 Znode 节点作为队列节点（queue node）， 各个分布式客户端通过调用 create() 函数向队列中放入数据，调用 create() 时节点路径名带 &quot;qn-&quot; 结尾，并设置顺序（_sequence_）节点标志。 由于设置了节点的顺序标志，新的路径名具有以下字符串模式：&quot;_path-to-queue-node_/qn-X&quot;，X 是唯一自增号。需要从队列中获取数据 / 移除数据的客户端首先调用 getChildren() 函数，有数据则获取（获取数据后可以删除也可以不删），没有则在队列节点（queue node）上将 _watch_ 设置为 true，等待触发并处理最小序号的节点（即从序号最小的节点中取数据）。</p>
+<h3 id="toc_2">Update dependencies<a href="#update-dependencies" title="Permalink to this section">#</a></h3>
 
-<p>实现步骤基本如下：</p>
+<p>As mentioned before the best thing you can do is to migrate all your dependencies to the latest stable versions to make sure everything works fine with Java 11. While many older dependencies might work just fine there&#39;s a couple of dependencies where version updates are mandatory, e.g. all those various bytecode enhancement libaries such as <code>javassist</code>, <code>cglib</code>, <code>asm</code> or <code>byte-buddy</code>. Those libraries often come as transitive dependencies so make sure at least those libaries are up-to-date.</p>
 
-<p>前提：需要一个队列 root 节点 dir</p>
+<pre><code>&lt;dependency&gt;
+    &lt;groupId&gt;org.javassist&lt;/groupId&gt;
+    &lt;artifactId&gt;javassist&lt;/artifactId&gt;
+    &lt;version&gt;3.23.1-GA&lt;/version&gt;
+&lt;/dependency&gt;
+&lt;dependency&gt;
+    &lt;groupId&gt;cglib&lt;/groupId&gt;
+    &lt;artifactId&gt;cglib-nodep&lt;/artifactId&gt;
+    &lt;version&gt;3.2.7&lt;/version&gt;
+&lt;/dependency&gt;
 
-<p>入队：使用 create() 创建节点，将共享数据 data 放在该节点上，节点类型为 PERSISTENT_SEQUENTIAL，永久顺序性的（也可以设置为临时的，看需求）。</p>
-
-<p>出队：因为队列可能为空，2 种方式处理：一种如果为空则 wait 等待，一种返回异常。</p>
-
-<p>等待方式：这里使用了 CountDownLatch 的等待和 Watcher 的通知机制，使用了 TreeMap 的排序获取节点顺序最小的数据（FIFO）。</p>
-
-<p>抛出异常：getChildren() 获取队列数据时，如果 size==0 则抛出异常。</p>
-
-<p>一个分布式 Queue 的实现，详细代码：</p>
-
-<pre><code class="language-java">package org.apache.zookeeper.recipes.queue;
-
-import java.util.List;
-import java.util.NoSuchElementException;
-import java.util.TreeMap;
-import java.util.concurrent.CountDownLatch;
-
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.apache.zookeeper.CreateMode;
-import org.apache.zookeeper.KeeperException;
-import org.apache.zookeeper.WatchedEvent;
-import org.apache.zookeeper.Watcher;
-import org.apache.zookeeper.ZooDefs;
-import org.apache.zookeeper.ZooKeeper;
-import org.apache.zookeeper.data.ACL;
-import org.apache.zookeeper.data.Stat;
-
-/**
- * 
- * A &lt;a href=&quot;package.html&quot;&gt;protocol to implement a distributed queue&lt;/a&gt;.
- * 
- */
-public class DistributedQueue {
-    private static final Logger LOG = LoggerFactory.getLogger(DistributedQueue.class);
-
-    private final String dir;
-
-    private ZooKeeper zookeeper;
-    private List&lt;ACL&gt; acl = ZooDefs.Ids.OPEN_ACL_UNSAFE;
-
-    private final String prefix = &quot;qn-&quot;;
-
-    public DistributedQueue(ZooKeeper zookeeper, String dir, List&lt;ACL&gt; acl){
-        this.dir = dir;
-
-        if(acl != null){
-            this.acl = acl;
-        }
-        this.zookeeper = zookeeper;
-
-        //Add root dir first if not exists
-        if (zookeeper != null) {
-            try {
-                Stat s = zookeeper.exists(dir, false);
-                if (s == null) {
-                    zookeeper.create(dir, new byte[0], acl, CreateMode.PERSISTENT);
-                }
-            } catch (KeeperException e) {
-                LOG.error(e.toString());
-            } catch (InterruptedException e) {
-                LOG.error(e.toString());
-            }
-        }
-    }
-
-    /**
-     * Returns a Map of the children, ordered by id.
-     * @param watcher optional watcher on getChildren() operation.
-     * @return map from id to child name for all children
-     */
-    private TreeMap&lt;Long,String&gt; orderedChildren(Watcher watcher) throws KeeperException, InterruptedException {
-        TreeMap&lt;Long,String&gt; orderedChildren = new TreeMap&lt;Long,String&gt;();
-
-        List&lt;String&gt; childNames = null;
-        try{
-            childNames = zookeeper.getChildren(dir, watcher);
-        }catch (KeeperException.NoNodeException e){
-            throw e;
-        }
-
-        for(String childName : childNames){
-            try{
-                //Check format
-                if(!childName.regionMatches(0, prefix, 0, prefix.length())){
-                    LOG.warn(&quot;Found child node with improper name: &quot; + childName);
-                    continue;
-                }
-                String suffix = childName.substring(prefix.length());
-                Long childId = new Long(suffix);
-                orderedChildren.put(childId,childName);
-            }catch(NumberFormatException e){
-                LOG.warn(&quot;Found child node with improper format : &quot; + childName + &quot; &quot; + e,e);
-            }
-        }
-
-        return orderedChildren;
-    }
-
-    /**
-     * Find the smallest child node.
-     * @return The name of the smallest child node.
-     */
-    private String smallestChildName() throws KeeperException, InterruptedException {
-        long minId = Long.MAX_VALUE;
-        String minName = &quot;&quot;;
-
-        List&lt;String&gt; childNames = null;
-
-        try{
-            childNames = zookeeper.getChildren(dir, false);
-        }catch(KeeperException.NoNodeException e){
-            LOG.warn(&quot;Caught: &quot; +e,e);
-            return null;
-        }
-
-        for(String childName : childNames){
-            try{
-                //Check format
-                if(!childName.regionMatches(0, prefix, 0, prefix.length())){
-                    LOG.warn(&quot;Found child node with improper name: &quot; + childName);
-                    continue;
-                }
-                String suffix = childName.substring(prefix.length());
-                long childId = Long.parseLong(suffix);
-                if(childId &lt; minId){
-                    minId = childId;
-                    minName = childName;
-                }
-            }catch(NumberFormatException e){
-                LOG.warn(&quot;Found child node with improper format : &quot; + childName + &quot; &quot; + e,e);
-            }
-        }
-
-        if(minId &lt; Long.MAX_VALUE){
-            return minName;
-        }else{
-            return null;
-        }
-    }
-
-    /**
-     * Return the head of the queue without modifying the queue.
-     * @return the data at the head of the queue.
-     * @throws NoSuchElementException
-     * @throws KeeperException
-     * @throws InterruptedException
-     */
-    public byte[] element() throws NoSuchElementException, KeeperException, InterruptedException {
-        TreeMap&lt;Long,String&gt; orderedChildren;
-
-        // element, take, and remove follow the same pattern.
-        // We want to return the child node with the smallest sequence number.
-        // Since other clients are remove()ing and take()ing nodes concurrently, 
-        // the child with the smallest sequence number in orderedChildren might be gone by the time we check.
-        // We don&#39;t call getChildren again until we have tried the rest of the nodes in sequence order.
-        while(true){
-            try{
-                orderedChildren = orderedChildren(null);
-            }catch(KeeperException.NoNodeException e){
-                throw new NoSuchElementException();
-            }
-            if(orderedChildren.size() == 0 ) throw new NoSuchElementException();
-
-            for(String headNode : orderedChildren.values()){
-                if(headNode != null){
-                    try{
-                        return zookeeper.getData(dir+&quot;/&quot;+headNode, false, null);
-                    }catch(KeeperException.NoNodeException e){
-                        //Another client removed the node first, try next
-                    }
-                }
-            }
-
-        }
-    }
-
-    /**
-     * Attempts to remove the head of the queue and return it.
-     * @return The former head of the queue
-     * @throws NoSuchElementException
-     * @throws KeeperException
-     * @throws InterruptedException
-     */
-    public byte[] remove() throws NoSuchElementException, KeeperException, InterruptedException {
-        TreeMap&lt;Long,String&gt; orderedChildren;
-        // Same as for element.  Should refactor this.
-        while(true){
-            try{
-                orderedChildren = orderedChildren(null);
-            }catch(KeeperException.NoNodeException e){
-                throw new NoSuchElementException();
-            }
-            if(orderedChildren.size() == 0) throw new NoSuchElementException();
-
-            for(String headNode : orderedChildren.values()){
-                String path = dir +&quot;/&quot;+headNode;
-                try{
-                    byte[] data = zookeeper.getData(path, false, null);
-                    zookeeper.delete(path, -1);
-                    return data;
-                }catch(KeeperException.NoNodeException e){
-                    // Another client deleted the node first.
-                }
-            }
-        }
-    }
-
-    private class LatchChildWatcher implements Watcher {
-
-        CountDownLatch latch;
-
-        public LatchChildWatcher(){
-            latch = new CountDownLatch(1);
-        }
-
-        public void process(WatchedEvent event){
-            LOG.debug(&quot;Watcher fired on path: &quot; + event.getPath() + &quot; state: &quot; + 
-                    event.getState() + &quot; type &quot; + event.getType());
-            latch.countDown();
-        }
-        public void await() throws InterruptedException {
-            latch.await();
-        }
-    }
-
-    /**
-     * Removes the head of the queue and returns it, blocks until it succeeds.
-     * @return The former head of the queue
-     * @throws NoSuchElementException
-     * @throws KeeperException
-     * @throws InterruptedException
-     */
-    public byte[] take() throws KeeperException, InterruptedException {
-        TreeMap&lt;Long,String&gt; orderedChildren;
-        // Same as for element.  Should refactor this.
-        while(true){
-            LatchChildWatcher childWatcher = new LatchChildWatcher();
-            try{
-                orderedChildren = orderedChildren(childWatcher);
-            }catch(KeeperException.NoNodeException e){
-                zookeeper.create(dir, new byte[0], acl, CreateMode.PERSISTENT);
-                continue;
-            }
-            if(orderedChildren.size() == 0){
-                childWatcher.await();
-                continue;
-            }
-
-            for(String headNode : orderedChildren.values()){
-                String path = dir +&quot;/&quot;+headNode;
-                try{
-                    byte[] data = zookeeper.getData(path, false, null);
-                    zookeeper.delete(path, -1);
-                    return data;
-                }catch(KeeperException.NoNodeException e){
-                    // Another client deleted the node first.
-                }
-            }
-        }
-    }
-
-    /**
-     * Inserts data into queue.
-     * @param data
-     * @return true if data was successfully added
-     */
-    public boolean offer(byte[] data) throws KeeperException, InterruptedException{
-        for(;;){
-            try{
-                zookeeper.create(dir+&quot;/&quot;+prefix, data, acl, CreateMode.PERSISTENT_SEQUENTIAL);
-                return true;
-            }catch(KeeperException.NoNodeException e){
-                zookeeper.create(dir, new byte[0], acl, CreateMode.PERSISTENT);
-            }
-        }
-    }
-
-    /**
-     * Returns the data at the first element of the queue, or null if the queue is empty.
-     * @return data at the first element of the queue, or null.
-     * @throws KeeperException
-     * @throws InterruptedException
-     */
-    public byte[] peek() throws KeeperException, InterruptedException{
-        try{
-            return element();
-        }catch(NoSuchElementException e){
-            return null;
-        }
-    }
-
-    /**
-     * Attempts to remove the head of the queue and return it. Returns null if the queue is empty.
-     * @return Head of the queue or null.
-     * @throws KeeperException
-     * @throws InterruptedException
-     */
-    public byte[] poll() throws KeeperException, InterruptedException {
-        try{
-            return remove();
-        }catch(NoSuchElementException e){
-            return null;
-        }
-    }
-}
 </code></pre>
 
-<p><strong>Apache Curator</strong></p>
+<p>This command helps to find outdated dependency versions from your modules:</p>
 
-<p>Curator 是一个封装 Zookeeper 操作的库，使用这个库的好处是 Curator 帮你管理和 Zookeeper 的连接，当连接有问题时会自动重试（retry）。</p>
+<pre><code>mvn versions:display-dependency-updates
 
-<pre><code class="language-java">RetryPolicy retryPolicy = new ExponentialBackoffRetry(1000, 3)
-CuratorFramework client = CuratorFrameworkFactory.newClient(zookeeperConnectionString, retryPolicy);
-client.start();
 </code></pre>
 
-<p>Curator 已经封装了一些常用的 Recipes</p>
+<p>Update as much libaries as possible to the latest stable version. If there&#39;s some dependency that you can&#39;t update due to compatibility issues in your project than leave it as is. Chances are that it just runs fine with Java 11.</p>
 
-<h4 id="toc_2">Distributed Lock</h4>
+<p>Now is a good time to compile your project with JDK 11 for the first time:</p>
 
-<pre><code class="language-java">InterProcessMutex lock = new InterProcessMutex(client, lockPath);
-if ( lock.acquire(maxWait, waitUnit) ) 
-{
-    try 
-    {
-        // do some work inside of the critical section here
-    }
-    finally
-    {
-        lock.release();
-    }
-}
+<pre><code>mvn clean test-compile compile
+
 </code></pre>
 
-<h4 id="toc_3">Leader Election</h4>
+<blockquote>
+<p>Hint: You can speed up multi-module Maven projects by using parallel builds, e.g. <code>mvn -T 4 compile</code> compiles all modules in parallel on 4 CPU cores.</p>
+</blockquote>
 
-<pre><code class="language-java">LeaderSelectorListener listener = new LeaderSelectorListenerAdapter()
-{
-    public void takeLeadership(CuratorFramework client) throws Exception
-    {
-        // this callback will get called when you are the leader
-        // do whatever leader work you need to and only exit
-        // this method when you want to relinquish leadership
-    }
-}
+<p>You will eventually face different compiler errors such as <code>ClassNotFoundException</code>. Every project is different so I cannot provide solutions for every problem you will face. The rest of this article describes solutions to various problems we had to solve in order to run our application with JDK 11.</p>
 
-LeaderSelector selector = new LeaderSelector(client, path, listener);
-selector.autoRequeue();  // not required, but this is behavior that you will probably expect
-selector.start();
+<h3 id="toc_3">Add missing modules<a href="#add-missing-modules" title="Permalink to this section">#</a></h3>
+
+<p>With the introduction of the Java module system (Jigsaw) in Java 9 the Java standard libary has been divided into separate modules. While most classes are still available without any changes, some are not. You have to explicitely define which additional modules your application needs access to or you can just add those modules from the Maven central repository.</p>
+
+<blockquote>
+<p>The command <code>java --list-modules</code> lists all available modules.</p>
+</blockquote>
+
+<p>When migrating our web project to Java 11 we had to add <code>jaxb</code> and <code>javax.annotations</code> to prevent <code>ClassNotFoundException</code>. We&#39;ve added the following libaries as additional Maven dependencies to our POMs:</p>
+
+<pre><code>&lt;dependency&gt;
+    &lt;groupId&gt;javax.annotation&lt;/groupId&gt;
+    &lt;artifactId&gt;javax.annotation-api&lt;/artifactId&gt;
+    &lt;version&gt;1.3.2&lt;/version&gt;
+&lt;/dependency&gt;
+&lt;dependency&gt;
+    &lt;groupId&gt;javax.xml.bind&lt;/groupId&gt;
+    &lt;artifactId&gt;jaxb-api&lt;/artifactId&gt;
+    &lt;version&gt;2.4.0-b180725.0427&lt;/version&gt;
+&lt;/dependency&gt;
+&lt;dependency&gt;
+    &lt;groupId&gt;org.glassfish.jaxb&lt;/groupId&gt;
+    &lt;artifactId&gt;jaxb-runtime&lt;/artifactId&gt;
+    &lt;version&gt;2.4.0-b180725.0644&lt;/version&gt;
+&lt;/dependency&gt;
+
 </code></pre>
 
-<h2 id="toc_4">参考</h2>
+<blockquote>
+<p>Instead of adding those libaries via Maven we could utilize the <code>–add-modules</code> Java parameter to add additional JDK modules to the project.</p>
+</blockquote>
+
+<h3 id="toc_4">Fixing <code>sun.*</code> and <code>com.sun.*</code> imports<a href="#fixing-sun-and-com-sun-imports" title="Permalink to this section">#</a></h3>
+
+<p>While some classes have been moved to additional Java modules other classes can no longer been used in user code, namely classes from <code>sun.*</code> packages and also some classes from <code>com.sun.*</code>. If you get compiler errors because your code links to classes from those packages you have to remove those imports from your code.</p>
+
+<p>Here&#39;s a few things we had to fix in our project:</p>
 
 <ul>
-<li><a href="http://zookeeper.apache.org/doc/trunk/recipes.html">http://zookeeper.apache.org/doc/trunk/recipes.html</a></li>
-<li><a href="http://curator.apache.org/curator-recipes/index.html">http://curator.apache.org/curator-recipes/index.html</a></li>
+<li>  <code>sun.misc.BASE64Encoder</code>: This can simply be replaced by <code>java.util.Base64.getEncoder()</code> which is available since Java 8.</li>
+<li>  <code>sun.reflect.generics.reflectiveObjects.ParameterizedTypeImpl</code>: This class has accidentally been used in our code base and can simply be replaced by the interface type <code>java.lang.reflect.ParameterizedType</code>.</li>
+<li>  <code>sun.reflect.annotation.AnnotationParser</code>: We use this class to programmatically create annotation instances. The class is no longer accessible but can be replaced by <code>AnnotationFactory</code> from Hibernate Validator.</li>
+<li>  <code>com.sun.org.apache.xml.internal.utils.DefaultErrorHandler</code>: We&#39;ve replaced this class with a custom implementation of the interface.</li>
 </ul>
+
+<h3 id="toc_5">Currency formats<a href="#currency-formats" title="Permalink to this section">#</a></h3>
+
+<p>We&#39;ve encountered a curious case with number formats for locales such as <code>Locale.GERMANY</code> which let a bunch of our tests fail with a rather strange assertion error:</p>
+
+<pre><code>java.lang.AssertionError:
+Expected: is &quot;9,80 €&quot;
+     but: was &quot;9,80 €&quot;
+
+</code></pre>
+
+<p>The underlying code uses <code>NumberFormat.getCurrencyInstance(Locale.GERMANY)</code> to format numbers into the german currency format. So what the heck is happening here?</p>
+
+<p>Javas number formats have been modified to use <a href="https://en.wikipedia.org/wiki/Non-breaking_space">non-breaking spaces</a> instead of normal spaces between the number and the currency symbol. This change makes perfectly sense because it prevents line-breaks between the number and the currency symbol in various presentation formats. Changing the strings in our tests to use non-breaking spaces (use OPTION SPACE on Mac OSX keyboards) fixed this issue.</p>
+
+<h3 id="toc_6">Servlet Container<a href="#servlet-container" title="Permalink to this section">#</a></h3>
+
+<p>When running web applications with Apache Tomcat you need at least Apache Tomcat 7.0.85 or later. Otherwise Tomcat will not start on Java 9 and above and you would see the following error:</p>
+
+<pre><code>/path/to/apache-tomcat-7.0.64/bin/catalina.sh run
+-Djava.endorsed.dirs=/path/to/apache-tomcat-7.0.64/endorsed is not supported. Endorsed standards and standalone APIs
+Error: Could not create the Java Virtual Machine.
+Error: A fatal exception has occurred. Program will exit.
+in modular form will be supported via the concept of upgradeable modules.
+Disconnected from server
+
+</code></pre>
+
+<p>Also don&#39;t forget to eventually add the additional startup parameter <code>--illegal-access=permit</code> to your servlet container.</p>
+
+<h3 id="toc_7">That&#39;s all<a href="#thats-all" title="Permalink to this section">#</a></h3>
+
+<p>I hope these tips are somewhat useful to you and helps you migrating your application from Java 8 to 11. If you like this guide please consider sharing the link with your followers. Also <a href="https://twitter.com/winterbe_">let me know on Twitter</a> if your migration was successful.</p>
+
+<p>Good luck!</p>
 
                         
                       </div>
@@ -1131,10 +337,10 @@ selector.start();
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/8/2</span>
+                    <span class="date">2018/9/2</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Orchestrator.html'>Orchestrator</a></span>
+          					    <span class="posted-in"><a href='Java.html'>Java</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -1224,31 +430,31 @@ selector.start();
 	      
 		      
 			      <li class="post">
-			        <a href="15337171704262.html">Introduction to Testing with Spock and Groovy</a>
+			        <a href="15358820607055.html">Java 8 Concurrency Tutorial: Atomic Variables and ConcurrentMap</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15336595358049.html">10 Excellent Ways to Secure Your Spring Boot Application</a>
+			        <a href="15358774987730.html">Java 8 Concurrency Tutorial: Synchronization and Locks</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15336592302916.html">First MicroProfile.io application using Java Module System</a>
+			        <a href="15358757119900.html">Java 8 Concurrency Tutorial: Threads and Executors</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15332186142588.html">Jenkins 的 Pipeline 脚本在美团餐饮 SaaS 中的实践</a>
+			        <a href="15358756631902.html">Java 8 Stream Tutorial</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15331749691571.html">基于ZooKeeper的分布式锁和队列</a>
+			        <a href="15358753472382.html">Migrate Maven Projects to Java 11</a>
 			      </li>
 		     
 		  

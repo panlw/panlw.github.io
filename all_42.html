@@ -105,125 +105,360 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15299316548658.html">
+                <a class="clearlink" href="15322166489736.html">
                 
-                  <h1>hbase 的架构及设计</h1>
+                  <h1>React JS: what is a PureComponent?</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://blog.csdn.net/liweisnake/article/details/78086262">https://blog.csdn.net/liweisnake/article/details/78086262</a></p>
+<p><a href="http://lucybain.com/blog/2018/react-js-pure-component/">http://lucybain.com/blog/2018/react-js-pure-component/</a></p>
+
+<p>Published on: January 14, 2018</p>
+
+<p>Tags: <a href="/blog/tags/react/">react</a>, <a href="/blog/tags/js/">js</a>, and <a href="/blog/tags/performance/">performance</a></p>
 </blockquote>
 
-<p>hbase 是强一致性的海量数据库，无论是读写性能，或是数据容量，还是一致性方面，hbase 都有非常优秀的表现。</p>
+<p>Early on, React developers had the idea of “pure” components. This concept went by a variety of names (stateful/pure, smart/dumb, container/presentational, etc.) but were all fairly similar. These components still used the <code>React.Component</code> class, but the idea provided a useful mental model for developers to work with.</p>
 
-<p>本文从架构方面探讨 hbase 的主要设计，从而在需要 hbase 的场合能够更好的设计和判断。</p>
+<p>But then on June 29, 2016 React 15.3 was released a new <code>PureComponent</code> class. The <code>PureComponent</code> kind of summed up the previous concept of “pure” components, and put a large speed boost in as well. This article is about the <code>PureComponent</code> class, and only touches on the “pure” component mental model. I’ve added some links in the references section to cover why the idea of “pure” components is useful. Because of <code>PureComponent</code>’s emphasis on performance, this is also a continuation from my previous article about <a href="/blog/2017/react-js-when-to-rerender/">when React re-renders</a> (I recommend reading that one first if you haven’t already).</p>
 
-<p>首先，先来看看 <strong>hbase 的整体架构</strong>。除了 DFS 组件，hbase 的基本组件图实际上就是 Zookeeper，HMaster，RegionServer。</p>
+<h3 id="toc_0">What problem does it solve?</h3>
 
-<p><img src="https://img-blog.csdn.net/20171007104837576?watermark/2/text/aHR0cDovL2Jsb2cuY3Nkbi5uZXQvbGl3ZWlzbmFrZQ==/font/5a6L5L2T/fontsize/400/fill/I0JBQkFCMA==/dissolve/70/gravity/Center" alt=""/></p>
+<p>By default, a plain <code>React.Component</code> has <code>shouldComponentUpdate</code> set to always return <code>true</code>. This is good because it means React errs on the side of always updating the component in case there’s any new data to show. However, it’s bad because it means React might trigger unnecessary re-renders. One way to deal with these extra re-renders is to change the <code>shouldComponentUpdate</code> function to check when your component needs to update (see my <a href="/blog/2017/react-js-when-to-rerender/">previous post</a> for more information).</p>
 
-<p>其中，<strong>RegionServer</strong> 作为数据的实际存取服务器，主要负责数据的最终存取，一般情况都是多台；</p>
+<p>Another way to stop extra re-renders is to use a <code>PureComponent</code>. Let’s build out the example from the previous performance post...</p>
 
-<p>RegionServer 根据不同的 row key 划分为许多 region，每个 region 按顺序存放从 startKey 到 endKey 的数据。每个 RegionServer 有下面这些组件：</p>
+<h3 id="toc_1">Example setup</h3>
 
-<p><img src="https://img-blog.csdn.net/20171015092617159?watermark/2/text/aHR0cDovL2Jsb2cuY3Nkbi5uZXQvbGl3ZWlzbmFrZQ==/font/5a6L5L2T/fontsize/400/fill/I0JBQkFCMA==/dissolve/70/gravity/Center" alt=""/><img src="https://img-blog.csdn.net/20171007212610301?watermark/2/text/aHR0cDovL2Jsb2cuY3Nkbi5uZXQvbGl3ZWlzbmFrZQ==/font/5a6L5L2T/fontsize/400/fill/I0JBQkFCMA==/dissolve/70/gravity/Center" alt=""/></p>
+<p><strong>Note:</strong> I’ve written intentionally bad code in the <code>componentDidMount</code> methods throughout. This is to keep the examples small and to show some gotchas along the way. Please do not write this kind of code for reals!</p>
 
-<p><strong>一个 WAL</strong>: write ahead log. 听名知其意，该文件是落库前先写的日志文件，它最主要的作用是恢复数据用，类似于 mysql 的 binlog。保存在 HDFS 中</p>
+<pre><code class="language-js">class Todos extends React.PureComponent {
 
-<p><strong>一个 BlockCache</strong>: regionServer 的读缓存。保存使用最频繁的数据，使用 LRU 算法换出不需要的数据。</p>
+    constructor(props) {
+        super(props);
+        this.state = { 
+            todos: [
+                { title: &#39;take out the trash&#39;, done: false, notes: [&#39;boring&#39;] },
+                { title: &#39;walk dog&#39;, done: true, notes: [&#39;exercise&#39;] },
+                { title: &#39;read about React&#39;, done: false, notes: [&#39;fun!&#39;] },
+            ]
+        };
+    }
 
-<p><strong>多个 Region</strong>: 每个 region 包含多个 store，每个 CF 拥有一个 store</p>
+    componentDidMount() {
+        setInterval(() =&gt; {
+            this.setState((oldState) =&gt; {
+                return { todos: [...oldState.todos] }
+            });
+        }, 1000);
+    }
 
-<p><strong>store</strong>: 每个 store 包含多个 storeFile 和一个 memstore</p>
+    render() {
+        console.log(&#39;Todos render called&#39;);
+        return (&lt;div&gt;
+            {this.state.todos.map((todo, i) =&gt; {
+              return (&lt;TodoItem
+                key={i}
+                title={todo.title}
+                done={todo.done}
+                notes={todo.notes}
+              /&gt;);
+            })}
+          &lt;/div&gt;);
+    }
+}
 
-<p><strong>Memstore</strong>: region 的写缓存。保存还未写入 HFile 的数据，写入数据前会先做排序，每个 region 每个 CF 都会拥有一个 Memstore，这就是为什么 CF 不能建太多的原因。</p>
+class TodoItem extends React.Component {
 
-<p><strong>storeFile</strong>: 真正存储 keyvalue 数据的文件，其保存的文件是排序过的。一个 storeFile 对应一个 HFile。保存在 HDFS 中</p>
+    render() {
+        console.log(&#39;TodoItem render called&#39;);
+        return (&lt;div&gt;
+                {this.props.done ? &#39;✓&#39;: &#39;▢&#39;} {this.props.title}
+                ({this.props.notes.join(&#39;, &#39;)})
+            &lt;/div&gt;);
+    }
+}
 
-<p>HFile 分为数据块，索引块，bloom 过滤器以及 trailer。</p>
+ReactDOM.render(&lt;Todos /&gt;, document.getElementById(&#39;app&#39;));
+</code></pre>
 
-<p><img src="https://img-blog.csdn.net/20171015100418759?watermark/2/text/aHR0cDovL2Jsb2cuY3Nkbi5uZXQvbGl3ZWlzbmFrZQ==/font/5a6L5L2T/fontsize/400/fill/I0JBQkFCMA==/dissolve/70/gravity/Center" alt=""/></p>
+<p>It’s bigger than most of the examples I write, but it’s all relevant - promise! We’ll break it down (feel free to skip down to the next section if the above is clear to you already):</p>
 
-<p><strong>Trailer</strong> 主要记录了 HFile 的基本信息，各个部分的偏移和地址信息。</p>
+<h4 id="toc_2"><code>Todos</code></h4>
 
-<p><strong>Data block</strong> 主要存储用户的 key-value 数据</p>
+<p>First we have a React component, this is the one that <code>ReactDOM</code> will render (see the last line in the example).</p>
 
-<p><strong>Bloom filter</strong> 主要用来快速定位文件是否不在数据块。</p>
+<p>We have the constructor method so we can set the initial state - in this case an array of <code>todos</code>, each of which has <code>title</code>, <code>done</code>, and <code>notes</code> attributes. (Typically this kind of state would be passed in through <code>props</code> but I’ve written it in the <code>state</code> to keep the example smaller and self contained.)</p>
 
-<p><img src="https://img-blog.csdn.net/20171015103532031?watermark/2/text/aHR0cDovL2Jsb2cuY3Nkbi5uZXQvbGl3ZWlzbmFrZQ==/font/5a6L5L2T/fontsize/400/fill/I0JBQkFCMA==/dissolve/70/gravity/Center" alt=""/></p>
+<pre><code class="language-js">constructor(props) {
+    super(props);
+    this.state = { 
+        todos: [
+            { title: &#39;take out the trash&#39;, done: false, notes: [&#39;boring&#39;] },
+            { title: &#39;walk dog&#39;, done: true, notes: [&#39;exercise&#39;] },
+            { title: &#39;read about React&#39;, done: false, notes: [&#39;fun!&#39;] },
+        ]
+    };
+}
+</code></pre>
 
-<p><img src="https://img-blog.csdn.net/20171015103549504?watermark/2/text/aHR0cDovL2Jsb2cuY3Nkbi5uZXQvbGl3ZWlzbmFrZQ==/font/5a6L5L2T/fontsize/400/fill/I0JBQkFCMA==/dissolve/70/gravity/Center" alt=""/></p>
+<p>Then there’s the <code>componentDidMount</code> method. Its only purpose is to change the state every second so we can see how React deals with those changes. Right now it updates <code>state.todos</code> to be the same as the previous <code>state.todos</code>.</p>
 
-<p>比较容易混淆的是 <strong>zookeeper 和 hmaster</strong>。</p>
+<pre><code class="language-js">componentDidMount() {
+    setInterval(() =&gt; {
+        this.setState((oldState) =&gt; {
+            return { todos: [...oldState.todos] }
+        });
+    }, 1000);
+}
+</code></pre>
 
-<p><strong>Zookeeper</strong> 负责保持多台 Hmaster 中只有一台是活跃的；存储 Hbase 的 schema，table，CF 等元信息；存储所有的 region 入口；监控 regionServer 的状态，并将该信息通知 hmaster。可以看出来，zookeeper 几乎是负责整个集群的关键信息存取以及关键状态监控。<strong>如果 zookeeper 挂了，那么整个 hbase 集群几乎就是不可用的状态</strong>。</p>
+<p>Finally <code>Todos</code> has the render method. It renders a list of the <code>TodoItem</code> components, and passes in their respective <code>title</code>, <code>done</code>, and <code>notes</code> attributes. The main thing we’re interested in here is seeing when this component is rendered.</p>
 
-<p><img src="https://img-blog.csdn.net/20171007233209495?watermark/2/text/aHR0cDovL2Jsb2cuY3Nkbi5uZXQvbGl3ZWlzbmFrZQ==/font/5a6L5L2T/fontsize/400/fill/I0JBQkFCMA==/dissolve/70/gravity/Center" alt=""/></p>
+<pre><code class="language-js">render() {
+    console.log(&#39;Todos render called&#39;);
+    return (&lt;div&gt;
+        {this.state.todos.map((todo, i) =&gt; {
+            return (&lt;TodoItem
+            key={i}
+            title={todo.title}
+            done={todo.done}
+            notes={todo.notes}
+            /&gt;);
+        })}
+        &lt;/div&gt;);
+}
+</code></pre>
 
-<p><strong>Hmaster</strong> 则是负责对 table 元数据的管理；对 HRegion 的负载均衡，调整 HRegion 的布局，比如分裂和合并；包括恢复数据的迁移等。Hmaster 相当于对 RegionServer 的后台管理，对于一些定制的管理行为，zookeeper 不可能帮你完成，于是乎才有了 hmaster。<strong>如果 hmaster 挂了，除了不能对 table 进行管理配置，不能扩展 region，并不会影响整体服务的可用性</strong>。</p>
+<h4 id="toc_3"><code>TodoItem</code></h4>
 
-<p>接下来我们来关注一些关键流程。</p>
+<p><u>It’s a lot simpler than <code>Todos</code></u></p>
 
-<p><strong>客户端首次读写的流程</strong>：</p>
+<p>Yes, that’s right <code>TodoItem</code> inherits from <code>React.Component</code> just like <code>Todos</code>, but it only implements the <code>render</code> function (which is required) to display the <code>title</code>, <code>done</code>, and <code>notes</code> values. Here again we’re mostly interested in knowing <u>when</u> the <code>render</code> method is called, not really what is displayed (yet!).</p>
 
-<p>1. 客户端首先从 zookeeper 中得到 META table 的位置，根据 META table 的存储位置得到具体的 RegionServer 是哪台</p>
+<pre><code class="language-js">render() {
+    console.log(&#39;TodoItem render called&#39;);
+    return (&lt;div&gt;
+            {this.props.done ? &#39;✓&#39;: &#39;▢&#39;} {this.props.title}
+            ({this.props.notes.join(&#39;, &#39;)})
+        &lt;/div&gt;);
+}
+</code></pre>
 
-<p>2. 询问具体的 RegionServer</p>
+<h3 id="toc_4">What’s the problem?</h3>
 
-<p><strong>写流程</strong>：</p>
+<p>Well, if you <a href="https://codepen.io/lbain/pen/GyOXye">look at it yourself</a> you’ll see the console spits out:</p>
 
-<p>1. 首先写入 WAL 日志，以防 crash。</p>
+<pre><code class="language-log">Todos render called
+TodoItem render called
+TodoItem render called
+TodoItem render called
+Todos render called
+TodoItem render called
+TodoItem render called
+TodoItem render called
+</code></pre>
 
-<p>2. 紧接着写入 Memstore，即写缓存。由于是内存写入，速度较快。</p>
+<p>Over and over, every second.</p>
 
-<p>3. 立马返回客户端表示写入完毕。</p>
+<p><u>That seems silly, the data isn’t even changing!</u></p>
 
-<p>4. 当 Memstore 满时，从 Memstore 刷新到 HFile，磁盘的顺序写速度非常快，并记录下最后一次最高的 sequence 号。这样系统能知道哪些记录已经持久化，哪些没有。</p>
+<p>You’re right - there’s no need to re-render any of these components because the data doesn’t change. But React doesn’t know this - the <code>setState</code> method from the <code>onComponentDidmount</code> triggers a re-render every second for the <code>Todos</code> component and its children.</p>
 
-<p><strong>读流程</strong>：</p>
+<h3 id="toc_5">How do we re-render less?</h3>
 
-<p>1. 首先到读缓存 BlockCache 中查找可能被缓存的数据</p>
+<p>Let’s focus on <code>TodoItem</code> for now. It’s rendering three times for each <code>Todos</code> render so we can optimise it first. We’ll talk about <code>Todos</code> later on.</p>
 
-<p>2. 如果未找到，到写缓存查找已提交但是未落 HFile 的数据</p>
+<p><u>How can we fix <code>TodoItem</code> re-rendering too much?</u></p>
 
-<p>3. 如果还未找到， 到 HFile 中继续查找数据</p>
+<p>That brings us nicely to the <code>React.PureComponent</code> this post is supposed to be all about. The <code>TodoItem</code> doesn’t need to re-render since none of its data changes. The <code>props</code> coming in each time are the same, and there’s no internal <code>state</code>. Let’s try converting <code>TodoItem</code> to a <code>React.PureComponent</code>:</p>
 
-<p><img src="https://img-blog.csdn.net/20171008110233034?watermark/2/text/aHR0cDovL2Jsb2cuY3Nkbi5uZXQvbGl3ZWlzbmFrZQ==/font/5a6L5L2T/fontsize/400/fill/I0JBQkFCMA==/dissolve/70/gravity/Center" alt=""/></p>
+<pre><code class="language-js">class TodoItem extends React.PureComponent { // This line changed
 
-<p><strong>数据紧凑</strong>：</p>
+    render() {
+        console.log(&#39;TodoItem render called&#39;);
+        return (&lt;div&gt;
+                {this.props.done ? &#39;✓&#39;: &#39;▢&#39;} {this.props.title}
+                ({this.props.notes.join(&#39;, &#39;)})
+            &lt;/div&gt;);
+    }
+}
+</code></pre>
 
-<p>数据从 memStore 刷新到 HFile 时，为了保持简单，都是每个 memStore 放一个 HFile，这会带来大量小 HFile 文件，使得查询时效率相对较低，于是，采用数据紧凑的方式将多个小文件压缩为几个大文件。其中，minor compaction 是自动将相关的小文件做一些适当的紧凑，但不彻底；而 major compaction 则是放在午夜跑的定时任务，将文件做最大化的紧凑。</p>
+<p>If you make that change in the <a href="https://codepen.io/lbain/pen/GyOXye">CodePen</a> you’ll see the following in the console:</p>
 
-<p><img src="https://img-blog.csdn.net/20171008114505743?watermark/2/text/aHR0cDovL2Jsb2cuY3Nkbi5uZXQvbGl3ZWlzbmFrZQ==/font/5a6L5L2T/fontsize/400/fill/I0JBQkFCMA==/dissolve/70/gravity/Center" alt=""/></p>
+<pre><code class="language-log">Todos render called
+TodoItem render called
+TodoItem render called
+TodoItem render called
+Todos render called
+Todos render called
+Todos render called
+Todos render called
+...
+</code></pre>
 
-<p><img src="https://img-blog.csdn.net/20171008114703447?watermark/2/text/aHR0cDovL2Jsb2cuY3Nkbi5uZXQvbGl3ZWlzbmFrZQ==/font/5a6L5L2T/fontsize/400/fill/I0JBQkFCMA==/dissolve/70/gravity/Center" alt=""/></p>
+<p>After the initial <code>TodoItem</code>s render, they never render again <u>even though their parent renders multiple times.</u></p>
 
-<p><strong>数据恢复流程</strong>：</p>
+<p><strong>Boom.</strong></p>
 
-<p>当 RegionServer 挂了，zookeeper 很快就能检测到，于是将其下的 region 状态设置为不可用。Hmaster 随即开始恢复的流程。</p>
+<p>Did you catch that? We just saved ourselves a <u>bunch</u> of unnecessary <code>TodoItem</code> renders simply by converting it to a <code>PureComponent</code>. Aw yeah.</p>
 
-<p>1. HFile 本身有 2 个备份，而且有专门的 HDFS 来管理其下的文件。因此对 HFile 来说并不需要恢复。</p>
+<h3 id="toc_6">How does <code>PureComponent</code> work?</h3>
 
-<p>2. Hmaster 重置 region 到新的 regionServer</p>
+<p><u>Ok, you’ve had your big reveal. How does it actually work?</u></p>
 
-<p>3. 之前在 MemStore 中丢失的数据，通过 WAL 分裂先将 WAL 按照 region 切分。切分的原因是 WAL 并不区分 region，而是所有 region 的 log 都写入同一个 WAL。</p>
+<p>You know how we’d normally need to write our own <code>shouldComponentUpdate</code> to check if the component should re-render or not? Well, React has written that check for us in <code>PureComponent</code>. The <a href="https://github.com/facebook/react/blob/9d310e0bc7b9d5ce39d82536dfcb67f98462a346/packages/react-test-renderer/src/ReactShallowRenderer.js#L170-L173">relevant shouldComponentUpdate code</a> is:</p>
 
-<p>4. 根据 WAL 回放并恢复数据。回放的过程实际上先进 MemStore，再 flush 到 HFile</p>
+<pre><code class="language-js">if (type.prototype &amp;&amp; type.prototype.isPureReactComponent) {
+    shouldUpdate = !shallowEqual(oldProps, props) ||
+                   !shallowEqual(oldState, state);
+}
+</code></pre>
 
-<p><img src="https://img-blog.csdn.net/20171008154723461?watermark/2/text/aHR0cDovL2Jsb2cuY3Nkbi5uZXQvbGl3ZWlzbmFrZQ==/font/5a6L5L2T/fontsize/400/fill/I0JBQkFCMA==/dissolve/70/gravity/Center" alt=""/></p>
+<p><strong>Note:</strong> React checks both <code>props</code> and <code>state</code>. Throughout this article I focus on <code>state</code> because it makes the examples easier and self contained, however it’s important to note that everything we talk about here equally applies to <code>props</code>.</p>
 
-<p><img src="https://img-blog.csdn.net/20171008154745990?watermark/2/text/aHR0cDovL2Jsb2cuY3Nkbi5uZXQvbGl3ZWlzbmFrZQ==/font/5a6L5L2T/fontsize/400/fill/I0JBQkFCMA==/dissolve/70/gravity/Center" alt=""/></p>
+<p><a href="https://github.com/facebook/fbjs/blob/c69904a511b900266935168223063dd8772dfc40/packages/fbjs/src/core/shallowEqual.js">Here</a> is the code for that <code>shallowEqual</code> function. Of particular interest is the <a href="https://github.com/facebook/fbjs/blob/c69904a511b900266935168223063dd8772dfc40/packages/fbjs/src/core/shallowEqual.js#L35-L37">method documentation</a>:</p>
 
-<h2 id="toc_0">参考资料</h2>
+<blockquote>
+<p>Performs equality by iterating through keys on an object and returning false when any key has values which are not strictly equal between the arguments. Returns true when the values of all keys are strictly equal.</p>
+</blockquote>
+
+<p><u>But wait, what does “strictly equal” mean?</u></p>
+
+<p>That is a <strong>very</strong> good question, so we’ll dedicate a whole section to it.</p>
+
+<h3 id="toc_7">Side note: shallow equality</h3>
+
+<p>Feel free to skip if this isn’t new for you.</p>
+
+<p>A <u>shallow</u> equality check means that JS only checks that the value’s object <u>ids</u> (as in, the memory address for where JS stores the information for that particular object) are the same, not that their <u>content</u> is the same. So here’s an example where shallow equality is what you and I would usually think of as “equal”:</p>
+
+<pre><code class="language-js">const value = &#39;cat&#39;;
+
+const item1 = value;
+const item2 = value;
+
+console.log(item1 === item2); // true
+</code></pre>
+
+<p>And here’s an example where JS’s definition of “equal” and our definition might differ:</p>
+
+<pre><code class="language-js">const value = &#39;cat&#39;;
+
+const array1 = [value];
+const array2 = [value];
+
+console.log(array1 === array2); // false
+</code></pre>
+
+<p>Even though we can clearly see the <u>content</u> of <code>array2</code> is the same as <code>array1</code> JS registers them as different since their <u>ids</u> are different. In this case we created two completely separate arrays, that just happened to have the same data in them.</p>
+
+<p><u>What’s the alternative?</u></p>
+
+<p>We can check inside each item and see if all the values are the same - this is called a “deep” equality check. Something like this:</p>
+
+<pre><code class="language-js">const value = &#39;cat&#39;;
+
+const array1 = [value];
+const array2 = [value];
+
+let equal = true;
+array1.forEach((item, index) =&gt; {
+    equal = equal &amp;&amp; array1[index] === array2[index];
+});
+
+console.log(equal); // true
+</code></pre>
+
+<p><u>Why would shallow equality ever be useful?</u></p>
+
+<p>Well, it’s <u>really</u> fast. In the previous example we have to loop through every single item in the array to find that the arrays are equal. Assuming you’ve got more than one thing in your array that gets slow quickly.</p>
+
+<h3 id="toc_8">Warning: PureComponent does a shallow equality check</h3>
+
+<p>React uses a shallow equality check because it is is <u>way</u> more performant than doing a deep equal. In fact, React doesn’t even offer doing a deep equality check. You can do a shallow check (with <code>PureComponent</code>), write your own check (with <code>shouldComponentUpdate</code>), or not check at all and just always re-render (the default). It’s too risky for React to do a deep equality check since you might have really deeply nested data. Instead React errs on the side of not checking and doing the re-render automatically.</p>
+
+<p>All if this is generally good news if your component is working with shallow-equality-friendly data. If the <code>state</code> and <code>prop</code> value ids change when their content changes then the components re-render when the should - yay! However, if you don’t handle your data properly, then you can accidentally not re-render when you should - boo!</p>
+
+<p><u>Could you give an example?</u></p>
+
+<p>As it happens, we already have one ready to go! Let’s leave <code>TodoItem</code> as a <code>PureComponent</code>, and change <code>Todo</code>&#39;s <code>componentDidMount</code> to mess with some data:</p>
+
+<pre><code class="language-js">componentDidMount() {
+    setInterval(() =&gt; {
+        this.setState((oldState) =&gt; {
+            oldState.todos[0].done = !oldState.todos[0].done; // new line
+            return { todos: [...oldState.todos] }
+        });
+    }, 1000);
+}
+</code></pre>
+
+<p>If you run this you’ll see the “done” state for the first todo item flash on and off every second. This is good news - we’re updating the data and it’s displaying properly.</p>
+
+<p>But... let’s try this one:</p>
+
+<pre><code class="language-js">componentDidMount() {
+    setInterval(() =&gt; {
+        this.setState((oldState) =&gt; {
+            oldState.todos[0].notes.push(&#39;smelly&#39;); // new line
+            return { todos: [...oldState.todos] }
+        });
+    }, 1000);
+}
+</code></pre>
+
+<p>The first todo item <u>should</u> re-render every second with a new “smelly” note displaying. But it doesn’t, there’s just the initial render (without the “smelly” note), and that’s it.</p>
+
+<p><u>Why doesn’t React re-render?</u></p>
+
+<p>Because doing a <code>push</code> on an array <a href="http://gunnariauvinen.com/difference-between-concat-and-push-in-javascript/">does <u>not</u> create a <u>new</u> array.</a> When React does the shallow equality check for the <code>PureComponent</code> it only checks <code>oldState.notes === newState.notes</code>, which is <code>true</code> <u>even though</u> the data in <code>notes</code> has changed. In order to render this properly we need to change <code>TodoItem</code> back to a <code>React.Component</code>, <strong>or</strong> we can use <code>forceUpdate</code> to tell React that the data actually has changed. However using <code>forceUpdate</code> is kind of a code smell, so I won’t cover it here.</p>
+
+<h3 id="toc_9">Warning: think of the children!</h3>
+
+<p>A common pitfall when converting from <code>Component</code> to <code>PureComponent</code> is to forget that the children need to re-render too. As with all React - if the parent doesn’t re-render the children won’t either. So if you have a <code>PureComponent</code> with children, those children can only update if the parent’s <code>state</code> or <code>props</code> are shallowly different (causing the parent to re-render).</p>
+
+<p>You can only have a <code>PureComponent</code> parent if you know none of the children should re-render if the parent doesn’t re-render. Let’s see an example of this pitfall by converting the <code>Todos</code> component from a <code>Component</code> to a <code>PureComponent</code> :</p>
+
+<pre><code class="language-js">class Todos extends React.PureComponent { // new line
+    // ...
+
+    componentDidMount() {
+        setInterval(() =&gt; {
+            this.setState((oldState) =&gt; {
+                oldState.todos[0].done = !oldState.todos[0].done; // new line
+                return oldState; // new line
+            });
+        }, 1000);
+    }
+
+    // ...
+}
+</code></pre>
+
+<p>As you can see, most of the code is the same. We’ve changed <code>Todos</code> to be a <code>PureComponent</code> and the <code>componentDidMount</code> to return the original <code>oldState</code> object rather than creating a new object (as before).</p>
+
+<p>Now we <u>should</u> see the first todo item flashing its <code>done</code> state on and off. But it doesn’t, again there is only the initial render and that’s it. This happens because <code>Todos</code> is now a <code>PureComponent</code>, when the shallow equal check happens with <code>oldState === newState</code> we find exactly the same object (again, even though the content of that object has changed). So <code>Todos</code> never re-renders, so its <u>children</u> also never re-render. We can fix this really easily by simply changing <code>Todos</code> back to a <code>Component</code>.</p>
+
+<hr/>
+
+<h3 id="toc_10">Wrapping up</h3>
+
+<p><code>PureComponent</code> is very powerful in that it can help you limit the number of unnecessary re-renders that occur. However, it can also cause surprising gotchas. The key thing to keep in mind is that <code>PureComponent</code> only does a shallow equality check on <code>props</code> and <code>state</code> before deciding if it should re-render or not. And that has a cascade effect on if its children re-render or not. So use <code>PureComponent</code> and love the performance gains, but be sure to check that it is always re-rendering when it should. When in doubt fall back to a <code>Component</code> instead.</p>
+
+<h3 id="toc_11">Resources</h3>
+
+<p>I read a <u>lot</u> of posts and questions about <code>PureComponent</code>, <code>Component</code>, and <code>shouldComponentUpdate</code> for this, so the below is not a complete list of resources. Hopefully they’re the most useful though!</p>
 
 <ul>
-<li><a href="https://yq.aliyun.com/articles/54410">我们为什么选择 hbase</a></li>
-<li><a href="https://mapr.com/blog/in-depth-look-hbase-architecture/">hbase 架构</a></li>
-<li><a href="http://hbasefly.com/2016/10/29/hbase-regionserver-recovering/">HBase 原理－RegionServer 宕机数据恢复</a></li>
-<li><a href="http://hbasefly.com/2016/03/25/hbase-hfile/">HBase – 存储文件 HFile 结构解析</a></li>
-<li><a href="http://blog.cloudera.com/blog/2012/06/hbase-io-hfile-input-output/">Apache HBase I/O – HFile</a></li>
+<li>  <a href="https://reactjs.org/docs/react-api.html#reactpurecomponent">React docs</a></li>
+<li>  <a href="https://stackoverflow.com/questions/41340697/react-component-vs-react-purecomponent">StackOverflow</a></li>
+<li>  <a href="https://blog.shakacode.com/react-purecomponent-pitfalls-d057882f4b6e">Rob Wise</a> lists more pitfalls of using <code>PureComponent</code> - a good one to check if your <code>PureComponents</code> are rendering <u>more</u> than you’d expect (whereas I focused on not triggering re-renders enough)</li>
+<li>  <a href="https://medium.com/modus-create-front-end-development/component-rendering-performance-in-react-df859b474adc">Grgur Grisogono</a> did some performance testing on <code>PureComponent</code></li>
+<li>  <a href="https://medium.com/@dan_abramov/smart-and-dumb-components-7ca2f9a7c7d0">Dan Abramov</a> and <a href="https://jaketrent.com/post/smart-dumb-components-react/">Jake Trent</a> discuss what “pure” components are</li>
 </ul>
 
                         
@@ -233,10 +468,10 @@
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/6/25</span>
+                    <span class="date">2018/7/22</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Persistence.html'>Persistence</a></span>
+          					    <span class="posted-in"><a href='Node.js.html'>Node.js</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -326,31 +561,31 @@
 	      
 		      
 			      <li class="post">
-			        <a href="15337171704262.html">Introduction to Testing with Spock and Groovy</a>
+			        <a href="15358820607055.html">Java 8 Concurrency Tutorial: Atomic Variables and ConcurrentMap</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15336595358049.html">10 Excellent Ways to Secure Your Spring Boot Application</a>
+			        <a href="15358774987730.html">Java 8 Concurrency Tutorial: Synchronization and Locks</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15336592302916.html">First MicroProfile.io application using Java Module System</a>
+			        <a href="15358757119900.html">Java 8 Concurrency Tutorial: Threads and Executors</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15332186142588.html">Jenkins 的 Pipeline 脚本在美团餐饮 SaaS 中的实践</a>
+			        <a href="15358756631902.html">Java 8 Stream Tutorial</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15331749691571.html">基于ZooKeeper的分布式锁和队列</a>
+			        <a href="15358753472382.html">Migrate Maven Projects to Java 11</a>
 			      </li>
 		     
 		  

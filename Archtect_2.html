@@ -105,89 +105,185 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15327601601753.html">
+                <a class="clearlink" href="15340910961772.html">
                 
-                  <h1>以Dapper、Zipkin和LightStep [x]PM为例阐述分布式跟踪的过去、现在和未来</h1>
+                  <h1>RocketMQ 4.3 正式发布，支持分布式事务</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p>原文地址 <a href="http://www.infoq.com/cn/articles/distributed-tracing-microservices">http://www.infoq.com/cn/articles/distributed-tracing-microservices</a></p>
+<p>原文地址 <a href="http://www.infoq.com/cn/news/2018/08/rocketmq-4.3-release">http://www.infoq.com/cn/news/2018/08/rocketmq-4.3-release</a></p>
+</blockquote>
 
-<h2 id="toc_0">核心要点</h2>
+<p>近日，Apache RocketMQ 社区正式发布 4.3 版本。此次发布不仅包括提升性能，减少内存使用等原有特性增强，还修复了部分社区提出的若干问题，更重要的是该版本开源了社区最为关心的分布式事务消息，而且实现了对外部组件的零依赖。接下来，本文将详细探秘 RocketMQ 事务消息的设计原理以及实现机制。</p>
+
+<h2 id="toc_0"><strong>一</strong> <strong>需求缘起</strong></h2>
+
+<p>在微服务架构中，随着服务的逐步拆分，数据库私有已经成为共识，这也导致所面临的分布式事务问题成为微服务落地过程中一个非常难以逾越的障碍，但是目前尚没有一个完整通用的解决方案。</p>
+
+<p>其实不仅仅是在微服务架构中，随着用户访问量的逐渐上涨，数据库甚至是服务的分片、分区、水平拆分、垂直拆分已经逐渐成为较为常用的提升瓶颈的解决方案，因此越来越多的原子操作变成了跨库甚至是跨服务的事务操作。最终结果是在对高性能、高扩展性，高可用性的追求的道路上，我们开始逐渐放松对一致性的追求，但是在很多场景下，尤其是账务，电商等业务中，不可避免的存在着一致性问题，使得我们不得不去探寻一种机制，用以在分布式环境中保证事务的一致性。</p>
+
+<h2 id="toc_1"><strong>二</strong> <strong>理论基石</strong></h2>
+
+<p>微服务使得单体架构扩展为分布式架构，在扩展的过程中，逐渐丧失了单体架构中数据源单一，可以直接依赖于数据库进行事务操作的能力，而关系型数据库中，提供了强大的事务处理能力，可以满足 ACID（Atomicity，Consistency，Isolation，Durability）的特性，这种特性保证了数据操作的强一致性，这也是分布式环境中弱一致性以及最终一致性能够得以实现的基础。</p>
+
+<p>数据一致性分为三个种类型：强一致性，弱一致性以及最终一致性，正如上文所述，数据库实现的就是强一致性，能够保证在写入一份新的数据库，立即使其可见。最终一致性是弱一致性的强化版，系统保证在没有后续更新的前提下，系统最终返回上一次更新操作的值。在没有故障发生的前提下，不一致窗口的时间主要受通信延迟，系统负载和复制副本的个数影响。</p>
+
+<p>然而，微服务作为分布式系统，同样受 CAP<sup>[1]</sup> 原理的制约，在 CAP 理论中， C：Consistency、A：Availability、P：Partition tolerance 三者不可同时满足，而服务化中，更多的是提升 A 以及 P，在这个过程中不可避免的会降低对 C 的要求，因此，BASE 理论随之而来。</p>
+
+<p>BASE<sup>[2]</sup> 理论来源于 ebay 在 2008 年 ACM 中发表的论文，BASE 理论的基本原则有三个：Basically Available，Soft state，Eventually consistent，主要目的是为了提升分布式系统的可伸缩性，论文同样阐述了如何对业务进行调整以及折中的手段，BASE 理论的提出为分布式事务的发展指出了一个方向。</p>
+
+<p>在最终一致性的实现过程中，最基本的操作就是保证事务参与者的幂等性，所谓的幂等性，就是业务方能够使用相关的手段，保证单个事务多次提交依然能够保证达到同样的目的。</p>
+
+<h2 id="toc_2"><strong>三</strong> <strong>当前解决方案</strong></h2>
+
+<h3 id="toc_3">1. 2PC/3PC</h3>
+
+<p>谈到分布式事务，首先要说的就是 2PC（two phase commit）方案，如下图所示 <sup>[3]</sup>：</p>
+
+<p><a href="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/14image001-1533615962474.png"><img src="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/14image001-1533615962474.png" alt=""/></a></p>
+
+<p>2PC 把事务的执行分为两个阶段，第一个阶段即 prepare 阶段，这个阶段实际上就是投票阶段，协调者向参与者确认是否可以共同提交，再得到全部参与者的所有回答后，协调者向所有的参与者发布共同提交或者共同回滚的指令，用以保证事务达到一致性。            </p>
+
+<p>但是分布式系统中的所有通信均存在着三种状态：成功，失败，超时。其中，超时状态的存在是我们在设计分布式系统时所面对的永远的痛，2PC 同样存在问题，尤其是在发送完可以提交的指令后，参与者在没有收到提交或者回滚的指令时，面对已经上锁的资源，面对已经写出去的 undo 或者 redo 日志，参与者会一时陷入手足无措的状态，为了解决这个问题，3PC 应运而生，如下图所示 [4]：</p>
+
+<p><a href="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/14image003-1533615963768.png"><img src="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/14image003-1533615963768.png" alt=""/></a></p>
+
+<p>3PC 在 commit 之前增加了 preCommit 的过程，使得在参与者在收不到确认时，依然可以从容 commit 或者 rollback，避免资源锁定太久导致浪费。但是 3PC 同样存在着很多问题。实现起来非常复杂，因为很难通过多次询问来解决系统间分歧问题，尤其是存在超时状态互不信任的分布式网络中，这也就是著名的拜占庭将军问题 <sup>[5]</sup>。</p>
+
+<p>总结一下，2PC 是几乎所有分布式事务算法的基础，后续的分布式事务算法几乎都由此改进而来，其优缺点非常明显：</p>
 
 <ul>
-<li>  在观测分布式系统和微服务时，分布式跟踪已经成为一个越来越重要的组件。现在有一些流行的开源标准和框架，比如 OpenTracing API 和 OpenZipkin；</li>
-<li>  分布式跟踪的基本理念是非常简单直接的：在系统中，特定请求的转折点必须要识别出来并且要检测。所有的跟踪数据需要协调和整理，为请求提供一个有意义的流视图；</li>
-<li>  请求跟踪在理念上类似于应用性能管理（Application Performance Management，APM），这两个生态系统都面临一个挑战，那就是不断增长的大规模系统所生成的大量数据；</li>
-<li>  Google 在实现其分布式监控系统 Dapper 时解决了这个问题，他们采取的方式是采样跟踪，一般是 1000 个请求中采样 1 个请求，但是现代的商业跟踪产品都宣称能够分析 100% 的请求。</li>
+<li>  优点：在于已经有较为成熟的实现方案，比如 XA。</li>
+<li>  缺点：XA 是一个阻塞协议。服务在投票后需要等待协调器的决定，此时服务会阻塞并锁定资源。由于其阻塞机制和最差时间复杂度高， 因此，这种设计不能适应随着事务涉及的服务数量增加而扩展的需要，很难用于并发较高以及子事务声明周期较长 (long-running transactions) 的分布式服务中。</li>
 </ul>
-</blockquote>
 
-<p>在观测分布式系统和微服务时，分布式跟踪成为一个越来越重要的组件。本文将会介绍该技术，让读者对其有一个整体的了解，首先我们会探讨一下 <a href="https://research.google.com/pubs/pub36356.html">Google 的 Dapper</a> 请求跟踪论文，该论文反过来促成了 Zipkin 和 OpenTracing 项目的创建，随后我们会与 Ben Sigelman 讨论一下请求跟踪的未来，他是新的 <a href="https://lightstep.com/product">LightStep [x]PM</a> 跟踪系统的创建者。</p>
+<h3 id="toc_4">2. SAGA</h3>
 
-<p>正如最初的 Dapper 论文所述，现代互联网服务通常实现为复杂的大规模系统，比如采用流行的微服务架构模式。应用是由一组服务组合起来的，这些服务可能是由不同的团队开发的，而且可能采用不同的编程语言。在 Google 这种级别，应用会跨越多个基础设施的上千台机器，即便是相对较小的云计算用例，推荐的做法也是使用跨地域的 “availability zone” 和“region”运行服务的多个版本。在这种复杂的系统和环境中，能够辅助我们理解系统的行为、帮助调试和排查性能问题的工具是非常有价值的。</p>
+<p>SAGA 算法 <sup>[6]</sup>于 1987 年提出，是一种异步的分布式事务解决方案，其理论基础在于，其假设所有事件按照顺序推进，总能达到系统的最终一致性，因此 saga 需要服务分别定义提交接口以及补偿接口，当某个事务分支失败时，调用其它的分支的补偿接口来进行回滚，saga 的具体实现分为两种：Choreography 以及 Orchestration，</p>
 
-<p>分布式跟踪的基本理念是非常简单直接的：在系统、应用、网络以及中间件中，请求（一般是用户发起的）路径上的每个转折点，甚至可以说每个点必须要识别并检测（instrument）。这些点有着特殊的意义，因为它们通常代表了执行流上的分支，比如使用多个线程并行处理、进行异步计算或者发起进程外的网络调用。这些独立生成的跟踪数据必须要收集、协调和整理，在系统范围内为请求提供一个有意义的流视图。<a href="https://twitter.com/copyconstruct/">Cindy Sridharan</a> 提供了一个<a href="https://medium.com/@copyconstruct/monitoring-in-the-time-of-cloud-native-c87c7a5bfa3e">非常有用的指南</a>，该指南探讨了请求跟踪的基本原理，并将这项技术应用于现代监控和 “可观察性（observability）” 的两大支柱之中：日志和指标收集。</p>
+<p>（1）   Choreography：如下图所示：</p>
 
-<h2 id="toc_1">剖析 Trace</h2>
+<p><a href="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/13image005-1533615965769.png"><img src="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/13image005-1533615965769.png" alt=""/></a></p>
 
-<p>按照<a href="https://www.cncf.io/">云原生计算基金会（Cloud Native Computing Foundation，CNCF）</a>的 <a href="http://opentracing.io/">OpenTracing API</a> 项目的定义，<a href="http://opentracing.io/documentation/#what-is-a-trace">trace</a> 能够告诉我们事务或工作流在整个系统的传播过程中经历的所有事情。在 OpenTracing 和 Dapper 中，trace 是由 “span” 所组成的一个有向无环图（directed acyclic graph，DAG），在有些工具中 “span” 也被称为“segment”，比如在 <a href="https://aws.amazon.com/xray/">AWS X-Ray</a> 中。span 是一个带有名称和计时的操作，它代表了 trace 中一个持续的工作片段。被检测的组件还可以将额外的上下文注释（元数据或 “<a href="https://github.com/opentracing/specification/blob/master/specification.md#user-content-set-a-baggage-item">baggage</a>”）添加到 span 中，例如，应用开发人员可能会使用一个跟踪 SDK 添加任意的 key-value 条目到当前的 span 中。需要注意的是，添加注释数据会带来内在的侵入性：添加注释的组件必须要感知跟踪框架的存在性。</p>
+<p>这种模式下不存在协调器的概念，每个节点均对自己的上下游负责，在监听处理上游节点事件的同时，对下游节点发布事件。</p>
 
-<p>Trace 数据一般会 “按照不同的频道（out of band）” 进行收集，并写入到本地数据文件中（由 agent 或 daemon 来生成），然后通过单独的网络进程拉取到中心化的存储中，这与当前日志和指标收集的做法非常类似。Trace 数据不会添加到请求本身上，因为这样能够保持请求的大小和语义不发生变化，本地存储的数据会在方便的时候被拉取到出来。</p>
+<p>（2）   Orchestration：存在中心节点的模式，如下图所示：</p>
 
-<p>当请求初始化的时候，将会生成一个 “parent” span，该 span 可以与多个 “child” span 建立具有因果关系和临时的关联。图 1 来源于 OpenTracing 的文档，以可视化的方式展现了一个请求流中一系列的 span 及其关联关系。这种类型的可视化会添加一些上下文信息，包括时间、服务调用的层级以及进程 / 任务执行的串行或并行性。这种视图能够突出显示系统的关键路径，并且为我们提供了一个起点，让我们识别瓶颈以及需要提升的地方。很多分布式跟踪系统还提供了 API 或 UI，实现对 span 细节的进一步 “钻取”。</p>
+<p><a href="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/11image007-1533615966677.png"><img src="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/11image007-1533615966677.png" alt=""/></a></p>
 
-<p><a href="https://s3.amazonaws.com/infoq.content.live.0/articles/distributed-tracing-microservices/zh/resources/4101-1520271955968.png"><img src="https://res.infoq.com/articles/distributed-tracing-microservices/zh/resources/4101-1520271955968.png" alt=""/></a></p>
+<p>该中心节点，即协调器知道整个事务的分布状态，相比于无中心节点方式，该方式有着许多优点：</p>
 
-<p><small><strong>图 1 按照请求的生命线，以一系列 span 的形式可视化基本的跟踪（图片来源于 <a href="http://opentracing.io/documentation/#a-basic-trace">OpenTracing 文档</a>）</strong></small></p>
+<ol>
+<li> 能够避免事务之间的循环依赖关系。</li>
+<li> 参与者只需要执行命令 / 回复 (其实回复消息也是一种事件消息)，降低参与者的复杂性。</li>
+<li> 开发测试门槛低。</li>
+<li> 在添加新步骤时，事务复杂性保持线性，回滚更容易管理。因此大多数 saga 模型实现均采用了这种思路。</li>
+</ol>
 
-<h2 id="toc_2">实现分布式跟踪所面临的挑战</h2>
+<p>总结一下：SAGA 模型的优点在于其降低了事务粒度，使得事务扩展更加容易，同时采用了异步化方式提升性能。但是其缺点在于很多时候很难定义补偿接口，回滚代价高，而且由于 SAGA 在执行过程中采用了先提交后补偿的思路进行操作，所以单个子事务在并发提交时的隔离性很难保证。</p>
 
-<p>在历史上，为各种类型的分布式系统实现分布式跟踪会面临很多挑战。例如，使用多种编程语言实现的微服务架构可能并没有共享通用的检测点。Google 和 Twitter 分别创建了 Dapper 和 Zipkin 来实现跟踪，这相对较为简单，因为它们大多数的跨进程（跨服务）通信是通过同质的 RPC 框架完成的，Google 创建了 <a href="https://landing.google.com/sre/book/chapters/production-environment.html#our-software-infrastructure-XQs4iw">Stubby</a>（它的一个开源变种就是 <a href="https://grpc.io/">gRPC</a>），Twitter 则创建了 <a href="https://blog.twitter.com/engineering/en_us/a/2011/finagle-a-protocol-agnostic-rpc-system.html">Finagle</a>。</p>
+<h3 id="toc_5">3. TCC</h3>
 
-<p>Dapper 论文明确跟踪的价值只能通过如下的方式才能体现出来：（1）广泛部署，也就是系统的所有组成部分都要纳入检测，不能出现 “黑点（dark）”；（2）持续监控，也就是系统必须要一直处于监控之中，因为感兴趣的异常事件通常难以再现。</p>
+<p>TCC(Try-Confirm-Concel) 模型 <sup>[7]</sup> 同样是一种补偿性事务，主要分为 Try：检查、保留资源，Confirm：执行事务，Concel：释放资源三个阶段，如下图所示：</p>
 
-<p>“service mesh” 网络代理的流行程度正在不断上升，比如 <a href="https://www.envoyproxy.io/">Envoy</a>、<a href="https://linkerd.io/">Linkerd</a> 和 <a href="https://conduit.io/">Conduit</a>（以及关联的控制层，如 <a href="https://istio.io/">Istio</a>），它们可能会推进多类型分布式系统中跟踪功能的采用，因为它们能够提供缺失的通用检测点。Sridharan 在它的 Medium 博客文章中详细讨论了<a href="https://medium.com/@copyconstruct/monitoring-in-the-time-of-cloud-native-c87c7a5bfa3e">可见性的问题：</a></p>
+<p><a href="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/10image009-1533615965391.png"><img src="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/10image009-1533615965391.png" alt=""/></a></p>
 
-<p>“Lyft 为所有的应用提供了跟踪支持，通过采用 service mesh 模式 [使用 Envoy 代理]，无需更改一行代码。Service mesh 能够帮助实现可见性，这是通过在 mesh 级别实现跟踪和状态收集做到的，它允许我们将单个服务视为黑盒，但是依然能够在整个 mesh 级别实现非常棒的可见性”;</p>
+<p>其中，活动管理器记录了全局事务的推进状态以及各子事务的执行状态，负责推进各个子事务共同进行提交或者回滚。同时负责在子事务处理超时后不停重试，重试不成功后转手工处理，用以保证事务的最终一致性。</p>
 
-<h2 id="toc_3">对速度的需求：请求跟踪与 APM</h2>
+<p>总结一下，相比于 SAGA 模型，其优点在于尝试阶段仅仅只是对业务系统做检测，并保留业务资源，并没有真正提交，所以后续 SAGA 需要针对提交的事务做补偿，而 TCC 则仅仅需要释放保留资源，降低了补偿成本；并且，由于在 Try 阶段对资源进行了保留锁定，所以相比于 SAGA 模式，TCC 模式拥有更高的隔离性。</p>
 
-<p>Web 页面的加载速度会极大地影响用户的行为和转变。Google 使用其搜索引擎运行了一个<a href="https://research.googleblog.com/2009/06/speed-matters.html">延迟实验</a>，他们发现如果将结果页面的展现增加 100 到 400 毫秒的延迟，将会显著影响用户执行搜索的次数。Greg Linden 提到，在 2006 年 Amazon.com 运行了一个实验，如果页面加载的延迟增加 100 毫秒，<a href="http://glinden.blogspot.co.uk/2006/11/marissa-mayer-at-web-20.html">将会造成收入的大幅下降</a>。尽管理解整个系统中 Web 请求的流程非常具有挑战性，但是识别和消除性能瓶颈会带来显著的商业收益。</p>
+<p>缺点：相比于 SAGA 模式，TCC 模式多增加了一个状态，导致在业务开发过程中，复杂度上升，而且协调器与子事务的通信过程增加，状态轮转处理也更为复杂。</p>
 
-<p>请求跟踪的理念类似于应用性能监控（Application Performance Management，APM），它们都与监控有关，并且都关系到软件应用的性能和可用性的管理。APM 的目标在于探查和诊断复杂应用的性能问题，达到预期的服务等级协议（Service Level Agreement，SLA）。现代软件架构的分布式特性在不断增加，APM 工具也进行了适配以监控（可视化）这种类型的软件。图 2 展现了开源的 <a href="https://github.com/naver/pinpoint">Pinpoint APM</a> 工具的可视化界面，类似的视图在商业工具中也能见到，比如 <a href="https://www.dynatrace.com/">Dynatrace APM</a> 和 <a href="https://newrelic.com/application-monitoring">New Relic APM</a>。</p>
+<h2 id="toc_6"><strong>四</strong> <strong>事务消息</strong></h2>
 
-<p><a href="https://s3.amazonaws.com/infoq.content.live.0/articles/distributed-tracing-microservices/zh/resources/3232-1520271955650.png"><img src="https://res.infoq.com/articles/distributed-tracing-microservices/zh/resources/3232-1520271955650.png" alt=""/></a></p>
+<p>以购物场景为例，张三购买物品，账户扣款 100 元的同时，需要保证在下游的会员服务中给该账户增加 100 积分。由于数据库私有，所以导致在实际的操作过程中会出现很多问题，比如先发送消息，可能会因为扣款失败导致账户积分无故增加，如果先执行扣款，则有可能因服务宕机，导致积分不能增加，无论是先发消息还是先执行本地事务，都有可能导致出现数据不一致的结果。</p>
 
-<p><small><strong>图 2 现代 APM 工具中的跟踪（图片来源 <a href="https://github.com/naver/pinpoint">Pinpoint APM GitHub 仓库</a>）</strong></small></p>
+<p><a href="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/9image011-1533615967660.png"><img src="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/9image011-1533615967660.png" alt=""/></a></p>
 
-<p>在请求跟踪和 APM 领域都面临一项挑战，那就是大规模系统不断生成的大量数据。AWS 云架构战略（Cloud Architecture Strategy）的 VP <a href="https://www.linkedin.com/in/adriancockcroft/">Adrian Cockcroft</a> 说到，公有云能够让大众更容易地使用强大且可扩展的基础设施和服务，但是监控系统必须要比被监控的系统 <a href="https://www.infoq.com/news/2015/06/monitoring-microservices">更加可用（也要更加可扩展）</a>。Google 在实现 Dapper 时通过采样跟踪解决了这个问题，一般是 1000 个请求中采样 1 个请求，他们发现通过这种比例依然能够生成有意义的观察结果。很多的工程师和思想领袖都在从事该领域的工作，包括可观察性平台 Honeycomb 的 CEO <a href="https://www.linkedin.com/in/charity-majors-826b765">Charity Majors</a>，他们都相信<a href="https://twitter.com/mipsytipsy/status/936484900286296064">监控数据的采样是非常重要的</a>：</p>
+<p>事务消息的本质就是为了解决此类问题，解决本地事务执行与消息发送的原子性问题。目前，事务消息在多种分布式消息中间件种均有实现，但是其实现方式思路却各有不同。</p>
 
-<blockquote>
-<p>这非常简单：如果你不采样的话，就无法扩展。如果你认为这是一种有争议的说法的话，那么说明你还没有真正处理过大规模的可观察性，或者你之前做得非常糟糕和浪费。</p>
-</blockquote>
+<h3 id="toc_7">1. 传统事务消息实现</h3>
 
-<p>InfoQ 最近参加了在美国奥斯汀举行的 <a href="https://events.linuxfoundation.org/events/kubecon-cloudnativecon-north-america-2018/">CNCF CloudNativeCon</a>，并与 <a href="https://www.linkedin.com/in/bensigelman">Ben Sigelman</a> 进行了交流，他是 Dapper 论文的作者之一，同时也是 <a href="https://lightstep.com/">LightStep</a> 的 CEO 和联合创始人，他最近宣布了一个新的商用跟踪平台 <a href="https://lightstep.com/blog/launching-lightstep/">“LightStep [x]PM”</a>。Sigelman 讨论了 LightStep 的非传统架构（它会在本地安装的 agent 上使用机器学习技术），允许分析 100.0% 的事务数据，而不是 Dapper 所实现的 0.01%：</p>
+<p>传统事务消息实现，一种思路是依赖于 AMQP 协议用来确保消息发送成功，AMQP 模式下需要在发送在发送事务消息时进行两阶段提交，首先进行 tx_select 开启事务，然后再进行消息发送，最后进行消息的 commit 或者是 rollback。这个过程可以保证在消息发送成功的同时本地事务也一定成功执行，但事务粒度不好控制，而且会导致性能急剧下降，同时依然无法解决本地事务执行与消息发送的原子性问题。</p>
 
-<p>“我们过去和现在依然构建的工具对长期的性能分析是非常重要的，但是为了应对被监控系统的规模，Dapper 只会中心化地记录 0.01% 的性能数据，这意味着在特定的使用场景下，它是难以应对的，比如实时的事件响应（‘也就是最紧急的’）”。</p>
+<p>还有另外一种思路，就是通过保证多条消息的同时可见性来保证事务一致性。但是此类消息事务实现机制更多的是用到 consume-transform-produce 场景中，其本质还是用来保证消息自身事务，并没有把外部事务包含进来。</p>
 
-<p>LightStep 在过去的 18 个月中已经与很多客户合作过，包括 Lyft（使用 Envoy 代理作为集成点）、Twilio、GitHub 和 DigitalOcean，业已证明他们的方案能够处理大量的数据：</p>
+<h3 id="toc_8">2. RocketMQ 事务消息</h3>
 
-<p>“Lyft 给我们发送了大量的数据，LightStep 每天分析 100,000,000,000 个微服务调用。乍一看上去，这是数据全是噪音，没有什么有用的信息：大量的数据混杂在一起并且不相关，但是通过全盘考虑，LightStep 能够衡量出性能是如何影响 Lyft 的不同方面的，然后使用端到端的跟踪展现问题和异常情况，这种跟踪能够从移动应用一直延伸到微服务技术栈的底部。”</p>
+<p>RocketMQ 事务消息设计则主要是为了解决 Producer 端的消息发送与本地事务执行的原子性问题，RocketMQ 的设计中 broker 与 producer 端的双向通信能力，使得 broker 天生可以作为一个事务协调者存在；而 RocketMQ 本身提供的存储机制，则为事务消息提供了持久化能力；RocketMQ 的高可用机制以及可靠消息设计，则为事务消息在系统在发生异常时，依然能够保证事务的最终一致性达成。</p>
 
-<p><a href="https://lightstep.com/product">LightStep [x]PM</a> 目前可以作为 SaaS 平台来使用。Sigelman 想要强调的是，尽管可以分析 100% 的请求，但是在本地安装的 agent 所收集的数据并不会全部传送到中心化的平台中。Sigelman 将这个产品视为” 新一代的 APM“工具，如果用户正在寻找针对复杂分布式应用的性能监控和自动分析的工具的话，那么它可以为用户带来价值。</p>
+<p><strong>2.1 RocketMQ </strong><strong>事务消息设计</strong></p>
 
-<h2 id="toc_4">结论</h2>
+<p>事务消息作为一种异步确保型事务， 将两个事务分支通过 MQ 进行异步解耦，RocketMQ 事务消息的设计流程同样借鉴了两阶段提交理论，整体交互流程如下图所示：</p>
 
-<p>在分布式系统中，响应延迟可能会带来严重的商业影响，但是理解复杂系统中的请求流并识别瓶颈也是很有挑战性的任务。通过使用分布式跟踪，再结合其他的技术，如日志和监控指标，能够了解分布式应用的内部状况，这些应用可能是采用微服务的架构模式创建的。在分布式跟踪领域，开放的标准和工具正在不断组合，比如 OpenTracing API 和 OpenZipkin，商业的工具也在涌现，可能会与现有的 APM 供应商产生竞争。在为现代互联网服务实现分布式跟踪时，会面临一些挑战，比如处理大量的跟踪数据并生成有意义的输出，但是开源的生态系统和供应商正在应对这些挑战。</p>
+<p><a href="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/8image013-1533615967005.png"><img src="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/8image013-1533615967005.png" alt=""/></a></p>
 
-<h2 id="toc_5">关于作者</h2>
+<ol>
+<li> 事务发起方首先发送 prepare 消息到 MQ。</li>
+<li> 在发送 prepare 消息成功后执行本地事务。</li>
+<li> 根据本地事务执行结果返回 commit 或者是 rollback。</li>
+<li> 如果消息是 rollback，MQ 将删除该 prepare 消息不进行下发，如果是 commit 消息，MQ 将会把这个消息发送给 consumer 端。</li>
+<li> 如果执行本地事务过程中，执行端挂掉，或者超时，MQ 将会不停的询问其同组的其它 producer 来获取状态。</li>
+<li> Consumer 端的消费成功机制有 MQ 保证。</li>
+</ol>
 
-<p><strong><img src="https://res.infoq.com/articles/distributed-tracing-microservices/en/resources/6daniel-bryant-1519132850908.jpg" alt=""/>Daniel Bryant</strong> 一直在组织内部和技术方面引领变化。他目前的工作包括通过引入更好的需求收集和计划技术推进企业内部的敏捷性，关注于敏捷开发中的架构关联性，并且搭建持续集成 / 交付环境。Daniel 现在的技术专长是 “DevOps” 工具、云 / 容器平台和微服务实现。他还是伦敦 Java 社区（LJC）的领导者，参与多个开源项目，为 InfoQ、DZone 和 Voxxed 这样的技术网站撰写文章，并且经常在 QCon、JavaOne 和 Devoxx 这样的国际会议上发表演讲。</p>
+<p><strong>2.2 RocketMQ</strong> <strong>事务消息实现</strong></p>
 
-<p><strong>查看英文原文：</strong><a href="https://www.infoq.com/articles/distributed-tracing-microservices">Distributed Tracing: Exploring the Past, Present and Future with Dapper, Zipkin and LightStep [x]PM</a></p>
+<p>RocketMQ 事务消息在实现上充分利用了 RocketMQ 本身机制，在实现零依赖的基础上，同样实现了高性能、可扩展、全异步等一系列特性。</p>
+
+<p>在具体实现上，RocketMQ 通过使用 Half Topic 以及 Operation Topic 两个内部队列来存储事务消息推进状态，如下图所示：</p>
+
+<p><a href="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/6image015-1533615967327.png"><img src="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/6image015-1533615967327.png" alt=""/></a></p>
+
+<p>其中，Half Topic 对应队列中存放着 prepare 消息，Operation Topic 对应的队列则存放了 prepare message 对应的 commit/rollback 消息，消息体中则是 prepare message 对应的 offset，服务端通过比对两个队列的差值来找到尚未提交的超时事务，进行回查。</p>
+
+<p>在具体实现上，事务消息作为普通消息的一个应用场景，在实现过程中进行了分层抽象，从而避免了对 RocketMQ 原有存储机制的修改，如下图所示：</p>
+
+<p><a href="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/4image017-1533615969003.png"><img src="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/4image017-1533615969003.png" alt=""/></a></p>
+
+<p>从用户侧来说，用户需要分别实现本地事务执行以及本地事务回查方法，因此只需关注本地事务的执行状态即可；而在 service 层，则对事务消息的两阶段提交进行了抽象，同时针对超时事务实现了回查逻辑，通过不断扫描当前事务推进状态，来不断反向请求 Producer 端获取超时事务的执行状态，在避免事务挂起的同时，也避免了 Producer 端的单点故障。而在存储层，RocketMQ 通过 Bridge 封装了与底层队列存储的相关操作，用以操作两个对应的内部队列，用户也可以依赖其它存储介质实现自己的 service，RocketMQ 会通过 ServiceProvider 加载进来。</p>
+
+<p>从上述事务消息设计中可以看到，RocketMQ 事务消息较好的解决了事务的最终一致性问题，事务发起方仅需要关注本地事务执行以及实现回查接口给出事务状态判定等实现，而且在上游事务峰值高时，可以通过消息队列，避免对下游服务产生过大压力。</p>
+
+<p>事务消息不仅适用于上游事务对下游事务无依赖的场景，还可以与一些传统分布式事务架构相结合，而 MQ 的服务端作为天生的具有高可用能力的协调者，使得我们未来可以基于 RocketMQ 提供一站式轻量级分布式事务解决方案，用以满足各种场景下的分布式事务需求。</p>
+
+<h2 id="toc_9"><strong>五</strong> <strong>参考文献</strong></h2>
+
+<p>[1] <a href="https://en.wikipedia.org/wiki/Cap">https://en.wikipedia.org/wiki/Cap</a></p>
+
+<p>[2] <a href="https://dl.acm.org/citation.cfm?id=1394128">https://dl.acm.org/citation.cfm?id=1394128</a></p>
+
+<p>[3] <a href="https://en.wikipedia.org/wiki/Two-phase_commit_protocol">https://en.wikipedia.org/wiki/Two-phase_commit_protocol</a></p>
+
+<p>[4] <a href="https://en.wikipedia.org/wiki/Three-phase_commit_protocol">https://en.wikipedia.org/wiki/Three-phase_commit_protocol</a></p>
+
+<p>[5] <a href="https://people.eecs.berkeley.edu/%7Eluca/cs174/byzantine.pdf">https://people.eecs.berkeley.edu/~luca/cs174/byzantine.pdf</a></p>
+
+<p>[6] <a href="https://www.cs.cornell.edu/andru/cs711/2002fa/reading/sagas.pdf">https://www.cs.cornell.edu/andru/cs711/2002fa/reading/sagas.pdf</a></p>
+
+<p>[7] <a href="https://www.cloud.alipay.com/docs/2/69656">https://www.cloud.alipay.com/docs/2/69656</a></p>
+
+<h2 id="toc_10">作者介绍</h2>
+
+<p><strong>冯嘉</strong>，Apache RocketMQ 联合创始人，LInux OpenMessaging 标准创始人。阿里巴巴高级技术专家，带领团队、社区打造了中国分布式云计算领域第一个 Apache 顶级开源中间件项目，创立分布式消息领域的国际标准 OpenMessaging。 冯嘉作为阿里巴巴 RocketMQ 技术负责人，具有丰富的分布式软件架构、高并发网站设计、性能调优经验，拥有国内外多项分布式、推荐领域的专利授权。目前专注于大规模分布式系统、分布式消息引擎、流计算领域，关注 Hbase/Hadoop/Spark/Flink 等大数据技术栈。</p>
+
+<p><strong>杜恒</strong>，阿里巴巴技术专家，Apache RocketMQ 内核控，拥有多年分布式系统研发经验，对 Microservice, Messaging，Storage 等领域有深刻理解，拥有多年金融领域开发设计经验。目前专注 RocketMQ 内核优化以及 Messaging 生态建设。</p>
+
+<p><input type="hidden"></p>
+
+<p>相关内容</p>
+
+<h3 id="toc_11"><a href="http://www.infoq.com/cn/presentations/message-engine-under-the-flood-peak-of-trillions-of-data-apache-rocketmq?utm_source=infoq&amp;utm_medium=related_content_link&amp;utm_campaign=relatedContent_undefined_clk">万亿级数据洪峰下的消息引擎——Apache RocketMQ</a></h3>
+
+<h3 id="toc_12"><a href="http://www.infoq.com/cn/articles/rocketmq-incubation-in-apache?utm_source=infoq&amp;utm_medium=related_content_link&amp;utm_campaign=relatedContent_undefined_clk">RocketMQ Apache 顶级项目之路</a></h3>
+
+<h3 id="toc_13"><a href="http://www.infoq.com/cn/news/2018/08/kafka2.0-new-features?utm_source=infoq&amp;utm_medium=related_content_link&amp;utm_campaign=relatedContent_undefined_clk">Kafka 2.0 重磅发布，新特性独家解读</a></h3>
+
+<h3 id="toc_14"><a href="http://www.infoq.com/cn/articles/how-to-design-an-outstanding-microservice-framework?utm_source=infoq&amp;utm_medium=related_content_link&amp;utm_campaign=relatedContent_undefined_clk">如何设计一个优质的微服务框架：Apache ServiceComb 的开放性设计</a></h3>
+
+<h3 id="toc_15"><a href="http://www.infoq.com/cn/news/2018/04/apache-servicecomb?utm_source=infoq&amp;utm_medium=related_content_link&amp;utm_campaign=relatedContent_undefined_clk">Apache ServiceComb（incubating） 第一个版本发布</a></h3>
 
                         
                       </div>
@@ -196,10 +292,10 @@
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/7/28</span>
+                    <span class="date">2018/8/13</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Microservice.html'>Microservice</a></span>
+          					    <span class="posted-in"><a href='MQ.html'>MQ</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -289,31 +385,31 @@
 	      
 		      
 			      <li class="post">
-			        <a href="15337171704262.html">Introduction to Testing with Spock and Groovy</a>
+			        <a href="15358820607055.html">Java 8 Concurrency Tutorial: Atomic Variables and ConcurrentMap</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15336595358049.html">10 Excellent Ways to Secure Your Spring Boot Application</a>
+			        <a href="15358774987730.html">Java 8 Concurrency Tutorial: Synchronization and Locks</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15336592302916.html">First MicroProfile.io application using Java Module System</a>
+			        <a href="15358757119900.html">Java 8 Concurrency Tutorial: Threads and Executors</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15332186142588.html">Jenkins 的 Pipeline 脚本在美团餐饮 SaaS 中的实践</a>
+			        <a href="15358756631902.html">Java 8 Stream Tutorial</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15331749691571.html">基于ZooKeeper的分布式锁和队列</a>
+			        <a href="15358753472382.html">Migrate Maven Projects to Java 11</a>
 			      </li>
 		     
 		  

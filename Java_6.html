@@ -105,277 +105,88 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15309739332194.html">
+                <a class="clearlink" href="15340923334107.html">
                 
-                  <h1>Spring WebFlux and rxjava2-jdbc</h1>
+                  <h1>Java 性能优化指南，及唯品会的实战</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://medium.com/netifi/spring-webflux-and-rxjava2-jdbc-83a94e71ba04">https://medium.com/netifi/spring-webflux-and-rxjava2-jdbc-83a94e71ba04</a></p>
+<p>原文出处： <a href="http://calvin1978.blogcn.com/articles/javatuning.html">江南白衣</a></p>
 </blockquote>
 
-<p>Spring <a href="https://docs.spring.io/spring/docs/current/spring-framework-reference/web-reactive.html#spring-webflux">WebFlux</a> is a great way to create a non-blocking REST application. One issue that you run into when start working with WebFlux is JDBC. JDBC is blocking. New school databases like <a href="http://cassandra.apache.org/">Cassandra</a> or <a href="https://www.couchbase.com/">Couchbase</a> have non-blocking drivers. In Couchbase’s case its driver uses <a href="https://github.com/ReactiveX/RxJava">RXJava</a>. NoSQL databases are great, but you can’t always use one for various reasons. There is some effort going into creating asynchronous drivers for databases, as well as Oracle’s effort to create <a href="https://blogs.oracle.com/java/jdbc-next:-a-new-asynchronous-api-for-connecting-to-a-database">ADBA</a>. Unfortunately, these are early days, and if you want to talk to a SQL database on the JVM you’re stuck with a blocking driver. This is a problem when you’re building a non-blocking application with Spring WebFlux . Luckily reactor-core and rxjava2 both implement <a href="http://www.reactive-streams.org/">ReactiveStreams</a>.</p>
+<p>来了唯品会一年多，不少时间花在与服务化框架、业务应用的性能的缠斗上。</p>
 
-<p>This means that you can use David Moten’s <a href="https://github.com/davidmoten/rxjava2-jdbc">rxjava2-jdbc</a> library. It takes a normal JDBC driver and allows you to interact with it in a way that won’t block your application. It does this by scheduling potentially blocking work on different threads. Additionally, it has DSL that lets you model your SQL statements and results into streams. This makes integrating into your reactive application a snap.</p>
+<p>前几天正好趁着中生代社区的<a href="http://www.hdb.com/party/bajzu.html">十月十城技术沙龙</a>，把脑海中<strong>关于性能优化的记忆</strong>全部理了一遍…. 讲完回家，又本着认真严谨的态度再理了一遍，终于成为现在这份 <strong>66 页的 PPT</strong>。</p>
 
-<p>Rxjava2-jdbc also provides non-blocking connection pooling. Normally in a blocking application threads are blocked until a connection is available to make a query. This is a problem for a non-blocking application as you will quickly exhaust all database connection threads and turn your wonderful non-blocking application into a clunky blocking application. In rxjava2-jdbc its connection pool returns a <a href="http://reactivex.io/RxJava/javadoc/io/reactivex/Single.html">Single</a> that is controlled by the connection pool. This means that instead of assigning threads to each query, queries subscribe to the connection pool and receive a connection when one is available — no blocked threads!</p>
+<p>各位客官，1.4 版的内容略有增减，超链接也已修好: <a href="http://files.blogcn.com/wp06/M00/00/ED/CpCCFVgRySAAAAAAAC42ozG7w4w912.pdf">《Java 性能优化指南 V1.4.pdf》</a></p>
 
-<p>Nothing is better than an example, so I created one that uses Spring WebFlux, rxjava2-jdbc, and H2. The example is a simple REST application that uses an embedded H2 database. It can be found <a href="https://github.com/netifi/webflux-rxjava2-jdbc-example">here</a>. The example has two objects. The first is an Employee object which contains information about the employee including: first name, last name, and department id. The second object is the Department object, which contains information about different departments. The application has restful endpoints for basic create, read, delete and list operations for the Employee and list operations for Department.</p>
+<p><a href="http://files.blogcn.com/wp04/M00/08/02/CoFCGVgHnLkAAAAAAAETKzIbY-c369.jpg" title="幻灯片01"><img src="http://files.blogcn.com/wp04/M00/08/02/CoFCGVgHnLkAAAAAAAETKzIbY-c369.jpg" alt=""/></a></p>
 
-<h4 id="toc_0">Running the Example</h4>
+<h3 id="toc_0">范围</h3>
 
-<p>Running the example is simple and can be done with following command:</p>
+<p>应用性能，受操作系统参数，三方类库选择，数据库查询，甚至压测工具如 JMeter 本身调优的影响。</p>
 
-<pre><code class="language-sh">./gradlew clean run
-</code></pre>
-
-<p>This command will configure the database and start the WebFlux application using Spring Boot. The example doesn’t need a servlet container to run, and instead uses <a href="http://netty.io">Netty</a> to serve traffic. If you want to test and see if the example is up and running you can run the following curl command:</p>
-
-<pre><code class="language-sh">curl localhost:8080/employees
-</code></pre>
-
-<p>You should see a JSON employee list if it’s running properly.</p>
-
-<h4 id="toc_1">Routing Requests</h4>
-
-<p>Let’s take look inside the application and see what it’s doing. The first thing to take a look at is the <u>EmployeeRouter</u> class. This class routes incoming HTTP requests to the appropriate handler based on URL and HTTP method.</p>
-
-<p><a href="https://gist.github.com/robertroeser/e7ce97c4fc7d69de449925e7a3f2b7e1#file-employeerouter-java">EmployeeRouter.java hosted with ❤ by GitHub</a></p>
-
-<pre><code class="language-java">@Configuration
-public class EmployeeRouter {
-  @Bean
-  public RouterFunction&lt;ServerResponse&gt; route(EmployeeHandler handler) {
-    return RouterFunctions.route(
-            GET(&quot;/employees&quot;).and(RequestPredicates.accept(MediaType.APPLICATION_JSON)),
-            handler::getAllEmployees)
-        .andRoute(
-            GET(&quot;/employee/fn/{fn}/ln/{ln}&quot;)
-                .and(RequestPredicates.accept(MediaType.APPLICATION_JSON)),
-            handler::getEmployee)
-        .andRoute(
-            PUT(&quot;/employee&quot;).and(RequestPredicates.accept(MediaType.APPLICATION_JSON)),
-            handler::createNewEmployee)
-        .andRoute(
-            DELETE(&quot;/employee/id/{id}&quot;).and(RequestPredicates.accept(MediaType.APPLICATION_JSON)),
-            handler::deleteEmployee)
-        .andRoute(
-            GET(&quot;/departments&quot;).and(RequestPredicates.accept(MediaType.APPLICATION_JSON)),
-            handler::getAllDepartments);
-  }
-}
-</code></pre>
-
-<p>In Spring WebFlux because it’s non-blocking these handlers must return a Mono<T>.</p>
-
-<h4 id="toc_2">Handling Requests</h4>
-
-<p>The next class to take a look at is the class that is handling the requests, <u>EmployeeHandler</u>.</p>
-
-<p><a href="https://gist.github.com/robertroeser/5d4ab5386e5b2e7301c33551ead8ada8#file-employeehandler-java">EmployeeHandler.java hosted with ❤ by GitHub</a></p>
-
-<pre><code class="language-java">@Component
-public class EmployeeHandler {
-  private final EmployeeRepository repository;
-
-  public EmployeeHandler(EmployeeRepository repository) {
-    this.repository = repository;
-  }
-
-  public Mono&lt;ServerResponse&gt; getAllEmployees(ServerRequest request) {
-    Flux&lt;Employee&gt; employees = repository.getAllEmployees();
-    return ServerResponse.ok()
-        .contentType(MediaType.APPLICATION_JSON)
-        .body(employees, Employee.class);
-  }
-
-  public Mono&lt;ServerResponse&gt; getEmployee(ServerRequest request) {
-    String firstName = request.pathVariable(&quot;fn&quot;);
-    String lastName = request.pathVariable(&quot;ln&quot;);
-    Mono&lt;Employee&gt; employee = repository.getEmployee(firstName, lastName);
-
-    return ServerResponse.ok()
-        .contentType(MediaType.APPLICATION_JSON)
-        .body(employee, Employee.class);
-  }
-
-  public Mono&lt;ServerResponse&gt; createNewEmployee(ServerRequest request) {
-    Mono&lt;Employee&gt; employeeMono = request.bodyToMono(Employee.class);
-    Mono&lt;Employee&gt; employee = repository.createNewEmployee(employeeMono);
-
-    return ServerResponse.ok()
-        .contentType(MediaType.APPLICATION_JSON)
-        .body(employee, Employee.class);
-  }
-
-  public Mono&lt;ServerResponse&gt; deleteEmployee(ServerRequest request) {
-    String id = request.pathVariable(&quot;id&quot;);
-    Mono&lt;Void&gt; employee = repository.deleteEmployee(id);
-
-    return ServerResponse.ok().contentType(MediaType.APPLICATION_JSON).build(employee);
-  }
-
-  public Mono&lt;ServerResponse&gt; getAllDepartments(ServerRequest request) {
-    Flux&lt;Department&gt; allDepartments = repository.getAllDepartments();
-    return ServerResponse.ok()
-        .contentType(MediaType.APPLICATION_JSON)
-        .body(allDepartments, Department.class);
-  }
-}
-</code></pre>
-
-<p>This is the class that is responsible for handling incoming requests. Each handle method returns a <u>Mono<ServerResponse></u>. The ServerResponse object has a builder that is used to create the response, and has methods that take Fluxes and Monos for responses. The <u>ServerResponse</u> object will also automatically serialize your results to JSON. Additionally, if you return a stream of responses, WebFlux will automatically turn the response into a JSON list. You can can see this in the <u>getAllEmployees</u> and <u>getAllDepoartment</u> methods. A method to look closer at is the <u>deleteEmployee</u> method. The <u>deleteEmployee</u> method is a little different then the other methods. You’ll notice that most methods use the <u>body</u> method to create a response. The <u>deleteEmployee</u> doesn’t have a body so it uses the <u>build</u> method instead which takes a Mono<Void>.</p>
-
-<h4 id="toc_3">Interacting with the Database</h4>
-
-<p>To create our responses we need to get the information from our database. The object that takes care of that is the the <u>EmployeeRepository</u> which is being injected into the handler. This is normally where things start to fall apart because you’re accessing a blocking database. In our case though we’re using rxjava2-jdbc and it’s no longer an issue. While this does turn a JDBC driver into a non-blocking driver and deals with the difficulties of scheduling potentially blocking work off the event loop, this isn’t as efficient as a purely non-blocking approach. However, it is sufficient for all but the highest throughput applications. Lets take a look at the <u>EmployeeRepository</u> class:</p>
-
-<p><a href="https://gist.github.com/robertroeser/580116df0045187e4850bd4016704ce1#file-employeerepository-java">EmployeeRepository.java hosted with ❤ by GitHub</a></p>
-
-<pre><code class="language-java">@Component
-public class EmployeeRepository {
-  private Database db;
-
-  public EmployeeRepository() throws Exception {
-    Connection connection = DriverManager.getConnection(&quot;jdbc:h2:./build/mydatabase&quot;, &quot;sa&quot;, &quot;sa&quot;);
-    NonBlockingConnectionPool pool =
-        Pools.nonBlocking()
-            .maxPoolSize(Runtime.getRuntime().availableProcessors() * 5)
-            .connectionProvider(ConnectionProvider.from(connection))
-            .build();
-
-    this.db = Database.from(pool);
-  }
-
-  Flux&lt;Employee&gt; getAllEmployees() {
-    String sql = &quot;SELECT * FROM employee e JOIN department d ON e.department_id = d.department_id&quot;;
-
-    Flowable&lt;Employee&gt; employeeFlowable =
-        db.select(sql)
-            .get(
-                rs -&gt; {
-                  Employee employee = new Employee();
-                  employee.setId(rs.getInt(&quot;employee_id&quot;));
-                  employee.setFirstName(rs.getString(&quot;employee_firstname&quot;));
-                  employee.setLastName(rs.getString(&quot;employee_lastname&quot;));
-                  employee.setDepartment(rs.getString(&quot;department_name&quot;));
-
-                  return employee;
-                });
-
-    return Flux.from(employeeFlowable);
-  }
-
-  Mono&lt;Employee&gt; getEmployee(String firstName, String lastName) {
-    String sql =
-        &quot;SELECT employee_id, employee_firstname, employee_lastname, department_name FROM employee e &quot;
-            + &quot;JOIN department d ON e.department_id = d.department_id &quot;
-            + &quot;WHERE employee_firstname = ? AND &quot;
-            + &quot;employee_lastname = ?&quot;;
-
-    Flowable&lt;Employee&gt; employeeFlowable =
-        db.select(sql)
-            .parameters(firstName, lastName)
-            .get(
-                rs -&gt; {
-                  Employee employee = new Employee();
-                  employee.setId(rs.getInt(&quot;employee_id&quot;));
-                  employee.setFirstName(rs.getString(&quot;employee_firstname&quot;));
-                  employee.setLastName(rs.getString(&quot;employee_lastname&quot;));
-                  employee.setDepartment(rs.getString(&quot;department_name&quot;));
-
-                  return employee;
-                });
-
-    return Mono.from(employeeFlowable);
-  }
-
-  Mono&lt;Employee&gt; createNewEmployee(Mono&lt;Employee&gt; employeeMono) {
-
-    String createSql =
-        &quot;INSERT INTO employee (employee_firstname, employee_lastname, department_id) VALUES (?, ?, ?)&quot;;
-    String selectDepartmentId = &quot;SELECT department_id from department where department_name = ?&quot;;
-    String selectSql =
-        &quot;SELECT employee_id, employee_firstname, employee_lastname, department_name FROM employee e &quot;
-            + &quot;JOIN department d ON e.department_id = d.department_id &quot;
-            + &quot;WHERE employee_id = ?&quot;;
-
-    return employeeMono.flatMap(
-        newEmployee -&gt; {
-          Flowable&lt;Integer&gt; employeeIds =
-              db.select(selectDepartmentId)
-                  .parameters(newEmployee.getDepartment())
-                  .getAs(Integer.class)
-                  .flatMap(
-                      departmentId -&gt;
-                          db.update(createSql)
-                              .parameters(
-                                  newEmployee.getFirstName(),
-                                  newEmployee.getLastName(),
-                                  departmentId)
-                              .returnGeneratedKeys()
-                              .getAs(Integer.class));
-
-          Flowable&lt;Employee&gt; employeeFlowable =
-              db.select(selectSql)
-                  .parameterStream(employeeIds)
-                  .get(
-                      rs -&gt; {
-                        Employee employee = new Employee();
-                        employee.setId(rs.getInt(&quot;employee_id&quot;));
-                        employee.setFirstName(rs.getString(&quot;employee_firstname&quot;));
-                        employee.setLastName(rs.getString(&quot;employee_lastname&quot;));
-                        employee.setDepartment(rs.getString(&quot;department_name&quot;));
-
-                        return employee;
-                      });
-
-          return Mono.from(employeeFlowable);
-        });
-  }
-
-  Mono&lt;Void&gt; deleteEmployee(String id) {
-    String sql = &quot;DELETE FROM employee WHERE employee_id = ?&quot;;
-    Flowable&lt;Integer&gt; counts = db.update(sql).parameter(id).counts();
-    return Flux.from(counts).then();
-  }
-
-  Flux&lt;Department&gt; getAllDepartments() {
-    return Flux.from(db.select(Department.class).get());
-  }
-}
-</code></pre>
-
-<p>The first thing to look at here is the constructor. The main class in rxjava2-jdbc is the Database class. This is what you use to interact with the database and run queries. Before you can do that you need to create a connection to the database. For our example, we’re creating a connection to an H2 database. Many databases allow you to pass in user credentials and other information in there connection string. If they do then you can use just create a database like so:</p>
-
-<pre><code class="language-java">Database db = Database.from(“&lt;connection_string”&gt;, &lt;pool_size&gt;);
-</code></pre>
-
-<p>However, H2 doesn’t allow you to do this, so you need to create a Connection object in order to pass in credentials. You then have to use the Pools builder to create a pool. Once you’ve created the your pool you can create the database object.</p>
-
-<p>The great thing about rxjava2-jdbc is that any JDBC driver can used. You can switch any standard JDBC database like Oracle, SQL Server, DB2, etc.</p>
-
-<p>I’m not going to go into too much detail about how rxjava2-jdbc works here because David Moten’s github page has great <a href="https://github.com/davidmoten/rxjava2-jdbc/blob/master/README.adoc">documentation</a>.</p>
-
-<p>I will point out a few things though about using Spring WebFlux and rxjava2-jdbc together. The good news is they both implement <a href="http://www.reactive-streams.org/">ReactiveStreams</a> so it’s transparent for them to interoperate. The way to do this with reactor-core is to use the <u>Flux.from</u> or <u>Mono.from</u> methods. These can take any publisher. It is important to note that in the Mono version it can only emit one item or it will throw an exception. Another thing to take a look at is the <u>deleteEmployee</u> method. This method returns a Mono<Void> which is a special convention in reactor-core. This roughly equivalent to a Completable in rxjava2. To mimic this behavior in reactor-core, call the <u>then</u> method on a Flux or a Mono. This will ignore all elements that are emitted from the stream, and either complete or emit an exception.</p>
-
-<h4 id="toc_4">Write some Code</h4>
-
-<p>To really get a feel for how this works, the next step is to write some code. One idea I would suggest are to port the sample app to the database of your choice. Another idea is to create endpoints for creating a new department and deleting one. You can use the <u>createNewEmployee</u> and <u>deleteEmployee</u> methods as references.</p>
-
-<h4 id="toc_5">Conclusion</h4>
-
-<p>The reality is that many applications today use SQL databases, and reactive application developers did not have an easy way to access them without turning their non-blocking application into a blocking application. Hopefully in the future there will be great solutions around truly non-blocking JDBC drivers. Until that time, I hope you can see with this blog post, that while not perfect, there is an effective solution.</p>
+<p>本次分享只着重在三方面：</p>
 
 <ul>
-<li>  <a href="https://medium.com/tag/java?source=post">Java</a></li>
-<li>  <a href="https://medium.com/tag/rxjava?source=post">Rxjava</a></li>
-<li>  <a href="https://medium.com/tag/spring?source=post">Spring</a></li>
-<li>  <a href="https://medium.com/tag/reactive?source=post">Reactive</a></li>
-<li>  <a href="https://medium.com/tag/rest?source=post">Rest</a></li>
+<li>  JVM 的调优</li>
+<li>  代码的调优</li>
+<li>  定位性能问题的工具</li>
 </ul>
+
+<p><a href="http://files.blogcn.com/wp06/M00/00/ED/CpCCFVgHnPMAAAAAAADXW3vnM8I951.jpg" title="幻灯片03"><img src="http://files.blogcn.com/wp06/M00/00/ED/CpCCFVgHnPMAAAAAAADXW3vnM8I951.jpg" alt=""/></a></p>
+
+<p><a href="http://files.blogcn.com/wp02/M00/08/EF/CpAZrVgHnSkAAAAAAACnv2fHcK0833.jpg" title="幻灯片04"><img src="http://files.blogcn.com/wp02/M00/08/EF/CpAZrVgHnSkAAAAAAACnv2fHcK0833.jpg" alt=""/></a></p>
+
+<h3 id="toc_1">基本原则</h3>
+
+<p>网上如此多新旧不一的资料，这么多肆意传播亦真亦错的观点，怎么办呢？</p>
+
+<ol>
+<li> 多看一些靠谱的资料，问一些靠谱的人。</li>
+<li> 怀疑一切，微基准测试一切，诚意推荐 JMH。</li>
+<li> 看 JDK 代码，看一切代码。</li>
+</ol>
+
+<p><a href="http://files.blogcn.com/wp04/M00/00/D1/CpCCFVgHnewAAAAAAAC4WC08BEA045.jpg" title="幻灯片06"><img src="http://files.blogcn.com/wp04/M00/00/D1/CpCCFVgHnewAAAAAAAC4WC08BEA045.jpg" alt=""/></a></p>
+
+<p><a href="http://files.blogcn.com/wp06/M00/04/D0/CoFCGVgHnjEAAAAAAADZwUFf8O8583.jpg" title="幻灯片07"><img src="http://files.blogcn.com/wp06/M00/04/D0/CoFCGVgHnjEAAAAAAADZwUFf8O8583.jpg" alt=""/></a></p>
+
+<p><a href="http://files.blogcn.com/wp02/M00/08/EF/CpAZrVgHnokAAAAAAACCHhzO17w957.jpg" title="幻灯片08"><img src="http://files.blogcn.com/wp02/M00/08/EF/CpAZrVgHnokAAAAAAACCHhzO17w957.jpg" alt=""/></a></p>
+
+<p><a href="http://files.blogcn.com/wp04/M00/08/02/CoFCGVgHn6YAAAAAAADGggFLBi0755.jpg" title="幻灯片09"><img src="http://files.blogcn.com/wp04/M00/08/02/CoFCGVgHn6YAAAAAAADGggFLBi0755.jpg" alt=""/></a></p>
+
+<h3 id="toc_2">JVM 优化</h3>
+
+<p>首先，JIT 入门知识；然后，JVM 参数的简介；再然后，最头痛的 GC 问题的处理。</p>
+
+<p><a href="http://files.blogcn.com/wp06/M00/00/ED/CpCCFVgHoB4AAAAAAACR8THhKLc792.jpg" title="幻灯片21"><img src="http://files.blogcn.com/wp06/M00/00/ED/CpCCFVgHoB4AAAAAAACR8THhKLc792.jpg" alt=""/></a></p>
+
+<p><a href="http://files.blogcn.com/wp06/M00/00/ED/CpCCFVgHqVoAAAAAAADQAgCkMkE356.jpg" title="幻灯片30"><img src="http://files.blogcn.com/wp06/M00/00/ED/CpCCFVgHqVoAAAAAAADQAgCkMkE356.jpg" alt=""/></a></p>
+
+<h3 id="toc_3">代码优化</h3>
+
+<p>代码优化，两大方向一是面向 GC 的编程，二是并发与锁，然后再来聊聊其他。</p>
+
+<p><a href="http://files.blogcn.com/wp02/M00/08/EF/CpAZrVgHoGwAAAAAAADk5iKpsPw033.jpg" title="幻灯片34"><img src="http://files.blogcn.com/wp02/M00/08/EF/CpAZrVgHoGwAAAAAAADk5iKpsPw033.jpg" alt=""/></a></p>
+
+<h3 id="toc_4">问题定位工具集</h3>
+
+<p>黑盒调优是最不可靠的，推荐线下用 JMC，线上用 Btrace 定位问题。</p>
+
+<p><a href="http://files.blogcn.com/wp04/M00/00/D1/CpCCFVgHoZMAAAAAAAC3Llc-Yyw623.jpg" title="幻灯片51"><img src="http://files.blogcn.com/wp04/M00/00/D1/CpCCFVgHoZMAAAAAAAC3Llc-Yyw623.jpg" alt=""/></a></p>
+
+<h3 id="toc_5">特别鸣谢</h3>
+
+<p>感谢 R 大 ， 日常三更半夜跨洋热心解答各种 JVM 问题。</p>
+
+<p>感谢 Chembo(国钦)，对 PPT 的美化。</p>
+
+<h3 id="toc_6">完整 PPT 下载</h3>
+
+<p><a href="http://files.blogcn.com/wp06/M00/00/ED/CpCCFVgRySAAAAAAAC42ozG7w4w912.pdf">《Java 性能优化指南 V1.4.pdf》</a>, by 江南白衣, 超链接修正版。</p>
 
                         
                       </div>
@@ -384,7 +195,7 @@ public class EmployeeRepository {
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/7/7</span>
+                    <span class="date">2018/8/13</span>
                     <span>posted in&nbsp;</span> 
           				  
           					    <span class="posted-in"><a href='Java.html'>Java</a></span>
@@ -477,31 +288,31 @@ public class EmployeeRepository {
 	      
 		      
 			      <li class="post">
-			        <a href="15337171704262.html">Introduction to Testing with Spock and Groovy</a>
+			        <a href="15358820607055.html">Java 8 Concurrency Tutorial: Atomic Variables and ConcurrentMap</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15336595358049.html">10 Excellent Ways to Secure Your Spring Boot Application</a>
+			        <a href="15358774987730.html">Java 8 Concurrency Tutorial: Synchronization and Locks</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15336592302916.html">First MicroProfile.io application using Java Module System</a>
+			        <a href="15358757119900.html">Java 8 Concurrency Tutorial: Threads and Executors</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15332186142588.html">Jenkins 的 Pipeline 脚本在美团餐饮 SaaS 中的实践</a>
+			        <a href="15358756631902.html">Java 8 Stream Tutorial</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15331749691571.html">基于ZooKeeper的分布式锁和队列</a>
+			        <a href="15358753472382.html">Migrate Maven Projects to Java 11</a>
 			      </li>
 		     
 		  

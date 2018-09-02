@@ -105,24 +105,120 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15281638428061.html">
+                <a class="clearlink" href="15293276617956.html">
                 
-                  <h1>[Nexus Repository OSS](https://www.sonatype.com/nexus-repository-oss)</h1>
+                  <h1>Java如何实现任务超时处理</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
-                        	<h2 id="toc_0">Mirror repository</h2>
+                        	<blockquote>
+<p>原文地址 <a href="https://mp.weixin.qq.com/s/2yEMqv6v26nnDR6s0kLZnw">https://mp.weixin.qq.com/s/2yEMqv6v26nnDR6s0kLZnw</a></p>
+</blockquote>
 
-<p>repository type: maven2 (proxy)</p>
+<p>任务超时处理是比较常见的需求，比如在进行一些比较耗时的操作（如网络请求）或者在占用一些比较宝贵的资源（如数据库连接）时，我们通常需要给这些操作设置一个超时时间，当执行时长超过设置的阈值的时候，就终止操作并回收资源。Java 中对超时任务的处理有两种方式：一种是基于异步任务结果的超时获取，一种则是使用延时任务来终止超时操作。下文将详细说明。</p>
 
-<h2 id="toc_1">Private repository</h2>
+<p>一、基于异步任务结果的超时获取</p>
 
-<p>repository type: hosted (hosted)</p>
+<p>基于异步任务结果的获取通常是跟线程池一起使用的，我们向线程池提交任务时会返回一个 Future 对象，在调用 Future 的 get 方法时，可以设置一个超时时间，如果超过设置的时间任务还没结束，就抛出异常。接下来看代码：</p>
 
-<h2 id="toc_2">Service repository</h2>
+<pre><code class="language-java">public class FutureDemo {
 
-<p>repository type: hosted (group)</p>
+    static ExecutorService executorService= Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors()*2);
+
+    public static void main(String[] args) {
+        Future&lt;String&gt; future = executorService.submit(new Callable&lt;String&gt;() {
+            @Override
+            public String call() {
+                try {
+                    TimeUnit.SECONDS.sleep(10);
+                } catch (InterruptedException e) {
+                    System.out.println(&quot;任务被中断。&quot;);
+                }
+                return  &quot;OK&quot;;
+            }
+        });
+        try {
+            String result = future.get(2, TimeUnit.SECONDS);
+        } catch (InterruptedException |ExecutionException | TimeoutException e) {
+            future.cancel(true);
+            System.out.println(&quot;任务超时。&quot;);
+        }finally {
+            System.out.println(&quot;清理资源。&quot;);
+        }
+    }
+}
+</code></pre>
+
+<p>运行代码，输出如下：</p>
+
+<p><img src="https://mmbiz.qpic.cn/mmbiz_png/XA3sPCPib1l5IMwDuGO307gROb7pTu3FKDlcv4ZjuXvM2BuhpB15GeE19ga65YynWsicJl2BWr0zWljJzFJPH4zA/640?wx_fmt=png" alt=""/></p>
+
+<p>二、使用延时任务来终止超时操作</p>
+
+<p>还有一种实现任务超时处理的思路是在提交任务之前先设置一个定时器，这个定时器会在设置的时间间隔之后去取消任务。当然如果任务在规定的时间内完成了，要记得取消定时器。首先来看一下我们的工作线程：</p>
+
+<pre><code class="language-java">public class RunningTask  {
+
+    private volatile boolean isStop;
+
+    public void stop(){
+        this.isStop=true;
+    }
+
+    public void doing() {
+        int i=1;
+        while (!isStop){
+            try {
+                TimeUnit.SECONDS.sleep(1);
+            } catch (InterruptedException e) {
+
+            }
+        }
+        System.out.println(&quot;任务被中断。&quot;);
+    }
+}
+</code></pre>
+
+<p>这个工作线程每隔一秒钟会去检查下 isStop 变量，因此我们可以通过 isStop 变量来取消任务。至于取消任务的逻辑我们放在了定时器里面，代码如下：</p>
+
+<pre><code class="language-java">public class CancelTask implements Runnable {
+
+    private RunningTask runningTask;
+
+    public CancelTask(RunningTask runningTask) {
+        this.runningTask = runningTask;
+    }
+
+    @Override
+    public void run() {
+        runningTask.stop();
+    }
+}
+</code></pre>
+
+<p>可以看到，该定时器的作用就是在一定的时间之后去中断工作线程的运行。接下来测试一下：</p>
+
+<pre><code class="language-java">public class ScheduleDemo {
+
+    static ScheduledExecutorService executorService= Executors.newScheduledThreadPool(Runtime.getRuntime().availableProcessors()*2);
+
+    public static void main(String[] args) {
+        RunningTask runningTask=new RunningTask();
+        ScheduledFuture&lt;?&gt; scheduledFuture = executorService.schedule(new CancelTask(runningTask), 3, TimeUnit.SECONDS);
+        runningTask.doing();
+        if(!scheduledFuture.isDone()){
+            scheduledFuture.cancel(true);
+        }
+    }
+}
+</code></pre>
+
+<p>运行结果如下：</p>
+
+<p><img src="https://mmbiz.qpic.cn/mmbiz_png/XA3sPCPib1l5IMwDuGO307gROb7pTu3FKFIFzub5qZic3f9xxSRFI1KeXXG7VbGTJujrN4EbIriaqaeor9dfA3d5Q/640?wx_fmt=png" alt=""/></p>
+
+<p>可以看到，任务在超时之后也可以被取消。</p>
 
                         
                       </div>
@@ -131,10 +227,10 @@
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/6/5</span>
+                    <span class="date">2018/6/18</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Container.html'>Container</a></span>
+          					    <span class="posted-in"><a href='Cocurrency.html'>Cocurrency</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -224,31 +320,31 @@
 	      
 		      
 			      <li class="post">
-			        <a href="15337171704262.html">Introduction to Testing with Spock and Groovy</a>
+			        <a href="15358820607055.html">Java 8 Concurrency Tutorial: Atomic Variables and ConcurrentMap</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15336595358049.html">10 Excellent Ways to Secure Your Spring Boot Application</a>
+			        <a href="15358774987730.html">Java 8 Concurrency Tutorial: Synchronization and Locks</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15336592302916.html">First MicroProfile.io application using Java Module System</a>
+			        <a href="15358757119900.html">Java 8 Concurrency Tutorial: Threads and Executors</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15332186142588.html">Jenkins 的 Pipeline 脚本在美团餐饮 SaaS 中的实践</a>
+			        <a href="15358756631902.html">Java 8 Stream Tutorial</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15331749691571.html">基于ZooKeeper的分布式锁和队列</a>
+			        <a href="15358753472382.html">Migrate Maven Projects to Java 11</a>
 			      </li>
 		     
 		  

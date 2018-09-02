@@ -105,254 +105,403 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15262259555946.html">
+                <a class="clearlink" href="15277861393795.html">
                 
-                  <h1>A Guide To NIO2 Asynchronous File Channel</h1>
+                  <h1>深入浅出Netty - EventLoop, EventLoopGroup</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="http://www.baeldung.com/java-nio2-async-file-channel">http://www.baeldung.com/java-nio2-async-file-channel</a><br/>
-Last modified: January 12, 2018</p>
+<p>DECEMBER 24 2016 <a href="https://caorong.github.io/2016/12/24/head-first-netty-1/">原文地址</a></p>
 </blockquote>
 
-<h3 id="toc_0"><strong>I just announced the new <u>Spring 5</u> modules in REST With Spring:</strong></h3>
+<p>近年来netty 十分流行，至于为何那么流行，因为它性能好，能更有效的利用系统资源。</p>
 
-<h2 id="toc_1"><strong>1. Overview</strong></h2>
+<p>但是， netty 很容易上手， 但是很多时候却无法理解设计的初衷， 比如为什么会有 EventLoop 这个东东， 本文从历史阐述原因。</p>
 
-<p>In this article, we are going to explore one of the key additional APIs of the new I/O (NIO2) in Java 7, asynchronous file channel APIs.</p>
+<h2 id="toc_0"><a href="#%E5%90%8C%E6%AD%A5%E7%BD%91%E7%BB%9C%E6%A8%A1%E5%9E%8B" title="同步网络模型"></a>同步网络模型</h2>
 
-<p>If you are new to asynchronous channel APIs in general, we have an introductory article on this site which you can read by following <a href="/java-nio-2-async-channels">this link</a> before proceeding.</p>
+<p>首先说说同步模型， 也就是常说的 bio， bio 是基于 stream 的。 网上找到一个图如下</p>
 
-<p>You can read more about NIO.2 <a href="/java-nio-2-file-api">file operations</a> and <a href="/java-nio-2-path">path operations</a> as well – understanding these will make this article much easier to follow.</p>
+<p><img src="media/15277861393795/15277864485883.jpg" alt=""/></p>
 
-<p>To use the NIO2 asynchronous file channels in our projects, we have to import the <u>java.nio.channels</u> package as it bundles all required classes:</p>
+<p>从图可知，对于bio 来说，我的程序何时处理完需要靠 看 datasource 何时发完数据。</p>
 
-<pre><code class="language-java">import java.nio.channels.*;
-</code></pre>
+<p>这是非常坑爹的， 举个例子， 如果我的服务是一个多线程的 bio 的服务(比如 10个线程)，然后某个黑客建10个 telnet 连上你的server， holding住 不发数据，那么你的服务就down了。</p>
 
-<h2 id="toc_2"><strong>2. The <u>AsynchronousFileChannel</u></strong></h2>
+<p>那么如何解决这种问题？ 如果 waiting client 发的数据不阻塞 worker 线程不就行了？</p>
 
-<p>In this section, we will explore how to use the main class that enables us to perform asynchronous operations on files, the <u>AsynchronousFileChannel</u> class. To create an instance of it, we call the static <u>open</u> method:</p>
+<p>于是出现了 异步网络模型</p>
 
-<pre><code class="language-java">Path filePath = Paths.get(&quot;/path/to/file&quot;);
- 
-AsynchronousFileChannel fileChannel = AsynchronousFileChannel.open(
-  filePath, READ, WRITE, CREATE, DELETE_ON_CLOSE);
-</code></pre>
+<h2 id="toc_1"><a href="#%E5%BC%82%E6%AD%A5%E7%BD%91%E7%BB%9C%E6%A8%A1%E5%9E%8B" title="异步网络模型"></a>异步网络模型</h2>
 
-<p>All enum values come from the Sta_ndardOpenOption_.</p>
+<p>异步网络模型， 也就是非阻塞IO， 在java 中由于 jdk1.4 之后才被引入所以被称之为 Nio (New IO)</p>
 
-<p>The first parameter to the open API is a <u>Path</u> object representing the file location. To read more about path operations in NIO2, follow <a href="/java-nio-2-path">this link</a>. The other parameters make up a set specifying options that should be available to the returned file channel.</p>
+<p>网上同样找到个图</p>
 
-<p>The asynchronous file channel we have created can be used to perform all known operations on a file. To perform only a subset of the operations, we would specify options for only those. For instance, to only read:</p>
+<p><img src="media/15277861393795/15277864586815.jpg" alt=""/></p>
 
-<pre><code class="language-java">Path filePath = Paths.get(&quot;/path/to/file&quot;);
- 
-AsynchronousFileChannel fileChannel = AsynchronousFileChannel.open(
-  filePath, StandardOpenOption.READ);
-</code></pre>
+<p>由图可知， 实现异步的原理是 系统帮你给每一个连接(channel) 都维护了一个 <code>buffer</code>。<br/>
+将 client 发来的数据暂存到 <code>buffer</code> 中, 待 java 进程需要的时候一次性做一次内存拷贝，在 java 进程中使用。</p>
 
-<h2 id="toc_3"><strong>3. Reading From a File</strong></h2>
+<p>当然， 写出也是同样的 写到 <code>buffer</code> 中，当 <code>buffer</code> 满 或者 手动调用 <code>flush</code> 写出去。</p>
 
-<p>Just like with all asynchronous operations in NIO2, reading a file’s contents can be done in two ways. Using <u>Future</u> and using <u>CompletionHandler</u>. In each case, we use the <u>read</u> API of the returned channel.</p>
+<p>下面有个简单的 非阻塞 echo server demo， 当读到 q 时关闭连接。</p>
 
-<p>Inside the test resources folder of maven or in the source directory if not using maven, let’s create a file called <u>file.txt</u> with only the text <u>baeldung.com</u> at it’s beginning. We will now demonstrate how to read this content.</p>
+<pre><code class="language-java">ServerSocketChannel serverSocketChannel = ServerSocketChannel.open();
 
-<h3 id="toc_4"><strong>3.1. The Future Approach</strong></h3>
+serverSocketChannel.socket().bind(new InetSocketAddress(9999));
+serverSocketChannel.configureBlocking(false);
 
-<p>First, we will see how to read a file asynchronously using the <u>Future</u> class:</p>
+final List&lt;SocketChannel&gt; socketChannelList = Lists.newLinkedList();
 
-<pre><code class="language-java">@Test
-public void givenFilePath_whenReadsContentWithFuture_thenCorrect() {
-    Path path = Paths.get(
-      URI.create(
-        this.getClass().getResource(&quot;/file.txt&quot;).toString()));
-    AsynchronousFileChannel fileChannel = AsynchronousFileChannel.open(
-      path, StandardOpenOption.READ);
- 
-    ByteBuffer buffer = ByteBuffer.allocate(1024);
- 
-    Future&lt;Integer&gt; operation = fileChannel.read(buffer, 0);
- 
-    // run other code as operation continues in background
-    operation.get();
-       
-    String fileContent = new String(buffer.array()).trim();
-    buffer.clear();
- 
-    assertEquals(fileContent, &quot;baeldung.com&quot;);
-}
-</code></pre>
-
-<p>In the above code, after creating a file channel, we make use of the <u>read</u> API – which takes a <u>ByteBuffer</u> to store the content read from the channel as its first parameter.</p>
-
-<p>The second parameter is a long indicating the position in the file from which to start reading.</p>
-
-<p>The method returns right away whether the file has been read or not.</p>
-
-<p>Next, we can execute any other code as the operation continues in the background. When we are done with executing other code, we can call the <u>get()</u> API which returns right away if the operation already completed as we were executing other code, or else it blocks until the operation completes.</p>
-
-<p>Our assertion indeed proves that the content from the file has been read.</p>
-
-<p>If we had changed the position parameter in the <u>read</u> API call from zero to something else, we would see the effect too. For example, the seventh character in the string <u>baeldung.com</u> is <u>g</u>. So changing the position parameter to 7 would cause the buffer to contain the string <u>g.com</u>.</p>
-
-<h3 id="toc_5"><strong>3.2. The <u>CompletionHandler</u> Approach</strong></h3>
-
-<p>Next, we will see how to read a file’s contents using a <u>CompletionHandler</u> instance:</p>
-
-<pre><code class="language-java">@Test
-public void
-  givenPath_whenReadsContentWithCompletionHandler_thenCorrect() {
-     
-    Path path = Paths.get(
-      URI.create( this.getClass().getResource(&quot;/file.txt&quot;).toString()));
-    AsynchronousFileChannel fileChannel 
-      = AsynchronousFileChannel.open(path, StandardOpenOption.READ);
- 
-    ByteBuffer buffer = ByteBuffer.allocate(1024);
- 
-    fileChannel.read(
-      buffer, 0, buffer, new CompletionHandler&lt;Integer, ByteBuffer&gt;() {
- 
-        @Override
-        public void completed(Integer result, ByteBuffer attachment) {
-            // result is number of bytes read
-            // attachment is the buffer containing content
+new Thread(new Runnable() {
+  @Override
+  public void run() {
+    while (true) {
+      // 处理 每个连接是否可读, 这里的逻辑是 读4个字节后切断连接
+      for (SocketChannel socketChannel : Lists.newArrayList(socketChannelList)) {
+        try {
+          ByteBuffer buf = ByteBuffer.allocate(4);
+          int readed = socketChannel.read(buf);
+          System.out.println(readed);
+          System.out.println(Arrays.toString(buf.array()));
+          if (readed &gt; 0 &amp;&amp; buf.array()[0] == &#39;q&#39;) {
+            // close
+            socketChannel.close();
+            // remove from list
+            socketChannelList.remove(socketChannel);
+          }
+        } catch (Throwable e) {
+          e.printStackTrace();
         }
-        @Override
-        public void failed(Throwable exc, ByteBuffer attachment) {
- 
+      }
+      try {
+        Thread.sleep(100);
+      } catch (InterruptedException e) {
+      }
+    }
+  }
+}, &quot;server-handler-thread&quot;).start();
+
+// 等待新连接连进来
+while (true) {
+  SocketChannel socketChannel = serverSocketChannel.accept();
+  if (socketChannel != null) {
+    socketChannelList.add(socketChannel);
+  }
+  Thread.sleep(1000);
+}
+</code></pre>
+
+<p>简单分析下上面的代码，</p>
+
+<ol>
+<li> 由于 accept 是非阻塞的， 所以我们要一直轮询 判断是否有新连接进来。</li>
+<li> 连接进来后，由于我们不知道 client 何时能发完数据， 所以我们维护了一个列表 <code>socketChannelList</code> 定期去轮询列表，看是否有数据可读。</li>
+</ol>
+
+<p>但是后来大家发现， 每当用 nonblocking socket 的时候都要做类似的操作， 于是想把它们提出来，提取成一个通用模块， 让代码实现更容易，</p>
+
+<p>在 <a href="https://en.wikipedia.org/wiki/Berkeley_sockets">berkeley socket</a> 中这个模块被称为 select, poll, epoll. (后面2个是加强版)</p>
+
+<p>而在java中， java 在他们之上抽象成 Selector</p>
+
+<h2 id="toc_2"><a href="#Selector-select-poll-epoll" title="Selector(select, poll, epoll)"></a>Selector(select, poll, epoll)</h2>
+
+<p>既然 select 是一个使用 nonblocking io 的通用封装， 那么在 linux 中， 为什么要有 select, poll, epoll 这么多的选择呢？</p>
+
+<p>我猜测，最早其实只有 select， 然后由于linux 是一个开源， 所以， 后来别人实现了性能更好的 poll, 再之后 epoll 也是这样。</p>
+
+<p>但是, 由于它们都在 linux 2.6.12 之前就已经被实现了， 在github上 都看不到具体提交历史了。。</p>
+
+<p><a href="https://github.com/torvalds/linux/commits/a379f71a30dddbd2e7393624e455ce53c87965d1/fs/select.c?after=Y3Vyc29yOqN59xow3dvS5zk2JORVzlPIeWXRKzY5">select.c</a>,<br/>
+<a href="https://github.com/torvalds/linux/commits/5924bbecd0267d87c24110cbe2041b5075173a25/include/linux/poll.h">poll.h</a>,<br/>
+<a href="https://github.com/torvalds/linux/commits/5924bbecd0267d87c24110cbe2041b5075173a25/include/linux/eventpoll.h">eventpoll.h</a></p>
+
+<p>我们再来看看 使用了 selector 后的非阻塞 IO 的编码, 同样实现一个 echo server</p>
+
+<pre><code class="language-java">Selector selector = Selector.open();
+ServerSocketChannel servChannel = ServerSocketChannel.open();
+servChannel.configureBlocking(false);
+// 建立一个server socket，到本地端口9999， backlog 1024
+servChannel.socket().setReuseAddress(true);
+servChannel.socket().bind(new InetSocketAddress(9999), 1024);
+// selector 关心 server 上的 ACCEPT 事件
+servChannel.register(selector, SelectionKey.OP_ACCEPT); 
+
+while (start) {
+  try {
+    // 阻塞等待 直到有IO事件可读(系统IO事件队列不为空)
+    selector.select();
+    // 获取 事件 以及 事件所对应的 channel (client server 的连接)
+    Set&lt;SelectionKey&gt; selectedKeys = selector.selectedKeys();
+    Iterator&lt;SelectionKey&gt; it = selectedKeys.iterator();
+    SelectionKey key = null;
+    while (it.hasNext()) {
+      key = it.next();
+      it.remove();
+      try {
+        if (key.isValid()) {
+          // OP_ACCEPT 事件 表示有个新client 完成了三次握手。连接上了本服务器
+          if (key.isAcceptable()) {
+            // Accept the new connection
+            ServerSocketChannel ssc = (ServerSocketChannel) key.channel();
+            SocketChannel sc = ssc.accept();
+            sc.configureBlocking(false);
+            // 将该连接的可读事件 注册到 selector， 到时候他发起请求的时候，我会收到新事件
+            sc.register(selector, SelectionKey.OP_READ);
+          }
+          // OP_READ 事件 说明 client 发的数据已经发到了系统缓冲区，server 可以去读了。
+          if (key.isReadable()) {
+            SocketChannel sc = (SocketChannel) key.channel();
+            // 分配用户台空间, 将数据从内核态 拷贝到 用户态
+            ByteBuffer readBuffer = ByteBuffer.allocate(4);
+            int readBytes = sc.read(readBuffer);
+            if (readBytes &gt; 0) {
+              // 切换读写模式 详见下面的图, 表示自己目前可以读 [position, limit]
+              readBuffer.flip();
+              byte[] bytes = new byte[readBuffer.remaining()];
+              // 将buffer 数据拷贝到 bytes 数组
+              // 如果这里只收到一半的数据怎么办？
+              String body = new String(bytes, &quot;UTF-8&quot;);
+              System.out.println(body);
+              // 将 read的数据 写回去
+              ByteBuffer writeBuffer = ByteBuffer.allocate(bytes.length);
+              writeBuffer.put(bytes);
+              writeBuffer.flip();
+              sc.write(writeBuffer);
+            } else if (readBytes &lt; 0) {
+              // 对端链路关闭
+              key.cancel();
+              sc.close();
+            } else
+              ;
+          }
         }
-    });
-}
-</code></pre>
-
-<p>In the above code, we use the second variant of the <u>read</u> API. It still takes a <u>ByteBuffer</u> and the start position of the <u>read</u> operation as the first and second parameters respectively. The third parameter is the <u>CompletionHandler</u> instance.</p>
-
-<p>The first generic type of the completion handler is the return type of the operation, in this case, an Integer representing the number of bytes read.</p>
-
-<p>The second is the type of the attachment. We have chosen to attach the buffer such that when the <u>read</u> completes, we can use the content of the file inside the <u>completed</u> callback API.</p>
-
-<p>Semantically speaking, this is not really a valid unit test since we cannot do an assertion inside the <u>completed</u> callback method. However, we do this for the sake of consistency and because we want our code to be as <u>copy-paste-run-</u>able as possible.</p>
-
-<h2 id="toc_6"><strong>4. Writing to a File</strong></h2>
-
-<p>Java NIO2 also allows us to perform write operations on a file. Just as we did with other operations, we can write to a file in two ways. Using <u>Future</u> and using <u>CompletionHandler</u>. In each case, we use the <u>write</u> API of the returned channel.</p>
-
-<p>Creating an <u>AsynchronousFileChannel</u> for writing to a file can be done like this:</p>
-
-<pre><code class="language-java">AsynchronousFileChannel fileChannel
-  = AsynchronousFileChannel.open(path, StandardOpenOption.WRITE);
-</code></pre>
-
-<h3 id="toc_7"><strong>4.1. Special Considerations</strong></h3>
-
-<p>Notice the option passed to the <u>open</u> API. We can also add another option <u>StandardOpenOption.CREATE</u> if we want the file represented by a <u>path</u> to be created in case it does not already exist. Another common option is <u>StandardOpenOption.APPEND</u> which does not over-write existing content in the file.</p>
-
-<p>We will use the following line for creating our file channel for test purposes:</p>
-
-<pre><code class="language-java">AsynchronousFileChannel fileChannel = AsynchronousFileChannel.open(
-  path, WRITE, CREATE, DELETE_ON_CLOSE);
-</code></pre>
-
-<p>This way, we will provide any arbitrary path and be sure that the file will be created. After the test exits, the created file will be deleted. To ensure the files created are not deleted after the test exits, you can remove the last option.</p>
-
-<p>To run assertions, we will need to read the file content where possible after writing to them. Let’s hide the logic for reading in a separate method to avoid redundancy:</p>
-
-<pre><code class="language-java">public static String readContent(Path file) {
-    AsynchronousFileChannel fileChannel = AsynchronousFileChannel.open(
-      file, StandardOpenOption.READ);
- 
-    ByteBuffer buffer = ByteBuffer.allocate(1024);
- 
-    Future&lt;Integer&gt; operation = fileChannel.read(buffer, 0);
- 
-    // run other code as operation continues in background
-    operation.get();     
- 
-    String fileContent = new String(buffer.array()).trim();
-    buffer.clear();
-    return fileContent;
-}
-</code></pre>
-
-<h3 id="toc_8"><strong>4.2. The <u>Future</u> Approach</strong></h3>
-
-<p>To write to a file asynchronously using the <u>Future</u> class:</p>
-
-<pre><code class="language-java">@Test
-public void
-  givenPathAndContent_whenWritesToFileWithFuture_thenCorrect() {
-     
-    String fileName = UUID.randomUUID().toString();
-    Path path = Paths.get(fileName);
-    AsynchronousFileChannel fileChannel = AsynchronousFileChannel.open(
-      path, WRITE, CREATE, DELETE_ON_CLOSE);
- 
-    ByteBuffer buffer = ByteBuffer.allocate(1024);
- 
-    buffer.put(&quot;hello world&quot;.getBytes());
-    buffer.flip();
- 
-    Future&lt;Integer&gt; operation = fileChannel.write(buffer, 0);
-    buffer.clear();
- 
-    //run other code as operation continues in background
-    operation.get();
- 
-    String content = readContent(path);
-    assertEquals(&quot;hello world&quot;, content);
-}
-</code></pre>
-
-<p>Let’s inspect what is happening in the above code. We create a random file name and use it to get a <u>Path</u> object. We use this path to open an asynchronous file channel with the previously mentioned options.</p>
-
-<p>We then put the content we want to write to the file in a buffer and perform the <u>write</u>. We use our helper method to read the contents of the file and indeed confirm that it is what we expect.</p>
-
-<h3 id="toc_9"><strong>4.3. The <u>CompletionHandler</u> Approach</strong></h3>
-
-<p>We can also use the completion handler so that we don’t have to wait for the operation to complete in a while loop:</p>
-
-<pre><code class="language-java">@Test
-public void
-  givenPathAndContent_whenWritesToFileWithHandler_thenCorrect() {
-     
-    String fileName = UUID.randomUUID().toString();
-    Path path = Paths.get(fileName);
-    AsynchronousFileChannel fileChannel = AsynchronousFileChannel.open(
-      path, WRITE, CREATE, DELETE_ON_CLOSE);
- 
-    ByteBuffer buffer = ByteBuffer.allocate(1024);
-    buffer.put(&quot;hello world&quot;.getBytes());
-    buffer.flip();
- 
-    fileChannel.write(
-      buffer, 0, buffer, new CompletionHandler&lt;Integer, ByteBuffer&gt;() {
- 
-        @Override
-        public void completed(Integer result, ByteBuffer attachment) {
-            // result is number of bytes written
-            // attachment is the buffer
+      } catch (Exception e) {
+        if (key != null) {
+          key.cancel();
+          if (key.channel() != null)
+            key.channel().close();
         }
-        @Override
-        public void failed(Throwable exc, ByteBuffer attachment) {
- 
-        }
-    });
+      }
+    }
+  } catch (Exception e) {
+    throw e;
+  }
 }
 </code></pre>
 
-<p>When we call the write API this time, the only new thing is a third parameter where we pass an anonymous inner class of type <u>CompletionHandler</u>.</p>
+<pre><code class="language-sh">~ ᐅ nc localhost 9999
+1
+1
+2
+2
+</code></pre>
 
-<p>When the operation completes, the class calls it’s completed method within which we can define what should happen.</p>
+<p>但是， 很奇怪的是，代码更长了。。。</p>
 
-<h2 id="toc_10"><strong>5. Conclusion</strong></h2>
+<p>因为其实真正的 selector 将所有的socket 的时间都封装进去了。</p>
 
-<p>In this article, we have explored some of the most important features of the Asynchronous File Channel APIs of Java NIO2.</p>
+<p>带来的结果是， java 层的代码 只要一个线程就能处理所有了，(我之前的实现需要2个线程)。</p>
 
-<p>To get all code snippets and the full source code for this article, you can visit the <a href="https://github.com/eugenp/tutorials/tree/master/core-java-io">Github project</a>.</p>
+<p>当然还有个问题是， 及时用了 selector， 我们依然认为代码可读性非常差， 代码容易写错。</p>
+
+<p>于是， netty 登场了， 他在 selector 之上， 又封装了一层， 让我们先看下 同样实现 netty 的代码。</p>
+
+<h2 id="toc_3"><a href="#netty-echo-server" title="netty echo server"></a>netty echo server</h2>
+
+<pre><code class="language-java">public class Netty4Demo {
+  public class EchoHandler extends SimpleChannelInboundHandler {
+    @Override
+    public void channelRead0(ChannelHandlerContext ctx, Object msg) throws Exception {
+      // 为什么 这里可以强转String？
+      String in = (String) msg;
+      System.out.print(in);
+      // 将数据写回
+      ctx.writeAndFlush(in);
+    }
+  }
+
+  public void run() throws Exception {
+    EventLoopGroup acceptGroup = new NioEventLoopGroup(1); // 指定 Acceptor 线程池大小
+    EventLoopGroup ioGroup = new NioEventLoopGroup(1); // 指定 NIO线程池大小
+    try {
+      ServerBootstrap b = new ServerBootstrap(); // 创建 ServerBootstrap 对象，他是Netty 用于启动NIO 服务端的辅助启动类，目的是降低服务端的开发复杂度。
+      b.group(acceptGroup, ioGrou).channel(
+          NioServerSocketChannel.class) // 指定使用 java 的NioServerSocketChannel
+          .childHandler(new ChannelInitializer&lt;SocketChannel&gt;() { // 创建 IOThread 的 pipeline
+            @Override
+            public void initChannel(SocketChannel ch) throws Exception {
+              ch.pipeline()
+                .addLast(new StringDecoder())
+                .addLast(new StringEncoder()); // 添加echo Handler
+                .addLast(new EchoHandler())
+            }
+          }).option(ChannelOption.SO_BACKLOG, 128)          // server socket config backlog 设置为 128
+          .childOption(ChannelOption.SO_KEEPALIVE, true); // client socket config 设置 keepalive = true
+      // 绑定端口，开始接收进来的连接
+      ChannelFuture f = b.bind(9999).sync(); // 同步等待绑定本地端口
+
+      // 等待服务器  socket 关闭 。
+      // 在这个例子中，这不会发生，但你可以优雅地关闭你的服务器。
+      f.channel().closeFuture().sync();
+    } finally {
+      // 释放两个线程池
+      acceptGroup.shutdownGracefully();
+      ioGrou.shutdownGracefully();
+    }
+  }
+
+  public static void main(String[] args) throws Exception {
+    new Netty4Demo().run();
+  }
+}
+</code></pre>
+
+<pre><code class="language-sh">~ ᐅ nc localhost 9999
+1
+1
+2
+2
+3
+3
+</code></pre>
+
+<p>代码短了一些， 关键是少了很多 if 判断， 代码可读性更好了。</p>
+
+<p>但是， 可读性提高(抽象)的同时， 又带出了了问题， EventLoop 是什么 , EventloopGroup 是什么？ 为什么要有它们？</p>
+
+<p>这里要解释以上的问题， 要先从 线程模型说起</p>
+
+<h2 id="toc_4"><a href="#%E7%BA%BF%E7%A8%8B%E6%A8%A1%E5%9E%8B" title="线程模型"></a>线程模型</h2>
+
+<p>首先是 单线程模型， 如下图</p>
+
+<p><img src="media/15277861393795/15277864778610.jpg" alt=""/></p>
+
+<p>上面直接用 selector 实现的 echo server 就是单线程模型，<br/>
+还有类似存在 GIL 问题的语言比如 python 的 tornado 也是 单线程模型。</p>
+
+<p>然后是多线程模型</p>
+
+<p><img src="media/15277861393795/15277864864829.jpg" alt=""/></p>
+
+<p>多线程模型的区别就是 让接收连接 和 对连接读写的处理 分别用不同的线程处理。 比如上面的 echo server demo 就可以被称为一个 多线程模型。<br/>
+只不过扩展性差了些。。。</p>
+
+<p>netty 的 EventloopGroup 其实就是线程池， 通过它来配置 接收连接 和 处理连接读写 的线程池大小。</p>
+
+<h2 id="toc_5"><a href="#netty-%E4%B9%8B-EventloopGroup" title="netty 之 EventloopGroup"></a>netty 之 EventloopGroup</h2>
+
+<p><img src="media/15277861393795/15277864950859.jpg" alt=""/></p>
+
+<p>上图就是 EventLoopGroup 的大致模块图。</p>
+
+<p>Boss EventloopGroup 和 worker EventloopGroup 分别 处理 接收连接， 和读写。</p>
+
+<p>而 Eventloop 里则封装了类似上面单线程的 echo server 的模块下面会详细说。</p>
+
+<p>对于开发者来说，主要关心紫色圈出部分。 其余的都已经封装完毕</p>
+
+<p>有几个关键点。</p>
+
+<ol>
+<li> Eventloopsize 建议设置为 2 的次方，dispatch 使用位移，更快。</li>
+<li> 侦听一个端口，只会绑定到 BossEventLoopGroup 中的一个 Eventloop，所以， BossEventLoopGroup 配置多个也无用。</li>
+</ol>
+
+<h2 id="toc_6"><a href="#EventLoop" title="EventLoop"></a>EventLoop</h2>
+
+<p>如果只使用 tcp 和 异步阻塞的话主要关心以下2个 EventLoop (本文也只介绍这2个)</p>
+
+<p>NioEventLoop - 基于java 原生nio</p>
+
+<pre><code>level-triggered （水平触发）
+
+</code></pre>
+
+<p>EpollEventLoop - native jni 直接调用 epoll, only work on linux</p>
+
+<pre><code>edge-triggered （边缘触发）更少的系统调用
+C代码，更少GC，更少synchronized
+暴露了更多的Socket配置参数
+
+</code></pre>
+
+<h3 id="toc_7"><a href="#%E6%B5%81%E7%A8%8B%E5%9B%BE" title="流程图"></a>流程图</h3>
+
+<p><img src="media/15277861393795/15277865072620.jpg" alt=""/></p>
+
+<p>关键点</p>
+
+<ol>
+<li> 整个loop 干的事情就是 <code>select -&gt; processIO -&gt; runAllTask</code></li>
+<li> 这是一个死循环</li>
+<li> 那么这个loop 如何自己优雅退出？ noway，只能通过外部添加 CloseTask， 比如添加到 MpscQueue</li>
+<li> deadline 为 定时任务的触发时间，避免 select 阻塞, 让 定时任务不能及时执行。</li>
+<li> 在select 这一步 解决 epollbug</li>
+</ol>
+
+<p>关于解决 epoll bug的原理是 应当 “阻塞”的 select 变得不再阻塞。<br/>
+所以只需要统计下 select 次数就行了</p>
+
+<p>部分关键代码:</p>
+
+<pre><code class="language-java">for(;;){
+    int selectedKeys = selector.select(timeoutMillis); // select with timeout
+    selectCnt ++;
+    // 我由于 select 阻塞 而等待了 timeoutMillis 毫秒， 说明， 我阻塞了，说明没有bug
+    if (time - TimeUnit.MILLISECONDS.toNanos(timeoutMillis) &gt;= currentTimeNanos) {
+        selectCnt = 1;
+    } else if (SELECTOR_AUTO_REBUILD_THRESHOLD &gt; 0 &amp;&amp;
+            selectCnt &gt;= SELECTOR_AUTO_REBUILD_THRESHOLD) {
+        // 在小于 timeoutMillis 毫秒的时间内 select 的次数超过了 阀值(512) 次
+        rebuildSelector();
+        selector = this.selector;
+
+        selector.selectNow();// Select again
+        selectCnt = 1;
+        break;
+    }
+}
+</code></pre>
+
+<h2 id="toc_8"><a href="#other" title="other"></a>other</h2>
+
+<h3 id="toc_9"><a href="#Selector-wakeup" title="Selector.wakeup()"></a>Selector.wakeup()</h3>
+
+<p>java 的 Selector 在原生的 select api 之上 增加了个 Selector.wakeup()</p>
+
+<p>她的目的是唤醒 阻塞在 <code>select()</code> 的线程, (通过写一个字节)</p>
+
+<p>为什么要唤醒？ 什么时候需要唤醒？</p>
+
+<ol>
+<li>注册了新的 channel 或者事件。</li>
+<li>channel 关闭， 取消注册。</li>
+<li>优先级更高的事件触发（如定时器事件）， 希望及时处理。</li>
+</ol>
+
+<h4 id="toc_10"><a href="#%E5%8E%9F%E7%90%86" title="原理"></a>原理</h4>
+
+<p>Linux上利用pipe调用创建一个管道，Windows上则是一个loopback的tcp连接。这是因为win32的管道无法加入select的fd set，将管道或者TCP连接加入select fd set。</p>
+
+<p>wakeup往管道或者连接写入一个字节，阻塞的select因为有I/O事件就绪，立即返回。可见，wakeup的调用开销不可忽视。</p>
+
+<p>之前看到的 coolshell 也分析过 –&gt; Java NIO类库Selector机制解析（<a href="http://blog.csdn.net/haoel/archive/2008/03/27/2224055.aspx">上</a>，<a href="http://blog.csdn.net/haoel/archive/2008/03/27/2224069.aspx">下</a>，<a href="http://blog.csdn.net/haoel/archive/2008/05/04/2379586.aspx">续</a>）</p>
+
+<h1 id="toc_11"><a href="#reference" title="reference"></a>reference</h1>
+
+<p><a href="http://www.infoq.com/cn/articles/netty-threading-model">http://www.infoq.com/cn/articles/netty-threading-model</a></p>
+
+<p><a href="http://calvin1978.blogcn.com/articles/netty-performance.html">http://calvin1978.blogcn.com/articles/netty-performance.html</a></p>
+
+<p><a href="http://calvin1978.blogcn.com/articles/netty-performance2.html">http://calvin1978.blogcn.com/articles/netty-performance2.html</a></p>
+
+<p><a href="http://tech.meituan.com/nio.html">http://tech.meituan.com/nio.html</a></p>
 
                         
                       </div>
@@ -361,10 +510,10 @@ public void
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/5/13</span>
+                    <span class="date">2018/6/1</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Java.html'>Java</a></span>
+          					    <span class="posted-in"><a href='Network.html'>Network</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -454,31 +603,31 @@ public void
 	      
 		      
 			      <li class="post">
-			        <a href="15337171704262.html">Introduction to Testing with Spock and Groovy</a>
+			        <a href="15358820607055.html">Java 8 Concurrency Tutorial: Atomic Variables and ConcurrentMap</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15336595358049.html">10 Excellent Ways to Secure Your Spring Boot Application</a>
+			        <a href="15358774987730.html">Java 8 Concurrency Tutorial: Synchronization and Locks</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15336592302916.html">First MicroProfile.io application using Java Module System</a>
+			        <a href="15358757119900.html">Java 8 Concurrency Tutorial: Threads and Executors</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15332186142588.html">Jenkins 的 Pipeline 脚本在美团餐饮 SaaS 中的实践</a>
+			        <a href="15358756631902.html">Java 8 Stream Tutorial</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15331749691571.html">基于ZooKeeper的分布式锁和队列</a>
+			        <a href="15358753472382.html">Migrate Maven Projects to Java 11</a>
 			      </li>
 		     
 		  

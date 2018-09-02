@@ -105,321 +105,169 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15246678052226.html">
+                <a class="clearlink" href="15277821532847.html">
                 
-                  <h1>阿里云Redis开发规范</h1>
+                  <h1>Aspect-Oriented Programming in Spring Boot Part 2: Spring JDK Proxies vs CGLIB vs AspectJ</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://yq.aliyun.com/articles/531067">https://yq.aliyun.com/articles/531067</a></p>
+<p>Justin Wilson May 9, 2016<br/>
+<a href="https://www.credera.com/blog/technology-insights/open-source-technology-insights/aspect-oriented-programming-in-spring-boot-part-2-spring-jdk-proxies-vs-cglib-vs-aspectj/">https://www.credera.com/blog/technology-insights/open-source-technology-insights/aspect-oriented-programming-in-spring-boot-part-2-spring-jdk-proxies-vs-cglib-vs-aspectj/</a></p>
 </blockquote>
 
-<h2 id="toc_0">一、键值设计</h2>
+<p>This is the second entry in a three-part series on aspect-oriented programming (AOP) with Spring Boot. This entry covers the differences between using AOP with Spring JDK proxies, CGLIB proxes, and AspectJ load-time weaving (LTW). The <a href="https://www.credera.com/blog/technology-insights/open-source-technology-insights/aspect-oriented-programming-in-spring-boot-part-1-making-your-own-hystrix-aspect/">first entry</a> covered how to write your own aspect, and the <a href="https://www.credera.com/blog/technology-insights/open-source-technology-insights/aspect-oriented-programming-in-spring-boot-part-3-setting-up-aspectj-load-time-weaving/">last entry</a> will contain detailed AspectJ LTW setup information.</p>
 
-<h3 id="toc_1">1. key名设计</h3>
+<p><strong>How Can You Call Code Without Writing Its Invocation?</strong></p>
 
-<ul>
-<li>  (1)【建议】: 可读性和可管理性</li>
-</ul>
+<p>The Spring framework supports two main methods of AOP—Spring proxies and AspectJ. Both methods allow code snippets called aspects to be injected or “woven” around existing code by targeting specific join points. However, even though both AOP styles can use the same code for their aspects, the way in which they weave those aspects into existing code is completely different.</p>
 
-<p>以业务名(或数据库名)为前缀(防止key冲突)，用冒号分隔，比如业务名:表名:id</p>
+<p><strong>Spring Proxies: JDK and CGLIB Styles</strong></p>
 
-<pre><code>ugc:video:1
+<p>Every Spring bean (heretofore referred to as just a “bean”) can be considered a managed component. Whenever you declare a bean in XML or use @Component, @Service, or @Repository on a class targeted by Spring’s annotation component scanning (which is enabled by default for Spring Boot), that class is instantiated and managed as a singleton bean by the Spring framework. (It’s technically possible to use different scoping mechanisms to avoid singletons, but those won’t be covered here; see <a href="https://www.credera.com/blog/technology-insights/java/dependency-injection-part-3-spring/">my blog series on dependency injection</a> for more information.) Spring can inject references to that bean into other beans that request it using the @Autowired annotation (or @Resource or @Inject annotations) or beans that use “ref” in their XML definition. However, Spring doesn’t actually provide a literal reference to the original bean when it’s injected—it wraps the bean in a proxy class to give Spring a chance to weave in AOP code if needed.</p>
+
+<p>There are two ways Spring can make proxies:</p>
+
+<p>1. By default, Spring will try to use <a href="http://www.ibm.com/developerworks/java/library/j-jtp08305/index.html">JDK dynamic proxy libraries</a> to create a new instance of the injected bean’s interface which will act as a delegate to that bean. This behavior is demonstrated by the <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-proxy/src/test/java/org/jdw/blog/ProxyHystrixAspectTest.java#L36">unit tests</a> that use injected beans with interfaces in the <a href="https://github.com/jwilsoncredera/spring-aop-blog/tree/master/spring-aop-proxy">spring-aop-proxy sample project</a>.</p>
+
+<p><a href="https://www.credera.com/wp-content/uploads/2016/04/Picture2-4.png"><img src="https://www.credera.com/wp-content/uploads/2016/04/xPicture2-4.png.pagespeed.ic.dhHNYptsoi.webp" alt="Picture2"/></a></p>
+
+<p>2. If CGLIB is available on the classpath (which comes by default with Spring Boot) and there is no interface to implement a proxy with, CGLIB will be used to make a new object that extends the target bean’s class and acts as a delegate to that original bean. This behavior is also demonstrated by a <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-proxy/src/test/java/org/jdw/blog/ProxyHystrixAspectTest.java#L65">unit test</a> that uses an injected bean without an interface in the <a href="https://github.com/jwilsoncredera/spring-aop-blog/tree/master/spring-aop-proxy">spring-aop-proxy sample project</a>.</p>
+
+<p><a href="https://www.credera.com/wp-content/uploads/2016/04/Picture3-3.png"><img src="https://www.credera.com/wp-content/uploads/2016/04/xPicture3-3.png.pagespeed.ic.W2zdwkeosT.webp" alt="Picture3"/></a></p>
+
+<p>By default, Spring Boot will use JDK proxies if the bean has an interface and CGLIB proxies if the bean does not. If you try to inject a bean using its concrete class and that bean has an interface, Spring will fail to find the bean with a NoSuchBeanDefinitionException because it will fail to create a JDK proxy using the concrete class. In the first example above, that would be using this:</p>
+
+<p>| </p>
+
+<pre><code class="language-java">@Autowired
+private ImplForInterface bean;
 </code></pre>
 
-<ul>
-<li>  (2)【建议】：简洁性</li>
-</ul>
+<p>Instead of this:</p>
 
-<p>保证语义的前提下，控制key的长度，当key较多时，内存占用也不容忽视，例如：</p>
-
-<pre><code>user:{uid}:friends:messages:{mid}简化为u:{uid}:fr:m:{mid}。
+<pre><code class="language-java">@Autowired
+private Interface bean;
 </code></pre>
 
-<ul>
-<li>  (3)【强制】：不要包含特殊字符</li>
-</ul>
+<p>To get around this limitation and be able to inject concrete classes that have interfaces, you have to tell Spring to always use CGLIB for all beans. This will disable Spring’s use of JDK proxies entirely, making Spring always extend concrete classes even if an interface is injected. To enable this in Spring Boot, just add the following Java property, as seen in the <a href="https://github.com/jwilsoncredera/spring-aop-blog/tree/master/spring-aop-proxy-cglib">spring-aop-proxy-cglib</a> sample project’s <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-proxy-cglib/src/main/resources/application.properties">application.properties</a> file:</p>
 
-<p>反例：包含空格、换行、单双引号以及其他转义字符</p>
+<p>spring.aop.proxy-target-class=true</p>
 
-<h3 id="toc_2">2. value设计</h3>
+<p><strong>Spring Proxies: Annotations on Interfaces</strong></p>
 
-<ul>
-<li>  (1)【强制】：拒绝bigkey(防止网卡流量、慢查询)</li>
-</ul>
-
-<p>string类型控制在10KB以内，hash、list、set、zset元素个数不要超过5000。</p>
-
-<p>反例：一个包含200万个元素的list。</p>
-
-<p>非字符串的bigkey，不要使用del删除，使用hscan、sscan、zscan方式渐进式删除，同时要注意防止bigkey过期时间自动删除问题(例如一个200万的zset设置1小时过期，会触发del操作，造成阻塞，而且该操作不会不出现在慢查询中(latency可查))，<a href="#cc1">查找方法</a>和<a href="#cc2">删除方法</a></p>
+<p>Consider an aspect that’s used to weave code around annotated methods (such as the <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-common/src/main/java/org/jdw/blog/common/aspect/HystrixAspect.java">HystrixAspect</a> that targets <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-common/src/main/java/org/jdw/blog/common/annotation/HystrixWrapper.java">@HystrixWrapper</a> annotated methods from part one in this series).</p>
 
 <ul>
-<li>  (2)【推荐】：选择适合的数据类型。</li>
-</ul>
-
-<p>例如：实体类型(要合理控制和使用数据结构内存编码优化配置,例如ziplist，但也要注意节省内存和性能之间的平衡)</p>
-
-<p>反例：</p>
-
-<pre><code>set user:1:name tom
-set user:1:age 19
-set user:1:favor football
-</code></pre>
-
-<p>正例:</p>
-
-<pre><code>hmset user:1 name tom age 19 favor football
-</code></pre>
-
-<h3 id="toc_3">3.【推荐】：控制key的生命周期，redis不是垃圾桶。</h3>
-
-<p>建议使用expire设置过期时间(条件允许可以打散过期时间，防止集中过期)，不过期的数据重点关注idletime。</p>
-
-<h3 id="toc_4">二、命令使用</h3>
-
-<h3 id="toc_5">1.【推荐】 O(N)命令关注N的数量</h3>
-
-<p>例如hgetall、lrange、smembers、zrange、sinter等并非不能使用，但是需要明确N的值。有遍历的需求可以使用hscan、sscan、zscan代替。</p>
-
-<h3 id="toc_6">2.【推荐】：禁用命令</h3>
-
-<p>禁止线上使用keys、flushall、flushdb等，通过redis的rename机制禁掉命令，或者使用scan的方式渐进式处理。</p>
-
-<h3 id="toc_7">3.【推荐】合理使用select</h3>
-
-<p>redis的多数据库较弱，使用数字进行区分，很多客户端支持较差，同时多业务用多数据库实际还是单线程处理，会有干扰。</p>
-
-<h3 id="toc_8">4.【推荐】使用批量操作提高效率</h3>
-
-<pre><code>原生命令：例如mget、mset。
-非原生命令：可以使用pipeline提高效率。
-</code></pre>
-
-<p>但要注意控制一次批量操作的<strong>元素个数</strong>(例如500以内，实际也和元素字节数有关)。</p>
-
-<p>注意两者不同：</p>
-
-<pre><code>1\. 原生是原子操作，pipeline是非原子操作。
-2\. pipeline可以打包不同的命令，原生做不到
-3\. pipeline需要客户端和服务端同时支持。
-</code></pre>
-
-<h3 id="toc_9">5.【建议】Redis事务功能较弱，不建议过多使用</h3>
-
-<p>Redis的事务功能较弱(不支持回滚)，而且集群版本(自研和官方)要求一次事务操作的key必须在一个slot上(可以使用hashtag功能解决)</p>
-
-<h3 id="toc_10">6.【建议】Redis集群版本在使用Lua上有特殊要求：</h3>
+<li>  When a Spring JDK proxy is used, the join point annotation should be present on both the interface’s method and the concrete class’s method for the aspect to trigger correctly.
 
 <ul>
-<li>  1.所有key都应该由 KEYS 数组来传递，redis.call/pcall 里面调用的redis命令，key的位置，必须是KEYS array, 否则直接返回error，&quot;-ERR bad lua script for redis cluster, all the keys that the script uses should be passed using the KEYS array&quot;</li>
-<li>  2.所有key，必须在1个slot上，否则直接返回error, &quot;-ERR eval/evalsha command keys must in same slot&quot;</li>
+<li>  The <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-proxy/src/test/java/org/jdw/blog/ProxyHystrixAspectTest.java#L72">second to last test in the spring-aop-proxy test class</a> proves that both the interface and the concrete class require the join point annotation when a JDK proxy is used.</li>
+</ul></li>
+<li>  When a CGLIB proxy is used, the concrete implementation must have the annotation on its method for the aspect to trigger.
+
+<ul>
+<li>  The <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-proxy-cglib/src/test/java/org/jdw/blog/ProxyCglibHystrixAspectTest.java#L96">second to last test in the spring-aop-proxy-cglib test class</a> proves that the interface’s join point annotations are ignored when CGLIB is used.</li>
+</ul></li>
 </ul>
 
-<h3 id="toc_11">7.【建议】必要情况下使用monitor命令时，要注意不要长时间使用。</h3>
+<p>The <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-proxy/src/test/java/org/jdw/blog/ProxyHystrixAspectTest.java#L48">JDK proxy unit test that expects an <strong>InaccessablePointcutAnnotationException</strong></a> is of particular interest. It demonstrates that if you’re using a JDK proxy and the join point annotation is present on the concrete implementation of a bean and not on its interface, the aspect will still trigger but it won’t be able to find the annotation that was used to trigger it. This prevents us from finding the Hystrix command group key that should come from the wrapped method’s annotation, as shown in the bold parts of the example below. (<a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-common/src/main/java/org/jdw/blog/common/annotation/HystrixWrapper.java">This</a> is the GitHub link for the @HystrixWrapper annotation, and <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-common/src/main/java/org/jdw/blog/common/aspect/HystrixAspect.java">this</a> is the link for the HystrixAspect.)</p>
 
-<h3 id="toc_12">三、客户端使用</h3>
+<pre><code class="language-java">@Retention(RetentionPolicy.RUNTIME)
+@Target(ElementType.METHOD)
+public @interface HystrixWrapper {
+  public String commandGroupKey();
+}
+@Aspect
+@Component
+public class HystrixAspect {
 
-<h3 id="toc_13">1.【推荐】</h3>
+  @Around(&quot;within(org.jdw.blog..*) &amp;amp;&amp;amp; &quot;  &quot;@annotation(org.jdw.blog.common.annotation.HystrixWrapper)&quot;)
+  public Object around(final ProceedingJoinPoint joinPoint) {
 
-<p>避免多个应用使用一个Redis实例</p>
+    Method method = ((MethodSignature) joinPoint.getSignature()).getMethod();
+    HystrixWrapper annotation = method.getAnnotation(HystrixWrapper.class);
+    if (annotation == null) {      // Can occur when not using CCGLIB-style &#39;subclass&#39; proxies,
+      // when using an interface that has a concrete class
+      // that has the annotation.
+      throw new InaccessablePointcutAnnotationException();    }
 
-<p>正例：不相干的业务拆分，公共数据做服务化。</p>
-
-<h3 id="toc_14">2.【推荐】</h3>
-
-<p>使用带有连接池的数据库，可以有效控制连接，同时提高效率，标准使用方式：</p>
-
-<pre><code>执行命令如下：
-Jedis jedis = null;
-try {
-    jedis = jedisPool.getResource();
-    //具体的命令
-    jedis.executeCommand()
-} catch (Exception e) {
-    logger.error(&quot;op key {} error: &quot; + e.getMessage(), key, e);
-} finally {
-    //注意这里不是关闭连接，在JedisPool模式下，Jedis会被归还给资源池。
-    if (jedis != null) 
-        jedis.close();
+    // Hystrix invocation code goes here, see GitHub for details. 
+    // [https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-common/src/main/java/org/jdw/blog/common/aspect/HystrixAdvice.java](https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-common/src/main/java/org/jdw/blog/common/aspect/HystrixAdvice.java)
+  }
 }
 </code></pre>
 
-<p>下面是JedisPool优化方法的文章:</p>
+<p><strong>I recommend always using CGLIB to avoid this edge case.</strong> Doing so makes all Spring proxy behavior consistent since JDK proxies will never be used, it allows the injection of concrete implementations of beans which can be useful for unit tests, and it negates the need to duplicate join point annotations on interfaces and concrete classes (which could easily get out of sync). As a reminder, to always use CGLIB, just set the “spring.aop.proxy-target-class” property to true.</p>
 
-<ul>
-<li>  <a href="https://yq.aliyun.com/articles/236384">Jedis常见异常汇总</a></li>
-<li>  <a href="https://yq.aliyun.com/articles/236383">JedisPool资源池优化</a></li>
-</ul>
+<p>Before using CGLIB, ensure your codebase always uses pre-existing AOP annotations (such as @Transactional) on concrete classes instead of only on interfaces. Interface-only AOP annotations will be ignored when CGLIB is enabled. Changing when @Transactional aspects are triggered could lead to items not being saved to the database, or poor performance due to transactional boundary shifting.</p>
 
-<h3 id="toc_15">3.【建议】</h3>
+<p><strong>Spring Proxies: Annotations in Concrete Classes</strong></p>
 
-<p>高并发下建议客户端添加熔断功能(例如netflix hystrix)</p>
+<p>Both JDK- and CGLIB-style Spring proxies have one glaring weakness—AOP can only be invoked by calling a method on an injected bean. Consider a bean with these two methods (all of the classes in <a href="https://github.com/jwilsoncredera/spring-aop-blog/tree/master/spring-aop-common/src/main/java/org/jdw/blog/common/executable">this package</a> qualify):</p>
 
-<h3 id="toc_16">4.【推荐】</h3>
+<pre><code class="language-java">@HystrixWrapper(commandGroupKey = &quot;blog&quot;)
+public long hystrixWrappedGetCurrentThreadId() {
+  return getCurrentThreadId();
+}
 
-<p>设置合理的密码，如有必要可以使用SSL加密访问（阿里云Redis支持）</p>
-
-<h3 id="toc_17">5.【建议】</h3>
-
-<p>根据自身业务类型，选好maxmemory-policy(最大内存淘汰策略)，设置好过期时间。</p>
-
-<p>默认策略是volatile-lru，即超过最大内存后，在过期键中使用lru算法进行key的剔除，保证不过期数据不被删除，但是可能会出现OOM问题。</p>
-
-<h4 id="toc_18">其他策略如下：</h4>
-
-<ul>
-<li>  allkeys-lru：根据LRU算法删除键，不管数据有没有设置超时属性，直到腾出足够空间为止。</li>
-<li>  allkeys-random：随机删除所有键，直到腾出足够空间为止。</li>
-<li>  volatile-random:随机删除过期键，直到腾出足够空间为止。</li>
-<li>  volatile-ttl：根据键值对象的ttl属性，删除最近将要过期数据。如果没有，回退到noeviction策略。</li>
-<li>  noeviction：不会剔除任何数据，拒绝所有写入操作并返回客户端错误信息&quot;(error) OOM command not allowed when used memory&quot;，此时Redis只响应读操作。</li>
-</ul>
-
-<h3 id="toc_19">四、相关工具</h3>
-
-<h4 id="toc_20">1.【推荐】：数据同步</h4>
-
-<p>redis间数据同步可以使用：redis-port</p>
-
-<p><a></a></p>
-
-<h4 id="toc_21">2.【推荐】：big key搜索</h4>
-
-<p><a href="https://yq.aliyun.com/articles/117042">redis大key搜索工具</a></p>
-
-<h4 id="toc_22">3.【推荐】：热点key寻找(内部实现使用monitor，所以建议短时间使用)</h4>
-
-<p><a href="https://github.com/facebookarchive/redis-faina">facebook的redis-faina</a></p>
-
-<pre><code>阿里云Redis已经在内核层面解决热点key问题，欢迎使用。
-</code></pre>
-
-<p><a></a></p>
-
-<h2 id="toc_23">五 附录：删除bigkey</h2>
-
-<pre><code>1\. 下面操作可以使用pipeline加速。
-2\. redis 4.0已经支持key的异步删除，欢迎使用。
-</code></pre>
-
-<h4 id="toc_24">1. Hash删除: hscan + hdel</h4>
-
-<pre><code>public void delBigHash(String host, int port, String password, String bigHashKey) {
-    Jedis jedis = new Jedis(host, port);
-    if (password != null &amp;&amp; !&quot;&quot;.equals(password)) {
-        jedis.auth(password);
-    }
-    ScanParams scanParams = new ScanParams().count(100);
-    String cursor = &quot;0&quot;;
-    do {
-        ScanResult&lt;Entry&lt;String, String&gt;&gt; scanResult = jedis.hscan(bigHashKey, cursor, scanParams);
-        List&lt;Entry&lt;String, String&gt;&gt; entryList = scanResult.getResult();
-        if (entryList != null &amp;&amp; !entryList.isEmpty()) {
-            for (Entry&lt;String, String&gt; entry : entryList) {
-                jedis.hdel(bigHashKey, entry.getKey());
-            }
-        }
-        cursor = scanResult.getStringCursor();
-    } while (!&quot;0&quot;.equals(cursor));
-
-    //删除bigkey
-    jedis.del(bigHashKey);
+public long nestedHystrixWrappedGetCurrentThreadId() {
+  return hystrixWrappedGetCurrentThreadId();
 }
 </code></pre>
 
-<h4 id="toc_25">2. List删除: ltrim</h4>
+<p>The second method cannot trigger the HystrixAspect when calling the first method because it invokes the first method directly without going through a Spring proxy—the bean is just calling one of its own methods. Spring doesn’t have any opportunities to inject the aspect code. This is demonstrated by every other test in both the <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-proxy/src/test/java/org/jdw/blog/ProxyHystrixAspectTest.java#L42">spring-aop-proxy test class</a> and <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-proxy-cglib/src/test/java/org/jdw/blog/ProxyCglibHystrixAspectTest.java#L41">spring-aop-proxy-cglib test class</a> (all the tests that start with “testNestedHystrixWrappedMethod”).</p>
 
-<pre><code>public void delBigList(String host, int port, String password, String bigListKey) {
-    Jedis jedis = new Jedis(host, port);
-    if (password != null &amp;&amp; !&quot;&quot;.equals(password)) {
-        jedis.auth(password);
-    }
-    long llen = jedis.llen(bigListKey);
-    int counter = 0;
-    int left = 100;
-    while (counter &lt; llen) {
-        //每次从左侧截掉100个
-        jedis.ltrim(bigListKey, left, llen);
-        counter += left;
-    }
-    //最终删除key
-    jedis.del(bigListKey);
+<p>However, when AspectJ is used instead of Spring proxies, the HystrixAspect <u>does</u> trigger when a bean calls its own join point annotated method. This is shown by every other test in the <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-aspectj-ltw/src/test/java/org/jdw/blog/AspectJHystrixAspectTest.java#L41">spring-aop-aspectj-ltw test class</a> (which also begin with “testNestedHystrixWrappedMethod”)—every scenario that fails to invoke the Hystrix aspect for Spring proxies succeeds for AspectJ (except for <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-aspectj-ltw/src/test/java/org/jdw/blog/AspectJHystrixAspectTest.java#L101">one specific scenario</a> which will be covered later). How can this be?</p>
+
+<p><strong>AspectJ</strong></p>
+
+<p>AspectJ extends the Java compiler to weave aspect code directly into join points. It doesn’t require Spring to run. Instead, you need to use <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-aspectj-ltw/README.md">JVM arguments</a> to enable a compiler extension along with an <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-aspectj-ltw/src/main/resources/META-INF/aop.xml">aop.xml file</a> and <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-aspectj-ltw/src/main/java/org/jdw/blog/config/AspectJConfig.java">another configuration file</a> which will be covered in part three of this series.</p>
+
+<p>This has two important ramifications. First, if you’re using AspectJ, you don’t need to inject Spring beans to invoke AOP functionality. Technically you don’t even need Spring beans for AOP at all when AspectJ is enabled—you could manually create a new object and invoke AOP code on it right away if it had join points your aspects could target.</p>
+
+<p>Second, if an object calls its own methods it can trigger AOP code, unlike AOP using Spring proxies. Here’s a visual example of how this AspectJ behavior would look if the @HystrixAspect used @Before instead of @Around to inject code in front of its join point targets instead of completely wrapping them (because it’s easier to depict):</p>
+
+<p><a href="https://www.credera.com/wp-content/uploads/2016/04/Picture5-2.png"><img src="https://www.credera.com/wp-content/uploads/2016/04/xPicture5-2.png.pagespeed.ic.PXtdJ6_MY_.webp" alt="Picture5"/></a></p>
+
+<p>The fact that beans can trigger their own AOP code means you need to be very careful when enabling AspectJ on existing Spring projects, because this can change when database transactions are started by @Transactional annotations. For example, if you had a bean with two methods and one didn’t have an @Transactional annotation and it called another one that did, then that invocation would start a database transaction with AspectJ enabled but not with default Spring proxy-based AOP.</p>
+
+<pre><code class="language-java">public void notAnnotated() {
+  annotated();
+}
+
+@Transactional
+public void annotated() {
+  // With AspectJ, a direct call from notAnnotated will enable the transaction.
+  // Without it, this method will only get a transaction if it was called from a Spring proxy.
 }
 </code></pre>
 
-<h4 id="toc_26">3. Set删除: sscan + srem</h4>
+<p>Luckily, there is a way around this issue—AspectJ and Spring proxies can co-exist. The <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-aspectj-ltw/src/main/resources/META-INF/aop.xml">aop.xml file</a> lets you decide which aspects will be managed by AspectJ and which packages are included or excluded from AspectJ code weaving. If you exclude classes that use @Transactional from AspectJ weaving, their behavior will default to the same Spring proxy behavior they were using before. Stay tuned for part three of this series, which covers how to configure an aop.xml file.</p>
 
-<pre><code>public void delBigSet(String host, int port, String password, String bigSetKey) {
-    Jedis jedis = new Jedis(host, port);
-    if (password != null &amp;&amp; !&quot;&quot;.equals(password)) {
-        jedis.auth(password);
-    }
-    ScanParams scanParams = new ScanParams().count(100);
-    String cursor = &quot;0&quot;;
-    do {
-        ScanResult&lt;String&gt; scanResult = jedis.sscan(bigSetKey, cursor, scanParams);
-        List&lt;String&gt; memberList = scanResult.getResult();
-        if (memberList != null &amp;&amp; !memberList.isEmpty()) {
-            for (String member : memberList) {
-                jedis.srem(bigSetKey, member);
-            }
-        }
-        cursor = scanResult.getStringCursor();
-    } while (!&quot;0&quot;.equals(cursor));
+<p><strong>What About That Unit Test Where AspectJ Didn’t Work?</strong></p>
 
-    //删除bigkey
-    jedis.del(bigSetKey);
+<p>As noted earlier, every other test in the <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-aspectj-ltw/src/test/java/org/jdw/blog/AspectJHystrixAspectTest.java#L41">spring-aop-aspectj unit test</a> (which each begin with “testNestedHystrixWrappedMethod”) demonstrates how beans can trigger the HystrixAspect when calling their own @HystrixWrapper join point annotated methods without going through Spring beans… except for the <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-aspectj-ltw/src/test/java/org/jdw/blog/AspectJHystrixAspectTest.java#L102">last test</a>.</p>
+
+<p>That last test invokes the “nestedGetCurrentThreadId” method on a Spring CGLIB proxy of a class similar to the example below (<a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-common/src/main/java/org/jdw/blog/common/executable/NonAnnotatedImplForInterfaceWithAnnotation.java#L22">GitHub link for the original class</a>). The class’s interface annotates “getCurrentThreadId” with @HystrixWrapper, but the concrete class itself does not. Thus, when “getCurrentThreadId” is invoked by “nestedGetCurrentThreadId” within the CGLIB proxy, AspectJ looks at the concrete class instead of the interface and can’t find the @HystrixWrapper join point. Therefore, the HystrixAspect is not woven.</p>
+
+<pre><code class="language-java">@Override
+public long getCurrentThreadId () {
+  return Thread.currentThread().getId();
+}
+
+@Override
+public long nestedGetCurrentThreadId () {
+  return getCurrentThreadId();
 }
 </code></pre>
 
-<h4 id="toc_27">4. SortedSet删除: zscan + zrem</h4>
+<p>The takeaway from this scenario is that you should always put join point annotations on concrete classes when using AspectJ, just like you should when using Spring CGLIB proxies for AOP.</p>
 
-<pre><code>public void delBigZset(String host, int port, String password, String bigZsetKey) {
-    Jedis jedis = new Jedis(host, port);
-    if (password != null &amp;&amp; !&quot;&quot;.equals(password)) {
-        jedis.auth(password);
-    }
-    ScanParams scanParams = new ScanParams().count(100);
-    String cursor = &quot;0&quot;;
-    do {
-        ScanResult&lt;Tuple&gt; scanResult = jedis.zscan(bigZsetKey, cursor, scanParams);
-        List&lt;Tuple&gt; tupleList = scanResult.getResult();
-        if (tupleList != null &amp;&amp; !tupleList.isEmpty()) {
-            for (Tuple tuple : tupleList) {
-                jedis.zrem(bigZsetKey, tuple.getElement());
-            }
-        }
-        cursor = scanResult.getStringCursor();
-    } while (!&quot;0&quot;.equals(cursor));
+<p><strong>Next Steps</strong></p>
 
-    //删除bigkey
-    jedis.del(bigZsetKey);
-}
-</code></pre>
-
-<h3 id="toc_28">招聘：<a href="https://job.alibaba.com/zhaopin/position_detail.htm?positionId=40132">阿里云-技术专家-KVstore</a></h3>
-
-<p>岗位描述：</p>
-
-<ul>
-<li>  负责阿里云Redis源码开发维护</li>
-<li>  负责阿里云Redis cluster开发与设计</li>
-</ul>
-
-<p>岗位要求：</p>
-
-<ul>
-<li>  精通C/C++，熟悉TCP， Linux Kernel等优先</li>
-<li>  数据结构，算法等基础知识扎实</li>
-<li>  5年后台系统的设计与开发，或3年分布式系统的设计与开发，运维过大型分布式系统</li>
-<li>  精通至少一项开源NoSQL产品。Redis，mongodb,memcached等优先。</li>
-<li>  有云服务产品或基于SSD的系统开发经验优先</li>
-<li>  善于创新，乐于挑战，有责任心，良好团队精神</li>
-<li>  良好的表达能力，能够清晰和准确地描述问题，发现并解决问题能力</li>
-</ul>
+<p>Stay tuned for the third and final entry in this blog series, which will cover how to configure AspectJ for Spring Boot. It contains a critical piece of JVM configuration information that isn’t widely found in other tutorials (including Spring’s own documentation), so be sure to catch the next entry by following @CrederaOpen on Twitter or connecting with us on LinkedIn.</p>
 
                         
                       </div>
@@ -428,10 +276,10 @@ try {
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/4/25</span>
+                    <span class="date">2018/5/31</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Middleware.html'>Middleware</a></span>
+          					    <span class="posted-in"><a href='Java.html'>Java</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -521,31 +369,31 @@ try {
 	      
 		      
 			      <li class="post">
-			        <a href="15337171704262.html">Introduction to Testing with Spock and Groovy</a>
+			        <a href="15358820607055.html">Java 8 Concurrency Tutorial: Atomic Variables and ConcurrentMap</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15336595358049.html">10 Excellent Ways to Secure Your Spring Boot Application</a>
+			        <a href="15358774987730.html">Java 8 Concurrency Tutorial: Synchronization and Locks</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15336592302916.html">First MicroProfile.io application using Java Module System</a>
+			        <a href="15358757119900.html">Java 8 Concurrency Tutorial: Threads and Executors</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15332186142588.html">Jenkins 的 Pipeline 脚本在美团餐饮 SaaS 中的实践</a>
+			        <a href="15358756631902.html">Java 8 Stream Tutorial</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15331749691571.html">基于ZooKeeper的分布式锁和队列</a>
+			        <a href="15358753472382.html">Migrate Maven Projects to Java 11</a>
 			      </li>
 		     
 		  

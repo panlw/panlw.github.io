@@ -105,100 +105,101 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15278296738721.html">
+                <a class="clearlink" href="15290745541526.html">
                 
-                  <h1>Install NGINX + PHP + OCI8 + PDO_OCI on Mac OSX</h1>
+                  <h1>蚂蚁金服RPC框架结构分析</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
-                        	<h2 id="toc_0">1. Download</h2>
-
-<h3 id="toc_1"><a href="http://www.oracle.com/technetwork/database/database-technologies/instant-client/overview/index.html">Download Instant Client</a></h3>
-
-<blockquote>
-<p><a href="https://gist.github.com/alexbonhomme/0d5976f2126bcde34b817e0143be0dff">https://gist.github.com/alexbonhomme/0d5976f2126bcde34b817e0143be0dff</a></p>
+                        	<blockquote>
+<p><a href="https://juejin.im/post/5b0573046fb9a07aa542ad58">https://juejin.im/post/5b0573046fb9a07aa542ad58</a></p>
 </blockquote>
 
-<ul>
-<li>instantclient-basic</li>
-<li>instantclient-sqlplus</li>
-<li>instantclient-sdk</li>
-</ul>
+<p>蚂蚁金服近期开源了研发多年的SOFA一篮子框架，其中就有一个非常核心的RPC框架，它叫SOFA-BOLT。小编今天花了近一天的时间仔细阅读研究它的源码，阅读过程中遇到了不少问题，蚂蚁金服的相关技术人员都非常耐心的及时解答了我的疑难。这里将我从中学到的知识点一并分享给大家。</p>
 
-<h3 id="toc_2"><a href="http://php.net/downloads.php">Download PHP Source</a></h3>
+<p>SOFA-BOLT基于开源的Netty框架，同时提供了服务器和客户端的实现。它的源码非常值得一读，结构简单，考虑周全，绝不是一个普通的玩具。它没有滥用设计模式，源码阅读起来比较直接，没有太多绕来绕去的复杂结构。</p>
 
-<ul>
-<li>php-x.y.z.tar.xz</li>
-</ul>
+<p><img src="media/15290745541526/15290751810439.jpg" alt=""/></p>
 
-<h3 id="toc_3">Unzip all packages under <code>~/opt/</code> then get <code>~/opt/instantclient_V_R/</code> and <code>~/opt/php-x.y.z</code></h3>
+<p>一个节点既可以同时既是RPC服务器又是客户端，作为客户端该节点需要其它节点提供服务，作为服务器它可以为其它节点提供服务。不过上面这张图并不是合理的结构，因为两个服务相互耦合了，我需要你，你也需要我，就成了鸡蛋问题。比较合理的结构一般如下图所示，它们之间不构成环。<br/>
+<img src="media/15290745541526/15290751964181.jpg" alt=""/></p>
 
-<h2 id="toc_4">2. Install OCI</h2>
+<h2 id="toc_0">通讯协议</h2>
 
-<pre><code class="language-sh">. ~/src/bash/bash_profile.d/ora12c.sh
+<p>通讯协议是客户端和服务器之间交流的语言，SOFA定义了自己的一套通讯协议，它的编码解码分为二层，第一层是消息体对象的二进制序列化，这部分默认由开源的Hession协议库序列化完成，第二层是负责给序列化的消息体增加一系列包装字段，形成一个完整的消息。包括请求ID、消息体的长度、协议版本号和CRC32校验位等等<br/>
+如果希望进一步优化网络性能，SOFA还提供了Snappy压缩协议，可以在现有的两层协议基础上增加第三层，能显著降低网络传输负担。压缩是时间换空间，提升网络性能的同时，它也会加重CPU计算，所以在使用时需要适当进行权衡。</p>
 
-ln -s ~/opt/instantclient_V_R/sdk/include/*.h /usr/local/include/
-ln -s ~/opt/instantclient_V_R/sqlplus /usr/local/bin/
-ln -s ~/opt/instantclient_V_R/*.dylib /usr/local/lib/
-ln -s ~/opt/instantclient_V_R/*.dylib.V.1 /usr/local/lib/
-ln -s /usr/local/lib/libocci.dylib.V.1 /usr/local/lib/libocci.dylib
-ln -s /usr/local/lib/libclntsh.dylib.V.1 /usr/local/lib/libclntsh.dylib
+<p><img src="media/15290745541526/15290752045597.jpg" alt=""/></p>
+
+<h2 id="toc_1">连接池</h2>
+
+<p>客户端和服务器之间一般需要建立多个连接，但是也不能每个请求都建立一个连接。一般是通过维护一个连接池，限定最大连接数。客户端通过有限的连接来和服务器进行通信。</p>
+
+<p>我们在使用Jedis客户端和Redis服务器进行通信时，也是通过连接池来获取连接的。Jedis的连接必须是线程独占的，因为它不是线程安全的。从连接池中获取连接时，其它线程就暂时拿不到这个连接了，待当前线程处理完毕后，要将连接归还给线程池，这样其它线程才可以继续使用这个连接。</p>
+
+<p><img src="media/15290745541526/15290752153060.jpg" alt=""/></p>
+
+<p>Redis的客户端请求和应答是顺序性的，一问一答，所以请求和应答不需要唯一ID就可以建立起关联。</p>
+
+<p>Bolt不一样，它的问答是乱序的，问和答之间是必须通过请求的唯一ID来建立起关联。Bolt的客户端是线程安全的，它可以同时传递多个请求，连接对象会维护一个正在处理的RPC请求对象字典。当客户端想要发起RPC请求时，它不是从连接池中摘出一个独占连接，而是随意选择一个连接来传递自己的请求，这个连接也可以被其它线程同时使用。</p>
+
+<h2 id="toc_2">负载均衡</h2>
+
+<p>客户端提供了多种复杂均衡的实现，阿里默认使用带权重的随机算法(RandomLoadBalancer)，此外还有</p>
+
+<ol>
+<li>ConsistentHashLoaderBalancer 一致性hash，客户端和服务器之间的连接关系(谁跟谁连)比较稳定</li>
+<li>LocalPreferenceLoadBalancer 本地环回地址优先，提升本机调用性能</li>
+<li>RoundRobinLoadBalancer 循环依次来</li>
+<li>WeightedRoundRobinLoadBalancer 带权重的循环依次来</li>
+<li>RandomLoadBalancer 这个是带权重的随机，阿里的默认使用</li>
+</ol>
+
+<h2 id="toc_3">服务器线程模型</h2>
+
+<p>服务器采用传统netty多线程模型，一个acceptor线程专门用来接收连接，然后扔给io线程处理读消息并解码成请求对象，最后扔给业务线程池进行处理。<br/>
+<img src="media/15290745541526/15290752347331.jpg" alt=""/></p>
+
+<h2 id="toc_4">心跳</h2>
+
+<p>客户端和服务器之间会有定时心跳检测连接的存活，默认30s来一次。tcp的关闭是通过FIN包来通知对方的，如果因为网络问题，对方连FIN包都收不到，那么即使一边关闭了套接字，另一边可能还以为连接正常。所以心跳检测存活机制在长连接应用里非常普遍。如果客户端连续发了三次心跳都没有收到服务器的回复，那么就认为连接已经关闭。服务器也会有连接存活检测，如果一个客户端连接90s内没有任何消息进来，那么也认为该连接已经断开。服务器不会主动发送心跳消息。</p>
+
+<h2 id="toc_5">双工通信</h2>
+
+<p>RPC一般是由客户端向服务器发起一个请求，然后收到服务器的应答。Bolt的RPC是双工通信，服务器也可以向客户端主动发起请求，它们共享一个TCP连接。TCP连接本身就是双工的，所以这也不算什么奇迹。只是服务器在什么业务场景需要向客户端主动发起请求，这个蚂蚁并没有进行详细说明。<br/>
+<img src="media/15290745541526/15290752519556.jpg" alt=""/></p>
+
+<p>客户端作为主动连接方，它要负责重连和发起心跳消息。服务器作为被动方，它不需要处理重连，如果连接断开，它就直接将连接从集合中移除就行，不需要做特殊的处理，但是它会检测心跳消息，如果在一定时间内连接通道没有任何消息到来，它就会主动关闭。</p>
+
+<h2 id="toc_6">重连</h2>
+
+<p>客户端的重连策略是一个单独的模块，有两个地方会成为重连的入口。一个是正常连接断开触发channelInActive回调，另一个就是重连连接不能建立成功时需要进行重试。Bolt有一个单独的重连线程，所有需要重连的连接会被包装成一个任务塞进这个线程的任务队列，该线程不断地从队列里拿任务进行重连处理，如果重连失败会尝试再将任务重新包装进队列延后继续处理。默认是1s钟处理一个重连任务。<br/>
+<img src="media/15290745541526/15290752597075.jpg" alt=""/></p>
+
+<p>RPC连接是延迟建立的，它在第一次客户端发送RPC请求时尝试进行连接，如果连接失败，它会立即继续重连最多默认两次。如果三次尝试连接后还是没有建立成功，就向上层爆出异常。它不需要包装一个重连任务塞进ReconnectManager，因为后续客户端请求会继续触发连接。</p>
+
+<h2 id="toc_7">单向消息</h2>
+
+<p>RPC通常是一应一答，客户端可以同步等待响应，也可以提供回调接口等待结果通知。Bolt除了提供应答模式之外，还提供了oneway单向消息，这种消息服务器收到后不用回复，客户端发送请求之后就立即返回了也不需要等待结果。<br/>
+oneway消息一般用于不那么重要的日志类消息，它不能保证服务器一定能收到，所以此种业务消息应该是那种允许丢失的消息，形式上类似于UDP，它在牺牲可靠性的前提下能大幅提升消息的吞吐量。</p>
+
+<h2 id="toc_8">消息追踪</h2>
+
+<p>Bolt提供了回调接口，方便监控系统可以对请求的调用状况进行分析。监控的客户端可以通过实现该接口，注册进RPC的客户端和服务器进行打点收集日志，然后发送到日志分析系统。</p>
+
+<pre><code>`interface Tracer {
+    void startRpc(SofaRequest request);
+    void serverReceived(SofaRequest request);
+    void serverSend(SofaRequest request, SofaResponse response, Throwable throwable);
+    void clientReceived(SofaRequest request, SofaResponse response, Throwable throwable);
+    ...
+}`
 </code></pre>
 
-<pre><code>pecl install oci8
-</code></pre>
+<h2 id="toc_9">总结</h2>
 
-<blockquote>
-<p>If the script prompt you to provide the path to ORACLE_HOME directory, respond with:<br/>
-instantclient,/usr/local/lib</p>
-</blockquote>
-
-<h3 id="toc_5">Bash Profile: ~/src/bash/bash_profile.d/ora12c.sh</h3>
-
-<pre><code class="language-sh"># Oracle Instant CLient 12c
-export ORACLE_HOME=${HOME}/opt/instantclient_12_2
-export TNS_ADMIN=${ORACLE_HOME}/network/admin
-export LD_LIBRARY_PATH=${ORACLE_HOME}:${LD_LIBRARY_PATH}
-export PATH=${PATH}:${ORACLE_HOME}
-</code></pre>
-
-<h3 id="toc_6">TNS Config: <code>${TNS_ADMIN}/tnsnames.ora</code></h3>
-
-<pre><code class="language-ora">DBT1 =
-  (DESCRIPTION =
-    (ADDRESS_LIST =
-      (ADDRESS = (PROTOCOL = TCP)(HOST = a.b.c.d)(PORT = 1521))
-    )
-    (CONNECT_DATA =
-      (SERVICE_NAME = dbt1)
-    )
-  )
-</code></pre>
-
-<pre><code class="language-sh">sqlplus USERNAME/PASSWORD@DBT1
-</code></pre>
-
-<h2 id="toc_7">3. Install PDO_OCI (by PECL)</h2>
-
-<pre><code class="language-sh">cd ~/opt/php-7.2.5/ext/pdo_oci
-phpize
-./configure --with-pdo-oci=instantclient,/usr/local/lib,12.2
-ls /usr/local/lib/php/pecl/20170718/
-</code></pre>
-
-<h2 id="toc_8">4. Config PHP Extensions</h2>
-
-<p>/usr/local/etc/php/7.2/conf.d/ext-oci8.ini</p>
-
-<pre><code class="language-ini">extension=oci8.so
-extension=pdo_oci.so
-</code></pre>
-
-<h2 id="toc_9">5. Restart PHP Service</h2>
-
-<pre><code class="language-sh">brew services restart php
-</code></pre>
+<p>Bolt是一个成熟的比较复杂的RPC系统，这篇小文章只讲解了其中一部分，内部还有大量的实现细节有待去挖掘。</p>
 
                         
                       </div>
@@ -207,12 +208,10 @@ extension=pdo_oci.so
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/6/1</span>
+                    <span class="date">2018/6/15</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Database.html'>Database</a></span>
-          				  
-          					    <span class="posted-in"><a href='Bash.html'>Bash</a></span>
+          					    <span class="posted-in"><a href='Microservice.html'>Microservice</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -302,31 +301,31 @@ extension=pdo_oci.so
 	      
 		      
 			      <li class="post">
-			        <a href="15337171704262.html">Introduction to Testing with Spock and Groovy</a>
+			        <a href="15358820607055.html">Java 8 Concurrency Tutorial: Atomic Variables and ConcurrentMap</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15336595358049.html">10 Excellent Ways to Secure Your Spring Boot Application</a>
+			        <a href="15358774987730.html">Java 8 Concurrency Tutorial: Synchronization and Locks</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15336592302916.html">First MicroProfile.io application using Java Module System</a>
+			        <a href="15358757119900.html">Java 8 Concurrency Tutorial: Threads and Executors</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15332186142588.html">Jenkins 的 Pipeline 脚本在美团餐饮 SaaS 中的实践</a>
+			        <a href="15358756631902.html">Java 8 Stream Tutorial</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15331749691571.html">基于ZooKeeper的分布式锁和队列</a>
+			        <a href="15358753472382.html">Migrate Maven Projects to Java 11</a>
 			      </li>
 		     
 		  

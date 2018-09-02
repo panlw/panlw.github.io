@@ -105,224 +105,292 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15277833297034.html">
+                <a class="clearlink" href="15288661714760.html">
                 
-                  <h1>揭秘JDBC超时机制</h1>
+                  <h1>Python最广为使用的并发库futures使用入门与内部原理</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://mp.weixin.qq.com/s?__biz=MzAxNjM2MTk0Ng==&amp;mid=2247484354&amp;idx=1&amp;sn=6179c839cb309b03421f39b5b65a2374&amp;chksm=9bf4b377ac833a61acd0563fd3a010a18ba7dfd749a4dac933097e153ba99aa322828510e55c&amp;mpshare=1&amp;scene=23&amp;srcid=0531q9DrnbcTctSQuYmLHhtJ%23rd">原文地址</a></p>
+<p><a href="https://mp.weixin.qq.com/s?__biz=MzI0MzQyMTYzOQ==&amp;mid=2247484110&amp;idx=1&amp;sn=66d31f0a59cac900975ca724465d5527&amp;chksm=e96c1a66de1b9370468b2f1ed9b7d669f5c933ff5942550b58479df3197440e664ff7b8f4b48&amp;mpshare=1&amp;scene=23&amp;srcid=0613YZmmW3drwtB11sjqs4ZN%23rd">原文地址</a></p>
 </blockquote>
 
-<p>恰当的JDBC超时设置能够有效地减少服务失效的时间。本文将对数据库的各种超时设置及其设置方法做介绍。</p>
+<p>在使用 Python 处理任务时，限于单线程处理能力有限，需要将任务并行化，分散到多个线程或者是多个进程去执行。</p>
 
-<h3 id="toc_0">真实案例：应用服务器在遭到DDos攻击后无法响应</h3>
+<p>concurrent.futures 就是这样一种库，它可以让用户可以非常方便的将任务并行化。这个名字有点长，后面我直接使用词汇 concurrent 来代替 concurrent.futures。</p>
 
-<p>在遭到DDos攻击后，整个服务都垮掉了。由于第四层交换机不堪重负，网络变得无法连接，从而导致业务系统也无法正常运转。安全组很快屏蔽了所有的DDos攻击，并恢复了网络，但业务系统却还是无法工作。 通过分析系统的thread dump发现，业务系统停在了JDBC API的调用上。20分钟后，系统仍处于WAITING状态，无法响应。30分钟后，系统抛出异常，服务恢复正常。</p>
+<p><img src="media/15288661714760/15288662944396.jpg" alt=""/></p>
 
-<blockquote>
-<p>为什么我们明明将query timeout设置成了3秒，系统却持续了30分钟的WAITING状态？为什么30分钟后系统又恢复正常了？</p>
-</blockquote>
+<p>concurrent 提供了两种并发模型，一个是多线程 ThreadPoolExecutor，一个是多进程 ProcessPoolExecutor。对于 IO 密集型任务宜使用多线程模型。对于计算密集型任务应该使用多进程模型。</p>
 
-<p>当你对理解了JDBC的超时设置后，就能找到问题的答案。</p>
+<p>为什么要这样选择呢？是因为 Python GIL 的存在让 Python 虚拟机在进行运算时无法有效利用多核心。对于纯计算任务，它永远最多只能榨干单个 CPU 核心。如果要突破这个瓶颈，就必须 fork 出多个子进程来分担计算任务。而对于 IO 密集型任务，CPU 使用率往往是极低的，使用多线程虽然会加倍 CPU 使用率，但是还远远到不了饱和 (100%) 的地步，在单核心可以应付整体计算的前提下，自然是应该选择资源占用少的模式，也就是多线程模式。</p>
 
-<h3 id="toc_1">为什么我们要了解JDBC</h3>
+<p>接下来我们分别尝试一下两种模式来进行并行计算。</p>
 
-<p>当遇到性能问题或系统出错时，业务系统和数据库通常是我们最关心的两个部分。在公司里，这两个部分是交由两个不同的部门来负责的，因此各个部门都会集中精力地在自身领域内寻找问题，这样的话，在业务系统和数据库之间的部分就会成为一个盲区。对于Java应用而言，这个盲区就是DBCP数据库连接池和JDBC，本文将集中介绍JDBC。</p>
+<h2 id="toc_0">多线程</h2>
 
-<h3 id="toc_2">什么是JDBC</h3>
+<p><img src="media/15288661714760/15288663302029.jpg" alt=""/></p>
 
-<p>JDBC是Java应用中用来连接关系型数据库的标准API。Sun公司一共定义了4种类型的JDBC，我们主要使用的是第4种，该类型的Driver完全由Java代码实现，通过使用socket与数据库进行通信。</p>
+<p>多线程模式适合 IO 密集型运算，这里我要使用 sleep 来模拟一下慢速的 IO 任务。同时为了方便编写命令行程序，这里使用 Google fire 开源库来简化命令行参数处理。</p>
 
-<p><img src="data:image/gif;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQImWNgYGBgAAAABQABh6FO1AAAAABJRU5ErkJggg==" alt=""/></p>
+<pre><code class="language-py"># coding: utf8
+# t.py
+import time
+import fire
+import threading
+from concurrent.futures import ThreadPoolExecutor, wait
 
-<p>图1 JDBC Type 4.</p>
+# 分割子任务
+def each_task(index):
+    time.sleep(1)  # 睡1s，模拟IO
+    print &quot;thread %s square %d&quot; % (threading.current_thread().ident, index)
+    return index * index  # 返回结果
 
-<p>第4种类型的JDBC通过socket对字节流进行处理，因此也会有一些基本网络操作，类似于<code>HttpClient</code>这种用于网络操作的代码库。当在网络操作中遇到问题的时候，将会消耗大量的cpu资源，并且失去响应超时。如果你之前用过HttpClient，那么你一定遇到过未设置timeout造成的错误。同样，第4种类型的JDBC，若没有合理地设置socket timeout，也会有相同的错误——连接被阻塞。</p>
 
-<p>接下来，就让我们来学习一下如何正确地设置socket timeout，以及需要考虑的问题。</p>
+def run(thread_num, task_num):
+    # 实例化线程池，thread_num个线程
+    executor = ThreadPoolExecutor(thread_num)
+    start = time.time()
+    fs = []  # future列表
+    for i in range(task_num):
+        fs.append(executor.submit(each_task, i))  # 提交任务
+    wait(fs)  # 等待计算结束
+    end = time.time()
+    duration = end - start
+    s = sum([f.result() for f in fs])  # 求和
+    print &quot;total result=%s cost: %.2fs&quot; % (s, duration)
+    executor.shutdown()  # 销毁线程池
 
-<p>应用与数据库间的timeout层级 </p>
-
-<p><img src="data:image/gif;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQImWNgYGBgAAAABQABh6FO1AAAAABJRU5ErkJggg==" alt=""/></p>
-
-<p>图2 Timeout Class.</p>
-
-<p>上图展示了简化后应用与数据库间的timeout层级。（译者注：WAS/BLOC是作者公司的具体应用名称，无需深究） 高级别的timeout依赖于低级别的timeout，只有当低级别的timeout无误时，高级别的timeout才能确保正常。例如，当socket timeout出现问题时，高级别的statement timeout和transaction timeout都将失效。</p>
-
-<p>我们收到的很多评论中提到：</p>
-
-<blockquote>
-<p>即使设置了statement timeout，当网络出错时，应用也无法从错误中恢复。</p>
-</blockquote>
-
-<p><strong>statement timeout无法处理网络连接失败时的超时，它能做的仅仅是限制statement的操作时间</strong>。网络连接失败时的timeout必须交由JDBC来处理。</p>
-
-<p>JDBC的socket timeout会受到操作系统socket timeout设置的影响，这就解释了为什么在之前的案例中，JDBC连接会在网络出错后阻塞30分钟，然后又奇迹般恢复，即使我们并没有对JDBC的socket timeout进行设置。</p>
-
-<p>DBCP连接池位于图2的左侧，你会发现timeout层级与DBCP是相互独立的。DBCP负责的是数据库连接的创建和管理，并不干涉timeout的处理。当连接在DBCP中创建，或是DBCP发送校验query检查连接有效性的时候，socket timeout将会影响这些过程，但并不直接对应用造成影响。</p>
-
-<p>当在应用中调用DBCP的<code>getConnection()</code>方法时，你可以设置获取数据库连接的超时时间，但是这和JDBC的timeout毫不相关。</p>
-
-<p><img src="data:image/gif;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQImWNgYGBgAAAABQABh6FO1AAAAABJRU5ErkJggg==" alt=""/></p>
-
-<p>图3 Timeout for Each Levels.</p>
-
-<h3 id="toc_3">什么是Transaction Timeout？</h3>
-
-<p><strong>transaction timeout</strong>一般存在于框架（Spring, EJB）或应用级。</p>
-
-<p>transaction timeout或许是个相对陌生的概念，简单地说，transaction timeout就是“<code>Statement Timeout * N（需要执行的statement数量） + @（垃圾回收等其他时间）</code>”。transaction timeout用来限制执行statement的总时长。</p>
-
-<p>例如，假设执行一个statement需要0.1秒，那么执行少量statement不会有什么问题，但若是要执行100,000个statement则需要10,000秒（约7个小时）。这时，transaction timeout就派上用场了。EJB CMT (Container Managed Transaction)就是一种典型的实现，它提供了多种方法供开发者选择。但我们并不使用EJB，Spring的transaction timeout设置会更常用一些。在Spring中，你可以使用下面展示的XML或是在源码中使用<code>@Transactional</code>注解来进行设置。</p>
-
-<pre><code>&lt;tx:attributes&gt;  
-        &lt;tx:method name=“…” timeout=“3″/&gt;  
-&lt;/tx:attributes&gt;
+if __name__ == &#39;__main__&#39;:
+    fire.Fire(run)
 </code></pre>
 
-<p>Spring提供的transaction timeout配置非常简单，它会记录每个事务的开始时间和消耗时间，当特定的事件发生时就会对消耗时间做校验，当超出timeout值时将抛出异常。</p>
+<p>运行<code>python t.py 2 10</code>，也就是 2 个线程跑 10 个任务，观察输出</p>
 
-<p>Spring中，数据库连接被保存在ThreadLocal里，这被称为<code>事务同步（Transaction Synchronization）</code>，与此同时，事务的开始时间和消耗时间也被保存下来。当使用这种代理连接创建statement时，就会校验事务的消耗时间。</p>
-
-<p>EJB CMT的实现方式与之类似，其结构本身也十分简单。 当你选用的容器或框架并不支持transaction timeout这一特性，你可以考虑自己来实现。transaction timeout并没有标准的API。Lucy框架的1.5和1.6版本都不支持transaction timeout，但是你可以通过使用Spring的Transaction Manager来达到与之同样的效果。 假设某个事务中包含5个statement，每个statement的执行时间是200ms，其他业务逻辑的执行时间是100ms，那么transaction timeout至少应该设置为1,100ms（200 * 5 + 100）。</p>
-
-<p>什么是Statement Timeout？</p>
-
-<p>statement timeout用来限制statement的执行时长，timeout的值通过调用JDBC的java.sql.Statement.setQueryTimeout(int timeout) API进行设置。不过现在开发者已经很少直接在代码中设置，而多是通过框架来进行设置。 以iBatis为例，statement timeout的默认值可以通过sql-map-config.xml中的defaultStatementTimeout 属性进行设置。同时，你还可以设置sqlmap中select，insert，update标签的timeout属性，从而对不同sql语句的超时时间进行独立的配置。 如果你使用的是Lucy1.5或1.6版本，通过设置queryTimeout属性可以在datasource层面对statement timeout进行设置。 statement timeout的具体值需要依据应用本身的特性而定，并没有可供推荐的配置。</p>
-
-<p>JDBC的statement timeout处理过程<br/>
-不同的关系型数据库，以及不同的JDBC驱动，其statement timeout处理过程会有所不同。其中，Oracle和MS SQLServer的处理相类似，MySQL和CUBRID类似。</p>
-
-<p><strong>Oracle JDBC Statement的QueryTimeout处理过程</strong></p>
-
-<ol>
-<li><p>通过调用Connection的createStatement()方法创建statement</p></li>
-<li><p>调用Statement的executeQuery()方法</p></li>
-<li><p>statement通过自身connection将query发送给Oracle数据库</p></li>
-<li><p>statement在OracleTimeoutPollingThread（每个classloader一个）上进行注册</p></li>
-<li><p>达到超时时间</p></li>
-<li><p>OracleTimeoutPollingThread调用OracleStatement的cancel()方法</p></li>
-<li><p>通过connection向正在执行的query发送cancel消息</p></li>
-</ol>
-
-<p><img src="data:image/gif;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQImWNgYGBgAAAABQABh6FO1AAAAABJRU5ErkJggg==" alt=""/></p>
-
-<p>图4 Query Timeout Execution Process for Oracle JDBC Statement.</p>
-
-<p><strong>JTDS (MS SQLServer) Statement的QueryTimeout处理过程</strong></p>
-
-<ol>
-<li><p>通过调用Connection的createStatement()方法创建statement</p></li>
-<li><p>调用Statement的executeQuery()方法</p></li>
-<li><p>statement通过自身connection将query发送给MS SqlServer数据库</p></li>
-<li><p>statement在TimerThread上进行注册</p></li>
-<li><p>达到超时时间</p></li>
-<li><p>TimerThread调用JtdsStatement实例中的<code>TsdCore.cancel()</code>方法</p></li>
-<li><p>通过ConnectionJDBC向正在执行的query发送cancel消息</p></li>
-</ol>
-
-<p><img src="data:image/gif;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQImWNgYGBgAAAABQABh6FO1AAAAABJRU5ErkJggg==" alt=""/></p>
-
-<p>图5 QueryTimeout Execution Process for JTDS (MS SQLServer) Statement.</p>
-
-<p><strong>MySQL JDBC Statement的QueryTimeout处理过程（5.0.8）</strong></p>
-
-<ol>
-<li><p>通过调用<code>Connection.createStatement()</code>方法创建statement</p></li>
-<li><p>调用<code>Statement.executeQuery()</code>方法</p></li>
-<li><p>statement通过自身connection将query发送给MySQL数据库</p></li>
-<li><p>statement创建一个新的timeout-execution线程用于超时处理</p></li>
-<li><p>5.1版本后改为每个connection分配一个timeout-execution线程</p></li>
-<li><p>向timeout-execution线程进行注册</p></li>
-<li><p>达到超时时间</p></li>
-<li><p>timeout-execution线程创建一个和statement配置相同的connection</p></li>
-<li><p>使用新创建的connection向超时query发送cancel query（<code>KILL QUERY</code> “connectionId”）</p></li>
-</ol>
-
-<p><img src="data:image/gif;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQImWNgYGBgAAAABQABh6FO1AAAAABJRU5ErkJggg==" alt=""/></p>
-
-<p>图6 QueryTimeout Execution Process for MySQL JDBC Statement (5.0.8).</p>
-
-<p><strong>CUBRID JDBC Statement的QueryTimeout处理过程</strong></p>
-
-<ol>
-<li><p>通过调用Connection的createStatement()方法创建statement</p></li>
-<li><p>调用Statement的executeQuery()方法</p></li>
-<li><p>statement通过自身connection将query发送给CUBRID数据库</p></li>
-<li><p>statement创建一个新的timeout-execution线程用于超时处理</p></li>
-<li><p>5.1版本后改为每个connection分配一个timeout-execution线程 6. 向timeout-execution线程进行注册</p></li>
-<li><p>达到超时时间</p></li>
-<li><p>TimerThread调用JtdsStatement实例中的TsdCore.cancel()方法</p></li>
-<li><p>timeout-execution线程创建一个和statement配置相同的connection</p></li>
-<li><p>使用新创建的connection向超时query发送cancel消息</p></li>
-</ol>
-
-<p><img src="data:image/gif;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQImWNgYGBgAAAABQABh6FO1AAAAABJRU5ErkJggg==" alt=""/></p>
-
-<p>图7 QueryTimeout Execution Process for CUBRID JDBC Statement.</p>
-
-<p>什么是JDBC的socket timeout？</p>
-
-<p>第4种类型的JDBC使用socket与数据库连接，数据库并不对应用与数据库间的连接超时进行处理。 JDBC的socket timeout在数据库被突然停掉或是发生网络错误（由于设备故障等原因）时十分重要。由于TCP/IP的结构原因，socket没有办法探测到网络错误，因此应用也无法主动发现数据库连接断开。如果没有设置socket timeout的话，应用在数据库返回结果前会无期限地等下去，这种连接被称为dead connection。 为了避免dead connections，socket必须要有超时配置。socket timeout可以通过JDBC设置，socket timeout能够避免应用在发生网络错误时产生无休止等待的情况，缩短服务失效的时间。</p>
-
-<p>不推荐使用socket timeout来限制statement的执行时长，因此socket timeout的值必须要高于statement timeout，否则，socket timeout将会先生效，这样statement timeout就变得毫无意义，也无法生效。</p>
-
-<p>下面展示了socket timeout的两个设置项，不同的JDBC驱动其配置方式会有所不同。</p>
-
-<ul>
-<li><p>socket连接时的timeout：通过Socket.connect(SocketAddress endpoint, int timeout)设置</p></li>
-<li><p>socket读写时的timeout：通过Socket.setSoTimeout(int timeout)设置</p></li>
-</ul>
-
-<p>通过查看CUBRID，MySQL，MS SQL Server (JTDS)和Oracle的JDBC驱动源码，我们发现所有的驱动内部都是使用上面的2个API来设置socket timeout的。</p>
-
-<p>下面是不同驱动的socket timeout配置方式。</p>
-
-<p><img src="data:image/gif;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQImWNgYGBgAAAABQABh6FO1AAAAABJRU5ErkJggg==" alt=""/></p>
-
-<ul>
-<li><p><code>connectTimeout</code>和<code>socketTimeout</code>的默认值为0时，timeout不生效。</p></li>
-<li><p>除了调用DBCP的API以外，还可以通过properties属性进行配置。</p></li>
-</ul>
-
-<p>通过properties属性进行配置时，需要传入key为“connectionProperties”的键值对，value的格式为“[propertyName=property;]*”。下面是iBatis中的properties配置。<br/>
-Xml代码</p>
-
-<pre><code>&lt;transactionManager type=“JDBC”&gt;  
-  &lt;dataSource type=“com.nhncorp.lucy.db.DbcpDSFactory”&gt;  
-     ….  
-     &lt;property name=“connectionProperties” value=“oracle.net.CONNECT_TIMEOUT=6000;oracle.jdbc.ReadTimeout=6000″/&gt;   
-  &lt;/dataSource&gt;  
-&lt;/transactionManager&gt;
+<pre><code class="language-log">thread 123145422131200 square 0
+thread 123145426337792 square 1
+thread 123145426337792 square 2
+thread 123145422131200 square 3
+thread 123145426337792 square 4
+thread 123145422131200 square 5
+thread 123145426337792 square 6
+thread 123145422131200 square 7
+thread 123145426337792 square 8
+thread 123145422131200 square 9
+total result=285 cost: 5.02s
 </code></pre>
 
-<p>操作系统的socket timeout配置</p>
+<p>我们看到计算总共花费了大概 5s，总共 sleep 了 10s 由两个线程分担，所以是 5s。读者也许会问，为什么输出乱了，这是因为 print 操作不是原子的，它是两个连续的 write 操作合成的，第一个 write 输出内容，第二个 write 输出换行符，write 操作本身是原子的，但是在多线程环境下，这两个 write 操作会交错执行，所以输出就不整齐了。如果将代码稍作修改，将 print 改成单个 write 操作，输出就整齐了 (关于 write 是否绝对原子性还需要进一步深入讨论)</p>
 
-<p>如果不设置socket timeout或connect timeout，应用多数情况下是无法发现网络错误的。因此，当网络错误发生后，在连接重新连接成功或成功接收到数据之前，应用会无限制地等下去。但是，通过本文开篇处的实际案例我们发现，30分钟后应用的连接问题奇迹般的解决了，这是因为操作系统同样能够对socket timeout进行配置。公司的Linux服务器将socket timeout设置为了30分钟，从而会在操作系统的层面对网络连接做校验，因此即使JDBC的socket timeout设置为0，由网络错误造成的数据库连接问题的持续时间也不会超过30分钟。</p>
+<pre><code class="language-py"># 分割子任务
+def each_task(index):
+    time.sleep(1)  # 睡1s，模拟IO
+    import sys
+    sys.stdout.write(&quot;thread %s square %d\n&quot; % (threading.current_thread().ident, index))
+    return index * index  # 返回结果
+</code></pre>
 
-<p>通常，应用会在调用Socket.read()时由于网络问题被阻塞住，而很少在调用Socket.write()时进入waiting状态，这取决于网络构成和错误类型。当Socket.write()被调用时，数据被写入到操作系统内核的缓冲区，控制权立即回到应用手上。因此，一旦数据被写入内核缓冲区，Socket.write()调用就必然会成功。但是，如果系统内核缓冲区由于某种网络错误而满了的话，Socket.write()也会进入waiting状态。这种情况下，操作系统会尝试重新发包，当达到重试的时间限制时，将产生系统错误。在我们公司，重新发包的超时时间被设置为15分钟。</p>
+<p>我们再跑一下<code>python t.py 2 10</code>，观察输出</p>
 
-<p>至此，我已经对JDBC的内部操作做了讲解，希望能够让大家学会如何正确的配置超时时间，从而减少错误的发生。<br/>
-最后，我将列出一些常见的问题。</p>
+<pre><code class="language-log">thread 123145438244864 square 0
+thread 123145442451456 square 1
+thread 123145442451456 square 2
+thread 123145438244864 square 3
+thread 123145438244864 square 4
+thread 123145442451456 square 5
+thread 123145438244864 square 6
+thread 123145442451456 square 7
+thread 123145442451456 square 9
+thread 123145438244864 square 8
+total result=285 cost: 5.02s
+</code></pre>
 
-<h3 id="toc_4">FAQ</h3>
+<p>接下来，我们改变参数，扩大到 10 个线程，看看所有任务总共需要多久完成</p>
 
-<blockquote>
-<p><strong>Q1. 我已经使用Statement.setQueryTimeout()方法设置了查询超时，但在网络出错时并没有产生作用。</strong><br/>
-➔ 查询超时仅在socket timeout生效的前提下才有效，它并不能用来解决外部的网络错误，要解决这种问题，必须设置JDBC的socket timeout。</p>
+<pre><code class="language-log">&gt; python t.py 10 10
+thread 123145327464448 square 0
+thread 123145335877632 square 2
+thread 123145331671040 square 1
+thread 123145344290816 square 4
+thread 123145340084224 square 3
+thread 123145348497408 square 5
+thread 123145352704000 square 6
+thread 123145356910592 square 7
+thread 123145365323776 square 9
+thread 123145361117184 square 8
+total result=285 cost: 1.01s
+</code></pre>
 
-<p><strong>Q2.  transaction timeout，statement timeout和socket timeout和DBCP的配置有什么关系？</strong> <br/>
-➔ 当通过DBCP获取数据库连接时，除了DBCP获取连接时的waitTimeout配置以外，其他配置对JDBC没有什么影响。</p>
+<p>可以看到 1s 中就完成了所有的任务。这就是多线程的魅力，可以将多个 IO 操作并行化，减少整体处理时间。</p>
 
-<p><strong>Q3. 如果设置了JDBC的socket timeout，那DBCP连接池中处于IDLE状态的连接是否也会在达到超时时间后被关闭？</strong><br/>
-➔ 不会。socket的设置只会在产生数据读写时生效，而不会对DBCP中的IDLE连接产生影响。当DBCP中发生新连接创建，老的IDLE连接被移除，或是连接有效性校验的时候，socket设置会对其产生一定的影响，但除非发生网络问题，否则影响很小。</p>
+<h2 id="toc_1">多进程</h2>
 
-<p><strong>Q4. socket timeout应该设置为多少？ </strong><br/>
-➔ 就像我在正文中提的那样，socket timeout必须高于statement timeout，但并没有什么推荐值。在发生网络错误的时候，socket timeout将会生效，但是再小心的配置也无法避免网络错误的发生，只是在网络错误发生后缩短服务失效的时间（如果网络恢复正常的话）。</p>
-</blockquote>
+<p><img src="media/15288661714760/15288664619676.jpg" alt=""/></p>
+
+<p>相比多线程适合处理 IO 密集型任务，多进程适合计算密集型。接下来我们要模拟一下计算密集型任务。我的个人电脑有 2 个核心，正好可以体验多核心计算的优势。</p>
+
+<p>那这个密集型计算任务怎么模拟呢，我们可以使用圆周率计算公式。</p>
+
+<p><img src="media/15288661714760/15288664769272.jpg" alt=""/></p>
+
+<p>通过扩大级数的长度 n，就可以无限逼近圆周率。当 n 特别大时，计算会比较缓慢，这时候 CPU 就会一直处于繁忙状态，这正是我们所期望的。</p>
+
+<p>好，下面开写多进程并行计算代码</p>
+
+<pre><code class="language-py"># coding: utf8
+# p.py
+import os
+import sys
+import math
+import time
+import fire
+from concurrent.futures import ProcessPoolExecutor, wait
+
+# 分割子任务
+def each_task(n):
+    # 按公式计算圆周率
+    s = 0.0
+    for i in range(n):
+        s += 1.0/(i+1)/(i+1)
+    pi = math.sqrt(6*s)
+    # os.getpid可以获得子进程号
+    sys.stdout.write(&quot;process %s n=%d pi=%s\n&quot; % (os.getpid(), n, pi))
+    return pi
+    
+def run(process_num, *ns):  # 输入多个n值，分成多个子任务来计算结果
+    # 实例化进程池，process_num个进程
+    executor = ProcessPoolExecutor(process_num)
+    start = time.time()
+    fs = []  # future列表
+    for n in ns:
+        fs.append(executor.submit(each_task, int(n)))  # 提交任务
+    wait(fs)  # 等待计算结束
+    end = time.time()
+    duration = end - start
+    print &quot;total cost: %.2fs&quot; % duration
+    executor.shutdown()  # 销毁进程池
+
+if __name__ == &#39;__main__&#39;:
+    fire.Fire(run)
+</code></pre>
+
+<p>通过代码可以看出多进程模式在代码的编写上和多线程没有多大差异，仅仅是换了一个类名，其它都一摸一样。这也是 concurrent 库的魅力所在，将多线程和多进程模型抽象出了一样的使用接口。</p>
+
+<p>接下来我们运行一下<code>python p.py 1 5000000 5001000 5002000 5003000</code>，总共计算 4 次 pi，只用一个进程。观察输出</p>
+
+<pre><code class="language-log">process 96354 n=5000000 pi=3.1415924626
+process 96354 n=5001000 pi=3.14159246264
+process 96354 n=5002000 pi=3.14159246268
+process 96354 n=5003000 pi=3.14159246272
+total cost: 9.45s
+</code></pre>
+
+<p>可以看出来随着 n 的增大，结果越来越逼近圆周率，因为只用了一个进程，所以任务是串行执行，总共花了大约 9.5s。</p>
+
+<p>接下来再增加一个进程，观察输出</p>
+
+<pre><code>&gt; python p.py 2 5000000 5001000 5002000 5003000
+process 96529 n=5001000 pi=3.14159246264
+process 96530 n=5000000 pi=3.1415924626
+process 96529 n=5002000 pi=3.14159246268
+process 96530 n=5003000 pi=3.14159246272
+total cost: 4.98s
+</code></pre>
+
+<p>从耗时上看缩短了接近 1 半，说明多进程确实起到了计算并行化的效果。此刻如果使用 top 命令观察进程的 CPU 使用率，这两个进程的 CPU 使用率都占到了接近 100%。</p>
+
+<p>如果我们再增加 2 个进程，是不是还能继续压缩计算时间呢</p>
+
+<pre><code>&gt; python p.py 4 5000000 5001000 5002000 5003000
+process 96864 n=5002000 pi=3.14159246268
+process 96862 n=5000000 pi=3.1415924626
+process 96863 n=5001000 pi=3.14159246264
+process 96865 n=5003000 pi=3.14159246272
+total cost: 4.86s
+</code></pre>
+
+<p>看来耗时不能继续节约了，因为只有 2 个计算核心，2 个进程已经足以榨干它们了，即使再多加进程也只有 2 个计算核心可用。</p>
+
+<h2 id="toc_2">深入原理</h2>
+
+<p>concurrent 用的时候非常简单，但是内部实现并不是很好理解。在深入分析内部的结构之前，我们需要先理解一下 Future 这个对象。在前面的例子中，executor 提交 (submit) 任务后都会返回一个 Future 对象，它表示一个结果的坑，在任务刚刚提交时，这个坑是空的，一旦子线程运行任务结束，就会将运行的结果塞到这个坑里，主线程就可以通过 Future 对象获得这个结果。简单一点说，Future 对象是主线程和子线程通信的媒介。</p>
+
+<p><img src="media/15288661714760/15288665896000.jpg" alt=""/></p>
+
+<p>Future 对象的内部逻辑简单一点可以使用下面的代码进行表示</p>
+
+<pre><code class="language-py">class Future(object):
+
+    def __init__(self):
+        self._condition = threading.Condition()  # 条件变量
+        self._result = None
+
+    def result(self, timeout=None):
+        self._condition.wait(timeout)
+        return self._result
+
+    def set_result(self, result):
+        self._result = result
+        self._condition.notify_all()
+</code></pre>
+
+<p>主线程将任务塞进线程池后得到了这个 Future 对象，它内部的_result 还是空的。如果主线程调用 result() 方法获取结果，就会阻塞在条件变量上。如果子线程计算任务完成了就会立即调用 set_result() 方法将结果填充进 future 对象，并唤醒阻塞在条件变量上的线程，也就是主线程。这时主线程立即醒过来并正常返回结果。</p>
+
+<h2 id="toc_3">线程池内部结构</h2>
+
+<p>主线程和子线程交互分为两部分，第一部分是主线程如何将任务传递给子线程，第二部分是子线程如何将结果传递给主线程。第二部分已经讲过了是通过 Future 对象来完成的。那第一部分是怎么做到的呢？</p>
+
+<p><img src="media/15288661714760/15288666117893.jpg" alt=""/></p>
+
+<p>如上图所示，秘密就在于这个队列，主线程是通过队列将任务传递给多个子线程的。一旦主线程将任务塞进任务队列，子线程们就会开始争抢，最终只有一个线程能抢到这个任务，并立即进行执行，执行完后将结果放进 Future 对象就完成了这个任务的完整执行过程。</p>
+
+<h2 id="toc_4">线程池的缺点</h2>
+
+<p>concurrent 的线程池有个重大的设计问题，那就是任务队列是无界的。如果队列的生产者任务生产的太快，而线程池消费太慢处理不过来，任务就会堆积。如果堆积一直持续下去，内存就会持续增长直到 OOM，任务队列里堆积的所有任务全部彻底丢失。用户使用时一定要注意这点，并做好适当的控制。</p>
+
+<h2 id="toc_5">进程池内部结构</h2>
+
+<p>进程池内部结构复杂，连 concurent 库的作者自己也觉得特别复杂，所以在代码里专门画了一张 ascii 图来讲解模型内部结构</p>
+
+<p><img src="media/15288661714760/15288666342206.jpg" alt=""/></p>
+
+<p><img src="media/15288661714760/15288666482842.jpg" alt=""/></p>
+
+<p>我觉得作者的这张图还不够好懂，所以也单独画了一张图，请读者们仔细结合上面两张图，一起来过一边完整的任务处理过程。</p>
+
+<ol>
+<li> 主线程将任务塞进 TaskQueue(普通内存队列)，拿到 Future 对象</li>
+<li> 唯一的管理线程从 TaskQueue 获取任务，塞进 CallQueue(分布式跨进程队列)</li>
+<li> 子进程从 CallQueue 中争抢任务进行处理</li>
+<li> 子进程将处理结果塞进 ResultQueue(分布式跨进程队列)</li>
+<li> 管理线程从 ResultQueue 中获取结果，塞进 Future 对象</li>
+<li> 主线程从 Future 对象中拿到结果</li>
+</ol>
+
+<p>这个复杂的流程中涉及到 3 个队列，还有中间附加的管理线程。那为什么作者要设计的这么复杂，这样的设计有什么好处？</p>
+
+<p>首先，我们看这张图的左半边，它和线程池的处理流程没有太多区别，区别仅仅是管理线程只有一个，而线程池的子线程会有多个。这样设计可以使得多进程模型和多线程模型的使用方法保持一致，这就是为什么两个模型使用起来没有任何区别的原因所在——通过中间的管理线程隐藏了背后的多进程交互逻辑。</p>
+
+<p>然后我们再看这张图的右半边，管理线程通过两个队列来和子进程们进行交互，这两个队列都是跨进程队列 (multiprocessing.Queue)。CallQueue 是单生产者多消费者，ResultQueue 是多生产者单消费者。</p>
+
+<p>CallQueue 是个有界队列，它的上限在代码里写死了为「子进程数 + 1」。如果子进程们处理不过来，CallQueue 就会变满，管理线程就会停止往里面塞数据。但是这里也遭遇了和线程池一样的问题，TaskQueue 是无界队列，它的内容可不管消费者是否在持续 (管理线程) 消费，TaskQueue 会无限制的持续生长，于是最终也会会导致 OOM。</p>
+
+<h2 id="toc_6">跨进程队列</h2>
+
+<p>进程池模型中的跨进程队列是用 multiprocessing.Queue 实现的。那这个跨进程队列内部细节是怎样的，它又是用什么高科技来实现的呢</p>
+
+<p>笔者仔细阅读了 multiprocessing.Queue 的源码发现，它使用无名套接字 sockerpair 来完成的跨进程通信，socketpair 和 socket 的区别就在于 socketpair 不需要端口，不需要走网络协议栈，通过内核的套接字读写缓冲区直接进行跨进程通信。</p>
+
+<p><img src="media/15288661714760/15288666709878.jpg" alt=""/></p>
+
+<p>当父进程要传递任务给子进程时，先使用 pickle 将任务对象进行序列化成字节数组，然后将字节数组通过 socketpair 的写描述符写入内核的 buffer 中。子进程接下来就可以从 buffer 中读取到字节数组，然后再使用 pickle 对字节数组进行反序列化来得到任务对象，这样总算可以执行任务了。同样子进程将结果传递给父进程走的也是一样的流程，只不过这里的 socketpair 是 ResultQueue 内部创建的无名套接字。</p>
+
+<p>multiprocessing.Queue 是支持双工通信，数据流向可以是父到子，也可以是子到父，只不过在 concurrent 的进程池实现中只用到了单工通信。CallQueue 是从父到子，ResultQueue 是从子到父。</p>
+
+<h2 id="toc_7">总结</h2>
+
+<p>concurrent.futures 框架非常好用，虽然内部实现机制异常复杂，读者也无需完全理解内部细节就可以直接使用了。但是需要特别注意的是不管是线程池还是进程池其内部的任务队列都是无界的，一定要避免消费者处理不及时内存持续攀升的情况发生。</p>
 
                         
                       </div>
@@ -331,10 +399,10 @@ Xml代码</p>
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/6/1</span>
+                    <span class="date">2018/6/13</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Java.html'>Java</a></span>
+          					    <span class="posted-in"><a href='Cocurrency.html'>Cocurrency</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -424,31 +492,31 @@ Xml代码</p>
 	      
 		      
 			      <li class="post">
-			        <a href="15337171704262.html">Introduction to Testing with Spock and Groovy</a>
+			        <a href="15358820607055.html">Java 8 Concurrency Tutorial: Atomic Variables and ConcurrentMap</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15336595358049.html">10 Excellent Ways to Secure Your Spring Boot Application</a>
+			        <a href="15358774987730.html">Java 8 Concurrency Tutorial: Synchronization and Locks</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15336592302916.html">First MicroProfile.io application using Java Module System</a>
+			        <a href="15358757119900.html">Java 8 Concurrency Tutorial: Threads and Executors</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15332186142588.html">Jenkins 的 Pipeline 脚本在美团餐饮 SaaS 中的实践</a>
+			        <a href="15358756631902.html">Java 8 Stream Tutorial</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15331749691571.html">基于ZooKeeper的分布式锁和队列</a>
+			        <a href="15358753472382.html">Migrate Maven Projects to Java 11</a>
 			      </li>
 		     
 		  

@@ -105,462 +105,983 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15277854106004.html">
+                <a class="clearlink" href="15283864664932.html">
                 
-                  <h1>我必须得告诉大家的 MySQL 优化原理</h1>
+                  <h1>手把手教你搭建一个基于 Java 的分布式爬虫系统</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://www.jianshu.com/p/d7665192aaaf">原文地址</a></p>
+<p>原创： 叶泳豪  51CTO技术栈  5月8日<br/>
+<a href="http://developer.51cto.com/art/201805/572935.htm">http://developer.51cto.com/art/201805/572935.htm</a></p>
 </blockquote>
 
-<p>说起 MySQL 的查询优化，相信大家收藏了一堆奇技淫巧：不能使用<code>SELECT *</code>、不使用 NULL 字段、合理创建索引、为字段选择合适的数据类型..... 你是否真的理解这些优化技巧？是否理解其背后的工作原理？在实际场景下性能真有提升吗？我想未必。因而理解这些优化建议背后的原理就尤为重要，希望本文能让你重新审视这些优化建议，并在实际业务场景下合理的运用。</p>
+<p>在不用爬虫框架的情况下，我经过多方学习，尝试实现了一个分布式爬虫系统，并且可以将数据保存到不同地方，类似 MySQL、HBase 等。</p>
 
-<h3 id="toc_0">MySQL 逻辑架构</h3>
+<p>【51CTO.com 原创稿件】在不用爬虫框架的情况下，我经过多方学习，尝试实现了一个分布式爬虫系统，并且可以将数据保存到不同地方，类似 MySQL、HBase 等。</p>
 
-<p>如果能在头脑中构建一幅 MySQL 各组件之间如何协同工作的架构图，有助于深入理解 MySQL 服务器。下图展示了 MySQL 的逻辑架构图。</p>
+<p>因为此系统基于面向接口的编码思想来开发，所以具有一定的扩展性，有兴趣的朋友直接看一下代码，就能理解其设计思想。</p>
 
-<p><img src="https://upload-images.jianshu.io/upload_images/175724-2abdb6fbad8affa0.png" alt=""/></p>
+<p>虽然代码目前来说很多地方还是比较紧耦合，但只要花些时间和精力，很多都是可抽取出来并且可配置化的。</p>
 
-<p>MySQL 逻辑架构整体分为三层，最上层为客户端层，并非 MySQL 所独有，诸如：连接处理、授权认证、安全等功能均在这一层处理。</p>
+<p>因为时间的关系，我只写了京东和苏宁易购两个网站的爬虫，但是完全可以实现不同网站爬虫的随机调度，基于其代码结构，再写国美、天猫等的商品爬取，难度不大，但是估计需要花些时间和精力。</p>
 
-<p>MySQL 大多数核心服务均在中间这一层，包括查询解析、分析、优化、缓存、内置函数 (比如：时间、数学、加密等函数)。所有的跨存储引擎的功能也在这一层实现：存储过程、触发器、视图等。</p>
+<p>因为在解析网页的数据时，比如我在爬取苏宁易购商品的价格时，价格是异步获取的，并且其 API 是一长串的数字组合，我花了几个小时的时间才发现其规律，当然也承认，我的经验不足。</p>
 
-<p>最下层为存储引擎，其负责 MySQL 中的数据存储和提取。和 Linux 下的文件系统类似，每种存储引擎都有其优势和劣势。中间的服务层通过 API 与存储引擎通信，这些 API 接口屏蔽了不同存储引擎间的差异。</p>
-
-<h3 id="toc_1">MySQL 查询过程</h3>
-
-<p>我们总是希望 MySQL 能够获得更高的查询性能，最好的办法是弄清楚 MySQL 是如何优化和执行查询的。一旦理解了这一点，就会发现：<strong>很多的查询优化工作实际上就是遵循一些原则让 MySQL 的优化器能够按照预想的合理方式运行而已。</strong></p>
-
-<p>当向 MySQL 发送一个请求的时候，MySQL 到底做了些什么呢？</p>
-
-<p><img src="https://upload-images.jianshu.io/upload_images/175724-cb247a2b90ea9d4d.png" alt=""/></p>
-
-<h4 id="toc_2">客户端 / 服务端通信协议</h4>
-
-<p>MySQL 客户端 / 服务端通信协议是 “半双工” 的：在任一时刻，要么是服务器向客户端发送数据，要么是客户端向服务器发送数据，这两个动作不能同时发生。一旦一端开始发送消息，另一端要接收完整个消息才能响应它，所以我们无法也无须将一个消息切成小块独立发送，也没有办法进行流量控制。</p>
-
-<p>客户端用一个单独的数据包将查询请求发送给服务器，所以当查询语句很长的时候，需要设置<code>max_allowed_packet</code>参数。但是需要注意的是，如果查询实在是太大，服务端会拒绝接收更多数据并抛出异常。</p>
-
-<p>与之相反的是，服务器响应给用户的数据通常会很多，由多个数据包组成。但是当服务器响应客户端请求时，客户端必须完整的接收整个返回结果，而不能简单的只取前面几条结果，然后让服务器停止发送。因而在实际开发中，尽量保持查询简单且只返回必需的数据，减小通信间数据包的大小和数量是一个非常好的习惯，这也是查询中尽量避免使用<code>SELECT *</code>以及加上<code>LIMIT</code>限制的原因之一。</p>
-
-<h4 id="toc_3">查询缓存</h4>
-
-<p>在解析一个查询语句前，如果查询缓存是打开的，那么 MySQL 会检查这个查询语句是否命中查询缓存中的数据。如果当前查询恰好命中查询缓存，在检查一次用户权限后直接返回缓存中的结果。这种情况下，查询不会被解析，也不会生成执行计划，更不会执行。</p>
-
-<p>MySQL 将缓存存放在一个引用表（不要理解成<code>table</code>，可以认为是类似于<code>HashMap</code>的数据结构），通过一个哈希值索引，这个哈希值通过查询本身、当前要查询的数据库、客户端协议版本号等一些可能影响结果的信息计算得来。所以两个查询在任何字符上的不同（例如：空格、注释），都会导致缓存不会命中。</p>
-
-<p>如果查询中包含任何用户自定义函数、存储函数、用户变量、临时表、mysql 库中的系统表，其查询结果<br/>
-都不会被缓存。比如函数<code>NOW()</code>或者<code>CURRENT_DATE()</code>会因为不同的查询时间，返回不同的查询结果，再比如包含<code>CURRENT_USER</code>或者<code>CONNECION_ID()</code>的查询语句会因为不同的用户而返回不同的结果，将这样的查询结果缓存起来没有任何的意义。</p>
-
-<p>既然是缓存，就会失效，那查询缓存何时失效呢？MySQL 的查询缓存系统会跟踪查询中涉及的每个表，如果这些表（数据或结构）发生变化，那么和这张表相关的所有缓存数据都将失效。正因为如此，在任何的写操作时，MySQL 必须将对应表的所有缓存都设置为失效。如果查询缓存非常大或者碎片很多，这个操作就可能带来很大的系统消耗，甚至导致系统僵死一会儿。而且查询缓存对系统的额外消耗也不仅仅在写操作，读操作也不例外：</p>
-
-<ol>
-<li> 任何的查询语句在开始之前都必须经过检查，即使这条 SQL 语句永远不会命中缓存</li>
-<li> 如果查询结果可以被缓存，那么执行完成后，会将结果存入缓存，也会带来额外的系统消耗</li>
-</ol>
-
-<p>基于此，我们要知道并不是什么情况下查询缓存都会提高系统性能，缓存和失效都会带来额外消耗，只有当缓存带来的资源节约大于其本身消耗的资源时，才会给系统带来性能提升。但要如何评估打开缓存是否能够带来性能提升是一件非常困难的事情，也不在本文讨论的范畴内。如果系统确实存在一些性能问题，可以尝试打开查询缓存，并在数据库设计上做一些优化，比如：</p>
-
-<ol>
-<li> 用多个小表代替一个大表，注意不要过度设计</li>
-<li> 批量插入代替循环单条插入</li>
-<li> 合理控制缓存空间大小，一般来说其大小设置为几十兆比较合适</li>
-<li> 可以通过<code>SQL_CACHE</code>和<code>SQL_NO_CACHE</code>来控制某个查询语句是否需要进行缓存</li>
-</ol>
-
-<p>最后的忠告是不要轻易打开查询缓存，特别是写密集型应用。如果你实在是忍不住，可以将<code>query_cache_type</code>设置为<code>DEMAND</code>，这时只有加入<code>SQL_CACHE</code>的查询才会走缓存，其他查询则不会，这样可以非常自由地控制哪些查询需要被缓存。</p>
-
-<p>当然查询缓存系统本身是非常复杂的，这里讨论的也只是很小的一部分，其他更深入的话题，比如：缓存是如何使用内存的？如何控制内存的碎片化？事务对查询缓存有何影响等等，读者可以自行阅读相关资料，这里权当抛砖引玉吧。</p>
-
-<h4 id="toc_4">语法解析和预处理</h4>
-
-<p>MySQL 通过关键字将 SQL 语句进行解析，并生成一颗对应的解析树。这个过程解析器主要通过语法规则来验证和解析。比如 SQL 中是否使用了错误的关键字或者关键字的顺序是否正确等等。预处理则会根据 MySQL 规则进一步检查解析树是否合法。比如检查要查询的数据表和数据列是否存在等等。</p>
-
-<h4 id="toc_5">查询优化</h4>
-
-<p>经过前面的步骤生成的语法树被认为是合法的了，并且由优化器将其转化成查询计划。多数情况下，一条查询可以有很多种执行方式，最后都返回相应的结果。优化器的作用就是找到这其中最好的执行计划。</p>
-
-<p>MySQL 使用基于成本的优化器，它尝试预测一个查询使用某种执行计划时的成本，并选择其中成本最小的一个。在 MySQL 可以通过查询当前会话的<code>last_query_cost</code>的值来得到其计算当前查询的成本。</p>
-
-<pre><code>mysql&gt; select * from t_message limit 10;
-...省略结果集
-
-mysql&gt; show status like &#39;last_query_cost&#39;;
-+-----------------+-------------+
-| Variable_name   | Value       |
-+-----------------+-------------+
-| Last_query_cost | 6391.799000 |
-+-----------------+-------------+
-
-</code></pre>
-
-<p>示例中的结果表示优化器认为大概需要做 6391 个数据页的随机查找才能完成上面的查询。这个结果是根据一些列的统计信息计算得来的，这些统计信息包括：每张表或者索引的页面个数、索引的基数、索引和数据行的长度、索引的分布情况等等。</p>
-
-<p>有非常多的原因会导致 MySQL 选择错误的执行计划，比如统计信息不准确、不会考虑不受其控制的操作成本（用户自定义函数、存储过程）、MySQL 认为的最优跟我们想的不一样（我们希望执行时间尽可能短，但 MySQL 值选择它认为成本小的，但成本小并不意味着执行时间短）等等。</p>
-
-<p>MySQL 的查询优化器是一个非常复杂的部件，它使用了非常多的优化策略来生成一个最优的执行计划：</p>
+<p>这个系统的设计，除了基本的数据爬取以外，更关注以下几个方面的问题：</p>
 
 <ul>
-<li>  重新定义表的关联顺序（多张表关联查询时，并不一定按照 SQL 中指定的顺序进行，但有一些技巧可以指定关联顺序）</li>
-<li>  优化<code>MIN()</code>和<code>MAX()</code>函数（找某列的最小值，如果该列有索引，只需要查找 B+Tree 索引最左端，反之则可以找到最大值，具体原理见下文）</li>
-<li>  提前终止查询（比如：使用 Limit 时，查找到满足数量的结果集后会立即终止查询）</li>
-<li>  优化排序（在老版本 MySQL 会使用两次传输排序，即先读取行指针和需要排序的字段在内存中对其排序，然后再根据排序结果去读取数据行，而新版本采用的是单次传输排序，也就是一次读取所有的数据行，然后根据给定的列排序。对于 I/O 密集型应用，效率会高很多）</li>
+<li>  如何实现分布式？同一个程序打包后分发到不同的节点运行时，不影响整体的数据爬取。</li>
+<li>  如何实现 URL 随机循环调度？核心是针对不同的顶级域名做随机。</li>
+<li>  如何定时向 URL 仓库中添加种子 URL？达到不让爬虫系统停下来的目的。</li>
+<li>  如何实现对爬虫节点程序的监控，并能够发邮件报警？</li>
+<li>  如何实现一个随机 IP 代理库？目的跟第 2 点有点类似，都是为了反反爬虫。</li>
 </ul>
 
-<p>随着 MySQL 的不断发展，优化器使用的优化策略也在不断的进化，这里仅仅介绍几个非常常用且容易理解的优化策略，其他的优化策略，大家自行查阅吧。</p>
+<p>下面会针对这个系统来做一个整体的基本介绍，我在代码中都有非常详细的注释，有兴趣的朋友可以参考一下代码，最后我会给出一些我爬虫时的数据分析。</p>
 
-<h4 id="toc_6">查询执行引擎</h4>
+<p>另外需要注意的是，这个爬虫系统是基于 Java 实现的，但是语言本身仍然不是最重要的，有兴趣的朋友可以尝试用 Python 实现。</p>
 
-<p>在完成解析和优化阶段以后，MySQL 会生成对应的执行计划，查询执行引擎根据执行计划给出的指令逐步执行得出结果。整个执行过程的大部分操作均是通过调用存储引擎实现的接口来完成，这些接口被称为<code>handler API</code>。查询过程中的每一张表由一个<code>handler</code>实例表示。实际上，MySQL 在查询优化阶段就为每一张表创建了一个<code>handler</code>实例，优化器可以根据这些实例的接口来获取表的相关信息，包括表的所有列名、索引统计信息等。存储引擎接口提供了非常丰富的功能，但其底层仅有几十个接口，这些接口像搭积木一样完成了一次查询的大部分操作。</p>
+<p><strong>分布式爬虫系统架构</strong></p>
 
-<h4 id="toc_7">返回结果给客户端</h4>
+<p>整体系统架构如下：</p>
 
-<p>查询执行的最后一个阶段就是将结果返回给客户端。即使查询不到数据，MySQL 仍然会返回这个查询的相关信息，比如该查询影响到的行数以及执行时间等等。</p>
+<p><a href="http://s3.51cto.com/oss/201805/09/1ec03f13dff96ba2a1cb42795b7a1ba1.jpg"><img src="http://s3.51cto.com/oss/201805/09/1ec03f13dff96ba2a1cb42795b7a1ba1.jpg" alt=""/></a></p>
 
-<p>如果查询缓存被打开且这个查询可以被缓存，MySQL 也会将结果存放到缓存中。</p>
-
-<p>结果集返回客户端是一个增量且逐步返回的过程。有可能 MySQL 在生成第一条结果时，就开始向客户端逐步返回结果集了。这样服务端就无须存储太多结果而消耗过多内存，也可以让客户端第一时间获得返回结果。需要注意的是，结果集中的每一行都会以一个满足①中所描述的通信协议的数据包发送，再通过 TCP 协议进行传输，在传输过程中，可能对 MySQL 的数据包进行缓存然后批量发送。</p>
-
-<p>回头总结一下 MySQL 整个查询执行过程，总的来说分为 6 个步骤：</p>
-
-<ol>
-<li> 客户端向 MySQL 服务器发送一条查询请求</li>
-<li> 服务器首先检查查询缓存，如果命中缓存，则立刻返回存储在缓存中的结果。否则进入下一阶段</li>
-<li> 服务器进行 SQL 解析、预处理、再由优化器生成对应的执行计划</li>
-<li> MySQL 根据执行计划，调用存储引擎的 API 来执行查询</li>
-<li> 将结果返回给客户端，同时缓存查询结果</li>
-</ol>
-
-<h3 id="toc_8">性能优化建议</h3>
-
-<p>看了这么多，你可能会期待给出一些优化手段，是的，下面会从 3 个不同方面给出一些优化建议。但请等等，还有一句忠告要先送给你：<strong>不要听信你看到的关于优化的 “绝对真理”，包括本文所讨论的内容，而应该是在实际的业务场景下通过测试来验证你关于执行计划以及响应时间的假设</strong>。</p>
-
-<h4 id="toc_9">Scheme 设计与数据类型优化</h4>
-
-<p>选择数据类型只要遵循<strong>小而简单</strong>的原则就好，越小的数据类型通常会更快，占用更少的磁盘、内存，处理时需要的 CPU 周期也更少。越简单的数据类型在计算时需要更少的 CPU 周期，比如，整型就比字符操作代价低，因而会使用整型来存储 ip 地址，使用<code>DATETIME</code>来存储时间，而不是使用字符串。</p>
-
-<p>这里总结几个可能容易理解错误的技巧：</p>
-
-<ol>
-<li> 通常来说把可为<code>NULL</code>的列改为<code>NOT NULL</code>不会对性能提升有多少帮助，只是如果计划在列上创建索引，就应该将该列设置为<code>NOT NULL</code>。</li>
-<li> 对整数类型指定宽度，比如<code>INT(11)</code>，没有任何卵用。<code>INT</code>使用 32 位（4 个字节）存储空间，那么它的表示范围已经确定，所以<code>INT(1)</code>和<code>INT(20)</code>对于存储和计算是相同的。</li>
-<li> <code>UNSIGNED</code>表示不允许负值，大致可以使正数的上限提高一倍。比如<code>TINYINT</code>存储范围是 - 128 ~ 127，而<code>UNSIGNED TINYINT</code>存储的范围却是 0 - 255。</li>
-<li> 通常来讲，没有太大的必要使用<code>DECIMAL</code>数据类型。即使是在需要存储财务数据时，仍然可以使用<code>BIGINT</code>。比如需要精确到万分之一，那么可以将数据乘以一百万然后使用<code>BIGINT</code>存储。这样可以避免浮点数计算不准确和<code>DECIMAL</code>精确计算代价高的问题。</li>
-<li> <code>TIMESTAMP</code>使用 4 个字节存储空间，<code>DATETIME</code>使用 8 个字节存储空间。因而，<code>TIMESTAMP</code>只能表示 1970 - 2038 年，比<code>DATETIME</code>表示的范围小得多，而且<code>TIMESTAMP</code>的值因时区不同而不同。</li>
-<li> 大多数情况下没有使用枚举类型的必要，其中一个缺点是枚举的字符串列表是固定的，添加和删除字符串（枚举选项）必须使用<code>ALTER TABLE</code>（如果只只是在列表末尾追加元素，不需要重建表）。</li>
-<li> schema 的列不要太多。原因是存储引擎的 API 工作时需要在服务器层和存储引擎层之间通过行缓冲格式拷贝数据，然后在服务器层将缓冲内容解码成各个列，这个转换过程的代价是非常高的。如果列太多而实际使用的列又很少的话，有可能会导致 CPU 占用过高。</li>
-<li> 大表<code>ALTER TABLE</code>非常耗时，MySQL 执行大部分修改表结果操作的方法是用新的结构创建一个张空表，从旧表中查出所有的数据插入新表，然后再删除旧表。尤其当内存不足而表又很大，而且还有很大索引的情况下，耗时更久。当然有一些奇技淫巧可以解决这个问题，有兴趣可自行查阅。</li>
-</ol>
-
-<h4 id="toc_10">创建高性能索引</h4>
-
-<p>索引是提高 MySQL 查询性能的一个重要途径，但过多的索引可能会导致过高的磁盘使用率以及过高的内存占用，从而影响应用程序的整体性能。应当尽量避免事后才想起添加索引，因为事后可能需要监控大量的 SQL 才能定位到问题所在，而且添加索引的时间肯定是远大于初始添加索引所需要的时间，可见索引的添加也是非常有技术含量的。</p>
-
-<p>接下来将向你展示一系列创建高性能索引的策略，以及每条策略其背后的工作原理。但在此之前，先了解与索引相关的一些算法和数据结构，将有助于更好的理解后文的内容。</p>
-
-<h5 id="toc_11">索引相关的数据结构和算法</h5>
-
-<p>通常我们所说的索引是指<code>B-Tree</code>索引，它是目前关系型数据库中查找数据最为常用和有效的索引，大多数存储引擎都支持这种索引。使用<code>B-Tree</code>这个术语，是因为 MySQL 在<code>CREATE TABLE</code>或其它语句中使用了这个关键字，但实际上不同的存储引擎可能使用不同的数据结构，比如 InnoDB 就是使用的<code>B+Tree</code>。</p>
-
-<p><code>B+Tree</code>中的 B 是指<code>balance</code>，意为平衡。需要注意的是，B + 树索引并不能找到一个给定键值的具体行，它找到的只是被查找数据行所在的页，接着数据库会把页读入到内存，再在内存中进行查找，最后得到要查找的数据。</p>
-
-<p>在介绍<code>B+Tree</code>前，先了解一下二叉查找树，它是一种经典的数据结构，其左子树的值总是小于根的值，右子树的值总是大于根的值，如下图①。如果要在这课树中查找值为 5 的记录，其大致流程：先找到根，其值为 6，大于 5，所以查找左子树，找到 3，而 5 大于 3，接着找 3 的右子树，总共找了 3 次。同样的方法，如果查找值为 8 的记录，也需要查找 3 次。所以二叉查找树的平均查找次数为 (3 + 3 + 3 + 2 + 2 + 1) / 6 = 2.3 次，而顺序查找的话，查找值为 2 的记录，仅需要 1 次，但查找值为 8 的记录则需要 6 次，所以顺序查找的平均查找次数为：(1 + 2 + 3 + 4 + 5 + 6) / 6 = 3.3 次，因此大多数情况下二叉查找树的平均查找速度比顺序查找要快。</p>
-
-<p><img src="https://upload-images.jianshu.io/upload_images/175724-272c1245eba594f5.png" alt=""/></p>
-
-<p>由于二叉查找树可以任意构造，同样的值，可以构造出如图②的二叉查找树，显然这棵二叉树的查询效率和顺序查找差不多。若想二叉查找数的查询性能最高，需要这棵二叉查找树是平衡的，也即平衡二叉树（AVL 树）。</p>
-
-<p>平衡二叉树首先需要符合二叉查找树的定义，其次必须满足任何节点的两个子树的高度差不能大于 1。显然图②不满足平衡二叉树的定义，而图①是一课平衡二叉树。平衡二叉树的查找性能是比较高的（性能最好的是最优二叉树），查询性能越好，维护的成本就越大。比如图①的平衡二叉树，当用户需要插入一个新的值 9 的节点时，就需要做出如下变动。</p>
-
-<p><img src="https://upload-images.jianshu.io/upload_images/175724-c806af2d9defcbab.png" alt=""/></p>
-
-<p>通过一次左旋操作就将插入后的树重新变为平衡二叉树是最简单的情况了，实际应用场景中可能需要旋转多次。至此我们可以考虑一个问题，平衡二叉树的查找效率还不错，实现也非常简单，相应的维护成本还能接受，为什么 MySQL 索引不直接使用平衡二叉树？</p>
-
-<p>随着数据库中数据的增加，索引本身大小随之增加，不可能全部存储在内存中，因此索引往往以索引文件的形式存储的磁盘上。这样的话，索引查找过程中就要产生磁盘 I/O 消耗，相对于内存存取，I/O 存取的消耗要高几个数量级。可以想象一下一棵几百万节点的二叉树的深度是多少？如果将这么大深度的一颗二叉树放磁盘上，每读取一个节点，需要一次磁盘的 I/O 读取，整个查找的耗时显然是不能够接受的。那么如何减少查找过程中的 I/O 存取次数？</p>
-
-<p>一种行之有效的解决方法是减少树的深度，将二叉树变为 m 叉树（多路搜索树），而<code>B+Tree</code>就是一种多路搜索树。理解<code>B+Tree</code>时，只需要理解其最重要的两个特征即可：第一，所有的关键字（可以理解为数据）都存储在叶子节点（<code>Leaf Page</code>），非叶子节点（<code>Index Page</code>）并不存储真正的数据，所有记录节点都是按键值大小顺序存放在同一层叶子节点上。其次，所有的叶子节点由指针连接。如下图为高度为 2 的简化了的<code>B+Tree</code>。</p>
-
-<p><img src="https://upload-images.jianshu.io/upload_images/175724-52306456815a0919.png" alt=""/></p>
-
-<p>怎么理解这两个特征？MySQL 将每个节点的大小设置为一个页的整数倍（原因下文会介绍），也就是在节点空间大小一定的情况下，每个节点可以存储更多的内结点，这样每个结点能索引的范围更大更精确。所有的叶子节点使用指针链接的好处是可以进行区间访问，比如上图中，如果查找大于 20 而小于 30 的记录，只需要找到节点 20，就可以遍历指针依次找到 25、30。如果没有链接指针的话，就无法进行区间查找。这也是 MySQL 使用<code>B+Tree</code>作为索引存储结构的重要原因。</p>
-
-<p>MySQL 为何将节点大小设置为页的整数倍，这就需要理解磁盘的存储原理。磁盘本身存取就比主存慢很多，在加上机械运动损耗（特别是普通的机械硬盘），磁盘的存取速度往往是主存的几百万分之一，为了尽量减少磁盘 I/O，磁盘往往不是严格按需读取，而是每次都会预读，即使只需要一个字节，磁盘也会从这个位置开始，顺序向后读取一定长度的数据放入内存，预读的长度一般为页的整数倍。</p>
-
-<blockquote>
-<p>页是计算机管理存储器的逻辑块，硬件及 OS 往往将主存和磁盘存储区分割为连续的大小相等的块，每个存储块称为一页（许多 OS 中，页的大小通常为 4K）。主存和磁盘以页为单位交换数据。当程序要读取的数据不在主存中时，会触发一个缺页异常，此时系统会向磁盘发出读盘信号，磁盘会找到数据的起始位置并向后连续读取一页或几页载入内存中，然后一起返回，程序继续运行。</p>
-</blockquote>
-
-<p>MySQL 巧妙利用了磁盘预读原理，将一个节点的大小设为等于一个页，这样每个节点只需要一次 I/O 就可以完全载入。为了达到这个目的，每次新建节点时，直接申请一个页的空间，这样就保证一个节点物理上也存储在一个页里，加之计算机存储分配都是按页对齐的，就实现了读取一个节点只需一次 I/O。假设<code>B+Tree</code>的高度为 h，一次检索最多需要<code>h-1</code>次 I/O（根节点常驻内存），复杂度 O(h) = O(logmN)。实际应用场景中，M 通常较大，常常超过 100，因此树的高度一般都比较小，通常不超过 3。</p>
-
-<p>最后简单了解下<code>B+Tree</code>节点的操作，在整体上对索引的维护有一个大概的了解，虽然索引可以大大提高查询效率，但维护索引仍要花费很大的代价，因此合理的创建索引也就尤为重要。</p>
-
-<p>仍以上面的树为例，我们假设每个节点只能存储 4 个内节点。首先要插入第一个节点 28，如下图所示。</p>
-
-<p><img src="https://upload-images.jianshu.io/upload_images/175724-a862bb909a8ed6a0.png" alt=""/></p>
-
-<p>接着插入下一个节点 70，在 Index Page 中查询后得知应该插入到 50 - 70 之间的叶子节点，但叶子节点已满，这时候就需要进行也分裂的操作，当前的叶子节点起点为 50，所以根据中间值来拆分叶子节点，如下图所示。</p>
-
-<p><img src="https://upload-images.jianshu.io/upload_images/175724-ce47c776928bc6b8.png" alt=""/></p>
-
-<p>最后插入一个节点 95，这时候 Index Page 和 Leaf Page 都满了，就需要做两次拆分，如下图所示。</p>
-
-<p><img src="https://upload-images.jianshu.io/upload_images/175724-33cee181795b3dcc.png" alt=""/></p>
-
-<p>拆分后最终形成了这样一颗树。</p>
-
-<p><img src="https://upload-images.jianshu.io/upload_images/175724-5289c6ec5d11216e.png" alt=""/></p>
-
-<p><code>B+Tree</code>为了保持平衡，对于新插入的值需要做大量的拆分页操作，而页的拆分需要 I/O 操作，为了尽可能的减少页的拆分操作，<code>B+Tree</code>也提供了类似于平衡二叉树的旋转功能。当 Leaf Page 已满但其左右兄弟节点没有满的情况下，<code>B+Tree</code>并不急于去做拆分操作，而是将记录移到当前所在页的兄弟节点上。通常情况下，左兄弟会被先检查用来做旋转操作。就比如上面第二个示例，当插入 70 的时候，并不会去做页拆分，而是左旋操作。</p>
-
-<p><img src="https://upload-images.jianshu.io/upload_images/175724-bafd2fbc93cf45ae.png" alt=""/></p>
-
-<p>通过旋转操作可以最大限度的减少页分裂，从而减少索引维护过程中的磁盘的 I/O 操作，也提高索引维护效率。需要注意的是，删除节点跟插入节点类似，仍然需要旋转和拆分操作，这里就不再说明。</p>
-
-<h5 id="toc_12">高性能策略</h5>
-
-<p>通过上文，相信你对<code>B+Tree</code>的数据结构已经有了大致的了解，但 MySQL 中索引是如何组织数据的存储呢？以一个简单的示例来说明，假如有如下数据表：</p>
-
-<pre><code>CREATE TABLE People(
-    last_name varchar(50) not null,
-    first_name varchar(50) not null,
-    dob date not null,
-    gender enum(`m`,`f`) not null,
-    key(last_name,first_name,dob)
-);
-
-</code></pre>
-
-<p>对于表中每一行数据，索引中包含了 last_name、first_name、dob 列的值，下图展示了索引是如何组织数据存储的。</p>
-
-<p><img src="https://upload-images.jianshu.io/upload_images/175724-3ba760afbae4a52d.png" alt=""/></p>
-
-<p>可以看到，索引首先根据第一个字段来排列顺序，当名字相同时，则根据第三个字段，即出生日期来排序，正是因为这个原因，才有了索引的 “最左原则”。</p>
-
-<h6 id="toc_13">1、MySQL 不会使用索引的情况：非独立的列</h6>
-
-<p>“独立的列” 是指索引列不能是表达式的一部分，也不能是函数的参数。比如：</p>
-
-<pre><code>select * from where id + 1 = 5
-
-</code></pre>
-
-<p>我们很容易看出其等价于 id = 4，但是 MySQL 无法自动解析这个表达式，使用函数是同样的道理。</p>
-
-<h6 id="toc_14">2、前缀索引</h6>
-
-<p>如果列很长，通常可以索引开始的部分字符，这样可以有效节约索引空间，从而提高索引效率。</p>
-
-<h6 id="toc_15">3、多列索引和索引顺序</h6>
-
-<p>在多数情况下，在多个列上建立独立的索引并不能提高查询性能。理由非常简单，MySQL 不知道选择哪个索引的查询效率更好，所以在老版本，比如 MySQL5.0 之前就会随便选择一个列的索引，而新的版本会采用合并索引的策略。举个简单的例子，在一张电影演员表中，在 actor_id 和 film_id 两个列上都建立了独立的索引，然后有如下查询：</p>
-
-<pre><code>select film_id,actor_id from film_actor where actor_id = 1 or film_id = 1
-
-</code></pre>
-
-<p>老版本的 MySQL 会随机选择一个索引，但新版本做如下的优化：</p>
-
-<pre><code>select film_id,actor_id from film_actor where actor_id = 1  
-union all 
-select film_id,actor_id from film_actor where film_id = 1 and actor_id &lt;&gt; 1
-
-</code></pre>
+<p>从上面的架构可以看出，整个系统主要分为三个部分：</p>
 
 <ul>
-<li>  当出现多个索引做相交操作时（多个 AND 条件），通常来说一个包含所有相关列的索引要优于多个独立索引。</li>
-<li>  当出现多个索引做联合操作时（多个 OR 条件），对结果集的合并、排序等操作需要耗费大量的 CPU 和内存资源，特别是当其中的某些索引的选择性不高，需要返回合并大量数据时，查询成本更高。所以这种情况下还不如走全表扫描。</li>
+<li>  爬虫系统</li>
+<li>  URL 调度系统</li>
+<li>  监控报警系统</li>
 </ul>
 
-<p>因此<code>explain</code>时如果发现有索引合并（Extra 字段出现<code>Using union</code>），应该好好检查一下查询和表结构是不是已经是最优的，如果查询和表都没有问题，那只能说明索引建的非常糟糕，应当慎重考虑索引是否合适，有可能一个包含所有相关列的多列索引更适合。</p>
+<p>爬虫系统是用来爬取数据的，因为系统设计为分布式，因此，爬虫程序本身可以运行在不同的服务器节点上。</p>
 
-<p>前面我们提到过索引如何组织数据存储的，从图中可以看到多列索引时，索引的顺序对于查询是至关重要的，很明显应该把选择性更高的字段放到索引的前面，这样通过第一个字段就可以过滤掉大多数不符合条件的数据。</p>
+<p>URL 调度系统核心在于 URL 仓库，所谓的 URL 仓库其实就是用 Redis 保存了需要爬取的 URL 列表，并且在我们的 URL 调度器中根据一定的策略来消费其中的 URL。从这个角度考虑，URL 仓库其实也是一个 URL 队列。</p>
 
-<blockquote>
-<p><strong>索引选择性</strong>是指不重复的索引值和数据表的总记录数的比值，选择性越高查询效率越高，因为选择性越高的索引可以让 MySQL 在查询时过滤掉更多的行。唯一索引的选择性是 1，这是最好的索引选择性，性能也是最好的。</p>
-</blockquote>
+<p>监控报警系统主要是对爬虫节点进行监控，虽然并行执行的爬虫节点中的某一个挂掉了对整体数据爬取本身没有影响（只是降低了爬虫的速度），但是我们还是希望能够主动接收到节点挂掉的通知，而不是被动地发现。</p>
 
-<p>理解索引选择性的概念后，就不难确定哪个字段的选择性较高了，查一下就知道了，比如：</p>
+<p>下面将针对以上三个方面并结合部分代码片段来对整个系统的设计思路做一些基本的介绍。</p>
 
-<pre><code>SELECT * FROM payment where staff_id = 2 and customer_id = 584
+<p><strong>爬虫系统</strong></p>
 
+<p><a href="http://s3.51cto.com/oss/201805/09/17cd163d986b85ed00354f60c90e8ca6.jpg"><img src="http://s3.51cto.com/oss/201805/09/17cd163d986b85ed00354f60c90e8ca6.jpg" alt=""/></a></p>
+
+<p>爬虫系统是一个独立运行的进程，我们把我们的爬虫系统打包成 jar 包，然后分发到不同的节点上执行，这样并行爬取数据可以提高爬虫的效率。（说明：ZooKeeper 监控属于监控报警系统，URL 调度器属于 URL 调度系统）</p>
+
+<p><strong>随机 IP 代理器</strong></p>
+
+<p>加入随机 IP 代理主要是为了反反爬虫，因此如果有一个 IP 代理库，并且可以在构建 http 客户端时随机地使用不同的代理，那么对我们进行反反爬虫会有很大的帮助。</p>
+
+<p>在系统中使用 IP 代理库，需要先在文本文件中添加可用的代理地址信息：</p>
+
+<pre><code class="language-txt"># IPProxyRepository.txt 
+58.60.255.104:8118 
+219.135.164.245:3128 
+27.44.171.27:9999 
+219.135.164.245:3128 
+58.60.255.104:8118 
+58.252.6.165:9000 
+...... 
 </code></pre>
 
-<p>是应该创建<code>(staff_id,customer_id)</code>的索引还是应该颠倒一下顺序？执行下面的查询，哪个字段的选择性更接近 1 就把哪个字段索引前面就好。</p>
+<p>需要注意的是，上面的代理 IP 是我在西刺代理上拿到的一些代理 IP，不一定可用，建议是自己花钱购买一批代理 IP，这样可以节省很多时间和精力去寻找代理 IP。</p>
 
-<pre><code>select count(distinct staff_id)/count(*) as staff_id_selectivity,
-       count(distinct customer_id)/count(*) as customer_id_selectivity,
-       count(*) from payment
+<p>然后在构建 http 客户端的工具类中，当第一次使用工具类时，会把这些代理 IP 加载进内存中，加载到 Java 的一个 HashMap：</p>
 
-</code></pre>
-
-<p>多数情况下使用这个原则没有任何问题，但仍然注意你的数据中是否存在一些特殊情况。举个简单的例子，比如要查询某个用户组下有过交易的用户信息：</p>
-
-<pre><code>select user_id from trade where user_group_id = 1 and trade_amount &gt; 0
-
-</code></pre>
-
-<p>MySQL 为这个查询选择了索引<code>(user_group_id,trade_amount)</code>，如果不考虑特殊情况，这看起来没有任何问题，但实际情况是这张表的大多数数据都是从老系统中迁移过来的，由于新老系统的数据不兼容，所以就给老系统迁移过来的数据赋予了一个默认的用户组。这种情况下，通过索引扫描的行数跟全表扫描基本没什么区别，索引也就起不到任何作用。</p>
-
-<p>推广开来说，经验法则和推论在多数情况下是有用的，可以指导我们开发和设计，但实际情况往往会更复杂，实际业务场景下的某些特殊情况可能会摧毁你的整个设计。</p>
-
-<h6 id="toc_16">4、避免多个范围条件</h6>
-
-<p>实际开发中，我们会经常使用多个范围条件，比如想查询某个时间段内登录过的用户：</p>
-
-<pre><code>select user.* from user where login_time &gt; &#39;2017-04-01&#39; and age between 18 and 30;
-
-</code></pre>
-
-<p>这个查询有一个问题：它有两个范围条件，login_time 列和 age 列，MySQL 可以使用 login_time 列的索引或者 age 列的索引，但无法同时使用它们。</p>
-
-<h6 id="toc_17">5、覆盖索引</h6>
-
-<p>如果一个索引包含或者说覆盖所有需要查询的字段的值，那么就没有必要再回表查询，这就称为覆盖索引。覆盖索引是非常有用的工具，可以极大的提高性能，因为查询只需要扫描索引会带来许多好处：</p>
-
-<ul>
-<li>  索引条目远小于数据行大小，如果只读取索引，极大减少数据访问量</li>
-<li>  索引是有按照列值顺序存储的，对于 I/O 密集型的范围查询要比随机从磁盘读取每一行数据的 IO 要少的多</li>
-</ul>
-
-<h6 id="toc_18">6、使用索引扫描来排序</h6>
-
-<p>MySQL 有两种方式可以生产有序的结果集，其一是对结果集进行排序的操作，其二是按照索引顺序扫描得出的结果自然是有序的。如果 explain 的结果中<code>type</code>列的值为<code>index</code>表示使用了索引扫描来做排序。</p>
-
-<p>扫描索引本身很快，因为只需要从一条索引记录移动到相邻的下一条记录。但如果索引本身不能覆盖所有需要查询的列，那么就不得不每扫描一条索引记录就回表查询一次对应的行。这个读取操作基本上是随机 I/O，因此按照索引顺序读取数据的速度通常要比顺序地全表扫描要慢。</p>
-
-<p>在设计索引时，如果一个索引既能够满足排序，又满足查询，是最好的。</p>
-
-<p>只有当索引的列顺序和<code>ORDER BY</code>子句的顺序完全一致，并且所有列的排序方向也一样时，才能够使用索引来对结果做排序。如果查询需要关联多张表，则只有<code>ORDER BY</code>子句引用的字段全部为第一张表时，才能使用索引做排序。<code>ORDER BY</code>子句和查询的限制是一样的，都要满足最左前缀的要求（有一种情况例外，就是最左的列被指定为常数，下面是一个简单的示例），其他情况下都需要执行排序操作，而无法利用索引排序。</p>
-
-<blockquote>
-<pre><code>// 最左列为常数，索引：(date,staff_id,customer_id)
-select  staff_id,customer_id from demo where date = &#39;2015-06-01&#39; order by staff_id,customer_id
-
-</code></pre>
-</blockquote>
-
-<h6 id="toc_19">7、冗余和重复索引</h6>
-
-<p>冗余索引是指在相同的列上按照相同的顺序创建的相同类型的索引，应当尽量避免这种索引，发现后立即删除。比如有一个索引<code>(A,B)</code>，再创建索引<code>(A)</code>就是冗余索引。冗余索引经常发生在为表添加新索引时，比如有人新建了索引<code>(A,B)</code>，但这个索引不是扩展已有的索引<code>(A)</code>。</p>
-
-<p>大多数情况下都应该尽量扩展已有的索引而不是创建新索引。但有极少情况下出现性能方面的考虑需要冗余索引，比如扩展已有索引而导致其变得过大，从而影响到其他使用该索引的查询。</p>
-
-<h6 id="toc_20">8、删除长期未使用的索引</h6>
-
-<p>定期删除一些长时间未使用过的索引是一个非常好的习惯。</p>
-
-<p>关于索引这个话题打算就此打住，最后要说一句，索引并不总是最好的工具，只有当索引帮助提高查询速度带来的好处大于其带来的额外工作时，索引才是有效的。对于非常小的表，简单的全表扫描更高效。对于中到大型的表，索引就非常有效。对于超大型的表，建立和维护索引的代价随之增长，这时候其他技术也许更有效，比如分区表。最后的最后，<strong><code>explain</code>后再提测是一种美德</strong>。</p>
-
-<h4 id="toc_21">特定类型查询优化</h4>
-
-<h5 id="toc_22">优化 COUNT() 查询</h5>
-
-<p><code>COUNT()</code>可能是被大家误解最多的函数了，它有两种不同的作用，其一是统计某个列值的数量，其二是统计行数。统计列值时，要求列值是非空的，它不会统计 NULL。如果确认括号中的表达式不可能为空时，实际上就是在统计行数。最简单的就是当使用<code>COUNT(*)</code>时，并不是我们所想象的那样扩展成所有的列，实际上，它会忽略所有的列而直接统计行数。</p>
-
-<p>我们最常见的误解也就在这儿，在括号内指定了一列却希望统计结果是行数，而且还常常误以为前者的性能会更好。但实际并非这样，如果要统计行数，直接使用<code>COUNT(*)</code>，意义清晰，且性能更好。</p>
-
-<p>有时候某些业务场景并不需要完全精确的<code>COUNT</code>值，可以用近似值来代替，EXPLAIN 出来的行数就是一个不错的近似值，而且执行 EXPLAIN 并不需要真正地去执行查询，所以成本非常低。通常来说，执行<code>COUNT()</code>都需要扫描大量的行才能获取到精确的数据，因此很难优化，MySQL 层面还能做得也就只有覆盖索引了。如果不还能解决问题，只有从架构层面解决了，比如添加汇总表，或者使用 redis 这样的外部缓存系统。</p>
-
-<h5 id="toc_23">优化关联查询</h5>
-
-<p>在大数据场景下，表与表之间通过一个冗余字段来关联，要比直接使用<code>JOIN</code>有更好的性能。如果确实需要使用关联查询的情况下，需要特别注意的是：</p>
-
-<ul>
-<li>  确保<code>ON</code>和<code>USING</code>字句中的列上有索引。在创建索引的时候就要考虑到关联的顺序。当表 A 和表 B 用列 c 关联的时候，如果优化器关联的顺序是 A、B，那么就不需要在 A 表的对应列上创建索引。没有用到的索引会带来额外的负担，一般来说，除非有其他理由，只需要在关联顺序中的第二张表的相应列上创建索引（具体原因下文分析）。</li>
-<li>  确保任何的<code>GROUP BY</code>和<code>ORDER BY</code>中的表达式只涉及到一个表中的列，这样 MySQL 才有可能使用索引来优化。</li>
-</ul>
-
-<p>要理解优化关联查询的第一个技巧，就需要理解 MySQL 是如何执行关联查询的。当前 MySQL 关联执行的策略非常简单，它对任何的关联都执行<strong>嵌套循环关联</strong>操作，即先在一个表中循环取出单条数据，然后在嵌套循环到下一个表中寻找匹配的行，依次下去，直到找到所有表中匹配的行为为止。然后根据各个表匹配的行，返回查询中需要的各个列。</p>
-
-<p>太抽象了？以上面的示例来说明，比如有这样的一个查询：</p>
-
-<pre><code>SELECT A.xx,B.yy 
-FROM A INNER JOIN B USING(c)
-WHERE A.xx IN (5,6)
-
-</code></pre>
-
-<p>假设 MySQL 按照查询中的关联顺序 A、B 来进行关联操作，那么可以用下面的伪代码表示 MySQL 如何完成这个查询：</p>
-
-<pre><code>outer_iterator = SELECT A.xx,A.c FROM A WHERE A.xx IN (5,6);
-outer_row = outer_iterator.next;
-while(outer_row) {
-    inner_iterator = SELECT B.yy FROM B WHERE B.c = outer_row.c;
-    inner_row = inner_iterator.next;
-    while(inner_row) {
-        output[inner_row.yy,outer_row.xx];
-        inner_row = inner_iterator.next;
+<pre><code class="language-java">// IP地址代理库Map 
+private static Map&lt;String, Integer&gt; IPProxyRepository = new HashMap&lt;&gt;(); 
+private static String[] keysArray = null;   // keysArray是为了方便生成随机的代理对象 
+ 
+/** 
+ * 初次使用时使用静态代码块将IP代理库加载进set中 
+ */ 
+static { 
+    InputStream in = HttpUtil.class.getClassLoader().getResourceAsStream(&quot;IPProxyRepository.txt&quot;);  // 加载包含代理IP的文本 
+    // 构建缓冲流对象 
+    InputStreamReader isr = new InputStreamReader(in); 
+    BufferedReader bfr = new BufferedReader(isr); 
+    String line = null; 
+    try { 
+        // 循环读每一行，添加进map中 
+        while ((line = bfr.readLine()) != null) { 
+            String[] split = line.split(&quot;:&quot;);   // 以:作为分隔符，即文本中的数据格式应为192.168.1.1:4893 
+            String host = split[0]; 
+            int port = Integer.valueOf(split[1]); 
+            IPProxyRepository.put(host, port); 
+        } 
+        Set&lt;String&gt; keys = IPProxyRepository.keySet(); 
+        keysArray = keys.toArray(new String[keys.size()]);  // keysArray是为了方便生成随机的代理对象 
+    } catch (IOException e) { 
+        e.printStackTrace(); 
     }
-    outer_row = outer_iterator.next;
+} 
+</code></pre>
+
+<p>之后，在每次构建 http 客户端时，都会先到 map 中看是否有代理 IP，有则使用，没有则不使用代理：</p>
+
+<pre><code class="language-java">/** 
+ * 随机返回一个代理对象 
+ * 
+ * @return 
+ */ 
+public static HttpHost getRandomProxy() { 
+    // 随机获取host:port，并构建代理对象 
+    Random random = new Random(); 
+    String host = keysArray[random.nextInt(keysArray.length)]; 
+    int port = IPProxyRepository.get(host); 
+    HttpHost proxy = new HttpHost(host, port);  // 设置http代理 
+    return proxy; 
+} 
+</code></pre>
+
+<p>随机代理对象则通过下面的方法生成：</p>
+
+<pre><code class="language-java">/** 
+     * 随机返回一个代理对象 
+     * 
+     * @return 
+     */ 
+public static HttpHost getRandomProxy() { 
+    // 随机获取host:port，并构建代理对象 
+    Random random = new Random(); 
+    String host = keysArray[random.nextInt(keysArray.length)]; 
+    int port = IPProxyRepository.get(host); 
+    HttpHost proxy = new HttpHost(host, port);  // 设置http代理 
+    return proxy; 
+} 
+</code></pre>
+
+<p>这样，通过上面的设计，基本就实现了随机 IP 代理器的功能，当然，其中还有很多可以完善的地方。</p>
+
+<p>比如，当使用这个 IP 代理而请求失败时，是否可以把这一情况记录下来；当超过一定次数时，再将其从代理库中删除，同时生成日志供开发人员或运维人员参考，这是完全可以实现的，不过我就不做这一步功能了。</p>
+
+<p><strong>网页下载器</strong></p>
+
+<p>网页下载器就是用来下载网页中的数据，主要基于下面的接口开发：</p>
+
+<pre><code class="language-java">/** 
+ * 网页数据下载 
+ */ 
+public interface IDownload { 
+    /** 
+     * 下载给定url的网页数据 
+     * @param url 
+     * @return 
+     */ 
+    public Page download(String url); 
+} 
+</code></pre>
+
+<p>基于此，在系统中只实现了一个 http get 的下载器，但是也可以完成我们所需要的功能了：</p>
+
+<pre><code class="language-java">/** 
+ * 数据下载实现类 
+ */ 
+public class HttpGetDownloadImpl implements IDownload { 
+ 
+    @Override 
+    public Page download(String url) { 
+        Page page = new Page(); 
+        String content = HttpUtil.getHttpContent(url);  // 获取网页数据 
+        page.setUrl(url); 
+        page.setContent(content); 
+        return page; 
+    } 
+} 
+</code></pre>
+
+<p><strong>网页解析器</strong></p>
+
+<p>网页解析器就是把下载的网页中我们感兴趣的数据解析出来，并保存到某个对象中，供数据存储器进一步处理以保存到不同的持久化仓库中，其基于下面的接口进行开发：</p>
+
+<pre><code class="language-java">/** 
+ * 网页数据解析 
+ */ 
+public interface IParser { 
+    public void parser(Page page); 
+} 
+</code></pre>
+
+<p>网页解析器在整个系统的开发中也算是比较重头戏的一个组件，功能不复杂，主要是代码比较多，针对不同的商城不同的商品，对应的解析器可能就不一样了。</p>
+
+<p>因此需要针对特别的商城的商品进行开发，因为很显然，京东用的网页模板跟苏宁易购的肯定不一样，天猫用的跟京东用的也肯定不一样。</p>
+
+<p>所以这个完全是看自己的需要来进行开发了，只是说，在解析器开发的过程当中会发现有部分重复代码，这时就可以把这些代码抽象出来开发一个工具类了。</p>
+
+<p>目前在系统中爬取的是京东和苏宁易购的手机商品数据，因此就写了这两个实现类：</p>
+
+<pre><code class="language-java">/** 
+ * 解析京东商品的实现类 
+ */ 
+public class JDHtmlParserImpl implements IParser { 
+    ...... 
+} 
+ 
+/** 
+ * 苏宁易购网页解析 
+ */ 
+public class SNHtmlParserImpl implements IParser { 
+    ...... 
+} 
+</code></pre>
+
+<p><strong>数据存储器</strong></p>
+
+<p><a href="http://s4.51cto.com/oss/201805/09/2979ac425e0fbcfcf2f078e6f97842f5.jpg-wh_600x-s_1985411508.jpg"><img src="http://s4.51cto.com/oss/201805/09/2979ac425e0fbcfcf2f078e6f97842f5.jpg-wh_600x-s_1985411508.jpg" alt=""/></a></p>
+
+<p>数据存储器主要是将网页解析器解析出来的数据对象保存到不同的表格，而对于本次爬取的手机商品，数据对象是下面一个 Page 对象：</p>
+
+<pre><code class="language-java">/** 
+ * 网页对象，主要包含网页内容和商品数据 
+ */ 
+public class Page { 
+    private String content;              // 网页内容 
+ 
+    private String id;                    // 商品Id 
+    private String source;               // 商品来源 
+    private String brand;                // 商品品牌 
+    private String title;                // 商品标题 
+    private float price;                // 商品价格 
+    private int commentCount;        // 商品评论数 
+    private String url;                  // 商品地址 
+    private String imgUrl;             // 商品图片地址 
+    private String params;              // 商品规格参数 
+ 
+    private List&lt;String&gt; urls = new ArrayList&lt;&gt;();  // 解析列表页面时用来保存解析的商品url的容器 
+} 
+</code></pre>
+
+<p>对应的，在 MySQL 中，表数据结构如下：</p>
+
+<pre><code class="language-sql">-- ---------------------------- 
+-- Table structure for phone 
+-- ---------------------------- 
+DROP TABLE IF EXISTS `phone`; 
+CREATE TABLE `phone` ( 
+  `id` varchar(30) CHARACTER SET armscii8 NOT NULL COMMENT &#39;商品id&#39;, 
+  `source` varchar(30) NOT NULL COMMENT &#39;商品来源，如jd suning gome等&#39;, 
+  `brand` varchar(30) DEFAULT NULL COMMENT &#39;手机品牌&#39;, 
+  `title` varchar(255) DEFAULT NULL COMMENT &#39;商品页面的手机标题&#39;, 
+  `price` float(10,2) DEFAULT NULL COMMENT &#39;手机价格&#39;, 
+  `comment_count` varchar(30) DEFAULT NULL COMMENT &#39;手机评论&#39;, 
+  `url` varchar(500) DEFAULT NULL COMMENT &#39;手机详细信息地址&#39;, 
+  `img_url` varchar(500) DEFAULT NULL COMMENT &#39;图片地址&#39;, 
+  `params` text COMMENT &#39;手机参数，json格式存储&#39;, 
+  PRIMARY KEY (`id`,`source`) 
+) ENGINE=InnoDB DEFAULT CHARSET=utf8; 
+</code></pre>
+
+<p>而在 HBase 中的表结构则为如下：</p>
+
+<pre><code class="language-log">## cf1 存储 id source price comment brand url 
+## cf2 存储 title params imgUrl 
+create &#39;phone&#39;, &#39;cf1&#39;, &#39;cf2&#39; 
+ 
+## 在HBase shell中查看创建的表 
+hbase(main):135:0&gt; desc &#39;phone&#39; 
+Table phone is ENABLED                                                                                                 
+phone                                                                                                                  
+COLUMN FAMILIES DESCRIPTION                                                                                            
+{NAME =&gt; &#39;cf1&#39;, BLOOMFILTER =&gt; &#39;ROW&#39;, VERSIONS =&gt; &#39;1&#39;, IN_MEMORY =&gt; &#39;false&#39;, KEEP_DELETED_CELLS =&gt; &#39;FALSE&#39;, DATA_BLOCK 
+_ENCODING =&gt; &#39;NONE&#39;, TTL =&gt; &#39;FOREVER&#39;, COMPRESSION =&gt; &#39;NONE&#39;, MIN_VERSIONS =&gt; &#39;0&#39;, BLOCKCACHE =&gt; &#39;true&#39;, BLOCKSIZE =&gt;  
+&#39;65536&#39;, REPLICATION_SCOPE =&gt; &#39;0&#39;}                                                                                     
+{NAME =&gt; &#39;cf2&#39;, BLOOMFILTER =&gt; &#39;ROW&#39;, VERSIONS =&gt; &#39;1&#39;, IN_MEMORY =&gt; &#39;false&#39;, KEEP_DELETED_CELLS =&gt; &#39;FALSE&#39;, DATA_BLOCK 
+_ENCODING =&gt; &#39;NONE&#39;, TTL =&gt; &#39;FOREVER&#39;, COMPRESSION =&gt; &#39;NONE&#39;, MIN_VERSIONS =&gt; &#39;0&#39;, BLOCKCACHE =&gt; &#39;true&#39;, BLOCKSIZE =&gt;  
+&#39;65536&#39;, REPLICATION_SCOPE =&gt; &#39;0&#39;}                                                                                     
+2 row(s) in 0.0350 seconds 
+</code></pre>
+
+<p>即在 HBase 中建立了两个列族，分别为 cf1、cf2，其中 cf1 用来保存 id source price comment brand url 字段信息；cf2 用来保存 title params imgUrl 字段信息。</p>
+
+<p>不同的数据存储用的是不同的实现类，但是其都是基于下面同一个接口开发的：</p>
+
+<pre><code class="language-java">/** 
+ * 商品数据的存储 
+ */ 
+public interface IStore { 
+    public void store(Page page); 
+} 
+</code></pre>
+
+<p>然后基于此开发了 MySQL 的存储实现类、HBase 的存储实现类还有控制台的输出实现类，如 MySQL 的存储实现类，其实就是简单的数据插入语句：</p>
+
+<pre><code class="language-java">/** 
+ * 使用dbc数据库连接池将数据写入mysql表中 
+ */ 
+public class MySQLStoreImpl implements IStore { 
+    private QueryRunner queryRunner = new QueryRunner(DBCPUtil.getDataSource()); 
+ 
+    @Override 
+    public void store(Page page) { 
+        String sql = &quot;insert into phone(id, source, brand, title, price, comment_count, url, img_url, params) values(?, ?, ?, ?, ?, ?, ?, ?, ?)&quot;; 
+        try { 
+            queryRunner.update(sql, page.getId(), 
+                    page.getSource(), 
+                    page.getBrand(), 
+                    page.getTitle(), 
+                    page.getPrice(), 
+                    page.getCommentCount(), 
+                    page.getUrl(), 
+                    page.getImgUrl(), 
+                    page.getParams()); 
+        } catch (SQLException e) { 
+            e.printStackTrace(); 
+        } 
+    } 
+} 
+</code></pre>
+
+<p>而 HBase 的存储实现类，则是 HBase Java API 的常用插入语句代码：</p>
+
+<pre><code class="language-java">...... 
+// cf1:price 
+Put pricePut = new Put(rowKey); 
+// 必须要做是否为null判断，否则会有空指针异常 
+pricePut.addColumn(cf1, &quot;price&quot;.getBytes(), page.getPrice() != null ? String.valueOf(page.getPrice()).getBytes() : &quot;&quot;.getBytes()); 
+puts.add(pricePut); 
+// cf1:comment 
+Put commentPut = new Put(rowKey); 
+commentPut.addColumn(cf1, &quot;comment&quot;.getBytes(), page.getCommentCount() != null ? String.valueOf(page.getCommentCount()).getBytes() : &quot;&quot;.getBytes()); 
+puts.add(commentPut); 
+// cf1:brand 
+Put brandPut = new Put(rowKey); 
+brandPut.addColumn(cf1, &quot;brand&quot;.getBytes(), page.getBrand() != null ? page.getBrand().getBytes() : &quot;&quot;.getBytes()); 
+puts.add(brandPut); 
+...... 
+</code></pre>
+
+<p>当然，至于要将数据存储在哪个地方，在初始化爬虫程序时，是可以手动选择的：</p>
+
+<pre><code class="language-java">// 3.注入存储器 
+iSpider.setStore(new HBaseStoreImpl()); 
+</code></pre>
+
+<p>目前还没有把代码写成可以同时存储在多个地方，按照目前代码的架构，要实现这一点也比较简单，修改一下相应代码就好了。</p>
+
+<p>实际上，是可以先把数据保存到 MySQL 中，然后通过 Sqoop 导入到 HBase 中，详细操作可以参考我写的 Sqoop 文章。</p>
+
+<p>仍然需要注意的是，如果确定需要将数据保存到 HBase 中，请保证你有可用的集群环境，并且需要将如下配置文档添加到 classpath 下：</p>
+
+<pre><code class="language-txt">core-site.xml 
+hbase-site.xml 
+hdfs-site.xml 
+</code></pre>
+
+<p>对大数据感兴趣的同学可以折腾一下这一点，如果之前没有接触过的，直接使用 MySQL 存储就好了，只需要在初始化爬虫程序时注入 MySQL 存储器即可：</p>
+
+<pre><code class="language-java">// 3.注入存储器 
+iSpider.setStore(new MySQLStoreImpl()); 
+</code></pre>
+
+<p>URL 调度系统</p>
+
+<p><a href="http://s1.51cto.com/oss/201805/09/ae7addb90d2c16385a177bac153cfcf5.jpg"><img src="http://s1.51cto.com/oss/201805/09/ae7addb90d2c16385a177bac153cfcf5.jpg" alt=""/></a></p>
+
+<p>URL 调度系统是实现整个爬虫系统分布式的桥梁与关键，正是通过 URL 调度系统的使用，才使得整个爬虫系统可以较为高效（Redis 作为存储）随机地获取 URL，并实现整个系统的分布式。</p>
+
+<p><strong>URL 仓库</strong></p>
+
+<p>通过架构图可以看出，所谓的 URL 仓库不过是 Redis 仓库，即在我们的系统中使用 Redis 来保存 URL 地址列表。</p>
+
+<p>正是这样，才能保证我们的程序实现分布式，只要保存了 URL 是唯一的，这样不管我们的爬虫程序有多少个，最终保存下来的数据都是只有唯一一份的，而不会重复。</p>
+
+<p>同时 URL 仓库中的 URL 地址在获取时的策略是通过队列的方式来实现的，待会通过 URL 调度器的实现即可知道。</p>
+
+<p>另外，在我们的 URL 仓库中，主要保存了下面的数据：</p>
+
+<p><strong>种子 URL 列表，Redis 的数据类型为 list</strong></p>
+
+<p>种子 URL 是持久化存储的，一定时间后，由 URL 定时器通过种子 URL 获取 URL，并将其注入到我们的爬虫程序需要使用的高优先级 URL 队列中。</p>
+
+<p>这样就可以保证我们的爬虫程序可以源源不断地爬取数据而不需要中止程序的执行。</p>
+
+<p><strong>高优先级 URL 队列，Redis 的数据类型为 set</strong></p>
+
+<p>什么是高优先级 URL 队列？其实它就是用来保存列表 URL 的。那么什么是列表 URL 呢？</p>
+
+<p>说白了就是一个列表中含有多个商品，以京东为例，我们打开一个手机列表：</p>
+
+<p>该地址中包含的不是一个具体商品的 URL，而是包含了多个我们需要爬取的数据（手机商品）的列表。</p>
+
+<p><a href="http://s4.51cto.com/oss/201805/09/797107def9ba8263c95d8d7d632fce1c.jpg"><img src="http://s4.51cto.com/oss/201805/09/797107def9ba8263c95d8d7d632fce1c.jpg" alt=""/></a></p>
+
+<p>通过对每个高级 URL 的解析，我们可以获取到非常多的具体商品 URL，而具体的商品 URL，就是低优先 URL，其会保存到低优先级 URL 队列中。</p>
+
+<p>那么以这个系统为例，保存的数据类似如下：</p>
+
+<pre><code class="language-log">jd.com.higher 
+    --https://list.jd.com/list.html?cat=9987,653,655&amp;page=1 
+    ...  
+suning.com.higher 
+    --https://list.suning.com/0-20006-0.html 
+    ... 
+</code></pre>
+
+<p><strong>低优先级 URL 队列，Redis 的数据类型为 set</strong></p>
+
+<p>低优先级 URL 其实就是具体某个商品的 URL，如下面一个手机商品：</p>
+
+<p><a href="http://s2.51cto.com/oss/201805/09/71ae2263e5ba4b9caa567fd704d659dc.jpg"><img src="http://s2.51cto.com/oss/201805/09/71ae2263e5ba4b9caa567fd704d659dc.jpg" alt=""/></a></p>
+
+<p>通过下载该 URL 的数据，并对其进行解析，就能够获取到我们想要的数据。</p>
+
+<p>那么以这个系统为例，保存的数据类似如下：</p>
+
+<pre><code class="language-log">jd.com.lower 
+    --https://item.jd.com/23545806622.html 
+    ... 
+suning.com.lower 
+    --https://product.suning.com/0000000000/690128156.html 
+    ... 
+</code></pre>
+
+<p><strong>URL 调度器</strong></p>
+
+<p>所谓 URL 调度器，就是 URL 仓库 Java 代码的调度策略，不过因为其核心在于调度，所以将其放到 URL 调度器中来进行说明，目前其调度基于以下接口开发：</p>
+
+<pre><code class="language-java">/** 
+ * url 仓库 
+ * 主要功能： 
+ *      向仓库中添加url（高优先级的列表，低优先级的商品url） 
+ *      从仓库中获取url（优先获取高优先级的url，如果没有，再获取低优先级的url） 
+ * 
+ */ 
+public interface IRepository { 
+ 
+    /** 
+     * 获取url的方法 
+     * 从仓库中获取url（优先获取高优先级的url，如果没有，再获取低优先级的url） 
+     * @return 
+     */ 
+    public String poll(); 
+ 
+    /** 
+     * 向高优先级列表中添加商品列表url 
+     * @param highUrl 
+     */ 
+    public void offerHigher(String highUrl); 
+ 
+    /** 
+     * 向低优先级列表中添加商品url 
+     * @param lowUrl 
+     */ 
+    public void offerLower(String lowUrl); 
+ 
 }
-
 </code></pre>
 
-<p>可以看到，最外层的查询是根据<code>A.xx</code>列来查询的，<code>A.c</code>上如果有索引的话，整个关联查询也不会使用。再看内层的查询，很明显<code>B.c</code>上如果有索引的话，能够加速查询，因此只需要在关联顺序中的第二张表的相应列上创建索引即可。</p>
+<p>其基于 Redis 作为 URL 仓库的实现如下：</p>
 
-<h5 id="toc_24">优化 LIMIT 分页</h5>
-
-<p>当需要分页操作时，通常会使用<code>LIMIT</code>加上偏移量的办法实现，同时加上合适的<code>ORDER BY</code>字句。如果有对应的索引，通常效率会不错，否则，MySQL 需要做大量的文件排序操作。</p>
-
-<p>一个常见的问题是当偏移量非常大的时候，比如：<code>LIMIT 10000 20</code>这样的查询，MySQL 需要查询 10020 条记录然后只返回 20 条记录，前面的 10000 条都将被抛弃，这样的代价非常高。</p>
-
-<p>优化这种查询一个最简单的办法就是尽可能的使用覆盖索引扫描，而不是查询所有的列。然后根据需要做一次关联查询再返回所有的列。对于偏移量很大时，这样做的效率会提升非常大。考虑下面的查询：</p>
-
-<pre><code>SELECT film_id,description FROM film ORDER BY title LIMIT 50,5;
-
+<pre><code class="language-java">/** 
+ * 基于Redis的全网爬虫，随机获取爬虫url： 
+ * 
+ * Redis中用来保存url的数据结构如下： 
+ * 1.需要爬取的域名集合（存储数据类型为set，这个需要先在Redis中添加） 
+ *      key 
+ *          spider.website.domains 
+ *      value(set) 
+ *          jd.com  suning.com  gome.com 
+ *      key由常量对象SpiderConstants.SPIDER_WEBSITE_DOMAINS_KEY 获得 
+ * 2.各个域名所对应的高低优先url队列（存储数据类型为list，这个由爬虫程序解析种子url后动态添加） 
+ *      key 
+ *          jd.com.higher 
+ *          jd.com.lower 
+ *          suning.com.higher 
+ *          suning.com.lower 
+ *          gome.com.higher 
+ *          gome.come.lower 
+ *      value(list) 
+ *          相对应需要解析的url列表 
+ *      key由随机的域名 + 常量 SpiderConstants.SPIDER_DOMAIN_HIGHER_SUFFIX或者SpiderConstants.SPIDER_DOMAIN_LOWER_SUFFIX获得 
+ * 3.种子url列表 
+ *      key 
+ *          spider.seed.urls 
+ *      value(list) 
+ *          需要爬取的数据的种子url 
+ *       key由常量SpiderConstants.SPIDER_SEED_URLS_KEY获得 
+ * 
+ *       种子url列表中的url会由url调度器定时向高低优先url队列中 
+ */ 
+public class RandomRedisRepositoryImpl implements IRepository { 
+ 
+    /** 
+     * 构造方法 
+     */ 
+    public RandomRedisRepositoryImpl() { 
+        init(); 
+    } 
+ 
+    /** 
+     * 初始化方法，初始化时，先将redis中存在的高低优先级url队列全部删除 
+     * 否则上一次url队列中的url没有消耗完时，再停止启动跑下一次，就会导致url仓库中有重复的url 
+     */ 
+    public void init() { 
+        Jedis jedis = JedisUtil.getJedis(); 
+        Set&lt;String&gt; domains = jedis.smembers(SpiderConstants.SPIDER_WEBSITE_DOMAINS_KEY); 
+        String higherUrlKey; 
+        String lowerUrlKey; 
+        for(String domain : domains) { 
+            higherUrlKey = domain + SpiderConstants.SPIDER_DOMAIN_HIGHER_SUFFIX; 
+            lowerUrlKey = domain + SpiderConstants.SPIDER_DOMAIN_LOWER_SUFFIX; 
+            jedis.del(higherUrlKey, lowerUrlKey); 
+        } 
+        JedisUtil.returnJedis(jedis); 
+    } 
+ 
+    /** 
+     * 从队列中获取url，目前的策略是： 
+     *      1.先从高优先级url队列中获取 
+     *      2.再从低优先级url队列中获取 
+     *  对应我们的实际场景，应该是先解析完列表url再解析商品url 
+     *  但是需要注意的是，在分布式多线程的环境下，肯定是不能完全保证的，因为在某个时刻高优先级url队列中 
+     *  的url消耗完了，但实际上程序还在解析下一个高优先级url，此时，其它线程去获取高优先级队列url肯定获取不到 
+     *  这时就会去获取低优先级队列中的url，在实际考虑分析时，这点尤其需要注意 
+     * @return 
+     */ 
+    @Override 
+    public String poll() { 
+        // 从set中随机获取一个顶级域名 
+        Jedis jedis = JedisUtil.getJedis(); 
+        String randomDomain = jedis.srandmember(SpiderConstants.SPIDER_WEBSITE_DOMAINS_KEY);    // jd.com 
+        String key = randomDomain + SpiderConstants.SPIDER_DOMAIN_HIGHER_SUFFIX;                // jd.com.higher 
+        String url = jedis.lpop(key); 
+        if(url == null) {   // 如果为null，则从低优先级中获取 
+            key = randomDomain + SpiderConstants.SPIDER_DOMAIN_LOWER_SUFFIX;    // jd.com.lower 
+            url = jedis.lpop(key); 
+        } 
+        JedisUtil.returnJedis(jedis); 
+        return url; 
+    } 
+ 
+    /** 
+     * 向高优先级url队列中添加url 
+     * @param highUrl 
+     */ 
+    @Override 
+    public void offerHigher(String highUrl) { 
+        offerUrl(highUrl, SpiderConstants.SPIDER_DOMAIN_HIGHER_SUFFIX); 
+    } 
+ 
+    /** 
+     * 向低优先url队列中添加url 
+     * @param lowUrl 
+     */ 
+    @Override 
+    public void offerLower(String lowUrl) { 
+        offerUrl(lowUrl, SpiderConstants.SPIDER_DOMAIN_LOWER_SUFFIX); 
+    } 
+ 
+    /** 
+     * 添加url的通用方法，通过offerHigher和offerLower抽象而来 
+     * @param url   需要添加的url 
+     * @param urlTypeSuffix  url类型后缀.higher或.lower 
+     */ 
+    public void offerUrl(String url, String urlTypeSuffix) { 
+        Jedis jedis = JedisUtil.getJedis(); 
+        String domain = SpiderUtil.getTopDomain(url);   // 获取url对应的顶级域名，如jd.com 
+        String key = domain + urlTypeSuffix;            // 拼接url队列的key，如jd.com.higher 
+        jedis.lpush(key, url);                          // 向url队列中添加url 
+        JedisUtil.returnJedis(jedis); 
+    } 
+} 
 </code></pre>
 
-<p>如果这张表非常大，那么这个查询最好改成下面的样子：</p>
+<p>通过代码分析也可以知道，其核心就在如何调度 URL 仓库（Redis）中的 URL。</p>
 
-<pre><code>SELECT film.film_id,film.description
-FROM film INNER JOIN (
-    SELECT film_id FROM film ORDER BY title LIMIT 50,5
-) AS tmp USING(film_id);
+<p><strong>URL 定时器</strong></p>
 
+<p>一段时间后，高优先级 URL 队列和低优先 URL 队列中的 URL 都会被消费完。</p>
+
+<p>为了让程序可以继续爬取数据，同时减少人为的干预，可以预先在 Redis 中插入种子 URL，之后定时让 URL 定时器从种子 URL 中取出 URL 存放到高优先级 URL 队列中，以此达到程序定时不间断爬取数据的目的。</p>
+
+<p>URL 消费完毕后，是否需要循环不断爬取数据根据个人业务需求而不同，因此这一步不是必需的，只是也提供了这样的操作。</p>
+
+<p>因为事实上，我们需要爬取的数据也是每隔一段时间就会更新的，如果希望我们爬取的数据也跟着定时更新，那么这时定时器就有非常重要的作用了。</p>
+
+<p>不过需要注意的是，一旦决定需要循环重复爬取数据，则在设计存储器实现时需要考虑重复数据的问题，即重复数据应该是更新操作。</p>
+
+<p>目前在我设计的存储器不包括这个功能，有兴趣的朋友可以自己实现，只需要在插入数据前判断数据库中是否存在该数据即可。</p>
+
+<p>另外需要注意的一点是，URL 定时器是一个独立的进程，需要单独启动。</p>
+
+<p>定时器基于 Quartz 实现，下面是其 job 的代码：</p>
+
+<pre><code class="language-java">/** 
+ * 每天定时从url仓库中获取种子url，添加进高优先级列表 
+ */ 
+public class UrlJob implements Job { 
+ 
+    // log4j日志记录 
+    private Logger logger = LoggerFactory.getLogger(UrlJob.class); 
+ 
+    @Override 
+    public void execute(JobExecutionContext context) throws JobExecutionException { 
+        /** 
+         * 1.从指定url种子仓库获取种子url 
+         * 2.将种子url添加进高优先级列表 
+         */ 
+        Jedis jedis = JedisUtil.getJedis(); 
+        Set&lt;String&gt; seedUrls = jedis.smembers(SpiderConstants.SPIDER_SEED_URLS_KEY);  // spider.seed.urls Redis数据类型为set，防止重复添加种子url 
+        for(String seedUrl : seedUrls) { 
+            String domain = SpiderUtil.getTopDomain(seedUrl);   // 种子url的顶级域名 
+            jedis.sadd(domain + SpiderConstants.SPIDER_DOMAIN_HIGHER_SUFFIX, seedUrl); 
+            logger.info(&quot;获取种子:{}&quot;, seedUrl); 
+        } 
+        JedisUtil.returnJedis(jedis); 
+//        System.out.println(&quot;Scheduler Job Test...&quot;); 
+    } 
+ 
+} 
 </code></pre>
 
-<p>这里的延迟关联将大大提升查询效率，让 MySQL 扫描尽可能少的页面，获取需要访问的记录后在根据关联列回原表查询所需要的列。</p>
+<p>调度器的实现如下：</p>
 
-<p>有时候如果可以使用书签记录上次取数据的位置，那么下次就可以直接从该书签记录的位置开始扫描，这样就可以避免使用<code>OFFSET</code>，比如下面的查询：</p>
-
-<pre><code>SELECT id FROM t LIMIT 10000, 10;
-改为：
-SELECT id FROM t WHERE id &gt; 10000 LIMIT 10;
-
+<pre><code class="language-java">/** 
+ * url定时调度器，定时向url对应仓库中存放种子url 
+ * 
+ * 业务规定：每天凌晨1点10分向仓库中存放种子url 
+ */ 
+public class UrlJobScheduler { 
+ 
+    public UrlJobScheduler() { 
+        init(); 
+    } 
+ 
+    /** 
+     * 初始化调度器 
+     */ 
+    public void init() { 
+        try { 
+            Scheduler scheduler = StdSchedulerFactory.getDefaultScheduler(); 
+ 
+            // 如果没有以下start方法的执行，则是不会开启任务的调度 
+            scheduler.start(); 
+ 
+            String name = &quot;URL_SCHEDULER_JOB&quot;; 
+            String group = &quot;URL_SCHEDULER_JOB_GROUP&quot;; 
+            JobDetail jobDetail = new JobDetail(name, group, UrlJob.class); 
+            String cronExpression = &quot;0 10 1 * * ?&quot;; 
+            Trigger trigger = new CronTrigger(name, group, cronExpression); 
+ 
+            // 调度任务 
+            scheduler.scheduleJob(jobDetail, trigger); 
+ 
+        } catch (SchedulerException e) { 
+            e.printStackTrace(); 
+        } catch (ParseException e) { 
+            e.printStackTrace(); 
+        } 
+    } 
+ 
+    public static void main(String[] args) { 
+        UrlJobScheduler urlJobScheduler = new UrlJobScheduler(); 
+        urlJobScheduler.start(); 
+    } 
+ 
+    /** 
+     * 定时调度任务 
+     * 因为我们每天要定时从指定的仓库中获取种子url，并存放到高优先级的url列表中 
+     * 所以是一个不间断的程序，所以不能停止 
+     */ 
+    private void start() { 
+        while (true) { 
+ 
+        } 
+    } 
+}
 </code></pre>
 
-<p>其他优化的办法还包括使用预先计算的汇总表，或者关联到一个冗余表，冗余表中只包含主键列和需要做排序的列。</p>
+<p><strong>监控报警系统</strong></p>
 
-<h5 id="toc_25">优化 UNION</h5>
+<p><a href="http://s1.51cto.com/oss/201805/09/b88be51ee744baefd70f4fdb7b4b6891.jpg"><img src="http://s1.51cto.com/oss/201805/09/b88be51ee744baefd70f4fdb7b4b6891.jpg" alt=""/></a></p>
 
-<p>MySQL 处理<code>UNION</code>的策略是先创建临时表，然后再把各个查询结果插入到临时表中，最后再来做查询。因此很多优化策略在<code>UNION</code>查询中都没有办法很好的时候。经常需要手动将<code>WHERE</code>、<code>LIMIT</code>、<code>ORDER BY</code>等字句 “下推” 到各个子查询中，以便优化器可以充分利用这些条件先优化。</p>
+<p>监控报警系统的加入主要是为了让使用者可以主动发现节点宕机，而不是被动地发现，因为实际中爬虫程序可能是持续不断运行的。</p>
 
-<p>除非确实需要服务器去重，否则就一定要使用<code>UNION ALL</code>，如果没有<code>ALL</code>关键字，MySQL 会给临时表加上<code>DISTINCT</code>选项，这会导致整个临时表的数据做唯一性检查，这样做的代价非常高。当然即使使用 ALL 关键字，MySQL 总是将结果放入临时表，然后再读出，再返回给客户端。虽然很多时候没有这个必要，比如有时候可以直接把每个子查询的结果返回给客户端。</p>
+<p>并且我们会在多个节点上部署我们的爬虫程序，因此很有必要对节点进行监控，并且在节点出现问题时可以及时发现并修正，需要注意的是，监控报警系统是一个独立的进程，需要单独启动。</p>
 
-<h4 id="toc_26">结语</h4>
+<p><strong>基本原理</strong></p>
 
-<p>理解查询是如何执行以及时间都消耗在哪些地方，再加上一些优化过程的知识，可以帮助大家更好的理解 MySQL，理解常见优化技巧背后的原理。希望本文中的原理、示例能够帮助大家更好的将理论和实践联系起来，更多的将理论知识运用到实践中。</p>
+<p>首先需要先在 ZooKeeper 中创建一个 /ispider 节点：</p>
 
-<p>其他也没啥说的了，给大家留两个思考题吧，可以在脑袋里想想答案，这也是大家经常挂在嘴边的，但很少有人会思考为什么？</p>
+<pre><code class="language-log">[zk: localhost:2181(CONNECTED) 1] create /ispider ispider 
+Created /ispider 
+</code></pre>
 
-<ol>
-<li><p>有非常多的程序员在分享时都会抛出这样一个观点：尽可能不要使用存储过程，存储过程非常不容易维护，也会增加使用成本，应该把业务逻辑放到客户端。既然客户端都能干这些事，那为什么还要存储过程？</p></li>
-<li><p><code>JOIN</code>本身也挺方便的，直接查询就好了，为什么还需要视图呢？</p></li>
-</ol>
+<p>监控报警系统的开发主要依赖于 ZooKeeper 实现，监控程序对 ZooKeeper  下面的这个节点目录进行监听：</p>
 
-<h4 id="toc_27">参考资料</h4>
+<pre><code class="language-log">[zk: localhost:2181(CONNECTED) 0] ls /ispider  
+[] 
+</code></pre>
 
-<p>[1] <a href="https://link.jianshu.com?t=http://union-click.jd.com/jdc?d=6vMwSD">姜承尧 著；MySQL 技术内幕 - InnoDB 存储引擎；机械工业出版社，2013</a><br/>
-[2] <a href="https://link.jianshu.com?t=http://union-click.jd.com/jdc?d=wMESxy">Baron Scbwartz 等著；宁海元 周振兴等译；高性能 MySQL（第三版）; 电子工业出版社， 2013</a><br/>
-[3] <a href="https://link.jianshu.com?t=https://segmentfault.com/a/1190000004690721">由 B-/B + 树看 MySQL 索引结构</a></p>
+<p>爬虫程序启动时会在该节点目录下注册一个临时节点目录：</p>
 
-<blockquote>
-<p>备注：水平有限，难免疏漏，如果问题请留言<br/>
-本文已经同步更新到微信公众号：<strong><a href="https://link.jianshu.com?t=https://mp.weixin.qq.com/misc/getqrcode?fakeid=3267562543&amp;token=1639688523&amp;style=1">轻描淡写 CODE</a> » <a href="https://link.jianshu.com?t=https://mp.weixin.qq.com/s/pCHxwsdMQvAFDdYwGk7ydQ">我必须得告诉大家的 MySQL 优化原理</a></strong></p>
-</blockquote>
+<pre><code class="language-log">[zk: localhost:2181(CONNECTED) 0] ls /ispider  
+[192.168.43.166] 
+</code></pre>
+
+<p>当节点出现宕机时，该临时节点目录就会被 ZooKeeper 删除。</p>
+
+<pre><code class="language-log">[zk: localhost:2181(CONNECTED) 0] ls /ispider 
+[]
+</code></pre>
+
+<p>同时因为我们监听了节点目录 /ispider，所以当 ZooKeeper 删除其下的节点目录时（或增加一个节点目录），ZooKeeper 会给我们的监控程序发送通知。</p>
+
+<p>即我们的监控程序会得到回调，这样便可以在回调程序中执行报警的系统动作，从而完成监控报警的功能。</p>
+
+<p><strong>ZooKeeper Java API 使用说明</strong></p>
+
+<p>可以使用 ZooKeeper 原生的 Java API，我在另外写的一个 RPC 框架（底层基于 Netty 实现远程通信）中就是使用原生的 API。</p>
+
+<p>不过显然代码会复杂很多，并且本身需要对 ZooKeeper 有更多的学习和了解，这样用起来才会容易一些。</p>
+
+<p>所以为了降低开发的难度，这里使用第三方封装的 API，即 curator，来进行 ZooKeeper 客户端程序的开发。</p>
+
+<p><strong>爬虫系统 ZooKeeper 注册</strong></p>
+
+<p>在启动爬虫系统时，我们的程序都会启动一个 ZooKeeper 客户端来向 ZooKeeper 来注册自身的节点信息，主要是 IP 地址。</p>
+
+<p>并在 /ispider 节点目录创建一个以该爬虫程序所在的节点 IP 地址命名的节点，如 /ispider/192.168.43.116，实现的代码如下：</p>
+
+<pre><code class="language-java">/** 
+ * 注册zk 
+ */ 
+private void registerZK() { 
+    String zkStr = &quot;uplooking01:2181,uplooking02:2181,uplooking03:2181&quot;; 
+    int baseSleepTimeMs = 1000; 
+    int maxRetries = 3; 
+    RetryPolicy retryPolicy = new ExponentialBackoffRetry(baseSleepTimeMs, maxRetries); 
+    CuratorFramework curator = CuratorFrameworkFactory.newClient(zkStr, retryPolicy); 
+    curator.start(); 
+    String ip = null; 
+    try { 
+        // 向zk的具体目录注册 写节点 创建节点 
+        ip = InetAddress.getLocalHost().getHostAddress(); 
+        curator.create().withMode(CreateMode.EPHEMERAL).forPath(&quot;/ispider/&quot; + ip, ip.getBytes()); 
+    } catch (UnknownHostException e) { 
+        e.printStackTrace(); 
+    } catch (Exception e) { 
+        e.printStackTrace(); 
+    } 
+} 
+</code></pre>
+
+<p>应该注意到的是，我们创建的节点为临时节点，要想实现监控报警功能，必须要为临时节点。</p>
+
+<p><strong>监控程序</strong></p>
+
+<p>首先需要先监听 ZooKeeper 中的一个节点目录，在我们的系统中，设计是监听 /ispider 这个节点目录：</p>
+
+<pre><code class="language-java">public SpiderMonitorTask() { 
+    String zkStr = &quot;uplooking01:2181,uplooking02:2181,uplooking03:2181&quot;; 
+    int baseSleepTimeMs = 1000; 
+    int maxRetries = 3; 
+    RetryPolicy retryPolicy = new ExponentialBackoffRetry(baseSleepTimeMs, maxRetries); 
+    curator = CuratorFrameworkFactory.newClient(zkStr, retryPolicy); 
+    curator.start(); 
+    try { 
+        previousNodes = curator.getChildren().usingWatcher(this).forPath(&quot;/ispider&quot;); 
+    } catch (Exception e) { 
+        e.printStackTrace(); 
+    } 
+} 
+</code></pre>
+
+<p>在上面注册了 ZooKeeper 中的 watcher，也就是接收通知的回调程序，在该程序中，执行我们报警的逻辑：</p>
+
+<pre><code class="language-java">/** 
+ * 这个方法，当监控的zk对应的目录一旦有变动，就会被调用 
+ * 得到当前最新的节点状态，将最新的节点状态和初始或者上一次的节点状态作比较，那我们就知道了是由谁引起的节点变化 
+ * @param event 
+ */ 
+@Override 
+public void process(WatchedEvent event) { 
+    try { 
+        List&lt;String&gt; currentNodes = curator.getChildren().usingWatcher(this).forPath(&quot;/ispider&quot;); 
+        //            HashSet&lt;String&gt; previousNodesSet = new HashSet&lt;&gt;(previousNodes); 
+        if(currentNodes.size() &gt; previousNodes.size()) { // 最新的节点服务，超过之前的节点服务个数，有新的节点增加进来 
+            for(String node : currentNodes) { 
+                if(!previousNodes.contains(node)) { 
+                    // 当前节点就是新增节点 
+                    logger.info(&quot;----有新的爬虫节点{}新增进来&quot;, node); 
+                } 
+            } 
+        } else if(currentNodes.size() &lt; previousNodes.size()) {  // 有节点挂了    发送告警邮件或者短信 
+            for(String node : previousNodes) { 
+                if(!currentNodes.contains(node)) { 
+                    // 当前节点挂掉了 得需要发邮件 
+                    logger.info(&quot;----有爬虫节点{}挂掉了&quot;, node); 
+                    MailUtil.sendMail(&quot;有爬虫节点挂掉了，请人工查看爬虫节点的情况，节点信息为：&quot;, node); 
+                } 
+            } 
+        } // 挂掉和新增的数目一模一样，上面是不包括这种情况的，有兴趣的朋友可以直接实现包括这种特殊情况的监控 
+        previousNodes = currentNodes;   // 更新上一次的节点列表，成为最新的节点列表 
+    } catch (Exception e) { 
+        e.printStackTrace(); 
+    } 
+    // 在原生的API需要再做一次监控，因为每一次监控只会生效一次，所以当上面发现变化后，需要再监听一次，这样下一次才能监听到 
+    // 但是在使用curator的API时则不需要这样做 
+} 
+</code></pre>
+
+<p>当然，判断节点是否挂掉，上面的逻辑还是存在一定的问题的，按照上面的逻辑，假如某一时刻新增节点和删除节点事件同时发生，那么其就不能判断出来，所以如果需要更精准的话，可以将上面的程序代码修改一下。</p>
+
+<p><strong>邮件发送模块</strong></p>
+
+<p>使用模板代码就可以了，不过需要注意的是，在使用时，发件人的信息请使用自己的邮箱。</p>
+
+<p><a href="http://s2.51cto.com/oss/201805/09/b712e7d28dd46deef7ca2d44c853d548.jpg"><img src="http://s2.51cto.com/oss/201805/09/b712e7d28dd46deef7ca2d44c853d548.jpg" alt=""/></a></p>
+
+<p>下面是爬虫节点挂掉时接收到的邮件：</p>
+
+<p>实际上，如果购买了短信服务，那么通过短信 API 也可以向我们的手机发送短信。</p>
+
+<p><strong>实战：爬取京东、苏宁易购全网手机商品数据</strong></p>
+
+<p>因为前面在介绍这个系统的时候也提到了，我只写了京东和苏宁易购的网页解析器，所以接下来也就是爬取其全网的手机商品数据。</p>
+
+<p><strong>环境说明</strong></p>
+
+<p>需要确保 Redis、ZooKeeper 服务可用，另外如果需要使用 HBase 来存储数据，需要确保 Hadoop 集群中的 HBase 可用，并且相关配置文件已经加入到爬虫程序的 classpath 中。</p>
+
+<p>还有一点需要注意的是，URL 定时器和监控报警系统是作为单独的进程来运行的，并且也是可选的。</p>
+
+<p><strong>爬虫结果</strong></p>
+
+<p>进行了两次爬取，分别尝试将数据保存到 MySQL 和 HBase 中，给出如下数据情况。</p>
+
+<p><strong>保存到 MySQL</strong></p>
+
+<pre><code class="language-log">mysql&gt; select count(*) from phone; 
++----------+ 
+| count(*) | 
++----------+ 
+|    12052 | 
++----------+ 
+1 row in set 
+ 
+mysql&gt; select count(*) from phone where source=&#39;jd.com&#39;; 
++----------+ 
+| count(*) | 
++----------+ 
+|     9578 | 
++----------+ 
+1 row in set 
+ 
+mysql&gt; select count(*) from phone where source=&#39;suning 
+.com&#39;; 
++----------+ 
+| count(*) | 
++----------+ 
+|     2474 | 
++----------+ 
+1 row in set 
+</code></pre>
+
+<p>在可视化工具中查看数据情况：</p>
+
+<p><a href="http://s4.51cto.com/oss/201805/09/a8e4c845fd594da5c2b4683c11bcc6b9.jpg"><img src="http://s4.51cto.com/oss/201805/09/a8e4c845fd594da5c2b4683c11bcc6b9.jpg" alt=""/></a></p>
+
+<p><strong>保存到 HBase</strong></p>
+
+<pre><code class="language-log">hbase(main):225:0* count &#39;phone&#39; 
+Current count: 1000, row: 11155386088_jd.com 
+Current count: 2000, row: 136191393_suning.com 
+Current count: 3000, row: 16893837301_jd.com 
+Current count: 4000, row: 19036619855_jd.com 
+Current count: 5000, row: 1983786945_jd.com 
+Current count: 6000, row: 1997392141_jd.com 
+Current count: 7000, row: 21798495372_jd.com 
+Current count: 8000, row: 24154264902_jd.com 
+Current count: 9000, row: 25687565618_jd.com 
+Current count: 10000, row: 26458674797_jd.com 
+Current count: 11000, row: 617169906_suning.com 
+Current count: 12000, row: 769705049_suning.com                  
+12348 row(s) in 1.5720 seconds 
+=&gt; 12348 
+</code></pre>
+
+<p>在 HDFS 中查看数据情况：</p>
+
+<p><a href="http://s1.51cto.com/oss/201805/09/ba11fe651d6475f644c075a3785644ae.jpg"><img src="http://s1.51cto.com/oss/201805/09/ba11fe651d6475f644c075a3785644ae.jpg" alt=""/></a></p>
+
+<p><strong>数据量与实际情况分析</strong></p>
+
+<p><a href="http://s2.51cto.com/oss/201805/09/74dc0bac52bd31c289be2c137db670a7.jpg"><img src="http://s2.51cto.com/oss/201805/09/74dc0bac52bd31c289be2c137db670a7.jpg" alt=""/></a></p>
+
+<p>京东：京东手机的列表大概有 160 多页，每个列表有 60 个商品数据，所以总量在 9600 左右，我们的数据基本是符合的。</p>
+
+<p>后面通过日志分析可以知道，一般丢失的数据为连接超时导致的，所以在选取爬虫的环境时，更建议在网络环境好的主机上进行。</p>
+
+<p>同时如果可以有 IP 代理地址库就更好了，另外对于连接超时的情况，可以进一步在我们的程序中加以控制。</p>
+
+<p>一旦出现爬取数据失败的 URL，可以将其加入到重试 URL 队列中，目前这一点功能我是没有做，有兴趣的同学可以试一下。</p>
+
+<p>苏宁易购：再来看看苏宁的数据，其有 100 页左右的手机列表，每页也是 60 个商品数据，所以总量在 6000 左右。</p>
+
+<p>但可以看到，我们的数据却只有 3000 这样的数量级（缺少的依然是频繁爬取造成的连接失败问题），这是为什么呢？</p>
+
+<p>这是因为，打开苏宁的某个列表页面后，其是先加载 30 个商品，当鼠标向下滑动时，才会通过另外的 API 去加载其他的 30 个商品数据，每一个列表页面都是如此，所以，实际上，我们是缺少了一半的商品数据没有爬取。</p>
+
+<p>知道这个原因之后，实现也不难，但是因为时间关系，我就没有做了，有兴趣的朋友折腾一下吧。</p>
+
+<p><strong>通过日志分析爬虫系统的性能</strong></p>
+
+<p>在我们的爬虫系统中，每个关键的地方，如网页下载、数据解析等都是有打 logger 的，所以通过日志，可以大概分析出相关的时间参数。</p>
+
+<pre><code class="language-log">2018-04-01 21:26:03 [pool-1-thread-1] [cn.xpleaf.spider.utils.HttpUtil] [INFO] - 下载网页：https://list.jd.com/list.html?cat=9987,653,655&amp;page=1，消耗时长：590 ms，代理信息：null:null 
+2018-04-01 21:26:03 [pool-1-thread-1] [cn.xpleaf.spider.core.parser.Impl.JDHtmlParserImpl] [INFO] - 解析列表页面:https://list.jd.com/list.html?cat=9987,653,655&amp;page=1, 消耗时长:46ms 
+2018-04-01 21:26:03 [pool-1-thread-3] [cn.xpleaf.spider.core.parser.Impl.SNHtmlParserImpl] [INFO] - 解析列表页面:https://list.suning.com/0-20006-0.html, 消耗时长:49ms 
+2018-04-01 21:26:04 [pool-1-thread-5] [cn.xpleaf.spider.utils.HttpUtil] [INFO] - 下载网页：https://item.jd.com/6737464.html，消耗时长：219 ms，代理信息：null:null 
+2018-04-01 21:26:04 [pool-1-thread-2] [cn.xpleaf.spider.utils.HttpUtil] [INFO] - 下载网页：https://list.jd.com/list.html?cat=9987,653,655&amp;page=2&amp;sort=sort_rank_asc&amp;trans=1&amp;JL=6_0_0，消耗时长：276 ms，代理信息：null:null 
+2018-04-01 21:26:04 [pool-1-thread-4] [cn.xpleaf.spider.utils.HttpUtil] [INFO] - 下载网页：https://list.suning.com/0-20006-99.html，消耗时长：300 ms，代理信息：null:null 
+2018-04-01 21:26:04 [pool-1-thread-4] [cn.xpleaf.spider.core.parser.Impl.SNHtmlParserImpl] [INFO] - 解析列表页面:https://list.suning.com/0-20006-99.html, 消耗时长:4ms 
+...... 
+2018-04-01 21:27:49 [pool-1-thread-3] [cn.xpleaf.spider.utils.HttpUtil] [INFO] - 下载网页：https://club.jd.com/comment/productCommentSummaries.action?referenceIds=23934388891，消耗时长：176 ms，代理信息：null:null 
+2018-04-01 21:27:49 [pool-1-thread-3] [cn.xpleaf.spider.core.parser.Impl.JDHtmlParserImpl] [INFO] - 解析商品页面:https://item.jd.com/23934388891.html, 消耗时长:413ms 
+2018-04-01 21:27:49 [pool-1-thread-2] [cn.xpleaf.spider.utils.HttpUtil] [INFO] - 下载网页：https://review.suning.com/ajax/review_satisfy/general-00000000010017793337-0070079092-----satisfy.htm，消耗时长：308 ms，代理信息：null:null 
+2018-04-01 21:27:49 [pool-1-thread-2] [cn.xpleaf.spider.core.parser.Impl.SNHtmlParserImpl] [INFO] - 解析商品页面:https://product.suning.com/0070079092/10017793337.html, 消耗时长:588ms 
+...... 
+</code></pre>
+
+<p>平均下来，下载一个商品网页数据的时间在 200~500 毫秒不等，当然这个还需要取决于当时的网络情况。</p>
+
+<p>另外，如果想要真正计算爬取一个商品的时间数据，可以通过日志下面的数据来计算：</p>
+
+<ul>
+<li>  下载一个商品页面数据的时间</li>
+<li>  获取价格数据的时间</li>
+<li>  获取评论数据的时间</li>
+</ul>
+
+<p>在我的主机上（CPU：E5 10 核心，内存：32GB，分别开启 1 个虚拟机和 3 个虚拟机），情况如下：</p>
+
+<p><a href="http://s3.51cto.com/oss/201805/09/8d3ba912a8b3845ea1943d97c66b5e80.jpg"><img src="http://s3.51cto.com/oss/201805/09/8d3ba912a8b3845ea1943d97c66b5e80.jpg" alt=""/></a></p>
+
+<p>可以看到，当使用 3 个节点时，时间并不会相应地缩小为原来的 1/3，这是因为此时影响爬虫性能的问题主要是网络问题，节点数量多，线程数量大，网络请求也多。</p>
+
+<p>但是带宽一定，并且在没有使用代理的情况，请求频繁，连接失败的情况也会增多，对时间也有一定的影响，如果使用随机代理库，情况将会好很多。</p>
+
+<p>但可以肯定的是，在横向扩展增加爬虫节点之后，确实可以大大缩小我们的爬虫时间，这也是分布式爬虫系统的好处。</p>
+
+<p><strong>爬虫系统中使用的反反爬虫策略</strong></p>
+
+<p>在整个爬虫系统的设计中，主要使用下面的策略来达到反反爬虫的目的：</p>
+
+<ul>
+<li>  使用代理来访问 --&gt;IP 代理库，随机 IP 代理。</li>
+<li>  随机顶级域名 url 访问 --&gt;url 调度系统。</li>
+<li>  每个线程每爬取完一条商品数据 sleep 一小段时间再进行爬取。</li>
+</ul>
+
+<p><strong>总结</strong></p>
+
+<p>需要说明的是，本系统是基于 Java 实现的，但个人觉得，语言本身依然不是问题，核心在于对整个系统的设计以及理解上。</p>
+
+<p>写此文章是希望分享这样一种分布式爬虫系统的架构给大家，如果对源代码感兴趣，可以到我的 GitHub 上查看。</p>
 
                         
                       </div>
@@ -569,10 +1090,10 @@ SELECT id FROM t WHERE id &gt; 10000 LIMIT 10;
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/6/1</span>
+                    <span class="date">2018/6/7</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Persistence.html'>Persistence</a></span>
+          					    <span class="posted-in"><a href='Solution.html'>Solution</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -662,31 +1183,31 @@ SELECT id FROM t WHERE id &gt; 10000 LIMIT 10;
 	      
 		      
 			      <li class="post">
-			        <a href="15337171704262.html">Introduction to Testing with Spock and Groovy</a>
+			        <a href="15358820607055.html">Java 8 Concurrency Tutorial: Atomic Variables and ConcurrentMap</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15336595358049.html">10 Excellent Ways to Secure Your Spring Boot Application</a>
+			        <a href="15358774987730.html">Java 8 Concurrency Tutorial: Synchronization and Locks</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15336592302916.html">First MicroProfile.io application using Java Module System</a>
+			        <a href="15358757119900.html">Java 8 Concurrency Tutorial: Threads and Executors</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15332186142588.html">Jenkins 的 Pipeline 脚本在美团餐饮 SaaS 中的实践</a>
+			        <a href="15358756631902.html">Java 8 Stream Tutorial</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15331749691571.html">基于ZooKeeper的分布式锁和队列</a>
+			        <a href="15358753472382.html">Migrate Maven Projects to Java 11</a>
 			      </li>
 		     
 		  

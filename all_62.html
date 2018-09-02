@@ -105,292 +105,224 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15288661714760.html">
+                <a class="clearlink" href="15301810578621.html">
                 
-                  <h1>Python最广为使用的并发库futures使用入门与内部原理</h1>
+                  <h1>架构设计：负载均衡层设计方案（4）——LVS原理</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://mp.weixin.qq.com/s?__biz=MzI0MzQyMTYzOQ==&amp;mid=2247484110&amp;idx=1&amp;sn=66d31f0a59cac900975ca724465d5527&amp;chksm=e96c1a66de1b9370468b2f1ed9b7d669f5c933ff5942550b58479df3197440e664ff7b8f4b48&amp;mpshare=1&amp;scene=23&amp;srcid=0613YZmmW3drwtB11sjqs4ZN%23rd">原文地址</a></p>
+<p><a href="https://blog.csdn.net/yinwenjie/article/details/46845997">https://blog.csdn.net/yinwenjie/article/details/46845997</a></p>
 </blockquote>
 
-<p>在使用 Python 处理任务时，限于单线程处理能力有限，需要将任务并行化，分散到多个线程或者是多个进程去执行。</p>
-
-<p>concurrent.futures 就是这样一种库，它可以让用户可以非常方便的将任务并行化。这个名字有点长，后面我直接使用词汇 concurrent 来代替 concurrent.futures。</p>
-
-<p><img src="media/15288661714760/15288662944396.jpg" alt=""/></p>
-
-<p>concurrent 提供了两种并发模型，一个是多线程 ThreadPoolExecutor，一个是多进程 ProcessPoolExecutor。对于 IO 密集型任务宜使用多线程模型。对于计算密集型任务应该使用多进程模型。</p>
-
-<p>为什么要这样选择呢？是因为 Python GIL 的存在让 Python 虚拟机在进行运算时无法有效利用多核心。对于纯计算任务，它永远最多只能榨干单个 CPU 核心。如果要突破这个瓶颈，就必须 fork 出多个子进程来分担计算任务。而对于 IO 密集型任务，CPU 使用率往往是极低的，使用多线程虽然会加倍 CPU 使用率，但是还远远到不了饱和 (100%) 的地步，在单核心可以应付整体计算的前提下，自然是应该选择资源占用少的模式，也就是多线程模式。</p>
-
-<p>接下来我们分别尝试一下两种模式来进行并行计算。</p>
-
-<h2 id="toc_0">多线程</h2>
-
-<p><img src="media/15288661714760/15288663302029.jpg" alt=""/></p>
-
-<p>多线程模式适合 IO 密集型运算，这里我要使用 sleep 来模拟一下慢速的 IO 任务。同时为了方便编写命令行程序，这里使用 Google fire 开源库来简化命令行参数处理。</p>
-
-<pre><code class="language-py"># coding: utf8
-# t.py
-import time
-import fire
-import threading
-from concurrent.futures import ThreadPoolExecutor, wait
-
-# 分割子任务
-def each_task(index):
-    time.sleep(1)  # 睡1s，模拟IO
-    print &quot;thread %s square %d&quot; % (threading.current_thread().ident, index)
-    return index * index  # 返回结果
-
-
-def run(thread_num, task_num):
-    # 实例化线程池，thread_num个线程
-    executor = ThreadPoolExecutor(thread_num)
-    start = time.time()
-    fs = []  # future列表
-    for i in range(task_num):
-        fs.append(executor.submit(each_task, i))  # 提交任务
-    wait(fs)  # 等待计算结束
-    end = time.time()
-    duration = end - start
-    s = sum([f.result() for f in fs])  # 求和
-    print &quot;total result=%s cost: %.2fs&quot; % (s, duration)
-    executor.shutdown()  # 销毁线程池
-
-if __name__ == &#39;__main__&#39;:
-    fire.Fire(run)
-</code></pre>
-
-<p>运行<code>python t.py 2 10</code>，也就是 2 个线程跑 10 个任务，观察输出</p>
-
-<pre><code class="language-log">thread 123145422131200 square 0
-thread 123145426337792 square 1
-thread 123145426337792 square 2
-thread 123145422131200 square 3
-thread 123145426337792 square 4
-thread 123145422131200 square 5
-thread 123145426337792 square 6
-thread 123145422131200 square 7
-thread 123145426337792 square 8
-thread 123145422131200 square 9
-total result=285 cost: 5.02s
-</code></pre>
-
-<p>我们看到计算总共花费了大概 5s，总共 sleep 了 10s 由两个线程分担，所以是 5s。读者也许会问，为什么输出乱了，这是因为 print 操作不是原子的，它是两个连续的 write 操作合成的，第一个 write 输出内容，第二个 write 输出换行符，write 操作本身是原子的，但是在多线程环境下，这两个 write 操作会交错执行，所以输出就不整齐了。如果将代码稍作修改，将 print 改成单个 write 操作，输出就整齐了 (关于 write 是否绝对原子性还需要进一步深入讨论)</p>
-
-<pre><code class="language-py"># 分割子任务
-def each_task(index):
-    time.sleep(1)  # 睡1s，模拟IO
-    import sys
-    sys.stdout.write(&quot;thread %s square %d\n&quot; % (threading.current_thread().ident, index))
-    return index * index  # 返回结果
-</code></pre>
-
-<p>我们再跑一下<code>python t.py 2 10</code>，观察输出</p>
-
-<pre><code class="language-log">thread 123145438244864 square 0
-thread 123145442451456 square 1
-thread 123145442451456 square 2
-thread 123145438244864 square 3
-thread 123145438244864 square 4
-thread 123145442451456 square 5
-thread 123145438244864 square 6
-thread 123145442451456 square 7
-thread 123145442451456 square 9
-thread 123145438244864 square 8
-total result=285 cost: 5.02s
-</code></pre>
-
-<p>接下来，我们改变参数，扩大到 10 个线程，看看所有任务总共需要多久完成</p>
-
-<pre><code class="language-log">&gt; python t.py 10 10
-thread 123145327464448 square 0
-thread 123145335877632 square 2
-thread 123145331671040 square 1
-thread 123145344290816 square 4
-thread 123145340084224 square 3
-thread 123145348497408 square 5
-thread 123145352704000 square 6
-thread 123145356910592 square 7
-thread 123145365323776 square 9
-thread 123145361117184 square 8
-total result=285 cost: 1.01s
-</code></pre>
-
-<p>可以看到 1s 中就完成了所有的任务。这就是多线程的魅力，可以将多个 IO 操作并行化，减少整体处理时间。</p>
+<p>之前我们花了两篇文章的篇幅，详细讲解了 Nginx 的原理、安装和特性组件。请参看《负载均衡层设计方案（2）——Nginx 安装》（<a href="http://blog.csdn.net/yinwenjie/article/details/46620711">http://blog.csdn.net/yinwenjie/article/details/46620711</a>）和《架构设计：负载均衡层设计方案（3）——Nginx 进阶》（<a href="http://blog.csdn.net/yinwenjie/article/details/46742661">http://blog.csdn.net/yinwenjie/article/details/46742661</a>）两篇文章。虽然不包括 Nginx 的所有知识（也不可能全部包括），但是足够读者将 Nginx 应用到实际的生产中，并进行重要特性的优化，后面有时间我们还会重新回到 Nginx 的讲解上。从本篇文章开始，我们将开始介绍 LVS 技术，包括基本概念、简单使用和进阶使用。</p>
 
-<h2 id="toc_1">多进程</h2>
-
-<p><img src="media/15288661714760/15288664619676.jpg" alt=""/></p>
+<h1 id="toc_0"><a></a>1、LVS 介绍</h1>
 
-<p>相比多线程适合处理 IO 密集型任务，多进程适合计算密集型。接下来我们要模拟一下计算密集型任务。我的个人电脑有 2 个核心，正好可以体验多核心计算的优势。</p>
-
-<p>那这个密集型计算任务怎么模拟呢，我们可以使用圆周率计算公式。</p>
+<p>请自行 Google 或者百度。</p>
 
-<p><img src="media/15288661714760/15288664769272.jpg" alt=""/></p>
-
-<p>通过扩大级数的长度 n，就可以无限逼近圆周率。当 n 特别大时，计算会比较缓慢，这时候 CPU 就会一直处于繁忙状态，这正是我们所期望的。</p>
+<h1 id="toc_1"><a></a>2、网络协议基础知识</h1>
 
-<p>好，下面开写多进程并行计算代码</p>
+<p>根据官方文档 LVS 支持三种负载工作方式：NAT 方式、TUN 方式和 DR 方式。为了说明这三种方式的工作原理，我们首先需要了解一下基础的 IP/TCP 报文（注意，IP 报文和 TCP 报文是两种不同的报文格式），以及链路层对 IP 数据的封装方式。然后我们采用看图说话的方式，以图文结合的方式为您介绍这三种工作方式中对报文或重写或封装的过程。</p>
 
-<pre><code class="language-py"># coding: utf8
-# p.py
-import os
-import sys
-import math
-import time
-import fire
-from concurrent.futures import ProcessPoolExecutor, wait
+<p>为了说清楚我们将要讲解的基础知识，就要提到 OSI7 层网络模型。</p>
 
-# 分割子任务
-def each_task(n):
-    # 按公式计算圆周率
-    s = 0.0
-    for i in range(n):
-        s += 1.0/(i+1)/(i+1)
-    pi = math.sqrt(6*s)
-    # os.getpid可以获得子进程号
-    sys.stdout.write(&quot;process %s n=%d pi=%s\n&quot; % (os.getpid(), n, pi))
-    return pi
-    
-def run(process_num, *ns):  # 输入多个n值，分成多个子任务来计算结果
-    # 实例化进程池，process_num个进程
-    executor = ProcessPoolExecutor(process_num)
-    start = time.time()
-    fs = []  # future列表
-    for n in ns:
-        fs.append(executor.submit(each_task, int(n)))  # 提交任务
-    wait(fs)  # 等待计算结束
-    end = time.time()
-    duration = end - start
-    print &quot;total cost: %.2fs&quot; % duration
-    executor.shutdown()  # 销毁进程池
+<p><img src="https://img-blog.csdn.net/20150716191755069" alt=""/></p>
 
-if __name__ == &#39;__main__&#39;:
-    fire.Fire(run)
-</code></pre>
+<p>章文嵩博士及其团队是我的偶像，LVS 体系之所以高效是因为其直接对链路层报文、IP 报文、TCP 报文进行了修改或封装。所以要真正理解 LVS 的三种工作方式，就不能像网络上的抄袭贴一样转几句不知所以的文字就完了，必须对链路层报文、网络层报文、传输层报文有所了解。下面我们就进行概述。</p>
 
-<p>通过代码可以看出多进程模式在代码的编写上和多线程没有多大差异，仅仅是换了一个类名，其它都一摸一样。这也是 concurrent 库的魅力所在，将多线程和多进程模型抽象出了一样的使用接口。</p>
+<p>为了保证这个系列的博文不发生偏差，我们只讲解其中需要用到的属性和含义，如果读者对网络的核心原理有兴趣，可以读读《TCP/IP 详解，卷 1：协议》这本书。</p>
 
-<p>接下来我们运行一下<code>python p.py 1 5000000 5001000 5002000 5003000</code>，总共计算 4 次 pi，只用一个进程。观察输出</p>
+<h2 id="toc_2"><a></a>2.1、链路层报文</h2>
 
-<pre><code class="language-log">process 96354 n=5000000 pi=3.1415924626
-process 96354 n=5001000 pi=3.14159246264
-process 96354 n=5002000 pi=3.14159246268
-process 96354 n=5003000 pi=3.14159246272
-total cost: 9.45s
-</code></pre>
+<p>链路层的数据格式有一个共同特点，都包括目标 MAC 地址和源 MAC 地址。下面这个图主要说明了我们最常用的 Ethernet 帧（以太帧）的报文格式：</p>
 
-<p>可以看出来随着 n 的增大，结果越来越逼近圆周率，因为只用了一个进程，所以任务是串行执行，总共花了大约 9.5s。</p>
+<p><img src="https://img-blog.csdn.net/20150716193001867" alt=""/></p>
 
-<p>接下来再增加一个进程，观察输出</p>
+<ul>
+<li><p>目标 MAC 地址 / 源 MAC 地址：00:00:00:00:00:00——FF:FF:FF:FF:FF:FF 这个范围是全球 MAC 地址的可用范围。一张物理网卡肯定有一个唯一的 MAC 地址。实际上网络层常用的 IP 协议，就是基于 MAC 地址的。一个子网范围内某个 IP 对应的 MAC 地址是通过 ARP 查询协议从 NAT 设备（可能是路由器、交换机或者网络代理设备）上查询得到的。</p></li>
+<li><p>上层协议类型：链路层的报文是为了承载网络层的协议而存在的，所以链路层的数据格式中需要有一个属性说明这个链路层所承载的上层协议是什么类型。</p>
 
-<pre><code>&gt; python p.py 2 5000000 5001000 5002000 5003000
-process 96529 n=5001000 pi=3.14159246264
-process 96530 n=5000000 pi=3.1415924626
-process 96529 n=5002000 pi=3.14159246268
-process 96530 n=5003000 pi=3.14159246272
-total cost: 4.98s
-</code></pre>
+<ul>
+<li>  IPv4: 0x0800</li>
+<li>  ARP:0x0806</li>
+<li>  PPPoE:0x8864</li>
+<li>  IPV6: 0x86DD</li>
+</ul></li>
+<li><p>封装的上层数据：最多可以有 1500 个字节。</p></li>
+</ul>
 
-<p>从耗时上看缩短了接近 1 半，说明多进程确实起到了计算并行化的效果。此刻如果使用 top 命令观察进程的 CPU 使用率，这两个进程的 CPU 使用率都占到了接近 100%。</p>
+<p>请记住这个链路层的数据格式，因为讲到 LVS-DR 方式的时候，主要就是对链路层的数据格式进行修改，而不会对 IP 数据报文和 TCP 数据报文进行修改。</p>
 
-<p>如果我们再增加 2 个进程，是不是还能继续压缩计算时间呢</p>
+<h2 id="toc_3"><a></a>2.2、网络层 IP 报文</h2>
 
-<pre><code>&gt; python p.py 4 5000000 5001000 5002000 5003000
-process 96864 n=5002000 pi=3.14159246268
-process 96862 n=5000000 pi=3.1415924626
-process 96863 n=5001000 pi=3.14159246264
-process 96865 n=5003000 pi=3.14159246272
-total cost: 4.86s
-</code></pre>
+<ul>
+<li><p>TCP 协议和 IP 协议是两种不同的协议。对应的，也就是两种不同的描述格式。</p></li>
+<li><p>IP 协议是网络层协议，顾名思义，就是用来描述整个网络构成情况的；TCP 协议是通讯层协议，是用来表示两个或多个网络上的点如何进行通信和当前通信状态的。</p></li>
+<li><p>这两种协议有很多共同特点，例如这两种协议都分为 “头部” 和“数据部”；针对 IP 协议来说，TCP 协议的描述就存放在其“数据部”。</p></li>
+</ul>
 
-<p>看来耗时不能继续节约了，因为只有 2 个计算核心，2 个进程已经足以榨干它们了，即使再多加进程也只有 2 个计算核心可用。</p>
+<p>我们首先来看看 IP 协议是怎么描述的：</p>
 
-<h2 id="toc_2">深入原理</h2>
+<p><img src="https://img-blog.csdn.net/20150712092543018" alt=""/></p>
 
-<p>concurrent 用的时候非常简单，但是内部实现并不是很好理解。在深入分析内部的结构之前，我们需要先理解一下 Future 这个对象。在前面的例子中，executor 提交 (submit) 任务后都会返回一个 Future 对象，它表示一个结果的坑，在任务刚刚提交时，这个坑是空的，一旦子线程运行任务结束，就会将运行的结果塞到这个坑里，主线程就可以通过 Future 对象获得这个结果。简单一点说，Future 对象是主线程和子线程通信的媒介。</p>
+<p>好吧，图我是直接从百度百科直接粘过来的，因为要我来画，结构也是这样 <sup>_<sup>。其中有几个重要的我们后面要使用的属性，要给大家说一下：</sup></sup></p>
 
-<p><img src="media/15288661714760/15288665896000.jpg" alt=""/></p>
+<ul>
+<li><p>header.version：IP 协议的版本号，你猜对了就是 IPV4 还是 IPV6。4 表示 IPV4 版本，6 表示 IPV6。你要问我什么是 IPV4，还是 IPV6：192.168.220.141，这就是 IPV4 的格式；FE80:0000:0000:0000:AAAA:0000:00C2:0002，这就是 IPV6 的格式。</p></li>
+<li><p>header.Total Length：总长度，这个总长度是 IP 头和 IP 数据两个区域的总长度。主要还是用于生成头验证码和为了操作系统处理方便。</p></li>
+<li><p>header.IP Flags：这个位置有 3 位 000，但实际只有后两位才有值 010，这个就是 “D” 位 = 1，这个时候表示由于要传输的整个数据不大，所以这个 IP 数据报的数据部分已经描述了整个数据描述，不需要进行 IP 数据报的分片；”D”为 = 0，表示要传输的整个数据比较大，所以 IP 数据报进行了拆分，这个时候就要用到最后一位了：最后一位 “M” 中“1”表示还有后续分片；0 表示这个数据报就是 IP 分片的最后一个数据片了。</p></li>
+<li><p>header.Protocol：IP 协议是网络层协议，在网络层以上是传输层协议。TCP、UDP、ICMP 和 IGMP 是传输层协议。这个位置的 8 位说明 IP 协议数据部分携带的是哪种上层协议。</p></li>
+<li><p>header.Source Address：这个当然就是 IP 数据报的来源地址咯。</p></li>
+<li><p>header. Destination Address：这个当然就是 IP 数据报的目标地址咯。</p></li>
+<li><p>header.checksum：首部校验值。这个值校验 IP 数据报首部的传输完整性（注意校验不包括 IP 数据报的数据部分）。这就意味着 NAT 设备重写这个数据报的来源或者目标 IP 后，校验值要重新进行计算。Source Address、Destination Address、Checksum 是各种 NAT 设备主要的改写属性。而且很多时候 NAT 设备只改写这三个值就可以实现 IP 数据报的转发（当然 TCP 报文中的端口也会被改写，以便在端口映射的情况下进行端口转换）。</p></li>
+</ul>
 
-<p>Future 对象的内部逻辑简单一点可以使用下面的代码进行表示</p>
+<h2 id="toc_4"><a></a>2.3、传输层 TCP 报文</h2>
 
-<pre><code class="language-py">class Future(object):
+<p>上文已经说过，TCP 的报文信息是装在到 IP 报文的数据部分的，当成网络上进行传输的数据从 Srouce Address 传到 Destination Address 中。下面是 TCP 报文的信息：</p>
 
-    def __init__(self):
-        self._condition = threading.Condition()  # 条件变量
-        self._result = None
+<p><img src="https://img-blog.csdn.net/20150712093802321" alt=""/></p>
 
-    def result(self, timeout=None):
-        self._condition.wait(timeout)
-        return self._result
+<ul>
+<li><p>头. 源端口号：TCP 信息来源的端口号。</p></li>
+<li><p>头. 目的端口号：TCP 信息数据的目标端口。</p></li>
+<li><p>头. 状态位（URG/ACK/PSH/RST/SYN/FIN）：如果您已经看到我之前写的《标准 Web 系统的架构分层》（<a href="http://blog.csdn.net/yinwenjie/article/details/46480485">http://blog.csdn.net/yinwenjie/article/details/46480485</a>）这边文章的第 3.2 小节，那么您对 ACK、SYN、FIN 这三个标记肯定不陌生，因为 TCP 的三次握手和连接中断就要用到这三个标记，需要注意 SYN SEQ 和 ACK SEQ 就是 TCP 数据报的确认号；另外解释一下 PSH 和 RST 两个状态标记。应用层的 TCP 数据报有一个缓存区，也就是说多个正确的 TCP 数据报会首先放到这个缓存区，达到一定条件后，再推送给上层的应用层协议，例如 http。PSH 为 1 的时候，表示不需要再等到后续的 TCP 数据报文了，直接将目前接收方缓存中的 tcp 数据报进行数据段组合后推送给上层协议，并且清空缓存区；RST 表示复位，您可以理解成放弃当前缓存区的所有未发送给上层协议的 TCP 数据报文，一般这种情况都是 TCP 报文传输出现了问题。</p></li>
+<li><p>头. TCP 校验和：TCP 报文的校验和比起 IP 头校验要稍微复杂点。TCP 校验的输入包括三部分：TCP 伪首部、TCP 首部长度和 TCP 数据部长度。TCP 伪首部是一个虚拟概念，它包括承载 TCP 数据报文的 IP 报文的一部分，和 TCP 首部的一部分数据（源 IP、目标 IP、IP 报文中的 protocoly、以及 TCP 报文的报文头长度和 TCP 报文的数据长度）。</p></li>
+</ul>
 
-    def set_result(self, result):
-        self._result = result
-        self._condition.notify_all()
-</code></pre>
+<p>从上面的描述可以看出，一旦 IP 报文中的源 IP 和目标 IP 发生改变了，TCP 报文校验信息就会改变。</p>
 
-<p>主线程将任务塞进线程池后得到了这个 Future 对象，它内部的_result 还是空的。如果主线程调用 result() 方法获取结果，就会阻塞在条件变量上。如果子线程计算任务完成了就会立即调用 set_result() 方法将结果填充进 future 对象，并唤醒阻塞在条件变量上的线程，也就是主线程。这时主线程立即醒过来并正常返回结果。</p>
+<h2 id="toc_5"><a></a>3、LVS 的三种工作方式</h2>
 
-<h2 id="toc_3">线程池内部结构</h2>
+<h2 id="toc_6"><a></a>3.1、LVS-NAT 工作方式</h2>
 
-<p>主线程和子线程交互分为两部分，第一部分是主线程如何将任务传递给子线程，第二部分是子线程如何将结果传递给主线程。第二部分已经讲过了是通过 Future 对象来完成的。那第一部分是怎么做到的呢？</p>
+<p>NAT 方式是一种由 LVS Master 服务节点收到数据报，然后转给下层的 Real Server 节点，当 Real Server 处理完成后回发给 LVS Master 节点然后又由 LVS Master 节点转发出去的工作方式。LVS 的管理程序 IPVSADMIN 负责绑定转发规则，并完成 IP 数据报文和 TCP 数据报文中属性的重写。请用几分钟时间仔细看看下图（为了简单，图里面只画了一个 Real Server。如果看不清楚，可点击右键 “查看原图”）：</p>
 
-<p><img src="media/15288661714760/15288666117893.jpg" alt=""/></p>
+<p><img src="https://img-blog.csdn.net/20150716170216002" alt=""/></p>
 
-<p>如上图所示，秘密就在于这个队列，主线程是通过队列将任务传递给多个子线程的。一旦主线程将任务塞进任务队列，子线程们就会开始争抢，最终只有一个线程能抢到这个任务，并立即进行执行，执行完后将结果放进 Future 对象就完成了这个任务的完整执行过程。</p>
+<ul>
+<li><p>1、在正式的机房环境中，一般有两种方式为一个机器分配外网地址：在核心交换机上直接绑定外网地址到主机网卡的，这样使用 ifconfig 命令看到的 IP 地址为外网地址；在核心交换机上使用映射规则，将一个外网地址映射到内网地址，这样使用 ifconfig 命令看到的 IP 地址为内网地址。上图中我们采用的是后一种映射规则。如果使用前一种外网 IP 的分配规则，也不会影响 LVS NAT 的工作方式，因为这个 IP 被限制在 LVS NAT 工作以外。只不过 eth1 的 IP 从 192.168.100.10 换成 100.64.92.199 而已。</p></li>
+<li><p>2、我们用中文描述一下转换规则：<strong>凡是发送到 “192.168.100.10:80” 的数据报，目标地址全部改写为“192.168.220.121:8080”</strong>，所以来自于 100.64.92.199:80 的报文被改写了。被改写的属性包括：IP.header.destinationIP、IP.header.checksum、TCP.header.sourcePort、TCP.header.targetPort、TCP.header.checksum。注意 IP 报文的 Source IP 不会发生变化，还是 “互联网某个 IP”。</p></li>
+<li><p>3、这个包最终被送到了 192.168.220.121 的 8080 端口进行处理，并由下层的 Real Server 生成了返回的数据报（至于这个 Real Server 是不是 “真正的 Real Server”，LVS 不会关心）。你要问它是怎么被发送过去的，请参考 ARP 查询协议。</p></li>
+<li><p>4、注意：因为 LVS 服务器和 Real Server（可能有多个），组成了一个封闭的局域网。除了 LVS 节点以外，这个子网的任何节点都是无法访问外网的。所以要求 192.168.220.121 这个 Real Server 直接把数据报给 “互联网某个 IP” 这个外网地址，显然是不行的，因为在局域网中根本就找不到这个 IP。Real Server 只能将数据报返给网关，再由网关去寻找这个外网地址。整个服务器中只有 LVS 节点能够找到这个外网地址，<strong>这就是为什么在 LVS-NAT 工作模式下，所有的 Real Server 节点必须设置自己的 Gateway 为 LVS 节点的原因</strong>。</p></li>
+<li><p>5、收到来源于 “192.168.220.121:8080” 的数据报文后，IPVS 又要进行数据报文的重写了。重写规则是：<strong>凡是来源于 “192.168.220.121:8080” 的数据报，源地址全部改写为“192.168.100.10:80”</strong>。于是数据报文的 Source IP、Source Port 被改写成 “192.168.100.10:80”。<strong>在外层的核心交换机（或者是机房以外的请求方）看来，LVS 接受了数据报，并进行了处理，返回了结果。它并不知道 LVS 节点的下层还有什么。</strong></p></li>
+</ul>
 
-<h2 id="toc_4">线程池的缺点</h2>
+<p>LVS-NAT 的优点在于：</p>
 
-<p>concurrent 的线程池有个重大的设计问题，那就是任务队列是无界的。如果队列的生产者任务生产的太快，而线程池消费太慢处理不过来，任务就会堆积。如果堆积一直持续下去，内存就会持续增长直到 OOM，任务队列里堆积的所有任务全部彻底丢失。用户使用时一定要注意这点，并做好适当的控制。</p>
+<ul>
+<li><p>配置管理简单。LVS-NAT 的工作方式是 LVS 三种工作模式中最容易理解、最容易配置、最容易管理的工作模式。</p></li>
+<li><p>节省外网 IP 资源，一般机房分配给使用者的 IP 数量是有限的，特别是您购买的机架的数量不多时。LVS-NAT 工作方式将您的系统架构封装在局域网中，只需要 LVS 有一个外网地址或外网地址映射就可以实现访问了。</p></li>
+<li><p>系统架构相对封闭。在内网环境下我们对防火墙的设置要求不会很高，也相对容易进行物理服务器的运维。您可以设置来源于外网的请求需要进行防火墙过滤，而对内网请求开放访问。</p></li>
+<li><p>另外改写后转给 Real Server 的数据报文，Real Server 并不会关心它的真实性，只要 TCP 校验和 IP 校验都能通过，Real Server 就可以进行处理。所以 LVS-NAT 工作模式下 Real Server 可以是任何操作系统，只要它支持 TCP/IP 协议即可。</p></li>
+<li><p>当然作为 Linux 系统忠实拥护者，我并不建议使用 Window 服务器。但如果您的 Real Server 是. Net 系统，又有业务场景需要用到 LVS，那么 LVS-NAT 可能是一个不错的选择。</p></li>
+</ul>
 
-<h2 id="toc_5">进程池内部结构</h2>
+<p>LVS-NAT 的缺点是由于这种转发模式本身所造成的：</p>
 
-<p>进程池内部结构复杂，连 concurent 库的作者自己也觉得特别复杂，所以在代码里专门画了一张 ascii 图来讲解模型内部结构</p>
+<ul>
+<li>  转发点就是瓶颈点。您可以想象 100 台 Real Server 将处理结果全部转到一个 LVS 进行发送是一个怎么样的场景。事实上，LVS-NAT 的极限负载是达不到 100 台 Real Server 的。</li>
+</ul>
 
-<p><img src="media/15288661714760/15288666342206.jpg" alt=""/></p>
+<h2 id="toc_7"><a></a>3.2、LVS-DR 工作方式</h2>
 
-<p><img src="media/15288661714760/15288666482842.jpg" alt=""/></p>
+<p>LVS 的 DR 工作模式，是目前生产环境中最常用的一种工作模式，网上的资料也是最多的，有的文章对 DR 工作模式的讲解还是比较透彻的。这里我们通过图文的方式再向您介绍一下 DR 的工作模式（同样，如果看不清楚，请右键 “查看原图”）：</p>
 
-<p>我觉得作者的这张图还不够好懂，所以也单独画了一张图，请读者们仔细结合上面两张图，一起来过一边完整的任务处理过程。</p>
+<p><img src="https://img-blog.csdn.net/20150716210428765" alt=""/></p>
 
-<ol>
-<li> 主线程将任务塞进 TaskQueue(普通内存队列)，拿到 Future 对象</li>
-<li> 唯一的管理线程从 TaskQueue 获取任务，塞进 CallQueue(分布式跨进程队列)</li>
-<li> 子进程从 CallQueue 中争抢任务进行处理</li>
-<li> 子进程将处理结果塞进 ResultQueue(分布式跨进程队列)</li>
-<li> 管理线程从 ResultQueue 中获取结果，塞进 Future 对象</li>
-<li> 主线程从 Future 对象中拿到结果</li>
-</ol>
+<p>上图反映了 DR 模式的整个工作过程，同样为了简单起见，这里的 Real Server 也只画了一个。如果是多个 Real Server 的话，LVS 会通过调度算法来决定发往哪台 Real Server。LVS-DR 工作模式的几个关键点在于：</p>
 
-<p>这个复杂的流程中涉及到 3 个队列，还有中间附加的管理线程。那为什么作者要设计的这么复杂，这样的设计有什么好处？</p>
+<ul>
+<li><p>被 Real Server 处理后形成的响应报文，不再回发到 LVS 节点，而是直接路由给中心交换机然后发送出去。省去了 LVS-NAT 方式中的 LVS 回发过程。</p></li>
+<li><p>LVS 节点只会改写链路层的报文封装，对网络层和传输层报文是不进行改写的。</p></li>
+<li><p>有网帖说 DR 工作模式，不能跨子网，也就是说 LVS 节点和各个 Real Server 节点必须处于同一个网段中。这是为什么呢？事实又真的是这样吗？很多网络帖子没有回答这个问题，这篇文章马上回答一下（实际上章文嵩先生已经回答过这个问题）。</p></li>
+<li><p>使用 DR 模式时，需要 Real Server 设置 LVS 上的 VIP 为自己的一个回环 IP，不然包会被丢弃。这又是为什么呢？很多网贴同样没有回答这个问题，好吧，我们马上回答一下。</p></li>
+</ul>
 
-<p>首先，我们看这张图的左半边，它和线程池的处理流程没有太多区别，区别仅仅是管理线程只有一个，而线程池的子线程会有多个。这样设计可以使得多进程模型和多线程模型的使用方法保持一致，这就是为什么两个模型使用起来没有任何区别的原因所在——通过中间的管理线程隐藏了背后的多进程交互逻辑。</p>
+<p>先来说一说上图的工作原理：</p>
 
-<p>然后我们再看这张图的右半边，管理线程通过两个队列来和子进程们进行交互，这两个队列都是跨进程队列 (multiprocessing.Queue)。CallQueue 是单生产者多消费者，ResultQueue 是多生产者单消费者。</p>
+<ul>
+<li><p>1、同样的，我们为了演示整个生产环境中，从机房中心交换机收到一个数据报文后开始讲解。中心交换机同样采取的 IP 映射方式。但是与 LVS-NAT 方式不一样，Real Server 在机房的中心交换机上也需要绑定一个外网映射。这样保证 Real Server 回发的响应报文能够被发送到外网。</p></li>
+<li><p>2、LVS 节点接收到请求报文后，会改写报文的数据链路层格式。将 Target Mac 改写成 Real Server 的 Mac，<strong>但是网络层和传输层报文不会改写</strong>，然后重新回发给交换机。这里就涉及一个问题，现在 <strong>target Mac 和 Destination IP 的对应关系的错误的，这个数据报文到了交换机后，由于这种错位的关系，是不能进行三层交换的，只能进行二层交换（一旦进行 IP 交换，数据报文的验证就会出错，被丢弃）。所以 LVS-DR 方式要求 Real Server 和 LVS 节点必须在同一个局域网内，或者这样说更确切：LVS 节点需要找到一个二层链路，将改写了 Mac 地址的报文发送给 Real Server，而不能进行三层交换的校验</strong>。这样来看，实际上 LVS 节点和 Real Server 界面不一定要在同一个子网，您用一个独立网卡独立组网，传送报文也是可行的。</p></li>
+<li><p>3、通过二层交换，数据被发送到 Real Server 节点。那么 Real Server 节点怎么来判断这个包的正确性呢？首先当然是传输层 TCP/IP 报文校验没有问题，LVS-NAT 没有改写 TCP/IP，当然校验就没有问题（除非报文本身就存在问题）；然后是链路层的 MAC 地址能够被识别，这时就是回环 IP 的功劳了。对于 Real Server 节点来说，192.168.100.10 这个 VIP 就是自己的回环 IP，绑定的 MAC 也就是被 LVS 替换后的 target mac。<strong>那么 Real Server 会认为这个包是在本机运行的某一个应用程序通过回环 IP 发给自己的，所以这个包不能被丢弃，必须处理</strong>。</p></li>
+<li><p>4、被处理后的生成的响应报文，被直接发送给网管。这个就没有太多的解释的了，只要保证 Real server 的默认路由设置成到核心交换机的 192.168.100.1 就 OK 了。另外，需要说明的是，<strong>由于 LVS-DR 模式并没有更改原有的 IP 报文和 TCP 报文，所以 LVS-DR 模式本身是不支持端口映射的</strong>，实际上在日常使用实践中，我们一般使用 Nginx 做端口映射，因为: 灵. 活.。</p></li>
+</ul>
 
-<p>CallQueue 是个有界队列，它的上限在代码里写死了为「子进程数 + 1」。如果子进程们处理不过来，CallQueue 就会变满，管理线程就会停止往里面塞数据。但是这里也遭遇了和线程池一样的问题，TaskQueue 是无界队列，它的内容可不管消费者是否在持续 (管理线程) 消费，TaskQueue 会无限制的持续生长，于是最终也会会导致 OOM。</p>
+<p>LVS-DR 工作模式的优点在于：</p>
 
-<h2 id="toc_6">跨进程队列</h2>
+<ul>
+<li><p>解决了 LVS-NAT 工作模式中的转发瓶颈问题，能够支撑规模更大的负载均衡场景。</p></li>
+<li><p>比较耗费网外 IP 资源，机房的外网 IP 资源都是有限的，如果在正式生产环境中确实存在这个问题，可以采用 LVS-NAT 和 LVS-DR 混合使用的方式来缓解。</p></li>
+</ul>
 
-<p>进程池模型中的跨进程队列是用 multiprocessing.Queue 实现的。那这个跨进程队列内部细节是怎样的，它又是用什么高科技来实现的呢</p>
+<p>LVS-DR 当然也有缺点：</p>
 
-<p>笔者仔细阅读了 multiprocessing.Queue 的源码发现，它使用无名套接字 sockerpair 来完成的跨进程通信，socketpair 和 socket 的区别就在于 socketpair 不需要端口，不需要走网络协议栈，通过内核的套接字读写缓冲区直接进行跨进程通信。</p>
+<ul>
+<li><p>配置工作较 LVS-NAT 方式稍微麻烦一点，您至少需要了解 LVS-DR 模式的基本工作方式才能更好的指导自己进行 LVS-DR 模式的配置和运行过程中问题的解决。</p></li>
+<li><p>由于 LVS-DR 模式的报文改写规则，导致 LVS 节点和 Real Server 节点必须在一个网段，因为二层交换是没法跨子网的。但是这个问题针对大多数系统架构方案来说，实际上并没有本质限制。</p></li>
+</ul>
 
-<p><img src="media/15288661714760/15288666709878.jpg" alt=""/></p>
+<h2 id="toc_8"><a></a>3.3、LVS-TUN 工作方式</h2>
 
-<p>当父进程要传递任务给子进程时，先使用 pickle 将任务对象进行序列化成字节数组，然后将字节数组通过 socketpair 的写描述符写入内核的 buffer 中。子进程接下来就可以从 buffer 中读取到字节数组，然后再使用 pickle 对字节数组进行反序列化来得到任务对象，这样总算可以执行任务了。同样子进程将结果传递给父进程走的也是一样的流程，只不过这里的 socketpair 是 ResultQueue 内部创建的无名套接字。</p>
+<p>很多网络上的文章都为读者介绍 DR 和 TUN 的工作方式类似，要么就是直接讲解 DR 模式和 TUN 模式的安装配置方式，然后总结两种模式类似。那为什么有了 DR 模式后还需要 TUN 模式呢？为什么 ipvsadmin 针对两种模式的配置参数不一样呢？</p>
 
-<p>multiprocessing.Queue 是支持双工通信，数据流向可以是父到子，也可以是子到父，只不过在 concurrent 的进程池实现中只用到了单工通信。CallQueue 是从父到子，ResultQueue 是从子到父。</p>
+<p>实际上 LVS-DR 模式和 LVS-TUN 模式的工作原理完全不一样，工作场景完全不一样。DR 基于数据报文重写，TUN 模式基于 IP 隧道，后者是对数据报文的重新封装。下面我们就来讲解一下 LVS-TUN 模式的工作原理。</p>
 
-<h2 id="toc_7">总结</h2>
+<p>首先要介绍一个概念 IPIP 隧道。将一个完整的 IP 报文封装成另一个新的 IP 报文的数据部分，并通过路由器传送到指定的地点。在这个过程中路由器并不在意被封装的原始协议的内容。到达目的地点后，由目的地方依靠自己的计算能力和对 IPIP 隧道协议的支持，打开封装协议，取得原始协议。如下图：</p>
 
-<p>concurrent.futures 框架非常好用，虽然内部实现机制异常复杂，读者也无需完全理解内部细节就可以直接使用了。但是需要特别注意的是不管是线程池还是进程池其内部的任务队列都是无界的，一定要避免消费者处理不及时内存持续攀升的情况发生。</p>
+<p><img src="https://img-blog.csdn.net/20150717135916686" alt=""/></p>
+
+<p>可以说隧道协议就是为了解决跨子网传输准备的，在生产环境中由于业务需要、技术需要或者安全需要，可能使用交换机进行 VLAN 隔离（即形成若干个虚拟的独立的局域网），我们可能需要 LVS 节点在局域网 A，而需要进行负载的多台 Mysql 读服务器可能在局域网 B 中。这个时候，我们就要配置 LVS 的隧道方式。LVS-TUN 模式如下图所示（注意，目标节点要能够解开隧道协议，好消息是 Linux 支持 IPIP 隧道协议）：</p>
+
+<p><img src="https://img-blog.csdn.net/20150717160306570" alt=""/></p>
+
+<p>上图中的线优点多，您只需要关注关心 “有箭头” 的虚线就可以了。</p>
+
+<ul>
+<li><p>1、一旦 LVS 节点发现来目标为 192.168.100.10VIP 的请求，就会使用 IPIP 隧道协议对这个请求报文进行封装。而不是像 LVS-DR 模式重写数据报文的 MAC 信息。如果配置了多个 Real Server，那么 LVS 会使用设置的调度算法确定一个 Real Server（这里为了简单，就只画了一个 Real Server 节点）。</p></li>
+<li><p>2、重新封装后的 IPIP 隧道协议报文会重新被回发到路由器，路由器（或三层交换机）会根据设置的 LVAN 映射情况，找到目标服务器，并将这个 IPIP 隧道报文发送过去。</p></li>
+<li><p>3、Real Server 收到这个 IPIP 隧道报文后，会将这个报文进行解包。这里注意一下，一般情况下 IPIP 隧道报文会进行分片，就如同 IP 报文分片一样，只是为了讲解方便，我们假定这个报文不需要分片。解压后得到的数据报文就是原来发送给 VIP 的请求报文。</p></li>
+<li><p>4、Real Server 设置的回环 IP，让 Real Server 认为原始的请求报文是从自己本地的某个应用程序发出的，完成原始报文的校验后，它会对这个报文进行处理。剩下的过程就和 LVS-DR 相同了，这里就不再进行复述了。</p></li>
+</ul>
+
+<p>可以说 LVS-TUN 方式基本上具有 LVS-DR 的优点。在此基础上又支持跨子网间穿透。这样的敷在方案能够给我们架构师足够的系统设计场景。</p>
+
+<h1 id="toc_9"><a></a>4、LVS 调度方式</h1>
+
+<p>在本文第 3 节中，为了集中介绍 LVS 的三种工作模式，我们在三幅图中都为 LVS 画了一个 Real Server。但实际应用中，一般都是多个 Real Server。<strong>LVS 使用多种调度算法来决定 “当前的数据报文” 由哪个 Real Server 进行处理</strong>。在我的上篇文章《架构设计：负载均衡层设计方案（2）——Nginx 安装》（<a href="http://blog.csdn.net/yinwenjie/article/details/46620711">http://blog.csdn.net/yinwenjie/article/details/46620711</a>）中，已经花了较多的篇幅介绍了 Nginx 中的调度方式，并明确说明了这些调度方式是<strong>万变不离其宗的</strong>。</p>
+
+<p>文章中包括了 Hash 算法，并且说明了任何属性都可以做 Hash，包括 IP、用户名等；还介绍了轮询和加权轮询，加权轮询也可以依据各种属性作为权值，例如节点的 CPU 使用情况、内存使用情况、或者管理员自己设置的一个固定权值。LVS 的调度也是这样的。</p>
+
+<ul>
+<li><p>利用一致性 Hash 算法完成调度</p>
+
+<ul>
+<li>  目标地址 Hash（DH）：调度算法根据请求的目标 IP 地址，作为散列键（Hash Key）从静态分配的散列表找出对应的服务器，若该服务器是可用的且未超载，将请求发送到该服务器，否则返回空。</li>
+<li>  原地址 Hash（SH）：根据请求的源 IP 地址，作为散列键（Hash Key）从静态分配的散列表找出对应的服务器，若该服务器是可用的且未超载，将请求发送到该服务器，否则返回空。</li>
+</ul></li>
+<li><p>轮询调度</p>
+
+<ul>
+<li><p>最简轮询（RR）：调度算法将外部请求按顺序轮流分配到集群中的真实服务器上，它均等地对待每一台服务器，而不管服务器上实际的连接数和系统负载。</p></li>
+<li><p>最少连接轮询（LC）：请注意 “最少连接轮询” 和“最少连接加权轮询”两种调度算法的区别。调度器通过 “最少连接” 调度算法动态地将网络请求调度到已建立的链接数最少的服务器上。注意请求肯定会被分配到这台目前连接数最少的 Real Server 上面，不会考虑几率问题</p></li>
+</ul></li>
+<li><p>加权轮询调度：</p>
+
+<ul>
+<li>  性能加权轮询（WRR）：调度算法根据真实服务器的不同处理能力来调度访问请求。这样可以保证处理能力强的服务器能处理更多的访问流量。调度器可以自动问询真实服务器的负载情况，并动态地调整其权值。</li>
+<li>  最少连接数的加权轮询（WLC）：具有较高权值的服务器将承受较大比例的活动连接负载。调度器可以自动问询真实服务器的负载情况，并动态地调整其权值。注意，是按照一个比例，有较高的分配几率，而不是 LC 一样 “肯定分配”。</li>
+</ul></li>
+</ul>
+
+<p>在 LVS 官方中文资料中，提到了更为完整的调度算法。可以进行参考（<a href="http://zh.linuxvirtualserver.org/node/2903">http://zh.linuxvirtualserver.org/node/2903</a>）。<strong>但一定记住各种调度算法肯定是逃不开哈希一致性、轮询、加权轮询这大思路的</strong>。</p>
+
+<h1 id="toc_10"><a></a>5、后文介绍</h1>
+
+<p>这篇文章我们的重点是说明 LVS 的工作原理，并详细介绍了 LVS 三种工作模式的工作过程、优缺点、应用场景。只要您理解了原理，那么下一篇介绍的 LVS 的安装和配置就是小菜一碟。我们在下一篇文章中，将介绍 LVS 三种工作模式的安装和配置方式，之后我们介绍 LVS + Keepalived 的安装和配置方式。有了这个知识基础，我们将回到 Nginx，介绍 LVS + Keepalived + Nginx 的安装和配置方式。</p>
+
+<p><link rel="stylesheet" href="https://csdnimg.cn/release/phoenix/template/css/markdown_views-ea0013b516.css"></p>
 
                         
                       </div>
@@ -399,10 +331,10 @@ total cost: 4.86s
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/6/13</span>
+                    <span class="date">2018/6/28</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Cocurrency.html'>Cocurrency</a></span>
+          					    <span class="posted-in"><a href='Network.html'>Network</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -492,31 +424,31 @@ total cost: 4.86s
 	      
 		      
 			      <li class="post">
-			        <a href="15337171704262.html">Introduction to Testing with Spock and Groovy</a>
+			        <a href="15358820607055.html">Java 8 Concurrency Tutorial: Atomic Variables and ConcurrentMap</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15336595358049.html">10 Excellent Ways to Secure Your Spring Boot Application</a>
+			        <a href="15358774987730.html">Java 8 Concurrency Tutorial: Synchronization and Locks</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15336592302916.html">First MicroProfile.io application using Java Module System</a>
+			        <a href="15358757119900.html">Java 8 Concurrency Tutorial: Threads and Executors</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15332186142588.html">Jenkins 的 Pipeline 脚本在美团餐饮 SaaS 中的实践</a>
+			        <a href="15358756631902.html">Java 8 Stream Tutorial</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15331749691571.html">基于ZooKeeper的分布式锁和队列</a>
+			        <a href="15358753472382.html">Migrate Maven Projects to Java 11</a>
 			      </li>
 		     
 		  

@@ -105,354 +105,133 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15293277939094.html">
+                <a class="clearlink" href="15295434052821.html">
                 
-                  <h1>Java 并发编程：阻塞队列</h1>
+                  <h1>Open Sourcing Zuul 2</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p>作者：海子<br/>
-原文：<a href="http://www.cnblogs.com/dolphin0520/p/3932906.html">http://www.cnblogs.com/dolphin0520/p/3932906.html</a></p>
+<p><a href="https://medium.com/netflix-techblog/open-sourcing-zuul-2-82ea476cb2b3">https://medium.com/netflix-techblog/open-sourcing-zuul-2-82ea476cb2b3</a></p>
 </blockquote>
 
-<p>使用非阻塞队列的时候有一个很大问题就是：它不会对当前线程产生阻塞，那么在面对类似消费者 - 生产者的模型时，就必须额外地实现同步策略以及线程间唤醒策略，这个实现起来就非常麻烦。但是有了阻塞队列就不一样了，它会对当前线程产生阻塞，比如一个线程从一个空的阻塞队列中取元素，此时线程会被阻塞直到阻塞队列中有了元素。当队列中有元素后，被阻塞的线程会自动被唤醒（不需要我们编写代码去唤醒）。这样提供了极大的方便性。</p>
+<p>We are excited to announce the open sourcing of <a href="https://github.com/netflix/zuul/">Zuul 2</a>, Netflix’s cloud gateway. We use Zuul 2 at Netflix as the front door for all requests coming into Netflix’s cloud infrastructure. Zuul 2 significantly improves the architecture and features that allow our gateway to handle, route, and protect Netflix’s cloud systems, and helps provide our 125 million members the best experience possible. The Cloud Gateway team at Netflix runs and operates more than 80 clusters of Zuul 2, sending traffic to about 100 (and growing) backend service clusters which amounts to more than 1 million requests per second. Nearly all of this traffic is from customer devices and browsers that enable the discovery and playback experience you are likely familiar with.</p>
 
-<p>本文先讲述一下 java.util.concurrent 包下提供主要的几种阻塞队列，然后分析了阻塞队列和非阻塞队列的中的各个方法，接着分析了阻塞队列的实现原理，最后给出了一个实际例子和几个使用场景。</p>
+<p>This post will overview Zuul 2, provide details on some of the interesting features we are releasing today, and discuss some of the other projects that we’re building with Zuul 2.</p>
 
-<p>　　一. 几种主要的阻塞队列</p>
+<h3 id="toc_0">How Zuul 2 Works</h3>
 
-<p>　　二. 阻塞队列中的方法 VS 非阻塞队列中的方法</p>
+<p>For context, here’s a high-level diagram of Zuul 2’s architecture:</p>
 
-<p>　　三. 阻塞队列的实现原理</p>
+<p><img src="https://cdn-images-1.medium.com/max/1600/0*ycjEWsSKCaPemEg3." alt=""/></p>
 
-<p>　　四. 示例和使用场景</p>
+<p>The Netty handlers on the front and back of the filters are mainly responsible for handling the network protocol, web server, connection management and proxying work. With those inner workings abstracted away, the filters do all of the heavy lifting. The inbound filters run before proxying the request and can be used for authentication, routing, or decorating the request. The endpoint filters can either be used to return a static response or proxy the request to the backend service (or origin as we call it). The outbound filters run after a response has been returned and can be used for things like gzipping, metrics, or adding/removing custom headers.</p>
 
-<p>若有不正之处请多多谅解，并欢迎批评指正。</p>
+<p>Zuul’s functionality depends almost entirely on the logic that you add in each filter. That means you can deploy it in multiple contexts and have it solve different problems based on the configurations and filters it is running.</p>
 
-<h2 id="toc_0">一. 几种主要的阻塞队列</h2>
+<p>We use Zuul at the entrypoint of all external traffic into Netflix’s cloud services and we’ve started using it for routing internal traffic, as well. We deploy the same core but with a substantially reduced amount of functionality (i.e. fewer filters). This allows us to leverage load balancing, self service routing, and resiliency features for internal traffic.</p>
 
-<p>自从 Java 1.5 之后，在 java.util.concurrent 包下提供了若干个阻塞队列，主要有以下几个：</p>
+<h3 id="toc_1">Open Source</h3>
 
-<ul>
-<li><p>ArrayBlockingQueue：基于数组实现的一个阻塞队列，在创建 ArrayBlockingQueue 对象时必须制定容量大小。并且可以指定公平性与非公平性，默认情况下为非公平的，即不保证等待时间最长的队列最优先能够访问队列。</p></li>
-<li><p>LinkedBlockingQueue：基于链表实现的一个阻塞队列，在创建 LinkedBlockingQueue 对象时如果不指定容量大小，则默认大小为 Integer.MAX_VALUE。</p></li>
-<li><p>PriorityBlockingQueue：以上 2 种队列都是先进先出队列，而 PriorityBlockingQueue 却不是，它会按照元素的优先级对元素进行排序，按照优先级顺序出队，每次出队的元素都是优先级最高的元素。注意，此阻塞队列为无界阻塞队列，即容量没有上限（通过源码就可以知道，它没有容器满的信号标志），前面 2 种都是有界队列。</p></li>
-<li><p>DelayQueue：基于 PriorityQueue，一种延时阻塞队列，DelayQueue 中的元素只有当其指定的延迟时间到了，才能够从队列中获取到该元素。DelayQueue 也是一个无界队列，因此往队列中插入数据的操作（生产者）永远不会被阻塞，而只有获取数据的操作（消费者）才会被阻塞。</p></li>
-</ul>
+<p>The Zuul code that’s running today is the most stable and resilient version of Zuul yet. The various phases of evolving and refactoring the codebase have paid dividends and we couldn’t be happier to share it with you.</p>
 
-<h2 id="toc_1">二. 阻塞队列中的方法 VS 非阻塞队列中的方法</h2>
+<p>Today we are releasing many <a href="https://github.com/Netflix/zuul/wiki/Core-Features">core features</a>. Here are the ones we’re most excited about:</p>
 
-<p><strong>1. 非阻塞队列中的几个主要方法：</strong></p>
+<h4 id="toc_2">Server Protocols</h4>
 
 <ul>
-<li><p><strong>add(E e)：</strong>将元素 e 插入到队列末尾，如果插入成功，则返回 true；如果插入失败（即队列已满），则会抛出异常；</p></li>
-<li><p><strong>remove()：</strong>移除队首元素，若移除成功，则返回 true；如果移除失败（队列为空），则会抛出异常；</p></li>
-<li><p><strong>offer(E e)：</strong>将元素 e 插入到队列末尾，如果插入成功，则返回 true；如果插入失败（即队列已满），则返回 false；</p></li>
-<li><p><strong>poll()：</strong>移除并获取队首元素，若成功，则返回队首元素；否则返回 null；</p></li>
-<li><p><strong>peek()：</strong>获取队首元素，若成功，则返回队首元素；否则返回 null</p></li>
+<li>  <strong>HTTP/2</strong> — full server support for inbound HTTP/2 connections</li>
+<li>  <strong>Mutual TLS</strong> — allow for running Zuul in more secure scenarios</li>
 </ul>
 
-<p>对于非阻塞队列，一般情况下建议使用 offer、poll 和 peek 三个方法，不建议使用 add 和 remove 方法。因为使用 offer、poll 和 peek 三个方法可以通过返回值判断操作成功与否，而使用 add 和 remove 方法却不能达到这样的效果。注意，非阻塞队列中的方法都没有进行同步措施。</p>
+<h4 id="toc_3">Resiliency Features</h4>
 
-<p><strong>2. 阻塞队列中的几个主要方法：</strong></p>
+<ul>
+<li>  <strong>Adaptive Retries</strong> — the core retry logic that we use at Netflix to increase our resiliency and availability</li>
+<li>  <strong>Origin Concurrency Protection </strong>— configurable concurrency limits to protect your origins from getting overloaded and protect other origins behind Zuul from each other</li>
+</ul>
 
-<p>阻塞队列包括了非阻塞队列中的大部分方法，上面列举的 5 个方法在阻塞队列中都存在，但是要注意这 5 个方法在阻塞队列中都进行了同步措施。</p>
+<h4 id="toc_4">Operational Features</h4>
 
-<p>除此之外，阻塞队列提供了另外 4 个非常有用的方法：</p>
+<ul>
+<li>  <strong>Request Passport </strong>— track all the lifecycle events for each request, which is invaluable for debugging async requests</li>
+<li>  <strong>Status Categories</strong> — an enumeration of possible success and failure states for requests that are more granular than HTTP status codes</li>
+<li>  <strong>Request Attempts</strong> — track proxy attempts and status of each, particularly useful for debugging retries and routing</li>
+</ul>
 
-<p>　　put(E e)</p>
+<p>We are also working on some features that will be <a href="https://github.com/Netflix/zuul/wiki/Coming-Soon">coming soon</a>, including:</p>
 
-<p>　　take()</p>
+<ul>
+<li>  <strong>Websocket/SSE </strong>— support for side-channel push notifications</li>
+<li>  <strong>Throttling and rate-limiting</strong> — protection from malicious client connections and requests, helping defend against volumetric attacks</li>
+<li>  <strong>Brownout filters</strong> — for disabling certain CPU-intensive features when Zuul is overloaded</li>
+<li>  <strong>Configurable routing</strong> — file-based routing configuration, instead of having to create routing filters in Zuul</li>
+</ul>
 
-<p>　　offer(E e,long timeout, TimeUnit unit)</p>
+<p>We would love to hear from you and see all the new and interesting applications of Zuul. For instructions on getting started, please visit our <a href="https://github.com/Netflix/zuul/wiki/Getting-Started-2.0">wiki page</a>.</p>
 
-<p>　　poll(long timeout, TimeUnit unit)</p>
+<h3 id="toc_5">Leveraging Zuul 2 at Netflix</h3>
 
-<p>这四个方法的理解：</p>
+<p>Internally, there are several major features that we’ve been working on but have not open sourced yet. Each one deserves its own blog post, but let’s go over them briefly.</p>
 
-<p>　　put 方法用来向队尾存入元素，如果队列满，则等待；</p>
+<h3 id="toc_6">Self Service Routing</h3>
 
-<p>　　take 方法用来从队首取元素，如果队列为空，则等待；</p>
+<p>The most widely-used feature by our partners is self service routing. We provide an application and API for users to create routing rules based on any criteria in the request URL, path, query params, or headers. We then publish these routing rules to all the Zuul instances.</p>
 
-<p>　　offer 方法用来向队尾存入元素，如果队列满，则等待一定的时间，当时间期限达到时，如果还没有插入成功，则返回 false；否则返回 true；</p>
+<p>The main use case is for routing traffic to a specific test or staging cluster. However, there are many use cases for real production traffic. For example:</p>
 
-<p>　　poll 方法用来从队首取元素，如果队列空，则等待一定的时间，当时间期限达到时，如果取到，则返回 null；否则返回取得的元素；</p>
+<ul>
+<li>  Services needing to shard their traffic create routing rules that map certain paths or prefixes to separate origins</li>
+<li>  Developers onboard new services by creating a route that maps a new hostname to their new origin</li>
+<li>  Developers run load tests by routing a percentage of existing traffic to a small cluster and ensuring applications will degrade gracefully under load</li>
+<li>  Teams refactoring applications migrate to a new origin slowly by creating rules mapping traffic gradually, one path at a time</li>
+<li>  Teams test changes (canary testing) by sending a small percentage of traffic to an instrumented cluster running the new build</li>
+<li>  If teams need to test changes requiring multiple consecutive requests on their new build, they run sticky canary tests that route the same users to their new build for brief periods of time</li>
+<li>  Security teams create rules that reject “bad” requests based on path or header rules across all Zuul clusters</li>
+</ul>
 
-<h2 id="toc_2">三. 阻塞队列的实现原理</h2>
+<p>As you can see we use self service routing extensively and are increasing the customizability and scope of routes to allow for even more use cases.</p>
 
-<p>前面谈到了非阻塞队列和阻塞队列中常用的方法，下面来探讨阻塞队列的实现原理，本文以 ArrayBlockingQueue 为例，其他阻塞队列实现原理可能和 ArrayBlockingQueue 有一些差别，但是大体思路应该类似，有兴趣的朋友可自行查看其他阻塞队列的实现源码。</p>
+<h3 id="toc_7">Load Balancing for Resiliency</h3>
 
-<p>首先看一下 ArrayBlockingQueue 类中的几个成员变量：</p>
+<p>Another major feature we’ve worked on is making load balancing to origins more intelligent. We are able to route around failures, slowness, GC issues, and various other things that crop up often when running large amounts of nodes. The goal of this work is to increase resiliency, availability, and quality of service for all Netflix services.</p>
 
-<pre><code class="language-java">public class ArrayBlockingQueue&lt;E&gt; extends AbstractQueue&lt;E&gt;
-implements BlockingQueue&lt;E&gt;, java.io.Serializable {
+<p>We have several cases that we handle:</p>
 
-private static final long serialVersionUID = -817911632652898426L;
+<h4 id="toc_8">Cold Instances</h4>
 
-/** The queued items  */
-private final E[] items;
-/** items index for next take, poll or remove */
-private int takeIndex;
-/** items index for next put, offer, or add. */
-private int putIndex;
-/** Number of items in the queue */
-private int count;
+<p>When new origin instances start up, we send them a reduced amount of traffic for some time, until they’re warmed up. This was an issue we observed for applications with large codebases and huge metaspace usage. It takes a significant amount of time for these apps to JIT their code and be ready to handle a large amount of traffic.</p>
 
-/*
-* Concurrency control uses the classic two-condition algorithm
-* found in any textbook.
-*/
+<p>We also generally bias the traffic to older instances and if we happen to hit a cold instance that throttles, we can always retry on a warm one. This gives us an order of magnitude improvement in availability.</p>
 
-/** Main lock guarding all access */
-private final ReentrantLock lock;
-/** Condition for waiting takes */
-private final Condition notEmpty;
-/** Condition for waiting puts */
-private final Condition notFull;
-}
-</code></pre>
+<h4 id="toc_9">High Error Rates</h4>
 
-<p>可以看出，ArrayBlockingQueue 中用来存储元素的实际上是一个数组，takeIndex 和 putIndex 分别表示队首元素和队尾元素的下标，count 表示队列中元素的个数。</p>
+<p>Errors happen all the time and for varying reasons, whether it’s because of a bug in the code, a bad instance, or an invalid configuration property being set. Fortunately, as a proxy, we can detect errors reliably — either we get a 5xx error or there are connectivity problems to the service.</p>
 
-<p>lock 是一个可重入锁，notEmpty 和 notFull 是等待条件。</p>
+<p>We track error rates for each origin and if the error rate is high enough, it implies the entire service is in trouble. We throttle retries from devices and disable internal retries to allow the service to recover. Moreover, we also track successive failures per instance and blacklist the bad ones for a period of time.</p>
 
-<p>下面看一下 ArrayBlockingQueue 的构造器，构造器有三个重载版本：</p>
+<h4 id="toc_10">Overloaded Instances</h4>
 
-<pre><code class="language-java">public ArrayBlockingQueue(int capacity) {
-}
-public ArrayBlockingQueue(int capacity, boolean fair) {
+<p>With the above approaches we send less traffic to servers in a cluster that are throttling or refusing connections, and lessened the impact by retrying those failed requests on other servers.</p>
 
-}
-public ArrayBlockingQueue(int capacity, boolean fair,
-                  Collection&lt;? extends E&gt; c) {
-}
-</code></pre>
+<p>We’re now rolling out an additional approach where we aim to avoid overloading servers in the first place. This is achieved by allowing origins to signal to Zuul their current utilization, which Zuul then uses as a factor in its load-balancing choices — leading to reduced error rates, retries, and latency.</p>
 
-<p>第一个构造器只有一个参数用来指定容量，第二个构造器可以指定容量和公平性，第三个构造器可以指定容量、公平性以及用另外一个集合进行初始化。</p>
+<p>The origins add a header to all responses stating their utilization as a percentage, along with a target utilization they would like to have across the cluster. Calculating the percentage is completely up to each application and engineers can use whatever metric suits them best. This allows for a general solution as opposed to us trying to come up with a one-size-fits-all approach.</p>
 
-<p>然后看它的两个关键方法的实现：put() 和 take()：</p>
+<p>With this functionality in place, we assign a score (combination of instance utilization and other factors like the ones above) to each instance and do a choice-of-two load balancing selection.</p>
 
-<pre><code class="language-java">public void put(E e) throws InterruptedException {
-   if (e == null) throw new NullPointerException();
-   final E[] items = this.items;
-   final ReentrantLock lock = this.lock;
-   lock.lockInterruptibly();
-   try {
-       try {
-           while (count == items.length)
-               notFull.await();
-       } catch (InterruptedException ie) {
-           notFull.signal(); // propagate to non-interrupted thread
-           throw ie;
-       }
-       insert(e);
-   } finally {
-       lock.unlock();
-   }
-}
-</code></pre>
-
-<p>从 put 方法的实现可以看出，它先获取了锁，并且获取的是可中断锁，然后判断当前元素个数是否等于数组的长度，如果相等，则调用 notFull.await() 进行等待，如果捕获到中断异常，则唤醒线程并抛出异常。</p>
-
-<p>当被其他线程唤醒时，通过 insert(e) 方法插入元素，最后解锁。</p>
-
-<p>我们看一下 insert 方法的实现：</p>
-
-<pre><code class="language-java">private void insert(E x) {
-   items[putIndex] = x;
-   putIndex = inc(putIndex);
-   ++count;
-   notEmpty.signal();
-}
-</code></pre>
-
-<p>它是一个 private 方法，插入成功后，通过 notEmpty 唤醒正在等待取元素的线程。</p>
-
-<p>下面是 take() 方法的实现：</p>
-
-<pre><code class="language-java">public E take() throws InterruptedException {
-   final ReentrantLock lock = this.lock;
-   lock.lockInterruptibly();
-   try {
-       try {
-           while (count == 0)
-               notEmpty.await();
-       } catch (InterruptedException ie) {
-           notEmpty.signal(); 
-           // propagate to non-interrupted thread
-           throw ie;
-       }
-       E x = extract();
-       return x;
-   } finally {
-       lock.unlock();
-   }
-}
-</code></pre>
-
-<p>跟 put 方法实现很类似，只不过 put 方法等待的是 notFull 信号，而 take 方法等待的是 notEmpty 信号。</p>
-
-<p>在 take 方法中，如果可以取元素，则通过 extract 方法取得元素，下面是 extract 方法的实现：</p>
-
-<pre><code class="language-java">private E extract() {
-   final E[] items = this.items;
-   E x = items[takeIndex];
-   items[takeIndex] = null;
-   takeIndex = inc(takeIndex);
-   --count;
-   notFull.signal();
-   return x;
-}
-</code></pre>
-
-<p>跟 insert 方法也很类似。</p>
-
-<p>其实从这里大家应该明白了阻塞队列的实现原理，事实它和我们用 Object.wait()、Object.notify() 和非阻塞队列实现生产者 - 消费者的思路类似，只不过它把这些工作一起集成到了阻塞队列中实现。</p>
-
-<h2 id="toc_3">四. 示例和使用场景</h2>
-
-<p>下面先使用 Object.wait() 和 Object.notify()、非阻塞队列实现生产者 - 消费者模式：</p>
-
-<pre><code class="language-java">public class Test {
-   private int queueSize = 10;
-   private PriorityQueue&lt;Integer&gt; queue = new PriorityQueue&lt;Integer&gt;(queueSize);
-
-   public static void main(String[] args)  {
-       Test test = new Test();
-       Producer producer = test.new Producer();
-       Consumer consumer = test.new Consumer();
-
-       producer.start();
-       consumer.start();
-   }
-
-   class Consumer extends Thread{
-
-       @Override
-       public void run() {
-           consume();
-       }
-
-       private void consume() {
-           while(true){
-               synchronized (queue) {
-                   while(queue.size() == 0){
-                       try {
-                           System.out.println(&quot;队列空，等待数据&quot;);
-                           queue.wait();
-                       } catch (InterruptedException e) {
-                           e.printStackTrace();
-                           queue.notify();
-                       }
-                   }
-                   queue.poll();          //每次移走队首元素
-                   queue.notify();
-                   System.out.println(&quot;从队列取走一个元素，队列剩余&quot;+
-                   queue.size()+&quot;个元素&quot;);
-               }
-           }
-       }
-   }
-
-   class Producer extends Thread{
-
-       @Override
-       public void run() {
-           produce();
-       }
-
-       private void produce() {
-           while(true){
-               synchronized (queue) {
-                   while(queue.size() == queueSize){
-                       try {
-                           System.out.println(&quot;队列满，等待有空余空间&quot;);
-                           queue.wait();
-                       } catch (InterruptedException e) {
-                           e.printStackTrace();
-                           queue.notify();
-                       }
-                   }
-                   queue.offer(1);        //每次插入一个元素
-                   queue.notify();
-                   System.out.println(&quot;向队列取中插入一个元素，队列剩余空间：&quot;+
-                   (queueSize-queue.size()));
-               }
-           }
-       }
-   }
-}
-</code></pre>
-
-<p>这个是经典的生产者 - 消费者模式，通过阻塞队列和 Object.wait() 和 Object.notify() 实现，wait() 和 notify() 主要用来实现线程间通信。</p>
-
-<p>具体的线程间通信方式（wait 和 notify 的使用）在后续问章中会讲述到。</p>
-
-<p>下面是使用阻塞队列实现的生产者 - 消费者模式：</p>
-
-<pre><code class="language-java">public class Test {
-   private int queueSize = 10;
-   private ArrayBlockingQueue&lt;Integer&gt; queue = 
-   new ArrayBlockingQueue&lt;Integer&gt;(queueSize);
-
-   public static void main(String[] args)  {
-       Test test = new Test();
-       Producer producer = test.new Producer();
-       Consumer consumer = test.new Consumer();
-
-       producer.start();
-       consumer.start();
-   }
-
-   class Consumer extends Thread{
-
-       @Override
-       public void run() {
-           consume();
-       }
-
-       private void consume() {
-           while(true){
-               try {
-                   queue.take();
-                   System.out.println(&quot;从队列取走一个元素，队列剩余&quot;+
-                   queue.size()+&quot;个元素&quot;);
-               } catch (InterruptedException e) {
-                   e.printStackTrace();
-               }
-           }
-       }
-   }
-
-   class Producer extends Thread{
-
-       @Override
-       public void run() {
-           produce();
-       }
-
-       private void produce() {
-           while(true){
-               try {
-                   queue.put(1);
-                   System.out.println(&quot;向队列取中插入一个元素，队列剩余空间：&quot;+
-                   (queueSize-queue.size()));
-               } catch (InterruptedException e) {
-                   e.printStackTrace();
-               }
-           }
-       }
-   }
-}
-</code></pre>
-
-<p>有没有发现，使用阻塞队列代码要简单得多，不需要再单独考虑同步和线程间通信的问题。</p>
-
-<p>在并发编程中，一般推荐使用阻塞队列，这样实现可以尽量地避免程序出现意外的错误。</p>
-
-<p>阻塞队列使用最经典的场景就是 socket 客户端数据的读取和解析，读取数据的线程不断将数据放入队列，然后解析线程不断从队列取数据解析。还有其他类似的场景，只要符合生产者 - 消费者模型的都可以使用阻塞队列。</p>
+<h3 id="toc_11">Anomaly Detection and Contextual Alerting</h3>
+
+<p>As we grew from just a handful of origins to a new world where anyone can quickly spin up a container cluster and put it behind Zuul, we found there was a need to automatically detect and pinpoint origin failures.</p>
+
+<p>With the help of <a href="https://medium.com/netflix-techblog/stream-processing-with-mantis-78af913f51a6">Mantis real time event streaming</a>, we built an anomaly detector that aggregates error rates per service and notifies us in real time when services are in trouble. It takes all of the anomalies in a given time window and creates a timeline of all the origins in trouble. We then create a contextual alert email with the timeline of events and services affected. This allows an operator to quickly correlate these events and orient themselves to debug a specific app or feature, and ultimately find the root cause.</p>
+
+<p>In fact, it was so useful that we expanded it to send notifications to the origin teams themselves. We’ve also added more internal applications, other than Zuul, and can build a much more extensive timeline of events. This has been a huge help during production incidents and helps operators quickly detect and fix problems before they cascade into massive outages.</p>
+
+<p>We hope to open source as many of the above features as we can. Keep watching the tech blog for more depth on them in the future. If you want to help us solve these kinds of problem, please check out our <a href="https://jobs.netflix.com/teams/engineering?team=Product%20Engineering&amp;organization=Engineering">jobs site</a>.</p>
+
+<p>— Arthur Gonigberg (@agonigberg), Mikey Cohen (@moldfarm ), Michael Smith (@kerumai ), Gaya Varadarajan ( @gaya3varadhu ), Sudheer Vinukonda ( @apachesudheerv ), Susheel Aroskar (@susheelaroskar )</p>
 
                         
                       </div>
@@ -461,10 +240,10 @@ public ArrayBlockingQueue(int capacity, boolean fair,
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/6/18</span>
+                    <span class="date">2018/6/21</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Cocurrency.html'>Cocurrency</a></span>
+          					    <span class="posted-in"><a href='Microservice.html'>Microservice</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -554,31 +333,31 @@ public ArrayBlockingQueue(int capacity, boolean fair,
 	      
 		      
 			      <li class="post">
-			        <a href="15337171704262.html">Introduction to Testing with Spock and Groovy</a>
+			        <a href="15358820607055.html">Java 8 Concurrency Tutorial: Atomic Variables and ConcurrentMap</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15336595358049.html">10 Excellent Ways to Secure Your Spring Boot Application</a>
+			        <a href="15358774987730.html">Java 8 Concurrency Tutorial: Synchronization and Locks</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15336592302916.html">First MicroProfile.io application using Java Module System</a>
+			        <a href="15358757119900.html">Java 8 Concurrency Tutorial: Threads and Executors</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15332186142588.html">Jenkins 的 Pipeline 脚本在美团餐饮 SaaS 中的实践</a>
+			        <a href="15358756631902.html">Java 8 Stream Tutorial</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15331749691571.html">基于ZooKeeper的分布式锁和队列</a>
+			        <a href="15358753472382.html">Migrate Maven Projects to Java 11</a>
 			      </li>
 		     
 		  
