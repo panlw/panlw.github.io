@@ -105,200 +105,218 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15281306050002.html">
+                <a class="clearlink" href="15281970486767.html">
                 
-                  <h1>分布式之 redis 复习精讲</h1>
+                  <h1>最小权限的容器编排</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="http://www.cnblogs.com/rjzheng/p/9096228.html">http://www.cnblogs.com/rjzheng/p/9096228.html</a></p>
+<p>作者：Diogo Mónica[3] 译者：qhwdw 校对：wxy<br/>
+本文由 LCTT 原创编译，Linux 中国 荣誉推出 <a href="https://linux.cn/article-9712-1.html">https://linux.cn/article-9712-1.html</a><br/>
+via: <a href="https://blog.docker.com/2017/10/least-privilege-container-orchestration/">https://blog.docker.com/2017/10/least-privilege-container-orchestration/</a></p>
 </blockquote>
 
-<h2 id="toc_0">引言</h2>
+<p>Docker 平台和容器已经成为打包、部署、和管理应用程序的标准。为了在一个集群内协调跨节点的容器，必须有一个关键的能力：一个容器编排器。</p>
 
-<h3 id="toc_1">为什么写这篇文章?</h3>
+<p><img src="https://dn-linuxcn.qbox.me/data/attachment/album/201806/03/215736pd1dhdoumu8ilhdi.jpg" alt=""/></p>
 
-<p>博主的<a href="http://www.cnblogs.com/rjzheng/p/8994962.html">《分布式之消息队列复习精讲》</a>得到了大家的好评，内心诚惶诚恐，想着再出一篇关于复习精讲的文章。但是还是要说明一下，复习精讲的文章偏面试准备，真正在开发过程中，还是脚踏实地，一步一个脚印，不要投机取巧。<br/>
-考虑到绝大部分写业务的程序员，在实际开发中使用 redis 的时候，只会 setvalue 和 getvalue 两个操作，对 redis 整体缺乏一个认知。又恰逢博主某个同事下周要去培训 redis，所以博主斗胆以 redis 为题材，对 redis 常见问题做一个总结，希望能够弥补大家的知识盲点。</p>
+<p><u>container orchestrator</u></p>
 
-<h3 id="toc_2">复习要点?</h3>
-
-<p>本文围绕以下几点进行阐述<br/>
-1、为什么使用 redis<br/>
-2、使用 redis 有什么缺点<br/>
-3、单线程的 redis 为什么这么快<br/>
-4、redis 的数据类型，以及每种数据类型的使用场景<br/>
-5、redis 的过期策略以及内存淘汰机制<br/>
-6、redis 和数据库双写一致性问题<br/>
-7、如何应对缓存穿透和缓存雪崩问题<br/>
-8、如何解决 redis 的并发竞争问题</p>
-
-<h2 id="toc_3">正文</h2>
-
-<h3 id="toc_4">1、为什么使用 redis</h3>
-
-<p><strong>分析</strong>: 博主觉得在项目中使用 redis，主要是从两个角度去考虑: <strong>性能</strong>和<strong>并发</strong>。当然，redis 还具备可以做分布式锁等其他功能，但是如果只是为了分布式锁这些其他功能，完全还有其他中间件 (如 zookpeer 等) 代替，并不是非要使用 redis。因此，这个问题主要从性能和并发两个角度去答。<br/>
-<strong>回答</strong>: 如下所示，分为两点<br/>
-<strong>（一）性能</strong><br/>
-如下图所示，我们在碰到需要执行耗时特别久，且结果不频繁变动的 SQL，就特别适合将运行结果放入缓存。这样，后面的请求就去缓存中读取，使得请求能够<strong>迅速响应</strong>。<br/>
-<img src="https://images.cnblogs.com/cnblogs_com/rjzheng/1202350/o_redis1.png" alt=""/><br/>
-<strong>题外话：</strong>忽然想聊一下这个<strong>迅速响应</strong>的标准。其实根据交互效果的不同，这个响应时间没有固定标准。不过曾经有人这么告诉我:&quot; 在理想状态下，我们的页面跳转需要在<strong>瞬间</strong>解决，对于页内操作则需要在<strong>刹那</strong>间解决。另外，超过<strong>一弹指</strong>的耗时操作要有进度提示，并且可以随时中止或取消，这样才能给用户最好的体验。&quot;<br/>
-那么<strong>瞬间、刹那、一弹指</strong>具体是多少时间呢？<br/>
-根据《摩诃僧祗律》记载</p>
-
-<pre><code>一刹那者为一念，二十念为一瞬，二十瞬为一弹指，二十弹指为一罗预，二十罗预为一须臾，一日一夜有三十须臾。
-</code></pre>
-
-<p>那么，经过周密的计算，一<strong>瞬间</strong>为 0.36 秒, 一<strong>刹那</strong>有 0.018 秒. 一<strong>弹指</strong>长达 7.2 秒。<br/>
-<strong>（二）并发</strong><br/>
-如下图所示，在大并发的情况下，所有的请求直接访问数据库，数据库会出现连接异常。这个时候，就需要使用 redis 做一个缓冲操作，让请求先访问到 redis，而不是直接访问数据库。<br/>
-<img src="https://images.cnblogs.com/cnblogs_com/rjzheng/1202350/o_redis2.png" alt=""/></p>
-
-<h3 id="toc_5">2、使用 redis 有什么缺点</h3>
-
-<p><strong>分析</strong>: 大家用 redis 这么久，这个问题是必须要了解的，基本上使用 redis 都会碰到一些问题，常见的也就几个。<br/>
-<strong>回答</strong>: 主要是四个问题<br/>
-(一) 缓存和数据库双写一致性问题<br/>
-(二) 缓存雪崩问题<br/>
-(三) 缓存击穿问题<br/>
-(四) 缓存的并发竞争问题<br/>
-这四个问题，我个人是觉得在项目中，比较常遇见的，具体解决方案，后文给出。</p>
-
-<h3 id="toc_6">3、单线程的 redis 为什么这么快</h3>
-
-<p><strong>分析</strong>: 这个问题其实是对 redis 内部机制的一个考察。其实根据博主的面试经验，很多人其实都不知道 redis 是单线程工作模型。所以，这个问题还是应该要复习一下的。<br/>
-<strong>回答</strong>: 主要是以下三点<br/>
-(一) 纯内存操作<br/>
-(二) 单线程操作，避免了频繁的上下文切换<br/>
-(三) 采用了非阻塞 <strong>I/O 多路复用机制</strong></p>
-
-<p><strong>题外话：</strong>我们现在要仔细的说一说 I/O 多路复用机制，因为这个说法实在是太通俗了，通俗到一般人都不懂是什么意思。博主打一个比方：小曲在 S 城开了一家快递店，负责同城快送服务。小曲因为资金限制，雇佣了<strong>一批</strong>快递员，然后小曲发现资金不够了，只够买<strong>一辆</strong>车送快递。<br/>
-<strong>经营方式一</strong><br/>
-客户每送来一份快递，小曲就让一个快递员盯着，然后快递员开车去送快递。慢慢的小曲就发现了这种经营方式存在下述问题</p>
+<p>对于关键的集群化以及计划的任务，编排器是起重大作用的，比如：</p>
 
 <ul>
-<li>  几十个快递员基本上时间都花在了抢车上了，大部分快递员都处在闲置状态，谁抢到了车，谁就能去送快递</li>
-<li>  随着快递的增多，快递员也越来越多，小曲发现快递店里越来越挤，没办法雇佣新的快递员了</li>
-<li>  快递员之间的协调很花时间</li>
+<li>  管理容器计划和资源分配。</li>
+<li>  支持服务发现和无缝的应用程序部署。</li>
+<li>  分配应用程序运行必需的资源。</li>
 </ul>
 
-<p>综合上述缺点，小曲痛定思痛，提出了下面的经营方式<br/>
-<strong>经营方式二</strong><br/>
-小曲只雇佣一个快递员。然后呢，客户送来的快递，小曲按<strong>送达地点</strong>标注好，然后<strong>依次</strong>放在一个地方。最后，那个快递员<strong>依次</strong>的去取快递，一次拿一个，然后开着车去送快递，送好了就回来拿下一个快递。</p>
+<p>不幸的是，在这种环境下，编排器的分布式特性和资源的短暂性使得确保编排器的安全是一个极具挑战性的任务。在这篇文章中，我们将讨论容器编排器安全模型中没有考虑到的、但是很重要的这方面的详细情况，以及 Docker 企业版中如何使用内置的编排性能、Swarm 模式，去克服这些问题。</p>
 
-<p><strong>对比</strong><br/>
-上述两种经营方式对比，是不是明显觉得第二种，效率更高，更好呢。在上述比喻中:</p>
+<p><a id="3_1089" class="target-fix ext" rel="external nofollow" target="_blank"></a></p>
+
+<h3 id="toc_0">诱因和威胁模型</h3>
+
+<p>使用 swarm 模式的 Docker 企业版的其中一个主要目标是提供一个内置安全特性的编排器。为达到这个目标，我们部署了第一个在我们心目中认为的以最小权限原则设计的容器编排器。</p>
+
+<p>在计算机科学中，一个分布式系统所要求的最小权限原则是，系统中的每个参与者仅仅能访问它正当目的所需要的信息和资源。不是更多，也不是更少。</p>
+
+<blockquote>
+<p>“一个进程必须仅仅能去访问它的正当目的所需要的信息和资源”</p>
+</blockquote>
+
+<p><a id="4_1721" class="target-fix ext" rel="external nofollow" target="_blank"></a></p>
+
+<h4 id="toc_1">最小权限原则</h4>
+
+<p>在一个 Docker 企业版集群中的每个节点分配的角色：既不是管理者（manager），也不是工人（worker）。这些角色为节点定义了一个很粗粒度的权限级别：分别进行管理和任务执行。尽管如此，不用理会它的角色，通过使用加密的方式，来保证一个节点仅仅有执行它的任务所需要的信息和资源。结果是，确保集群安全变得更容易了，甚至可以防止大多数的有经验的攻击者模式：攻击者控制了底层通讯网络，或者甚至攻陷了集群节点。</p>
+
+<p><a id="3_2340" class="target-fix ext" rel="external nofollow" target="_blank"></a></p>
+
+<h3 id="toc_2">内核缺省安全</h3>
+
+<p>这是一个很老的安全最大化状态：如果它不是缺省的，就没人用它。Docker Swarm 模式将缺省安全这一概念融入了核心，并且使用这一机制去解决编排器生命周期中三个很难并且很重要的部分：</p>
+
+<ol>
+<li> 可信引导和节点引入。</li>
+<li> 节点身份发布和管理。</li>
+<li> 认证、授权和加密的信息存储和传播。</li>
+</ol>
+
+<p>我们来分别看一下这三个部分：</p>
+
+<p><a id="4_2847" class="target-fix ext" rel="external nofollow" target="_blank"></a></p>
+
+<h4 id="toc_3">可信引导和节点引入</h4>
+
+<p>确保集群安全的第一步，没有别的，就是严格控制成员和身份。管理员不能依赖它们节点的身份，并且在节点之间强制实行绝对的负载隔离。这意味着，未授权的节点不能允许加入到集群中，并且，已经是集群一部分的节点不能改变身份，突然去伪装成另一个节点。</p>
+
+<p>为解决这种情况，通过 Docker 企业版 Swarm 模式管理的节点，维护了健壮的、不可改变的身份。期望的特性是，通过使用两种关键的构建块去保证加密：</p>
+
+<ol>
+<li> 为集群成员使用<ruby>安全加入令牌 <rt>Secure join token</rt></ruby>。</li>
+<li> 从一个集中化的认证机构发行的内嵌唯一身份的证书。</li>
+</ol>
+
+<p><a id="5_3651" class="target-fix ext" rel="external nofollow" target="_blank"></a></p>
+
+<h5 id="toc_4">加入 Swarm</h5>
+
+<p>要加入 Swarm，节点需要一份<ruby>安全加入令牌 <rt>Secure join token</rt></ruby> 的副本。在集群内的每个操作角色的令牌都是独一无二的 —— 现在有两种类型的节点：工人（workers）和管理者（managers）。由于这种区分，拥有一个工人令牌的节点将不允许以管理者角色加入到集群。唯一得到这个特殊令牌的方式是通过 swarm 的管理 API 去向集群管理者请求一个。</p>
+
+<p>令牌是安全的并且是随机生成的，它还有一个使得令牌泄露更容易被检测到的特殊语法：一个可以在你的日志和仓库中很容易监视的特殊前缀。幸运的是，即便发现一个泄露，令牌也可以很容易去更新，并且，推荐你经常去更新它们 —— 特别是，在一段时间中你的集群不进行扩大的情况下。</p>
+
+<p><img src="https://dn-linuxcn.qbox.me/data/attachment/album/201806/03/215739qv7uv8sbyv87hfvx.jpg" alt=""/></p>
+
+<p><u>Docker Swarm</u></p>
+
+<p><a id="5_4684" class="target-fix ext" rel="external nofollow" target="_blank"></a></p>
+
+<h5 id="toc_5">引导信任</h5>
+
+<p>作为它的身份标识创建的一部分，一个新的节点将向任意一个网络管理者请求发布一个新的身份。但是，在我们下面的威胁模型中，所有的通讯可以被一个第三方拦截。这种请求存在的问题是：一个节点怎么知道与它进行对话的对方是合法的管理者？</p>
+
+<p><img src="https://dn-linuxcn.qbox.me/data/attachment/album/201806/03/215739sbxzyy3i5yi7yv41.jpg" alt=""/></p>
+
+<p><u>Docker Security</u></p>
+
+<p>幸运的是，Docker 有一个内置机制可以避免这种情况。这个加入令牌被主机用于加入 Swarm，包含了一个根 CA 证书的哈希串。所以，主机可以使用单向 TLS，并且使用这个哈希串去验证它加入的 Swarm 是否正确：如果管理者持有的证书没有被正确的 CA 哈希串签名，节点就知道它不可信任。</p>
+
+<p><a id="4_5558" class="target-fix ext" rel="external nofollow" target="_blank"></a></p>
+
+<h4 id="toc_6">节点身份发布和管理</h4>
+
+<p>在一个 Swarm 中，身份标识是内嵌在每个节点都单独持有的一个 x509 证书中。在一个最小权限原则的表现形式中，证书的私钥被绝对限制在主机的原始位置。尤其是，管理者不能访问除了它自己的私钥以外的任何一个私钥。</p>
+
+<p><a id="5_5908" class="target-fix ext" rel="external nofollow" target="_blank"></a></p>
+
+<h5 id="toc_7">身份发布</h5>
+
+<p>要接收它们的证书而无需共享它们的私钥，新的主机通过发布一个证书签名请求（CSR）来开始，管理者收到证书签名请求之后，转换成一个证书。这个证书成为这个新的主机的身份标识，使这个节点成为 Swarm 的一个完全合格成员！</p>
+
+<p><img src="https://dn-linuxcn.qbox.me/data/attachment/album/201806/03/215742n1acrwxccxngwici.jpg" alt=""/></p>
+
+<p>当和安全引导机制一起使用时，发行身份标识的这个机制来加入节点是缺省安全的：所有的通讯部分都是经过认证的、授权的，并且非敏感信息从来都不会以明文方式进行交换。</p>
+
+<p><a id="5_6601" class="target-fix ext" rel="external nofollow" target="_blank"></a></p>
+
+<h5 id="toc_8">身份标识延期</h5>
+
+<p>尽管如此，给一个 Swarm 中安全地加入节点，仅仅是 “故事” 的一部分。为降低证书的泄露或者失窃造成的影响，并且移除管理 CRL 列表的复杂性，Swarm 模式为身份标识使用了较短存活周期的证书。这些证书缺省情况下三个月后将过期，但是，也可以配置为一个小时后即刻过期！</p>
+
+<p><img src="https://dn-linuxcn.qbox.me/data/attachment/album/201806/03/215742hud947n983d3s7a8.jpg" alt=""/></p>
+
+<p><u>Docker secrets</u></p>
+
+<p>较短的证书过期时间意味着不能手动去处理证书更新，所以，通常会使用一个 PKI 系统。对于 Swarm，所有的证书是以一种不中断的方式进行自动更新的。这个过程很简单：使用一个相互认证的 TLS 连接去证明一个特定身份标识的所有者，一个 Swarm 节点定期生成一个新的公钥 / 私钥密钥对，并且用相关的 CSR 去签名发送，创建一个维持相同身份标识的完整的新证书。</p>
+
+<p><a id="4_7631" class="target-fix ext" rel="external nofollow" target="_blank"></a></p>
+
+<h4 id="toc_9">经过认证、授权、和加密的信息存储和传播。</h4>
+
+<p>在一个正常的 Swarm 的操作中，关于任务的信息被发送给去运行的工人（worker）节点。这里不仅仅包含将被一个节点运行的容器的信息；也包含那个容器运行所必需的资源的所有信息，包括敏感的机密信息，比如，私钥、密码和 API 令牌。</p>
+
+<p><a id="5_8035" class="target-fix ext" rel="external nofollow" target="_blank"></a></p>
+
+<h5 id="toc_10">传输安全</h5>
+
+<p>事实上，参与 Swarm 的每个节点都拥有一个独一无二的 X509 格式的证书，因此，节点之间的通讯安全是没有问题的：节点使用它们各自的证书，与另一个连接方进行相互认证、继承机密、真实性、和 TLS 的完整性。</p>
+
+<p><img src="https://dn-linuxcn.qbox.me/data/attachment/album/201806/03/215744kv6j5j6118rrrlrl.jpg" alt=""/></p>
+
+<p><u>Swarm Mode</u></p>
+
+<p>关于 Swarm 模式的一个有趣的细节是，本质上它是使用了一个推送模式：仅管理者被允许去发送信息到工人们（workers）—— 显著降低了暴露在低权限的工人节点面前的管理者节点的攻击面。</p>
+
+<p><a id="5_8737" class="target-fix ext" rel="external nofollow" target="_blank"></a></p>
+
+<h5 id="toc_11">将负载严格隔离进安全区域</h5>
+
+<p>管理者节点的其中一个责任是，去决定发送到每个工人（worker）节点的任务是什么。管理者节点使用多种策略去做这个决定；根据每个节点和每个负载的特性，去跨 Swarm 去安排负载。</p>
+
+<p>在使用 Swarm 模式的 Docker 企业版中，管理者节点通过使用附加到每个单个节点标识上的安全标签，去影响这些安排决定。这些标签允许管理者将节点组与不同的安全区域连接到一起，以限制敏感负载暴露，以及使相关机密信息更安全。</p>
+
+<p><img src="https://dn-linuxcn.qbox.me/data/attachment/album/201806/03/215744hfd4zgcgzfrmthde.jpg" alt=""/></p>
+
+<p><u>Docker Swarm Security</u></p>
+
+<p><a id="5_9488" class="target-fix ext" rel="external nofollow" target="_blank"></a></p>
+
+<h5 id="toc_12">安全分发机密</h5>
+
+<p>除了加快身份标识发布过程之外，管理者节点还有存储和分发工人节点所需要的任何资源的任务。机密信息像任何其它类型的资源一样处理，并且基于安全的 mTLS 连接，从管理者推送到工人节点。</p>
+
+<p><img src="https://dn-linuxcn.qbox.me/data/attachment/album/201806/03/215745uoodd3k3e43kivvv.jpg" alt=""/></p>
+
+<p><u>Docker Secrets</u></p>
+
+<p>在主机上，Docker 企业版能确保机密仅提供给它们指定的容器。在同一个主机上的其它容器并不能访问它们。Docker 以一个临时文件系统的方式显露机密给一个容器，确保机密总是保存在内存中，并且从不写入到磁盘。这种方式比其它竞争的替代者更加安全，比如，<a href="https://diogomonica.com/2017/03/27/why-you-shouldnt-use-env-variables-for-secret-data/">在环境变量中存储它们</a>。一旦这个任务完成，这个机密将永远消失。</p>
+
+<p><a id="5_10460" class="target-fix ext" rel="external nofollow" target="_blank"></a></p>
+
+<h5 id="toc_13">存储机密</h5>
+
+<p>在管理者主机上的机密总是保持加密的。缺省情况下，加密这些机密的密钥（被称为数据加密密钥，DEK）是以明文的方式存储在硬盘上的。这使得那些对安全性要求较低的人可以轻松地去使用 Docker Swarm 模式。</p>
+
+<p>但是，如果你运行一个生产集群，我们推荐你启用自动锁定模式。当自动锁定模式启用后，一个重新更新过的 DEK 被一个独立的加密密钥的密钥（KEK）所加密。这个密钥从不被存储在集群中；管理者有责任将它存储在一个安全可靠的地方，并且当集群启动的时候可以提供它。这就是所谓的 “解锁” Swarm。</p>
+
+<p>根据 Raft 故障容错一致性算法，Swarm 模式支持多个管理者。在这个场景中，无缝扩展了机密存储的安全性。每个管理者主机除了共享密钥之外，还有一个唯一的磁盘加密密钥。幸运的是，Raft 日志在磁盘上也是加密的，并且，在自动锁定模式下，没有 KEK 同样是不可访问的。</p>
+
+<p><a id="4_11568" class="target-fix ext" rel="external nofollow" target="_blank"></a></p>
+
+<h4 id="toc_14">当一个节点被攻陷后发生了什么？</h4>
+
+<p><img src="https://dn-linuxcn.qbox.me/data/attachment/album/201806/03/215746h7dbkd33obobtk66.jpg" alt=""/></p>
+
+<p><u>Docker Secrets</u></p>
+
+<p>在传统的编排器中，挽回一台被攻陷的主机是一个缓慢而复杂的过程。使用 Swarm 模式，恢复它就像运行一个 Docker 节点的 <code>rm</code> 命令一样容易。这是从集群中删除一个受影响的节点，而 Docker 将去处理剩下的事情，即，重新均衡负载，并且确保其它的主机已经知道，而不会去与受影响的节点通讯。</p>
+
+<p>正如我们看到的那样，感谢最小权限的编排器，甚至是，如果攻击者在主机上持续活动，它们将被从剩余的网络上切断。主机的证书 —— 它的身份标识 —— 被列入黑名单，因此，管理者也不能有效访问它。</p>
+
+<p><a id="3_12461" class="target-fix ext" rel="external nofollow" target="_blank"></a></p>
+
+<h3 id="toc_15">结论</h3>
+
+<p>使用 Swarm 模式的 Docker 企业版，在缺省情况下确保了编排器的所有关键区域的安全：</p>
 
 <ul>
-<li>  每个快递员 ------------------&gt; 每个线程</li>
-<li>  每个快递 --------------------&gt; 每个 socket(I/O 流)</li>
-<li>  快递的送达地点 --------------&gt;socket 的不同状态</li>
-<li>  客户送快递请求 --------------&gt; 来自客户端的请求</li>
-<li>  小曲的经营方式 --------------&gt; 服务端运行的代码</li>
-<li>  一辆车 ----------------------&gt;CPU 的核数</li>
+<li>  加入集群。阻止恶意节点加入到集群。</li>
+<li>  把主机分组为安全区域。阻止攻击者的横向移动。</li>
+<li>  安排任务。任务将仅被委派到允许的节点。</li>
+<li>  分配资源。恶意节点不能 “盗取” 其它的负载或者资源。</li>
+<li>  存储机密。从不明文保存并且从不写入到工人节点的磁盘上。</li>
+<li>  与工人节点的通讯。使用相互认证的 TLS 加密。</li>
 </ul>
 
-<p>于是我们有如下结论<br/>
-1、经营方式一就是传统的并发模型，每个 I/O 流 (快递) 都有一个新的线程 (快递员) 管理。<br/>
-2、经营方式二就是 I/O 多路复用。只有单个线程 (一个快递员)，通过跟踪每个 I/O 流的状态 (每个快递的送达地点)，来管理多个 I/O 流。</p>
+<p>因为 Swarm 模式的持续改进，Docker 团队正在努力将最小权限原则进一步推进。我们正在处理的一个任务是：如果一个管理者被攻陷了，怎么去保证剩下的节点的安全？路线图已经有了，其中一些功能已经可以使用，比如，白名单功能，仅允许特定的 Docker 镜像，阻止管理者随意运行负载。这是通过 Docker 可信内容来实现的。</p>
 
-<p>下面类比到真实的 redis 线程模型，如图所示<br/>
-<img src="https://images.cnblogs.com/cnblogs_com/rjzheng/1202350/o_redis3.png" alt=""/><br/>
-参照上图，简单来说，就是。我们的 redis-client 在操作的时候，会产生具有不同事件类型的 socket。在服务端，有一段 I/0 多路复用程序，将其置入队列之中。然后，文件事件分派器，依次去队列中取，转发到不同的事件处理器中。<br/>
-需要说明的是，这个 I/O 多路复用机制，redis 还提供了 select、epoll、evport、kqueue 等多路复用函数库，大家可以自行去了解。</p>
+<hr/>
 
-<h3 id="toc_7">4、redis 的数据类型，以及每种数据类型的使用场景</h3>
+<p>via: <a href="https://blog.docker.com/2017/10/least-privilege-container-orchestration/">https://blog.docker.com/2017/10/least-privilege-container-orchestration/</a></p>
 
-<p><strong>分析</strong>：是不是觉得这个问题很基础，其实我也这么觉得。然而根据面试经验发现，至少百分八十的人答不上这个问题。建议，在项目中用到后，再类比记忆，体会更深，不要硬记。基本上，一个合格的程序员，五种类型都会用到。<br/>
-<strong>回答</strong>：一共五种<br/>
-(一)String<br/>
-这个其实没啥好说的，最常规的 set/get 操作，value 可以是 String 也可以是数字。一般做<strong>一些复杂的计数功能的缓存。</strong><br/>
-(二)hash<br/>
-这里 value 存放的是结构化的对象，比较方便的就是操作其中的某个字段。博主在做<strong>单点登录</strong>的时候，就是用这种数据结构存储用户信息，以 cookieId 作为 key，设置 30 分钟为缓存过期时间，能很好的模拟出类似 session 的效果。<br/>
-(三)list<br/>
-使用 List 的数据结构，可以<strong>做简单的消息队列的功能</strong>。另外还有一个就是，可以利用 lrange 命令，<strong>做基于 redis 的分页功能</strong>，性能极佳，用户体验好。<br/>
-(四)set<br/>
-因为 set 堆放的是一堆不重复值的集合。所以可以做<strong>全局去重的功能</strong>。为什么不用 JVM 自带的 Set 进行去重？因为我们的系统一般都是集群部署，使用 JVM 自带的 Set，比较麻烦，难道为了一个做一个全局去重，再起一个公共服务，太麻烦了。<br/>
-另外，就是利用交集、并集、差集等操作，可以<strong>计算共同喜好，全部的喜好，自己独有的喜好等功能</strong>。<br/>
-(五)sorted set<br/>
-sorted set 多了一个权重参数 score, 集合中的元素能够按 score 进行排列。可以做<strong>排行榜应用，取 TOP N 操作</strong>。另外，参照另一篇<a href="https://www.cnblogs.com/rjzheng/p/8972725.html">《分布式之延时任务方案解析》</a>，该文指出了 sorted set 可以用来做<strong>延时任务</strong>。最后一个应用就是可以做<strong>范围查找</strong>。</p>
-
-<h3 id="toc_8">5、redis 的过期策略以及内存淘汰机制</h3>
-
-<p><strong>分析</strong>: 这个问题其实相当重要，到底 redis 有没用到家，这个问题就可以看出来。比如你 redis 只能存 5G 数据，可是你写了 10G，那会删 5G 的数据。怎么删的，这个问题思考过么？还有，你的数据已经设置了过期时间，但是时间到了，内存占用率还是比较高，有思考过原因么?<br/>
-<strong>回答</strong>:<br/>
-redis 采用的是定期删除 + 惰性删除策略。<br/>
-<strong>为什么不用定时删除策略?</strong><br/>
-定时删除, 用一个定时器来负责监视 key, 过期则自动删除。虽然内存及时释放，但是十分消耗 CPU 资源。在大并发请求下，CPU 要将时间应用在处理请求，而不是删除 key, 因此没有采用这一策略.<br/>
-<strong>定期删除 + 惰性删除是如何工作的呢?</strong><br/>
-定期删除，redis 默认每个 100ms 检查，是否有过期的 key, 有过期 key 则删除。需要说明的是，redis 不是每个 100ms 将所有的 key 检查一次，而是随机抽取进行检查 (如果每隔 100ms, 全部 key 进行检查，redis 岂不是卡死)。因此，如果只采用定期删除策略，会导致很多 key 到时间没有删除。<br/>
-于是，惰性删除派上用场。也就是说在你获取某个 key 的时候，redis 会检查一下，这个 key 如果设置了过期时间那么是否过期了？如果过期了此时就会删除。<br/>
-<strong>采用定期删除 + 惰性删除就没其他问题了么?</strong><br/>
-不是的，如果定期删除没删除 key。然后你也没即时去请求 key，也就是说惰性删除也没生效。这样，redis 的内存会越来越高。那么就应该采用<strong>内存淘汰机制</strong>。<br/>
-在 redis.conf 中有一行配置</p>
-
-<pre><code># maxmemory-policy volatile-lru
-</code></pre>
-
-<p>该配置就是配内存淘汰策略的 (什么，你没配过？好好反省一下自己)<br/>
-1）noeviction：当内存不足以容纳新写入数据时，新写入操作会报错。<strong>应该没人用吧。</strong><br/>
-2）allkeys-lru：当内存不足以容纳新写入数据时，在键空间中，移除最近最少使用的 key。<strong>推荐使用，目前项目在用这种。</strong><br/>
-3）allkeys-random：当内存不足以容纳新写入数据时，在键空间中，随机移除某个 key。<strong>应该也没人用吧，你不删最少使用 Key, 去随机删。</strong><br/>
-4）volatile-lru：当内存不足以容纳新写入数据时，在设置了过期时间的键空间中，移除最近最少使用的 key。<strong>这种情况一般是把 redis 既当缓存，又做持久化存储的时候才用。不推荐</strong><br/>
-5）volatile-random：当内存不足以容纳新写入数据时，在设置了过期时间的键空间中，随机移除某个 key。<strong>依然不推荐</strong><br/>
-6）volatile-ttl：当内存不足以容纳新写入数据时，在设置了过期时间的键空间中，有更早过期时间的 key 优先移除。<strong>不推荐</strong><br/>
-ps：如果没有设置 expire 的 key, 不满足先决条件 (prerequisites); 那么 volatile-lru, volatile-random 和 volatile-ttl 策略的行为, 和 noeviction(不删除) 基本上一致。</p>
-
-<h3 id="toc_9">6、redis 和数据库双写一致性问题</h3>
-
-<p><strong>分析</strong>: 一致性问题是分布式常见问题，还可以再分为最终一致性和强一致性。数据库和缓存双写，就必然会存在不一致的问题。答这个问题，先明白一个前提。就是<strong>如果对数据有强一致性要求，不能放缓存。</strong>我们所做的一切，只能保证最终一致性。另外，我们所做的方案其实从根本上来说，只能说<strong>降低不一致发生的概率</strong>，无法完全避免。因此，有强一致性要求的数据，不能放缓存。<br/>
-<strong>回答</strong>:<a href="https://www.cnblogs.com/rjzheng/p/9041659.html">《分布式之数据库和缓存双写一致性方案解析》</a>给出了详细的分析，在这里简单的说一说。首先，采取正确更新策略，先更新数据库，再删缓存。其次，因为可能存在删除缓存失败的问题，提供一个补偿措施即可，例如利用消息队列。</p>
-
-<h3 id="toc_10">7、如何应对缓存穿透和缓存雪崩问题</h3>
-
-<p><strong>分析</strong>: 这两个问题，说句实在话，一般中小型传统软件企业，很难碰到这个问题。如果有大并发的项目，流量有几百万左右。这两个问题一定要深刻考虑。<br/>
-<strong>回答</strong>: 如下所示<br/>
-<strong>缓存穿透</strong>，即黑客故意去请求缓存中不存在的数据，导致所有的请求都怼到数据库上，从而数据库连接异常。<br/>
-<strong>解决方案</strong>:<br/>
-(一) 利用互斥锁，缓存失效的时候，先去获得锁，得到锁了，再去请求数据库。没得到锁，则休眠一段时间重试<br/>
-(二) 采用异步更新策略，无论 key 是否取到值，都直接返回。value 值中维护一个缓存失效时间，缓存如果过期，异步起一个线程去读数据库，更新缓存。需要做<strong>缓存预热</strong> (项目启动前，先加载缓存) 操作。<br/>
-(三) 提供一个能迅速判断请求是否有效的拦截机制，比如，利用布隆过滤器，内部维护一系列合法有效的 key。迅速判断出，请求所携带的 Key 是否合法有效。如果不合法，则直接返回。<br/>
-<strong>缓存雪崩</strong>，即缓存同一时间大面积的失效，这个时候又来了一波请求，结果请求都怼到数据库上，从而导致数据库连接异常。<br/>
-<strong>解决方案</strong>:<br/>
-(一) 给缓存的失效时间，加上一个随机值，避免集体失效。<br/>
-(二) 使用互斥锁，但是该方案吞吐量明显下降了。<br/>
-(三) 双缓存。我们有两个缓存，缓存 A 和缓存 B。缓存 A 的失效时间为 20 分钟，缓存 B 不设失效时间。自己做缓存预热操作。然后细分以下几个小点</p>
-
-<ul>
-<li>  I 从缓存 A 读数据库，有则直接返回</li>
-<li>  II A 没有数据，直接从 B 读数据，直接返回，并且异步启动一个更新线程。</li>
-<li>  III 更新线程同时更新缓存 A 和缓存 B。</li>
-</ul>
-
-<h3 id="toc_11">8、如何解决 redis 的并发竞争 key 问题</h3>
-
-<p><strong>分析</strong>: 这个问题大致就是，同时有多个子系统去 set 一个 key。这个时候要注意什么呢？大家思考过么。需要说明一下，博主提前百度了一下，发现答案基本都是推荐用 redis 事务机制。博主<strong>不推荐使用 redis 的事务机制。</strong>因为我们的生产环境，基本都是 redis 集群环境，做了数据分片操作。你一个事务中有涉及到多个 key 操作的时候，这多个 key 不一定都存储在同一个 redis-server 上。因此，<strong>redis 的事务机制，十分鸡肋。</strong><br/>
-<strong>回答:</strong> 如下所示<br/>
-(1) 如果对这个 key 操作，<strong>不要求顺序</strong><br/>
-这种情况下，准备一个分布式锁，大家去抢锁，抢到锁就做 set 操作即可，比较简单。<br/>
-(2) 如果对这个 key 操作，<strong>要求顺序</strong><br/>
-假设有一个 key1, 系统 A 需要将 key1 设置为 valueA, 系统 B 需要将 key1 设置为 valueB, 系统 C 需要将 key1 设置为 valueC.<br/>
-期望按照 key1 的 value 值按照 valueA--&gt;valueB--&gt;valueC 的顺序变化。这种时候我们在数据写入数据库的时候，需要保存一个时间戳。假设时间戳如下</p>
-
-<pre><code>系统A key 1 {valueA  3:00}
-系统B key 1 {valueB  3:05}
-系统C key 1 {valueC  3:10}
-</code></pre>
-
-<p>那么，假设这会系统 B 先抢到锁，将 key1 设置为 {valueB 3:05}。接下来系统 A 抢到锁，发现自己的 valueA 的时间戳早于缓存中的时间戳，那就不做 set 操作了。以此类推。</p>
-
-<p>其他方法，比如利用队列，将 set 方法变成串行访问也可以。总之，灵活变通。</p>
-
-<h2 id="toc_12">总结</h2>
-
-<p>本文对 redis 的常见问题做了一个总结。大部分是博主自己在工作中遇到，以及以前面试别人的时候，爱问的一些问题。另外，<strong>不推荐大家临时抱佛脚</strong>，真正碰到一些有经验的工程师，其实几下就能把你问懵。最后，希望大家有所收获吧。</p>
+<p>作者：<a href="https://blog.docker.com/author/diogo/">Diogo Mónica</a> 译者：<a href="https://github.com/qhwdw">qhwdw</a> 校对：<a href="https://github.com/wxy">wxy</a></p>
 
                         
                       </div>
@@ -310,7 +328,7 @@ ps：如果没有设置 expire 的 key, 不满足先决条件 (prerequisites); �
                     <span class="date">2018/6/5</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Solution.html'>Solution</a></span>
+          					    <span class="posted-in"><a href='Container.html'>Container</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -400,6 +418,12 @@ ps：如果没有设置 expire 的 key, 不满足先决条件 (prerequisites); �
 	      
 		      
 			      <li class="post">
+			        <a href="15359384213292.html">Securing Spring Boot with JWTs</a>
+			      </li>
+		     
+		  
+		      
+			      <li class="post">
 			        <a href="15358820607055.html">Java 8 Concurrency Tutorial: Atomic Variables and ConcurrentMap</a>
 			      </li>
 		     
@@ -419,12 +443,6 @@ ps：如果没有设置 expire 的 key, 不满足先决条件 (prerequisites); �
 		      
 			      <li class="post">
 			        <a href="15358756631902.html">Java 8 Stream Tutorial</a>
-			      </li>
-		     
-		  
-		      
-			      <li class="post">
-			        <a href="15358753472382.html">Migrate Maven Projects to Java 11</a>
 			      </li>
 		     
 		  

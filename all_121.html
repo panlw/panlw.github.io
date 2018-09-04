@@ -105,296 +105,753 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15274389377310.html">
+                <a class="clearlink" href="15274391142573.html">
                 
-                  <h1>Kubernetes API 使用文档</h1>
+                  <h1>RPC 原理及 RPC 实例分析 - God is a Coder..</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.10/">原文地址</a></p>
+<p><a href="https://my.oschina.net/hosee/blog/711632">原文地址</a></p>
 </blockquote>
 
-<h2 id="toc_0">API 概述</h2>
+<p>在学校期间大家都写过不少程序，比如写个 hello world 服务类，然后本地调用下，如下所示。这些程序的特点是服务消费方和服务提供方是本地调用关系。</p>
 
-<h4 id="toc_1">※ 资源分类</h4>
+<pre><code>public class Test {
+     public static void main(String[] args) {
+         HelloWorldService helloWorldService = new HelloWorldServiceImpl();
+         helloWorldService.sayHello(&quot;test&quot;);
+     }
+}
+</code></pre>
 
-<p>这是对 Kubernetes API 及其主要功能提供的基本资源类型的高级概述。</p>
+<p>而一旦踏入公司尤其是大型互联网公司就会发现，公司的系统都由成千上万大大小小的服务组成，各服务部署在不同的机器上，由不同的团队负责。</p>
 
-<ul>
-<li>  <strong>Workloads</strong>： 用于在集群中管理和运行容器；</li>
-<li>  <strong>Discovery &amp; LB</strong>：用于将 Workloads “缝合” 到一个可从外部访问的负载均衡的服务中；</li>
-<li>  <strong>Config &amp; Storage</strong>：用于将初始化数据注入到应用程序中，并保留容器外部的数据；</li>
-<li>  <strong>Cluster</strong>：用于定义如何配置集群，这些通常仅由集群运营商使用；</li>
-<li>  <strong>Metadata</strong>：用于配置群集内其他资源的行为，例如用于扩展 Workloads 的 HorizontalPodAutoscaler</li>
-</ul>
+<p>这时就会遇到两个问题：</p>
 
-<h4 id="toc_2">※ 资源对象</h4>
+<ol>
+<li> 要搭建一个新服务，免不了需要依赖他人的服务，而现在他人的服务都在远端，怎么调用？</li>
+<li> 其它团队要使用我们的新服务，我们的服务该怎么发布以便他人调用？下文将对这两个问题展开探讨。</li>
+</ol>
 
-<p>资源对象通常包含 3 个组件：</p>
+<h2 id="toc_0">1.  如何调用他人的远程服务？</h2>
 
-<ul>
-<li>  <strong>ResourceSpec</strong>：这由用户定义并描述系统所期望的状态，在创建或更新对象时填写；</li>
-<li>  <strong>ResourceStatus</strong>：这由服务器填写并报告系统的当前状态，只有 Kubernetes 组件才能填写此内容；</li>
-<li>  <strong>Resource ObjectMeta</strong>：这是关于资源的元数据，例如 name / type / api version / annotations / labels，包含可能由后端用户和系统更新的字段（如 annotations）</li>
-</ul>
+<p>由于各服务部署在不同机器，服务间的调用免不了网络通信过程，服务消费方每调用一个服务都要写一坨网络通信相关的代码，不仅复杂而且极易出错。</p>
 
-<h4 id="toc_3">※ 资源操作</h4>
+<p>如果有一种方式能让我们像调用本地服务一样调用远程服务，而让调用者对网络通信这些细节透明，那么将大大提高生产力，比如服务消费方在执行 helloWorldService.sayHello(&quot;test&quot;) 时，实质上调用的是远端的服务。这种方式其实就是 RPC（Remote Procedure Call Protocol），在各大互联网公司中被广泛使用，如阿里巴巴的 hsf、dubbo（开源）、Facebook 的 thrift（开源）、Google grpc（开源）、Twitter 的 finagle（开源）等。</p>
 
-<p>大部分资源提供如下操作：</p>
+<p>要让网络通信细节对使用者透明，我们需要对通信细节进行封装，我们先看下一个 RPC 调用的流程涉及到哪些通信细节：</p>
 
-<p><strong>▶ Create</strong></p>
+<p><img src="http://static.oschina.net/uploads/space/2016/0714/102634_AAIe_2243330.png" alt=""/></p>
 
-<p>Create 操作会在存储后端创建资源。资源创建后，系统将应用所期望的状态。</p>
+<ol>
+<li> 服务消费方（client）调用以本地调用方式调用服务；</li>
+<li> client stub 接收到调用后负责将方法、参数等组装成能够进行网络传输的消息体；</li>
+<li> client stub 找到服务地址，并将消息发送到服务端；</li>
+<li> server stub 收到消息后进行解码；</li>
+<li> server stub 根据解码结果调用本地的服务；</li>
+<li> 本地服务执行并将结果返回给 server stub；</li>
+<li> server stub 将返回结果打包成消息并发送至消费方；</li>
+<li> client stub 接收到消息，并进行解码；</li>
+<li> 服务消费方得到最终结果。</li>
+</ol>
 
-<p><strong>▶ Update</strong></p>
+<p>RPC 的目标就是要 2~8 这些步骤都封装起来，让用户对这些细节透明。</p>
 
-<p>更新有 2 种形式：<strong>Replace</strong> 和 <strong>Patch</strong></p>
+<h3 id="toc_1">1.1 怎么做到透明化远程服务调用？</h3>
 
-<p><strong>Replace</strong>：替换资源对象将通过提供的 spec 替换现有的 spec 来更新资源。对于读写操作，这是安全的，因为如果资源在读和写之间被修改，则会发生乐观锁定失败。注意：ResourceStatus 将被系统忽略，并且不会被更新，要更新状态，必须调用特定的状态更新操作。</p>
+<p>怎么封装通信细节才能让用户像以本地调用方式调用远程服务呢？对 java 来说就是使用代理！java 代理有两种方式：</p>
 
-<p>注意：替换资源对象可能不会立即传播到下游对象。例如，替换 ConfigMap 或 Secret 资源不会导致所有 Pod 看到更改，除非 Pod 在带外重新启动。</p>
+<ol>
+<li> jdk 动态代理</li>
+<li> 字节码生成</li>
+</ol>
 
-<p><strong>Patch</strong>：Patch 会更改特定字段，如何合并更改是每个字段定义的。列表可以被替换或合并，合并列表不会保留排序。</p>
+<p>尽管字节码生成方式实现的代理更为强大和高效，但代码维护不易，大部分公司实现 RPC 框架时还是选择动态代理方式。</p>
 
-<p><strong>Patch 操作永远不会导致乐观锁定失败，并且最后一次写入会获胜。</strong>如果在更新之前未读取完整状态，或者乐观锁定失败不可取，则建议使用 patch 操作。修补复杂 types、arrays 和 maps 时，如何应用修补程序是以每个字段为基础定义的，并可以替换字段的当前值，也可以将内容合并到当前值中。</p>
+<p>下面简单介绍下动态代理怎么实现我们的需求。我们需要实现 RPCProxyClient 代理类，代理类的 invoke 方法中封装了与远端服务通信的细节，消费方首先从 RPCProxyClient 获得服务提供方的接口，当执行 helloWorldService.sayHello(&quot;test&quot;) 方法时就会调用 invoke 方法。</p>
 
-<p><strong>▶ Read</strong></p>
+<pre><code>public class RPCProxyClient implements java.lang.reflect.InvocationHandler{
+    private Object obj;
 
-<p>读取有 3 种方式：<strong>Get</strong> 、 <strong>List</strong> 和 <strong>Watch</strong></p>
+    public RPCProxyClient(Object obj){
+        this.obj=obj;
+    }
 
-<p><strong>Get</strong>： 按名称检索特定的资源对象；</p>
+    /**
+     * 得到被代理对象;
+     */
+    public static Object getProxy(Object obj){
+        return java.lang.reflect.Proxy.newProxyInstance(obj.getClass().getClassLoader(),
+                obj.getClass().getInterfaces(), new RPCProxyClient(obj));
+    }
 
-<p><strong>List</strong>：检索命名空间内特定类型的所有资源对象，并且结果可以限制为与选择器查询结果匹配的资源；</p>
+    /**
+     * 调用此方法执行
+     */
+    public Object invoke(Object proxy, Method method, Object[] args)
+            throws Throwable {
+        //结果参数;
+        Object result = new Object();
+        // ...执行通信相关逻辑
+        // ...
+        return result;
+    }
+}
+</code></pre>
 
-<p><strong>List All Namespaces</strong>：像 List 一样，但是跨所有命名空间检索资源；</p>
+<pre><code>public class Test {
+     public static void main(String[] args) {
+         HelloWorldService helloWorldService = (HelloWorldService)RPCProxyClient.getProxy(HelloWorldService.class);
+         helloWorldService.sayHello(&quot;test&quot;);
+     }
+ }
+</code></pre>
 
-<p><strong>Watch</strong>：Watch 将在对象更新时汇出结果，类似于回调，watch 用于响应资源的更改。</p>
+<h3 id="toc_2">1.2  怎么对消息进行编码和解码？</h3>
 
-<p><strong>▶ Delete</strong></p>
+<h4 id="toc_3">1.2.1 确定消息数据结构</h4>
 
-<p>Delete 将删除资源。根据特定的资源，子对象可能会或可能不会被服务器当做垃圾收集，详情请参阅特定资源对象的注释。</p>
+<p>　　上节讲了 invoke 里需要封装通信细节（通信细节再后面几章详细探讨），而通信的第一步就是要确定客户端和服务端相互通信的消息结构。客户端的请求消息结构一般需要包括以下内容：</p>
 
-<p><strong>▶ 额外操作</strong></p>
+<p>1）接口名称</p>
 
-<p>资源可以定义特定于该资源类型的附加操作。</p>
+<p>　　在我们的例子里接口名是 “HelloWorldService”，如果不传，服务端就不知道调用哪个接口了；</p>
 
-<p><strong>Rollback</strong>：将 PodTemplate 回滚到以前的版本，仅适用于某些资源类型；</p>
+<p>2）方法名</p>
 
-<p><strong>Read / Write Scale</strong>：读取或更新给定资源的副本数量，仅适用于某些资源类型；</p>
+<p>　　一个接口内可能有很多方法，如果不传方法名服务端也就不知道调用哪个方法；</p>
 
-<p><strong>Read / Write Status</strong>：读取或更新资源对象的状态，状态只能通过这些更新操作进行更改。</p>
+<p>3）参数类型 &amp; 参数值</p>
 
-<h2 id="toc_4">WORKLOADS</h2>
+<p>　　参数类型有很多，比如有 bool、int、long、double、string、map、list，甚至如 struct（class）；以及相应的参数值；</p>
 
-<p>Workloads 资源负责管理和运行集群上的容器。容器（Containers）由控制器（Controllers）通过 Pod 创建，Pods 运行容器并提供环境依赖，如注入到容器中的共享或永久存储卷、配置或加密数据。</p>
+<p>4）超时时间</p>
 
-<p>最常见的控制器是：</p>
+<p>5）requestID，标识唯一请求 id，在下面一节会详细描述 requestID 的用处。</p>
 
-<ul>
-<li>  Deployments 无状态持久应用（如 http servers）</li>
-<li>  StatefulSets 有状态持久应用（如 database）</li>
-<li>  Jobs 运行至完成的应用 （如 batch jobs）</li>
-</ul>
+<p>　　同理服务端返回的消息结构一般包括以下内容。</p>
 
-<h2 id="toc_5">DISCOVERY &amp; LOAD BALANCING</h2>
+<p>1）返回值</p>
 
-<p>Discovery and Load Balancing 负责将 Workloads “缝合” 到一个可从外部访问的负载均衡的服务中。默认情况下，Workloads 只能在群集内访问，它们必须通过 LoadBalancer 或 NodePort Service 暴露到外部。对于开发，可以使用 <code>kubectl proxy</code>命令通过代理 api 主机访问内部可访问的 Workloads 。</p>
+<p>2）状态 code</p>
 
-<p>常用的资源类型：</p>
+<p>3）requestID </p>
 
-<ul>
-<li>  Services 提供跨多个 Workload 副本的负载均衡的单个 IP 端点。</li>
-<li>  Ingress 提供路由到一个或多个服务的 https(s) 端点</li>
-</ul>
+<h4 id="toc_4">1.2.2 序列化</h4>
 
-<h2 id="toc_6">CONFIG &amp; STORAGE</h2>
+<p>一旦确定了消息的数据结构后，下一步就是要考虑序列化与反序列化了。</p>
 
-<p>Config and Storage 资源负责将数据注入到应用程序中，并保留容器外部的数据。</p>
+<p>什么是序列化？序列化就是将数据结构或对象转换成二进制串的过程，也就是编码的过程。</p>
 
-<p>常用的资源类型：</p>
+<p>什么是反序列化？将在序列化过程中所生成的二进制串转换成数据结构或者对象的过程。</p>
 
-<ul>
-<li>  ConfigMaps 通过环境变量、命令行参数或文件提供注入应用的 K-V 键值对</li>
-<li>  Secrets 通过文件提供注入应用的二进制数据</li>
-<li>  Volumes 提供容器外部的文件系统。 可能在同一个 Pod 中跨 Container 容器共享，并且其寿命持续超出 Container 或 Pod。</li>
-</ul>
+<p>为什么需要序列化？转换为二进制串后才好进行网络传输嘛！</p>
 
-<h2 id="toc_7">METADATA</h2>
+<p>为什么需要反序列化？将二进制转换为对象才好进行后续处理！</p>
 
-<p>Metadata resources 负责集群内其他资源的行为。</p>
+<p>现如今序列化的方案越来越多，每种序列化方案都有优点和缺点，它们在设计之初有自己独特的应用场景，那到底选择哪种呢？从 RPC 的角度上看，主要看三点：</p>
 
-<p>常用的资源类型：</p>
+<ol>
+<li> 通用性，比如是否能支持 Map 等复杂的数据结构；</li>
+<li> 性能，包括时间复杂度和空间复杂度，由于 RPC 框架将会被公司几乎所有服务使用，如果序列化上能节约一点时间，对整个公司的收益都将非常可观，同理如果序列化上能节约一点内存，网络带宽也能省下不少；</li>
+<li> 可扩展性，对互联网公司而言，业务变化飞快，如果序列化协议具有良好的可扩展性，支持自动增加新的业务字段，而不影响老的服务，这将大大提供系统的灵活度。</li>
+</ol>
 
-<ul>
-<li>  HorizontalPodAutoscaler 自动缩放 workloads 的副本数量以响应加载</li>
-<li>  PodDisruptionBudget 在执行维护时，可以配置给定 workloads 中的多少副本可能同时不可用</li>
-<li>  ThirdPartyResource 使用自己的类型扩展 Kubernetes API</li>
-<li>  Event 群集中资源生命周期事件的通知</li>
-</ul>
+<p>目前互联网公司广泛使用 Protobuf、Thrift、Avro 等成熟的序列化解决方案来搭建 RPC 框架，这些都是久经考验的解决方案。</p>
 
-<h2 id="toc_8">API 调用方式</h2>
+<h3 id="toc_5">1.3  通信</h3>
 
-<p><strong>▶ kubectl</strong></p>
+<p>消息数据结构被序列化为二进制串后，下一步就要进行网络通信了。目前有两种常用 IO 通信模型：1）BIO；2）<a href="http://my.oschina.net/hosee/blog/615269">NIO</a>。一般 RPC 框架需要支持这两种 IO 模型。</p>
 
-<p>示例：创建 Deployment</p>
+<p>如何实现 RPC 的 IO 通信框架呢？</p>
 
-<pre><code>1.  `$ echo &#39;apiVersion: apps/v1`
+<ol>
+<li> 使用 java nio 方式自研，这种方式较为复杂，而且很有可能出现隐藏 bug，但也见过一些互联网公司使用这种方式；</li>
+<li> 基于 mina，mina 在早几年比较火热，不过这些年版本更新缓慢；</li>
+<li> 基于 netty，现在很多 RPC 框架都直接基于 netty 这一 IO 通信框架，省力又省心，比如阿里巴巴的 HSF、dubbo，Twitter 的 finagle 等。</li>
+</ol>
 
-2.  `kind: Deployment`
+<h3 id="toc_6">1.4  <strong>消息里为什么要有 requestID？</strong></h3>
 
-3.  `metadata:`
+<p>如果使用 netty 的话，一般会用 channel.writeAndFlush()方法来发送消息二进制串，这个方法调用后对于整个远程调用 (从发出请求到接收到结果) 来说是一个异步的，即对于当前线程来说，将请求发送出来后，线程就可以往后执行了，至于服务端的结果，是服务端处理完成后，再以消息的形式发送给客户端的。于是这里出现以下两个问题：</p>
 
-4.  `name: deployment-example`
+<ol>
+<li> 怎么让当前线程 “暂停”，等结果回来后，再向后执行？</li>
+<li> 如果有多个线程同时进行远程方法调用，这时建立在 client server 之间的 socket 连接上会有很多双方发送的消息传递，前后顺序也可能是随机的，server 处理完结果后，将结果消息发送给 client，client 收到很多消息，怎么知道哪个消息结果是原先哪个线程调用的？</li>
+</ol>
 
-5.  `spec:`
+<p>如下图所示，线程 A 和线程 B 同时向 client socket 发送请求 requestA 和 requestB，socket 先后将 requestB 和 requestA 发送至 server，而 server 可能将 responseA 先返回，尽管 requestA 请求到达时间更晚。我们需要一种机制保证 responseA 丢给 ThreadA，responseB 丢给 ThreadB。</p>
 
-6.  `replicas: 3`
+<p><img src="http://static.oschina.net/uploads/space/2016/0714/104316_FAgB_2243330.png" alt=""/></p>
 
-7.  `revisionHistoryLimit: 10`
+<p>怎么解决呢？</p>
 
-8.  `template:`
+<ol>
+<li> client 线程每次通过 socket 调用一次远程接口前，生成一个唯一的 ID，即 requestID（requestID 必需保证在一个 Socket 连接里面是唯一的），一般常常使用 AtomicLong 从 0 开始累计数字生成唯一 ID；</li>
+<li> 将处理结果的回调对象 callback，存放到全局 ConcurrentHashMap 里面 put(requestID, callback)；</li>
+<li> 当线程调用 channel.writeAndFlush() 发送消息后，紧接着执行 callback 的 get() 方法试图获取远程返回的结果。在 get() 内部，则使用 synchronized 获取回调对象 callback 的锁，再先检测是否已经获取到结果，如果没有，然后调用 callback 的 wait() 方法，释放 callback 上的锁，让当前线程处于等待状态。</li>
+<li> 服务端接收到请求并处理后，将 response 结果（此结果中包含了前面的 requestID）发送给客户端，客户端 socket 连接上专门监听消息的线程收到消息，分析结果，取到 requestID，再从前面的 ConcurrentHashMap 里面 get(requestID)，从而找到 callback 对象，再用 synchronized 获取 callback 上的锁，将方法调用结果设置到 callback 对象里，再调用 callback.notifyAll() 唤醒前面处于等待状态的线程。</li>
+</ol>
 
-9.  `metadata:`
+<pre><code>public Object get() {
+        synchronized (this) { // 旋锁
+            while (!isDone) { // 是否有结果了
+                wait(); //没结果是释放锁，让当前线程处于等待状态
+            }
+        }
+}
+</code></pre>
 
-10.  `labels:`
+<pre><code>private void setDone(Response res) {
+        this.res = res;
+        isDone = true;
+        synchronized (this) { //获取锁，因为前面wait()已经释放了callback的锁了
+            notifyAll(); // 唤醒处于等待的线程
+        }
+    }
+</code></pre>
 
-11.  `app: nginx`
+<h2 id="toc_7">2 如何发布自己的服务？</h2>
 
-12.  `spec:`
+<p>如何让别人使用我们的服务呢？有同学说很简单嘛，告诉使用者服务的 IP 以及端口就可以了啊。确实是这样，这里问题的关键在于是自动告知还是人肉告知。</p>
 
-13.  `containers:`
+<p>人肉告知的方式：如果你发现你的服务一台机器不够，要再添加一台，这个时候就要告诉调用者我现在有两个 ip 了，你们要轮询调用来实现负载均衡；调用者咬咬牙改了，结果某天一台机器挂了，调用者发现服务有一半不可用，他又只能手动修改代码来删除挂掉那台机器的 ip。现实生产环境当然不会使用人肉方式。</p>
 
-14.  `- name: nginx`
+<p>有没有一种方法能实现自动告知，即机器的增添、剔除对调用方透明，调用者不再需要写死服务提供方地址？当然可以，现如今 zookeeper 被广泛用于实现服务自动注册与发现功能！</p>
 
-15.  `image: nginx:1.10`
+<p>简单来讲，zookeeper 可以充当一个<code>服务注册表</code>（Service Registry），让多个<code>服务提供者</code>形成一个集群，让<code>服务消费者</code>通过服务注册表获取具体的服务访问地址（ip + 端口）去访问具体的服务提供者。如下图所示：</p>
 
-16.  `ports:`
+<p><img src="http://static.oschina.net/uploads/space/2016/0714/105148_gSi2_2243330.png" alt=""/></p>
 
-17.  `- containerPort: 80`
+<p>具体来说，zookeeper 就是个分布式文件系统，每当一个服务提供者部署后都要将自己的服务注册到 zookeeper 的某一路径上: /{service}/{version}/{ip:port}, 比如我们的 HelloWorldService 部署到两台机器，那么 zookeeper 上就会创建两条目录：分别为 / HelloWorldService/1.0.0/100.19.20.01:16888  /HelloWorldService/1.0.0/100.19.20.02:16888。</p>
 
-18.  `&#39; | kubectl create -f -`
+<p>zookeeper 提供了 “心跳检测” 功能，它会定时向各个服务提供者发送一个请求（实际上建立的是一个 Socket 长连接），如果长期没有响应，服务中心就认为该服务提供者已经“挂了”，并将其剔除，比如 100.19.20.02 这台机器如果宕机了，那么 zookeeper 上的路径就会只剩 / HelloWorldService/1.0.0/100.19.20.01:16888。</p>
+
+<p>服务消费者会去监听相应路径（/HelloWorldService/1.0.0），一旦路径上的数据有任务变化（增加或减少），zookeeper 都会通知服务消费方服务提供者地址列表已经发生改变，从而进行更新。</p>
+
+<p>更为重要的是 zookeeper 与生俱来的容错容灾能力（比如 leader 选举），可以确保服务注册表的高可用性。</p>
+
+<h2 id="toc_8">3.Hadoop 中 <strong>RPC</strong> 实例分析</h2>
+
+<p>ipc.RPC 类中有一些内部类，为了大家对 RPC 类有个初步的印象，就先罗列几个我们感兴趣的分析一下吧：</p>
+
+<p><strong>Invocation</strong> ：用于封装方法名和参数，作为数据传输层。<br/>
+<strong>ClientCache</strong> ：用于存储 client 对象，用 socket factory 作为 hash key, 存储结构为 hashMap <SocketFactory, Client>。<br/>
+<strong>Invoker</strong> ：是动态代理中的调用实现类，继承了 InvocationHandler.<br/>
+<strong>Server</strong> ：是 ipc.Server 的实现类。</p>
+
+<pre><code>    public Object invoke(Object proxy, Method method, Object[] args)
+      throws Throwable {
+      •••
+      ObjectWritable value = (ObjectWritable)
+        client.call(new Invocation(method, args), remoteId);
+      •••
+      return value.get();
+    }
 
 </code></pre>
 
-<p>yaml 文件编写的规则拆解如下图：</p>
+<p>如果你发现这个 invoke() 方法实现的有些奇怪的话，那你就对了。一般我们看到的<a href="http://my.oschina.net/hosee/blog/656945">动态代理</a>的 invoke() 方法中总会有 method.invoke(ac, arg);  这句代码。而上面代码中却没有，这是为什么呢？其实使用 method.invoke(ac, arg); 是在本地 JVM 中调用；而在 hadoop 中，是将数据发送给服务端，服务端将处理的结果再返回给客户端，所以这里的 invoke() 方法必然需要进行网络通信。而网络通信就是下面的这段代码实现的：</p>
 
-<p><img src="https://mmbiz.qpic.cn/mmbiz_png/wbiax4xEAl5xuUnZt7eHIfEe51sP9P3DjdKKVzb6BmPcZAQzsLM5ZM6SsD46djF4siaLHADeaQnrT6qOJDGSCkibw/640?wx_fmt=png" alt=""/></p>
+<pre><code>ObjectWritable value = (ObjectWritable)
+client.call(new Invocation(method, args), remoteId);
 
-<p><img src="https://mmbiz.qpic.cn/mmbiz_png/wbiax4xEAl5xuUnZt7eHIfEe51sP9P3DjrdW9EOgJy7BickNuoCKaX7R5t1TZHqDF8RN8qSCRzse8nRDO23IA66w/640?wx_fmt=png" alt=""/></p>
+</code></pre>
 
-<p><img src="https://mmbiz.qpic.cn/mmbiz_png/wbiax4xEAl5xuUnZt7eHIfEe51sP9P3DjEr3QHuRt71DVQHpNZHibDhFnDibRvT6ghUdMvCOLqSuUIZYO7YXWZyLg/640?wx_fmt=png" alt=""/></p>
+<p>Invocation 类在这里封装了方法名和参数。其实这里网络通信只是调用了 Client 类的 call() 方法。那我们接下来分析一下 ipc.Client 源码吧。和第一章一样，同样是 3 个问题</p>
 
-<p><img src="https://mmbiz.qpic.cn/mmbiz_png/wbiax4xEAl5xuUnZt7eHIfEe51sP9P3Djl2MJd16ycvpxFCy7ibcQmaqMVo0ndFic3xlVqvyzwFtl4VTw6y3WuRdg/640?wx_fmt=png" alt=""/></p>
+<ol>
+<li> 客户端和服务端的连接是怎样建立的？</li>
+<li> 客户端是怎样给服务端发送数据的？</li>
+<li> 客户端是怎样获取服务端的返回数据的？</li>
+</ol>
 
-<p>其他资源的创建或其他操作，都可以按照这种方式来操作。</p>
+<h3 id="toc_9">3.1 客户端和服务端的连接是怎样建立的？</h3>
 
-<p><strong>▶ curl</strong></p>
+<pre><code>public Writable call(Writable param, ConnectionId remoteId)  
+                       throws InterruptedException, IOException {
+    Call call = new Call(param);       //将传入的数据封装成call对象
+    Connection connection = getConnection(remoteId, call);   //获得一个连接
+    connection.sendParam(call);     // 向服务端发送call对象
+    boolean interrupted = false;
+    synchronized (call) {
+      while (!call.done) {
+        try {
+          call.wait(); // 等待结果的返回，在Call类的callComplete()方法里有notify()方法用于唤醒线程
+        } catch (InterruptedException ie) {
+          // 因中断异常而终止，设置标志interrupted为true
+          interrupted = true;
+        }
+      }
+      if (interrupted) {
+        Thread.currentThread().interrupt();
+      }
 
-<p>需要使用 <code>kubectl proxy</code></p>
+      if (call.error != null) {
+        if (call.error instanceof RemoteException) {
+          call.error.fillInStackTrace();
+          throw call.error;
+        } else { // 本地异常
+          throw wrapException(remoteId.getAddress(), call.error);
+        }
+      } else {
+        return call.value; //返回结果数据
+      }
+    }
+  }
 
-<pre data-initialized="true" data-gclp-id="6" style="box-sizing: border-box;margin-top: 0px;margin-bottom: 0px;padding: 8px 0px 6px;background-color: rgb(241, 239, 238);border-radius: 0px;overflow-y: auto;color: rgb(80, 97, 109);font-size: 10px;line-height: 12px;">
+</code></pre>
 
-1.  `$ kubectl proxy`
+<p>具体代码的作用我已做了注释，所以这里不再赘述。但到目前为止，你依然不知道 RPC 机制底层的网络连接是怎么建立的。分析代码后，我们会发现和网络通信有关的代码只会是下面的两句了：</p>
 
-2.  `$ curl -X POST -H 'Content-Type: application/yaml' --data '`
+<pre><code>  Connection connection = getConnection(remoteId, call);   //获得一个连接
+  connection.sendParam(call);      // 向服务端发送call对象
 
-3.  `apiVersion: apps/v1beta1`
+</code></pre>
 
-4.  `kind: Deployment`
+<p>先看看是怎么获得一个到服务端的连接吧，下面贴出 ipc.Client 类中的 getConnection() 方法。</p>
 
-5.  `metadata:`
+<pre><code>private Connection getConnection(ConnectionId remoteId,
+                                   Call call)
+                                   throws IOException, InterruptedException {
+    if (!running.get()) {
+      // 如果client关闭了
+      throw new IOException(&quot;The client is stopped&quot;);
+    }
+    Connection connection;
+//如果connections连接池中有对应的连接对象，就不需重新创建了；如果没有就需重新创建一个连接对象。
+//但请注意，该//连接对象只是存储了remoteId的信息，其实还并没有和服务端建立连接。
+    do {
+      synchronized (connections) {
+        connection = connections.get(remoteId);
+        if (connection == null) {
+          connection = new Connection(remoteId);
+          connections.put(remoteId, connection);
+        }
+      }
+    } while (!connection.addCall(call)); //将call对象放入对应连接中的calls池，就不贴出源码了
+   //这句代码才是真正的完成了和服务端建立连接哦~
+    connection.setupIOstreams();
+    return connection;
+  }
 
-6.  `name: deployment-example`
+</code></pre>
 
-7.  `spec:`
+<p>下面贴出 Client.Connection 类中的 setupIOstreams() 方法：</p>
 
-8.  `replicas: 3`
+<pre><code>  private synchronized void setupIOstreams() throws InterruptedException {
+   •••
+      try {
+       •••
+        while (true) {
+          setupConnection();  //建立连接
+          InputStream inStream = NetUtils.getInputStream(socket);     //获得输入流
+          OutputStream outStream = NetUtils.getOutputStream(socket);  //获得输出流
+          writeRpcHeader(outStream);
+          •••
+          this.in = new DataInputStream(new BufferedInputStream
+              (new PingInputStream(inStream)));   //将输入流装饰成DataInputStream
+          this.out = new DataOutputStream
+          (new BufferedOutputStream(outStream));   //将输出流装饰成DataOutputStream
+          writeHeader();
+          // 跟新活动时间
+          touch();
+          //当连接建立时，启动接受线程等待服务端传回数据，注意：Connection继承了Tread
+          start();
+          return;
+        }
+      } catch (IOException e) {
+        markClosed(e);
+        close();
+      }
+    }
 
-9.  `revisionHistoryLimit: 10`
+</code></pre>
 
-10.  `template:`
+<p>再有一步我们就知道客户端的连接是怎么建立的啦，下面贴出 Client.Connection 类中的 setupConnection() 方法：</p>
 
-11.  `metadata:`
+<pre><code>  private synchronized void setupConnection() throws IOException {
+      short ioFailures = 0;
+      short timeoutFailures = 0;
+      while (true) {
+        try {
+          this.socket = socketFactory.createSocket(); //终于看到创建socket的方法了
+          this.socket.setTcpNoDelay(tcpNoDelay);
+         •••
+          // 设置连接超时为20s
+          NetUtils.connect(this.socket, remoteId.getAddress(), 20000);
+          this.socket.setSoTimeout(pingInterval);
+          return;
+        } catch (SocketTimeoutException toe) {
+          /* 设置最多连接重试为45次。
+           * 总共有20s*45 = 15 分钟的重试时间。
+           */
+          handleConnectionFailure(timeoutFailures++, 45, toe);
+        } catch (IOException ie) {
+          handleConnectionFailure(ioFailures++, maxRetries, ie);
+        }
+      }
+    }
 
-12.  `labels:`
+</code></pre>
 
-13.  `app: nginx`
+<p>终于，我们知道了客户端的连接是怎样建立的了，其实就是创建一个普通的 socket 进行通信。</p>
 
-14.  `spec:`
+<h3 id="toc_10">3.2 客户端是怎样给服务端发送数据的？ </h3>
 
-15.  `containers:`
+<p>下面贴出 Client.Connection 类的 sendParam() 方法吧：</p>
 
-16.  `- name: nginx`
+<pre><code>public void sendParam(Call call) {
+      if (shouldCloseConnection.get()) {
+        return;
+      }
+      DataOutputBuffer d=null;
+      try {
+        synchronized (this.out) {
+          if (LOG.isDebugEnabled())
+            LOG.debug(getName() + &quot; sending #&quot; + call.id);
+          //创建一个缓冲区
+          d = new DataOutputBuffer();
+          d.writeInt(call.id);
+          call.param.write(d);
+          byte[] data = d.getData();
+          int dataLength = d.getLength();
+          out.writeInt(dataLength);        //首先写出数据的长度
+          out.write(data, 0, dataLength); //向服务端写数据
+          out.flush();
+        }
+      } catch(IOException e) {
+        markClosed(e);
+      } finally {
+        IOUtils.closeStream(d);
+      }
+    }  
 
-17.  `image: nginx:1.10`
+</code></pre>
 
-18.  `ports:`
+<h3 id="toc_11">3.3 客户端是怎样获取服务端的返回数据的？ </h3>
 
-19.  `- containerPort: 80`
+<p>下面贴出 Client.Connection 类和 Client.Call 类中的相关方法：</p>
 
-20.  `' http://127.0.0.1:8001/apis/apps/v1/namespaces/default/deployments` 
+<pre><code>方法一：  
+  public void run() {
+      •••
+      while (waitForWork()) {
+        receiveResponse();  //具体的处理方法
+      }
+      close();
+     •••
+}
 
-</pre>
+方法二：
+private void receiveResponse() {
+      if (shouldCloseConnection.get()) {
+        return;
+      }
+      touch();
+      try {
+        int id = in.readInt();                    // 阻塞读取id
+        if (LOG.isDebugEnabled())
+          LOG.debug(getName() + &quot; got value #&quot; + id);
+          Call call = calls.get(id);    //在calls池中找到发送时的那个对象
+        int state = in.readInt();     // 阻塞读取call对象的状态
+        if (state == Status.SUCCESS.state) {
+          Writable value = ReflectionUtils.newInstance(valueClass, conf);
+          value.readFields(in);           // 读取数据
+        //将读取到的值赋给call对象，同时唤醒Client等待线程，贴出setValue()代码方法三
+          call.setValue(value);              
+          calls.remove(id);               //删除已处理的call    
+        } else if (state == Status.ERROR.state) {
+        •••
+        } else if (state == Status.FATAL.state) {
+        •••
+        }
+      } catch (IOException e) {
+        markClosed(e);
+      }
+}
 
-<p><section class="" powered-by="xiumi.us" style="white-space: normal;box-sizing: border-box;"></p>
+方法三：
+public synchronized void setValue(Writable value) {
+      this.value = value;
+      callComplete();   //具体实现
+}
+protected synchronized void callComplete() {
+      this.done = true;
+      notify();         // 唤醒client等待线程
+    }
 
-<p><section class="" style="box-sizing: border-box;"></p>
+</code></pre>
 
-<p><section class="" style="font-size: 14px;box-sizing: border-box;"></p>
+<p>完成的功能主要是：启动一个处理线程，读取从服务端传来的 call 对象，将 call 对象读取完毕后，唤醒 client 处理线程。就这么简单，客户端就获取了服务端返回的数据了哦~。客户端的源码分析就到这里了哦，下面我们来分析 Server 端的源码吧。</p>
 
-<p>推荐：<a href="http://mp.weixin.qq.com/s?__biz=MzU0MDEwMjgwNA==&amp;mid=2247484509&amp;idx=1&amp;sn=e8b7f12fb3660d15379e2087c2e0e5c6&amp;chksm=fb3f1da6cc4894b0421d62ebecd16c9de11a3abf919d2c506643d3b864d0357ffc4eec1bfd29&amp;scene=21#wechat_redirect">译：基于注解的控制器：Spring Web/WebFlux 和 测试</a></p>
+<h3 id="toc_12">3.4 ipc.Server 源码分析</h3>
 
-<p>上一篇：<a href="http://mp.weixin.qq.com/s?__biz=MzU0MDEwMjgwNA==&amp;mid=2247484512&amp;idx=1&amp;sn=4130871a4e6360b4f1b8c1b4dac4b101&amp;chksm=fb3f1d9bcc48948d5430ce9e1cef224c40421241d3a925a891bb1cf2c1753d90db040529848a&amp;scene=21#wechat_redirect">Spring-5-webflux 和阻塞与非阻塞 JDBC</a></p>
+<p>为了让大家对 ipc.Server 有个初步的了解，我们先分析一下它的几个内部类吧：</p>
 
-<p></section></p>
+<p><strong>Call</strong> ：用于存储客户端发来的请求<br/>
+<strong>Listener</strong> ： 监听类，用于监听客户端发来的请求，同时 Listener 内部还有一个静态类，Listener.Reader，当监听器监听到用户请求，便让 Reader 读取用户请求。<br/>
+<strong>Responder</strong> ：响应 RPC 请求类，请求处理完毕，由 Responder 发送给请求客户端。<br/>
+<strong>Connection</strong> ：连接类，真正的客户端请求读取逻辑在这个类中。<br/>
+<strong>Handler</strong> ：请求处理类，会循环阻塞读取 callQueue 中的 call 对象，并对其进行操作。</p>
 
-<p></section></p>
+<pre><code>private void initialize(Configuration conf) throws IOException {
+   •••
+    // 创建 rpc server
+    InetSocketAddress dnSocketAddr = getServiceRpcServerAddress(conf);
+    if (dnSocketAddr != null) {
+      int serviceHandlerCount =
+        conf.getInt(DFSConfigKeys.DFS_NAMENODE_SERVICE_HANDLER_COUNT_KEY,
+                    DFSConfigKeys.DFS_NAMENODE_SERVICE_HANDLER_COUNT_DEFAULT);
+      //获得serviceRpcServer
+      this.serviceRpcServer = RPC.getServer(this, dnSocketAddr.getHostName(), 
+          dnSocketAddr.getPort(), serviceHandlerCount,
+          false, conf, namesystem.getDelegationTokenSecretManager());
+      this.serviceRPCAddress = this.serviceRpcServer.getListenerAddress();
+      setRpcServiceServerAddress(conf);
+}
+//获得server
+    this.server = RPC.getServer(this, socAddr.getHostName(),
+        socAddr.getPort(), handlerCount, false, conf, namesystem
+        .getDelegationTokenSecretManager());
 
-<p></section></p>
+   •••
+    this.server.start();  //启动 RPC server   Clients只允许连接该server
+    if (serviceRpcServer != null) {
+      serviceRpcServer.start();  //启动 RPC serviceRpcServer 为HDFS服务的server
+    }
+    startTrashEmptier(conf);
+  }
 
-<p><section class="" powered-by="xiumi.us" style="white-space: normal;box-sizing: border-box;"></p>
+</code></pre>
 
-<p><section class="" style="box-sizing: border-box;"></p>
+<p>查看 Namenode 初始化源码得知：RPC 的 server 对象是通过 ipc.RPC 类的 getServer() 方法获得的。下面咱们去看看 ipc.RPC 类中的 getServer() 源码吧：</p>
 
-<p><section class="" style="display: inline-block;vertical-align: top;width: 279px;box-sizing: border-box;"></p>
+<pre><code>public static Server getServer(final Object instance, final String bindAddress, final int port,
+                                 final int numHandlers,
+                                 final boolean verbose, Configuration conf,
+                                 SecretManager&lt;? extends TokenIdentifier&gt; secretManager) 
+    throws IOException {
+    return new Server(instance, conf, bindAddress, port, numHandlers, verbose, secretManager);
+  }
 
-<p><section class="" powered-by="xiumi.us" style="box-sizing: border-box;"></p>
+</code></pre>
 
-<p><section class="" style="box-sizing: border-box;"></p>
+<p>这时我们发现 getServer()是一个创建 Server 对象的工厂方法，但创建的却是 RPC.Server 类的对象。哈哈，现在你明白了我前面说的 “RPC.Server 是 ipc.Server 的实现类” 了吧。不过 RPC.Server 的构造函数还是调用了 ipc.Server 类的构造函数的，因篇幅所限，就不贴出相关源码了。</p>
 
-<p><section class="" style="text-align: center;color: rgb(160, 160, 160);font-size: 14px;box-sizing: border-box;"></p>
+<p>初始化 Server 后，Server 端就运行起来了，看看 ipc.Server 的 start() 源码吧：</p>
 
-<p>最好的赞赏</p>
+<pre><code>  /** 启动服务 */
+  public synchronized void start() {
+    responder.start();  //启动responder
+    listener.start();   //启动listener
+    handlers = new Handler[handlerCount];
 
-<p>就是你的关注</p>
+    for (int i = 0; i &lt; handlerCount; i++) {
+      handlers[i] = new Handler(i);
+      handlers[i].start();   //逐个启动Handler
+    }
+  }
 
-<p></section></p>
+</code></pre>
 
-<p></section></p>
+<p>分析过 ipc.Client 源码后，我们知道 Client 端的底层通信直接采用了阻塞式 IO 编程，当时我们曾做出猜测：Server 端是不是也采用了阻塞式 IO。现在我们仔细地分析一下吧，如果 Server 端也采用阻塞式 IO，当连接进来的 Client 端很多时，势必会影响 Server 端的性能。hadoop 的实现者们考虑到了这点，所以他们采用了 java  NIO 来实现 Server 端，那 Server 端采用 java NIO 是怎么建立连接的呢？分析源码得知，Server 端采用 Listener 监听客户端的连接，下面先分析一下 Listener 的构造函数吧：</p>
 
-<p></section></p>
+<pre><code>    public Listener() throws IOException {
+      address = new InetSocketAddress(bindAddress, port);
+      // 创建ServerSocketChannel,并设置成非阻塞式
+      acceptChannel = ServerSocketChannel.open();
+      acceptChannel.configureBlocking(false);
 
-<p></section></p>
+      // 将server socket绑定到本地端口
+      bind(acceptChannel.socket(), address, backlogLength);
+      port = acceptChannel.socket().getLocalPort(); 
+      // 获得一个selector
+      selector= Selector.open();
+      readers = new Reader[readThreads];
+      readPool = Executors.newFixedThreadPool(readThreads);
+      //启动多个reader线程，为了防止请求多时服务端响应延时的问题
+      for (int i = 0; i &lt; readThreads; i++) {       
+        Selector readSelector = Selector.open();
+        Reader reader = new Reader(readSelector);
+        readers[i] = reader;
+        readPool.execute(reader);
+      }
+      // 注册连接事件
+      acceptChannel.register(selector, SelectionKey.OP_ACCEPT);
+      this.setName(&quot;IPC Server listener on &quot; + port);
+      this.setDaemon(true);
+    }
 
-<p><section class="" style="display: inline-block;vertical-align: top;width: 279px;box-sizing: border-box;"></p>
+</code></pre>
 
-<p><section class="" powered-by="xiumi.us" style="box-sizing: border-box;"></p>
+<p>在启动 Listener 线程时，服务端会一直等待客户端的连接，下面贴出 Server.Listener 类的 run() 方法：</p>
 
-<p><section class="" style="margin-top: 10px;margin-bottom: 10px;text-align: center;box-sizing: border-box;"></p>
+<pre><code>  public void run() {
+     •••
+      while (running) {
+        SelectionKey key = null;
+        try {
+          selector.select();
+          Iterator&lt;SelectionKey&gt; iter = selector.selectedKeys().iterator();
+          while (iter.hasNext()) {
+            key = iter.next();
+            iter.remove();
+            try {
+              if (key.isValid()) {
+                if (key.isAcceptable())
+                  doAccept(key);     //具体的连接方法
+              }
+            } catch (IOException e) {
+            }
+            key = null;
+          }
+        } catch (OutOfMemoryError e) {
+       •••         
+    }
 
-<p><section class="" style="max-width: 100%;vertical-align: middle;display: inline-block;box-sizing: border-box;overflow: hidden !important;"><img src="https://mmbiz.qpic.cn/mmbiz_jpg/wbiax4xEAl5zQkzvFqgk7DUAem1u05eybPdhEythAoe3O0FxUHy0tmzgytKI7tJaiaDsEWib43ZFSYmEROK4MNNAQ/640?wx_fmt=jpeg" alt=""/></section></p>
+</code></pre>
 
-<p></section></p>
+<p>下面贴出 Server.Listener 类中 doAccept() 方法中的关键源码吧：</p>
 
-<p></section></p>
+<pre><code>    void doAccept(SelectionKey key) throws IOException,  OutOfMemoryError {
+      Connection c = null;
+      ServerSocketChannel server = (ServerSocketChannel) key.channel();
+      SocketChannel channel;
+      while ((channel = server.accept()) != null) { //建立连接
+        channel.configureBlocking(false);
+        channel.socket().setTcpNoDelay(tcpNoDelay);
+        Reader reader = getReader();  //从readers池中获得一个reader
+        try {
+          reader.startAdd(); // 激活readSelector，设置adding为true
+          SelectionKey readKey = reader.registerChannel(channel);//将读事件设置成兴趣事件
+          c = new Connection(readKey, channel, System.currentTimeMillis());//创建一个连接对象
+          readKey.attach(c);   //将connection对象注入readKey
+          synchronized (connectionList) {
+            connectionList.add(numConnections, c);
+            numConnections++;
+          }
+        ••• 
+        } finally {
+//设置adding为false，采用notify()唤醒一个reader,其实代码十三中启动的每个reader都使
+//用了wait()方法等待。因篇幅有限，就不贴出源码了。
+          reader.finishAdd();
+        }
+      }
+    }
 
-<p></section></p>
+</code></pre>
 
-<p></section></p>
+<p>当 reader 被唤醒，reader 接着执行 doRead() 方法。</p>
 
-<p></section></p>
+<p>下面贴出 Server.Listener.Reader 类中的 doRead() 方法和 Server.Connection 类中的 readAndProcess() 方法源码：</p>
+
+<pre><code>方法一：   
+ void doRead(SelectionKey key) throws InterruptedException {
+      int count = 0;
+      Connection c = (Connection)key.attachment();  //获得connection对象
+      if (c == null) {
+        return;  
+      }
+      c.setLastContact(System.currentTimeMillis());
+      try {
+        count = c.readAndProcess();    // 接受并处理请求  
+      } catch (InterruptedException ieo) {
+       •••
+      }
+     •••    
+}
+
+方法二：
+public int readAndProcess() throws IOException, InterruptedException {
+      while (true) {
+        •••
+        if (!rpcHeaderRead) {
+          if (rpcHeaderBuffer == null) {
+            rpcHeaderBuffer = ByteBuffer.allocate(2);
+          }
+         //读取请求头
+          count = channelRead(channel, rpcHeaderBuffer);
+          if (count &lt; 0 || rpcHeaderBuffer.remaining() &gt; 0) {
+            return count;
+          }
+        // 读取请求版本号  
+          int version = rpcHeaderBuffer.get(0);
+          byte[] method = new byte[] {rpcHeaderBuffer.get(1)};
+        •••  
+
+          data = ByteBuffer.allocate(dataLength);
+        }
+        // 读取请求  
+        count = channelRead(channel, data);
+
+        if (data.remaining() == 0) {
+         •••
+          if (useSasl) {
+         •••
+          } else {
+            processOneRpc(data.array());//处理请求
+          }
+        •••
+          }
+        } 
+        return count;
+      }
+    }
+
+</code></pre>
+
+<p>下面贴出 Server.Connection 类中的 processOneRpc() 方法和 processData() 方法的源码。</p>
+
+<pre><code>方法一：   
+ private void processOneRpc(byte[] buf) throws IOException,
+        InterruptedException {
+      if (headerRead) {
+        processData(buf);
+      } else {
+        processHeader(buf);
+        headerRead = true;
+        if (!authorizeConnection()) {
+          throw new AccessControlException(&quot;Connection from &quot; + this
+              + &quot; for protocol &quot; + header.getProtocol()
+              + &quot; is unauthorized for user &quot; + user);
+        }
+      }
+}
+方法二：
+    private void processData(byte[] buf) throws  IOException, InterruptedException {
+      DataInputStream dis =
+        new DataInputStream(new ByteArrayInputStream(buf));
+      int id = dis.readInt();      // 尝试读取id
+      Writable param = ReflectionUtils.newInstance(paramClass, conf);//读取参数
+      param.readFields(dis);        
+
+      Call call = new Call(id, param, this);  //封装成call
+      callQueue.put(call);   // 将call存入callQueue
+      incRpcCount();  // 增加rpc请求的计数
+    }
+
+</code></pre>
+
+<h2 id="toc_13">4. RPC 与 web service</h2>
+
+<p>RPC：</p>
+
+<p><img src="http://static.oschina.net/uploads/space/2016/0714/114103_HQGm_2243330.png" alt=""/></p>
+
+<p>Web service<img src="http://static.oschina.net/uploads/space/2016/0714/114022_sKwT_2243330.png" alt=""/></p>
+
+<p>web service 接口就是 RPC 中的 stub 组件，规定了 server 能够提供的服务（web service），这在 server 和 client 上是一致的，但是也是跨语言跨平台的。同时，由于 web service 规范中的 WSDL 文件的存在，现在各平台的 web service 框架，都可以基于 WSDL 文件，自动生成 web service 接口 。</p>
+
+<p>其实两者差不多，只是传输的协议不同。</p>
+
+<h2 id="toc_14">Reference：</h2>
+
+<p>1. <a href="http://www.cnblogs.com/LBSer/p/4853234.html">http://www.cnblogs.com/LBSer/p/4853234.html</a><br/>
+2. <a href="http://weixiaolu.iteye.com/blog/1504898">http://weixiaolu.iteye.com/blog/1504898</a><br/>
+3. <a href="http://kyfxbl.iteye.com/blog/1745550">http://kyfxbl.iteye.com/blog/1745550</a></p>
 
                         
                       </div>
@@ -406,7 +863,7 @@
                     <span class="date">2018/5/28</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Container.html'>Container</a></span>
+          					    <span class="posted-in"><a href='Microservice.html'>Microservice</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -496,6 +953,12 @@
 	      
 		      
 			      <li class="post">
+			        <a href="15359384213292.html">Securing Spring Boot with JWTs</a>
+			      </li>
+		     
+		  
+		      
+			      <li class="post">
 			        <a href="15358820607055.html">Java 8 Concurrency Tutorial: Atomic Variables and ConcurrentMap</a>
 			      </li>
 		     
@@ -515,12 +978,6 @@
 		      
 			      <li class="post">
 			        <a href="15358756631902.html">Java 8 Stream Tutorial</a>
-			      </li>
-		     
-		  
-		      
-			      <li class="post">
-			        <a href="15358753472382.html">Migrate Maven Projects to Java 11</a>
 			      </li>
 		     
 		  

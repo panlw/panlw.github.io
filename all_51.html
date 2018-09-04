@@ -105,277 +105,282 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15309739332194.html">
+                <a class="clearlink" href="15316410286252.html">
                 
-                  <h1>Spring WebFlux and rxjava2-jdbc</h1>
+                  <h1>GitHub的MySQL高可用性实践</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://medium.com/netifi/spring-webflux-and-rxjava2-jdbc-83a94e71ba04">https://medium.com/netifi/spring-webflux-and-rxjava2-jdbc-83a94e71ba04</a></p>
+<p><a href="https://mp.weixin.qq.com/s/J1dFPs_ijEk20f3q6GismQ">https://mp.weixin.qq.com/s/J1dFPs_ijEk20f3q6GismQ</a></p>
 </blockquote>
 
-<p>Spring <a href="https://docs.spring.io/spring/docs/current/spring-framework-reference/web-reactive.html#spring-webflux">WebFlux</a> is a great way to create a non-blocking REST application. One issue that you run into when start working with WebFlux is JDBC. JDBC is blocking. New school databases like <a href="http://cassandra.apache.org/">Cassandra</a> or <a href="https://www.couchbase.com/">Couchbase</a> have non-blocking drivers. In Couchbase’s case its driver uses <a href="https://github.com/ReactiveX/RxJava">RXJava</a>. NoSQL databases are great, but you can’t always use one for various reasons. There is some effort going into creating asynchronous drivers for databases, as well as Oracle’s effort to create <a href="https://blogs.oracle.com/java/jdbc-next:-a-new-asynchronous-api-for-connecting-to-a-database">ADBA</a>. Unfortunately, these are early days, and if you want to talk to a SQL database on the JVM you’re stuck with a blocking driver. This is a problem when you’re building a non-blocking application with Spring WebFlux . Luckily reactor-core and rxjava2 both implement <a href="http://www.reactive-streams.org/">ReactiveStreams</a>.</p>
-
-<p>This means that you can use David Moten’s <a href="https://github.com/davidmoten/rxjava2-jdbc">rxjava2-jdbc</a> library. It takes a normal JDBC driver and allows you to interact with it in a way that won’t block your application. It does this by scheduling potentially blocking work on different threads. Additionally, it has DSL that lets you model your SQL statements and results into streams. This makes integrating into your reactive application a snap.</p>
-
-<p>Rxjava2-jdbc also provides non-blocking connection pooling. Normally in a blocking application threads are blocked until a connection is available to make a query. This is a problem for a non-blocking application as you will quickly exhaust all database connection threads and turn your wonderful non-blocking application into a clunky blocking application. In rxjava2-jdbc its connection pool returns a <a href="http://reactivex.io/RxJava/javadoc/io/reactivex/Single.html">Single</a> that is controlled by the connection pool. This means that instead of assigning threads to each query, queries subscribe to the connection pool and receive a connection when one is available — no blocked threads!</p>
-
-<p>Nothing is better than an example, so I created one that uses Spring WebFlux, rxjava2-jdbc, and H2. The example is a simple REST application that uses an embedded H2 database. It can be found <a href="https://github.com/netifi/webflux-rxjava2-jdbc-example">here</a>. The example has two objects. The first is an Employee object which contains information about the employee including: first name, last name, and department id. The second object is the Department object, which contains information about different departments. The application has restful endpoints for basic create, read, delete and list operations for the Employee and list operations for Department.</p>
-
-<h4 id="toc_0">Running the Example</h4>
-
-<p>Running the example is simple and can be done with following command:</p>
-
-<pre><code class="language-sh">./gradlew clean run
+<pre><code>作者｜Shlomi Noach
+译者｜张健欣
 </code></pre>
 
-<p>This command will configure the database and start the WebFlux application using Spring Boot. The example doesn’t need a servlet container to run, and instead uses <a href="http://netty.io">Netty</a> to serve traffic. If you want to test and see if the example is up and running you can run the following curl command:</p>
+<blockquote>
+<p>本文阐述了 GitHub 的 MySQL 高可用性和主服务发现解决方案，这个方案使得 GitHub 能够可靠地进行跨数据中心运维、克服数据中心隔离的影响并实现故障时的短宕机时间。</p>
+</blockquote>
 
-<pre><code class="language-sh">curl localhost:8080/employees
-</code></pre>
+<p>GitHub 使用 MySQL 作为所有非<code>git</code>项目的主要数据存储，因此 MySQL 的可用性对于 GitHub 的运维来说至关重要。站点本身、GitHub 的 API、身份验证等都需要数据库访问。我们运行多个 MySQL 集群来服务我们的不同服务和任务。我们的集群使用经典的主 - 副设置，其中集群的单个节点（主节点）能够接受写操作。其它集群节点（副节点）异步更新主节点的变更并服务我们的读流量。</p>
 
-<p>You should see a JSON employee list if it’s running properly.</p>
+<p>主节点的可用性特别地重要。主节点不可用时，集群就不能接受写操作：任何需要持久化的写操作都不能被持久化。任何传入的变更，例如提交代码、提问题、用户创建、代码审查、新建代码库等等，都会失败。</p>
 
-<h4 id="toc_1">Routing Requests</h4>
+<p>为了支持写操作，我们显然需要有一个可用的写节点，即集群的主节点。但同样重要的是，我们需要能够识别，或者发现，那个节点。</p>
 
-<p>Let’s take look inside the application and see what it’s doing. The first thing to take a look at is the <u>EmployeeRouter</u> class. This class routes incoming HTTP requests to the appropriate handler based on URL and HTTP method.</p>
+<p>遇到一个故障时，比如主节点崩溃的场景，我们必须确保存在一个新的主节点，并且能够快速通告其身份。检测故障、运行故障恢复以及通告新主节点身份所花费的时间组成了总宕机时间。</p>
 
-<p><a href="https://gist.github.com/robertroeser/e7ce97c4fc7d69de449925e7a3f2b7e1#file-employeerouter-java">EmployeeRouter.java hosted with ❤ by GitHub</a></p>
+<p>本文阐述了 GitHub 的 MySQL 高可用性和主服务发现解决方案，这个方案使得我们能够可靠地进行跨数据中心运维、克服数据中心隔离的影响并实现故障时的短宕机时间。</p>
 
-<pre><code class="language-java">@Configuration
-public class EmployeeRouter {
-  @Bean
-  public RouterFunction&lt;ServerResponse&gt; route(EmployeeHandler handler) {
-    return RouterFunctions.route(
-            GET(&quot;/employees&quot;).and(RequestPredicates.accept(MediaType.APPLICATION_JSON)),
-            handler::getAllEmployees)
-        .andRoute(
-            GET(&quot;/employee/fn/{fn}/ln/{ln}&quot;)
-                .and(RequestPredicates.accept(MediaType.APPLICATION_JSON)),
-            handler::getEmployee)
-        .andRoute(
-            PUT(&quot;/employee&quot;).and(RequestPredicates.accept(MediaType.APPLICATION_JSON)),
-            handler::createNewEmployee)
-        .andRoute(
-            DELETE(&quot;/employee/id/{id}&quot;).and(RequestPredicates.accept(MediaType.APPLICATION_JSON)),
-            handler::deleteEmployee)
-        .andRoute(
-            GET(&quot;/departments&quot;).and(RequestPredicates.accept(MediaType.APPLICATION_JSON)),
-            handler::getAllDepartments);
-  }
-}
-</code></pre>
+<h2 id="toc_0">高可用性目标</h2>
 
-<p>In Spring WebFlux because it’s non-blocking these handlers must return a Mono<T>.</p>
+<p>本文描述的解决方案是对 GitHub 先前实现的高可用性（HA）解决方案的迭代和改进。随着我们规模的扩大，我们的 MySQL HA 策略必须适应变化。我们希望对我们的 MySQL 和 GitHub 的其它服务运用相似的 HA 策略。</p>
 
-<h4 id="toc_2">Handling Requests</h4>
-
-<p>The next class to take a look at is the class that is handling the requests, <u>EmployeeHandler</u>.</p>
-
-<p><a href="https://gist.github.com/robertroeser/5d4ab5386e5b2e7301c33551ead8ada8#file-employeehandler-java">EmployeeHandler.java hosted with ❤ by GitHub</a></p>
-
-<pre><code class="language-java">@Component
-public class EmployeeHandler {
-  private final EmployeeRepository repository;
-
-  public EmployeeHandler(EmployeeRepository repository) {
-    this.repository = repository;
-  }
-
-  public Mono&lt;ServerResponse&gt; getAllEmployees(ServerRequest request) {
-    Flux&lt;Employee&gt; employees = repository.getAllEmployees();
-    return ServerResponse.ok()
-        .contentType(MediaType.APPLICATION_JSON)
-        .body(employees, Employee.class);
-  }
-
-  public Mono&lt;ServerResponse&gt; getEmployee(ServerRequest request) {
-    String firstName = request.pathVariable(&quot;fn&quot;);
-    String lastName = request.pathVariable(&quot;ln&quot;);
-    Mono&lt;Employee&gt; employee = repository.getEmployee(firstName, lastName);
-
-    return ServerResponse.ok()
-        .contentType(MediaType.APPLICATION_JSON)
-        .body(employee, Employee.class);
-  }
-
-  public Mono&lt;ServerResponse&gt; createNewEmployee(ServerRequest request) {
-    Mono&lt;Employee&gt; employeeMono = request.bodyToMono(Employee.class);
-    Mono&lt;Employee&gt; employee = repository.createNewEmployee(employeeMono);
-
-    return ServerResponse.ok()
-        .contentType(MediaType.APPLICATION_JSON)
-        .body(employee, Employee.class);
-  }
-
-  public Mono&lt;ServerResponse&gt; deleteEmployee(ServerRequest request) {
-    String id = request.pathVariable(&quot;id&quot;);
-    Mono&lt;Void&gt; employee = repository.deleteEmployee(id);
-
-    return ServerResponse.ok().contentType(MediaType.APPLICATION_JSON).build(employee);
-  }
-
-  public Mono&lt;ServerResponse&gt; getAllDepartments(ServerRequest request) {
-    Flux&lt;Department&gt; allDepartments = repository.getAllDepartments();
-    return ServerResponse.ok()
-        .contentType(MediaType.APPLICATION_JSON)
-        .body(allDepartments, Department.class);
-  }
-}
-</code></pre>
-
-<p>This is the class that is responsible for handling incoming requests. Each handle method returns a <u>Mono<ServerResponse></u>. The ServerResponse object has a builder that is used to create the response, and has methods that take Fluxes and Monos for responses. The <u>ServerResponse</u> object will also automatically serialize your results to JSON. Additionally, if you return a stream of responses, WebFlux will automatically turn the response into a JSON list. You can can see this in the <u>getAllEmployees</u> and <u>getAllDepoartment</u> methods. A method to look closer at is the <u>deleteEmployee</u> method. The <u>deleteEmployee</u> method is a little different then the other methods. You’ll notice that most methods use the <u>body</u> method to create a response. The <u>deleteEmployee</u> doesn’t have a body so it uses the <u>build</u> method instead which takes a Mono<Void>.</p>
-
-<h4 id="toc_3">Interacting with the Database</h4>
-
-<p>To create our responses we need to get the information from our database. The object that takes care of that is the the <u>EmployeeRepository</u> which is being injected into the handler. This is normally where things start to fall apart because you’re accessing a blocking database. In our case though we’re using rxjava2-jdbc and it’s no longer an issue. While this does turn a JDBC driver into a non-blocking driver and deals with the difficulties of scheduling potentially blocking work off the event loop, this isn’t as efficient as a purely non-blocking approach. However, it is sufficient for all but the highest throughput applications. Lets take a look at the <u>EmployeeRepository</u> class:</p>
-
-<p><a href="https://gist.github.com/robertroeser/580116df0045187e4850bd4016704ce1#file-employeerepository-java">EmployeeRepository.java hosted with ❤ by GitHub</a></p>
-
-<pre><code class="language-java">@Component
-public class EmployeeRepository {
-  private Database db;
-
-  public EmployeeRepository() throws Exception {
-    Connection connection = DriverManager.getConnection(&quot;jdbc:h2:./build/mydatabase&quot;, &quot;sa&quot;, &quot;sa&quot;);
-    NonBlockingConnectionPool pool =
-        Pools.nonBlocking()
-            .maxPoolSize(Runtime.getRuntime().availableProcessors() * 5)
-            .connectionProvider(ConnectionProvider.from(connection))
-            .build();
-
-    this.db = Database.from(pool);
-  }
-
-  Flux&lt;Employee&gt; getAllEmployees() {
-    String sql = &quot;SELECT * FROM employee e JOIN department d ON e.department_id = d.department_id&quot;;
-
-    Flowable&lt;Employee&gt; employeeFlowable =
-        db.select(sql)
-            .get(
-                rs -&gt; {
-                  Employee employee = new Employee();
-                  employee.setId(rs.getInt(&quot;employee_id&quot;));
-                  employee.setFirstName(rs.getString(&quot;employee_firstname&quot;));
-                  employee.setLastName(rs.getString(&quot;employee_lastname&quot;));
-                  employee.setDepartment(rs.getString(&quot;department_name&quot;));
-
-                  return employee;
-                });
-
-    return Flux.from(employeeFlowable);
-  }
-
-  Mono&lt;Employee&gt; getEmployee(String firstName, String lastName) {
-    String sql =
-        &quot;SELECT employee_id, employee_firstname, employee_lastname, department_name FROM employee e &quot;
-            + &quot;JOIN department d ON e.department_id = d.department_id &quot;
-            + &quot;WHERE employee_firstname = ? AND &quot;
-            + &quot;employee_lastname = ?&quot;;
-
-    Flowable&lt;Employee&gt; employeeFlowable =
-        db.select(sql)
-            .parameters(firstName, lastName)
-            .get(
-                rs -&gt; {
-                  Employee employee = new Employee();
-                  employee.setId(rs.getInt(&quot;employee_id&quot;));
-                  employee.setFirstName(rs.getString(&quot;employee_firstname&quot;));
-                  employee.setLastName(rs.getString(&quot;employee_lastname&quot;));
-                  employee.setDepartment(rs.getString(&quot;department_name&quot;));
-
-                  return employee;
-                });
-
-    return Mono.from(employeeFlowable);
-  }
-
-  Mono&lt;Employee&gt; createNewEmployee(Mono&lt;Employee&gt; employeeMono) {
-
-    String createSql =
-        &quot;INSERT INTO employee (employee_firstname, employee_lastname, department_id) VALUES (?, ?, ?)&quot;;
-    String selectDepartmentId = &quot;SELECT department_id from department where department_name = ?&quot;;
-    String selectSql =
-        &quot;SELECT employee_id, employee_firstname, employee_lastname, department_name FROM employee e &quot;
-            + &quot;JOIN department d ON e.department_id = d.department_id &quot;
-            + &quot;WHERE employee_id = ?&quot;;
-
-    return employeeMono.flatMap(
-        newEmployee -&gt; {
-          Flowable&lt;Integer&gt; employeeIds =
-              db.select(selectDepartmentId)
-                  .parameters(newEmployee.getDepartment())
-                  .getAs(Integer.class)
-                  .flatMap(
-                      departmentId -&gt;
-                          db.update(createSql)
-                              .parameters(
-                                  newEmployee.getFirstName(),
-                                  newEmployee.getLastName(),
-                                  departmentId)
-                              .returnGeneratedKeys()
-                              .getAs(Integer.class));
-
-          Flowable&lt;Employee&gt; employeeFlowable =
-              db.select(selectSql)
-                  .parameterStream(employeeIds)
-                  .get(
-                      rs -&gt; {
-                        Employee employee = new Employee();
-                        employee.setId(rs.getInt(&quot;employee_id&quot;));
-                        employee.setFirstName(rs.getString(&quot;employee_firstname&quot;));
-                        employee.setLastName(rs.getString(&quot;employee_lastname&quot;));
-                        employee.setDepartment(rs.getString(&quot;department_name&quot;));
-
-                        return employee;
-                      });
-
-          return Mono.from(employeeFlowable);
-        });
-  }
-
-  Mono&lt;Void&gt; deleteEmployee(String id) {
-    String sql = &quot;DELETE FROM employee WHERE employee_id = ?&quot;;
-    Flowable&lt;Integer&gt; counts = db.update(sql).parameter(id).counts();
-    return Flux.from(counts).then();
-  }
-
-  Flux&lt;Department&gt; getAllDepartments() {
-    return Flux.from(db.select(Department.class).get());
-  }
-}
-</code></pre>
-
-<p>The first thing to look at here is the constructor. The main class in rxjava2-jdbc is the Database class. This is what you use to interact with the database and run queries. Before you can do that you need to create a connection to the database. For our example, we’re creating a connection to an H2 database. Many databases allow you to pass in user credentials and other information in there connection string. If they do then you can use just create a database like so:</p>
-
-<pre><code class="language-java">Database db = Database.from(“&lt;connection_string”&gt;, &lt;pool_size&gt;);
-</code></pre>
-
-<p>However, H2 doesn’t allow you to do this, so you need to create a Connection object in order to pass in credentials. You then have to use the Pools builder to create a pool. Once you’ve created the your pool you can create the database object.</p>
-
-<p>The great thing about rxjava2-jdbc is that any JDBC driver can used. You can switch any standard JDBC database like Oracle, SQL Server, DB2, etc.</p>
-
-<p>I’m not going to go into too much detail about how rxjava2-jdbc works here because David Moten’s github page has great <a href="https://github.com/davidmoten/rxjava2-jdbc/blob/master/README.adoc">documentation</a>.</p>
-
-<p>I will point out a few things though about using Spring WebFlux and rxjava2-jdbc together. The good news is they both implement <a href="http://www.reactive-streams.org/">ReactiveStreams</a> so it’s transparent for them to interoperate. The way to do this with reactor-core is to use the <u>Flux.from</u> or <u>Mono.from</u> methods. These can take any publisher. It is important to note that in the Mono version it can only emit one item or it will throw an exception. Another thing to take a look at is the <u>deleteEmployee</u> method. This method returns a Mono<Void> which is a special convention in reactor-core. This roughly equivalent to a Completable in rxjava2. To mimic this behavior in reactor-core, call the <u>then</u> method on a Flux or a Mono. This will ignore all elements that are emitted from the stream, and either complete or emit an exception.</p>
-
-<h4 id="toc_4">Write some Code</h4>
-
-<p>To really get a feel for how this works, the next step is to write some code. One idea I would suggest are to port the sample app to the database of your choice. Another idea is to create endpoints for creating a new department and deleting one. You can use the <u>createNewEmployee</u> and <u>deleteEmployee</u> methods as references.</p>
-
-<h4 id="toc_5">Conclusion</h4>
-
-<p>The reality is that many applications today use SQL databases, and reactive application developers did not have an easy way to access them without turning their non-blocking application into a blocking application. Hopefully in the future there will be great solutions around truly non-blocking JDBC drivers. Until that time, I hope you can see with this blog post, that while not perfect, there is an effective solution.</p>
+<p>当考虑高可用性和服务发现时，一些问题可以指导你找到一个恰当的解决方案。这些问题包括但不限于：</p>
 
 <ul>
-<li>  <a href="https://medium.com/tag/java?source=post">Java</a></li>
-<li>  <a href="https://medium.com/tag/rxjava?source=post">Rxjava</a></li>
-<li>  <a href="https://medium.com/tag/spring?source=post">Spring</a></li>
-<li>  <a href="https://medium.com/tag/reactive?source=post">Reactive</a></li>
-<li>  <a href="https://medium.com/tag/rest?source=post">Rest</a></li>
+<li><p>你能容忍的宕机时间是多久？</p></li>
+<li><p>崩溃检测的可靠性如何？你能容忍假阳性（过早进行故障恢复）吗？</p></li>
+<li><p>故障恢复的可靠性如何？它在哪些情况下会失败？</p></li>
+<li><p>解决方案跨数据中心能力如何？在低延迟和高延迟网络的能力如何？</p></li>
+<li><p>解决方案能克服完整的数据中心故障或网络隔离的影响吗？</p></li>
+<li><p>如果有的话，什么机制能够防止或减轻脑裂现象（两个服务器都宣称是指定集群的主节点，都独立地彼此无意识地接受写操作）？</p></li>
+<li><p>你能够承受数据丢失吗？到什么程度？</p></li>
 </ul>
+
+<p>为了说明上述一些问题，让我们先看一下我们之前的 HA 迭代以及为什么我们要改变它。</p>
+
+<h2 id="toc_1">远离基于 VIP 和 DNS 的服务发现</h2>
+
+<p>在我们之前的迭代中，我们使用：</p>
+
+<ul>
+<li><p>orchestrator (<a href="https://githubengineering.com/orchestrator-github/">https://githubengineering.com/orchestrator-github/</a>) 用于故障监听和故障恢复</p></li>
+<li><p>VIP 和 DNS 用于发现主节点</p></li>
+</ul>
+
+<p>在那个迭代中，客户端通过使用一个名称，例如<code>mysql-writer-1.github.net</code>来发现写节点。这个名称解析为主节点获取的虚拟 IP 地址（Virtual IP address，VIP）。</p>
+
+<p>因此，平常的时候，客户端会只解析这个名称，连接解析到的 IP 地址，然后找到正在另一端监听的主节点。</p>
+
+<p>这个副本拓扑，跨越 3 个不同的数据中心：</p>
+
+<p><img src="https://mmbiz.qpic.cn/mmbiz_png/FE4VibF0SjfNElvLNcBKtkApBEKRqzNbx8remfnnePa5aPxXwZ0cXfZia36ibrMbn2icLEBciaarLZ7AP49AniaCib6OA/640?wx_fmt=png" alt=""/></p>
+
+<p>当发生一个主节点故障事件时，一个新的服务器（副本之一），必须被提升为主节点。</p>
+
+<p><code>orchestrator</code>将监测到一个故障，提升一个新的主节点，然后采取行动重新分配名称 /VIP。客户端并不知道主节点的身份：它们所知道的只是一个名称，而那个名称现在一定解析到了新的主节点。然而，注意：</p>
+
+<p>VIP 是协作的：它们被数据库服务器本身声明和拥有。为了获取或释放一个 VIP，一个服务器必须发送一个 ARP 请求。在新提升的主节点获取这个 VIP 之前，拥有这个 VIP 的服务器必须先释放这个 VIP。这有一些不如人意的效果：</p>
+
+<ul>
+<li><p>一个故障恢复操作按顺序首先会请求挂掉的主节点释放 VIP，然后请求新提升的主节点获取这个 VIP。但如果老的主节点无法访问或者拒绝释放 VIP 呢？假设在那台服务器上一开始发生了一个故障，那么它也很可能不会及时响应或者根本不响应。</p></li>
+<li><p>我们会面临裂脑处境：两个主机声称拥有相同的 VIP。不同的客户端根据最短网络路径，可能会连接到其中任何一个服务器。</p></li>
+<li><p>这个问题的根源是依赖于两个独立服务器的合作，而这种设置是不可靠的。</p></li>
+<li><p>即使旧的主节点合作，这个工作流也浪费了宝贵的时间：切换到新的主节点时，需要等待与旧的主节点的联系。</p></li>
+<li><p>而且当 VIP 改变时，不能保证现有的客户端与旧的服务器的连接断开，从而导致我们仍面临裂脑处境。</p></li>
+</ul>
+
+<p>在我们的设置中，VIP 与物理地址绑定。它们属于一个交换机或路由器。因此，我们只能将 VIP 重新分配给相互定位的服务器。特别是，在某些情况下，我们不能将 VIP 分配给在不同数据中心提升的服务器，并且必须更改 DNS。</p>
+
+<ul>
+<li>  DNS 的变化需要更长的时间来传播。客户端会为了预配置时间而缓存 DNS 名称。一个跨数据中心的故障意味着更长的宕机时间：让所有客户端意识到新主节点的身份需要花费更长时间。</li>
+</ul>
+
+<p>仅仅这些限制就足以促使我们去寻找一种新的解决方案，但还有更多的顾虑：</p>
+
+<ul>
+<li><p>主节点通过<code>pt-heartbeat</code>服务来自我注入心跳，从而达到延迟测量和节流控制的目的。这个服务必须在新提升的主节点上开启。如果可能的话，这个服务会在旧的主节点上会被关停。</p></li>
+<li><p>同样地，Pseudo-GTID 注入是由主节点自我管理的。它需要在新的主节点上开启，而且最好在旧的主节点上关停。</p></li>
+<li><p>新的主节点被设置为可写的。如果可能的话，旧的主节点被设置为<code>read_only</code>。</p></li>
+</ul>
+
+<p>这些额外的步骤的执行时间构成了总宕机时间的一部分，并且引入了它们自己的故障和冲突。</p>
+
+<p>这个解决方案是有效的，而且 GitHub 已经有运行良好的非常成功的 MySQL 故障恢复措施，但是我们想要在以下方面提升我们的高可用性：</p>
+
+<ul>
+<li><p>不依赖数据中心。</p></li>
+<li><p>克服数据中心故障的影响。</p></li>
+<li><p>移除不可靠的协作工作流。</p></li>
+<li><p>减少总宕机时间。</p></li>
+<li><p>尽可能实现无损故障恢复。</p></li>
+</ul>
+
+<h2 id="toc_2">GitHub 的高可用性方案：orchestrator、Consul 和 GLB</h2>
+
+<p>我们的新策略以及附带的改进，解决或者减轻了上述的许多担忧。在目前的高可用性设置中我们使用：</p>
+
+<ul>
+<li><p>orchestrator 用来运行故障监听和故障恢复。我们使用了如下图所示的一个跨数据中心的 orchestrator/raft。</p></li>
+<li><p>Hashicorp 公司的用于服务发现的 Consul。</p></li>
+<li><p>作为客户端和写操作节点之间的代理层的 GLB/HAProxy。</p></li>
+<li><p>用于网络路由的<code>anycast</code>。</p></li>
+</ul>
+
+<p><img src="https://mmbiz.qpic.cn/mmbiz_png/FE4VibF0SjfNElvLNcBKtkApBEKRqzNbxtzJR0SWVD6clpF03I1T9Gewm2KLm54OEic0qdXicGUI4hicOndlhfo4eQ/640?wx_fmt=png" alt=""/></p>
+
+<p>新设置完全删除了 VIP 和 DNS 更改。并且在引入更多组件的同时，我们使得组件解耦并简化了任务，还使用了稳健的解决方案。详解如下：</p>
+
+<p><strong>一个普通的工作流</strong></p>
+
+<p>平常，App 通过 GLB/HAProxy 连接到写操作节点。</p>
+
+<p>App 不会意识到主节点的身份。和以前一样，它们使用一个名称。例如，<code>cluster1</code>的主节点会是<code>mysql-writer-1.github.net</code>。然而，在我们目前的设置中，这个名称会被解析到一个任播（anycast）IP。</p>
+
+<p>通过<code>anycast</code>方法，这个名称在任何地方都被解析为相同的 IP，但是流量会根据客户端位置分别进行路由。特别地，我们的每个数据中心都在多个区域部署了 GLB（我们的高可用负载均衡）。到<code>mysql-writer-1.github.net</code>的流量通常路由到本地数据中心的 GLB 集群。因此，所有的客户端都是由本地代理服务的。</p>
+
+<p>我们在 HAProxy 上运行 GLB。我们的 HAProxy 有写操作池：每个 MySQL 集群一个池，而每个池有一个后端服务器作为这个集群的主节点。所有的 GLB/HAProxy 区域在所有的数据中心都拥有相同的写操作池，而它们都指向这些池中完全相同的后端服务器。因此，如果一个 App 想要向<code>mysql-writer-1.github.net</code>写入，这跟它与哪个 GLB 服务器连接无关。它将总是被路由到<code>cluster1</code>主节点。</p>
+
+<p>就 App 而言，服务发现在 GLB 终止，并且永远不需要重新发现。流量都是在 GLB 上路由到正确的目的地。</p>
+
+<p>那么，GLB 如何知道将哪些服务器作为后端列表，以及我们如何将更改传播到 GLB？</p>
+
+<p><strong>Consul 的服务发现</strong></p>
+
+<p>Consul 作为一种服务发现解决方案而闻名，并且还提供 DNS 服务。然而在我们的解决方案中，我们用它作为一个高可用的键值对（KV）存储器。</p>
+
+<p>我们使用 Consul 的 KV 存储器写入集群主节点的身份。对于每个集群，都有一套 KV 记录表明集群的主节点的 fqdn、port、ipv4 和 ipv6。</p>
+
+<p>每个 GLB/HAProxy 节点都运行 consul-template：一个监听 Consul 数据变化的服务（在我们的案例中：是指集群主节点数据的变化）。<code>console-template</code>会生成一个有效的配置文件，并且能够基于配置的变化重新加载 HAProxy。</p>
+
+<p>因此，Consul 中每个主节点身份的改变都被每个 GLB/HAProxy 观测，然后重新配置自身，将新的主节点设置为一个集群的后端池的单个实体，然后重新加载以反映那些变化。</p>
+
+<p>在 GitHub，我们在每个数据中心都有一个 Consul 设置，而且每个设置都是高可用的。然而，这些设置是彼此独立的。它们不会彼此复制，也不共享任何数据。</p>
+
+<p>那么，Consul 是如何得知变化的呢？这些信息又是如何跨平台分布的呢？</p>
+
+<p><strong>orchestrator/raft</strong></p>
+
+<p>我们运行一个<code>orchestrator/raft</code>设置：<code>orchestrator</code>节点通过 raft 共识相互通信。我们每个数据中心有 1 到 2 个<code>orchestrator</code>节点。</p>
+
+<p><code>orchestrator</code>负责故障检测、MySQL 故障恢复并将主节点的变更通知 Consul。故障恢复由单个<code>orchestrator/raft</code>领导节点维护，但是集群现在有一个新的主节点这个变更消息是通过 raft 机制传播给所有<code>orchestrator</code>节点的。</p>
+
+<p>当<code>orchestrator</code>节点接收到主节点变更消息时，它们都会通知他们的本地 Consul 设置：它们各自调用一次 KV 写操作。拥有 1 个以上<code>orchestrator</code>的数据中心将会向 Consul 有多次（等同的）写操作。</p>
+
+<p><strong>整合工作流</strong></p>
+
+<p>在一个主节点宕机场景：</p>
+
+<ul>
+<li><p><code>orchestrator</code>节点监测到故障。</p></li>
+<li><p><code>orchestrator/raft</code>领导开始一次恢复措施，提升一个新的主节点。</p></li>
+<li><p><code>orchestrator/raft</code>将主节点变更通告给所有 raft 集群节点。</p></li>
+<li><p>每个<code>orchestrator/raft</code>成员接收到一个领导变更通知。它们各自在本地 Consul 的 KV 存储器中更新新的主节点的身份。</p></li>
+<li><p>每个 GLB/HAProxy 都运行了<code>consul-template</code>，监控 Consul 的 KV 存储中的变更，然后重新配置和加载 HAProxy。</p></li>
+<li><p>客户端流量被重定向到新的主节点。</p></li>
+</ul>
+
+<p>此外：</p>
+
+<ul>
+<li><p>无需传播 DNS 变更。</p></li>
+<li><p>没有 TTL。</p></li>
+<li><p>这个流程不需要挂掉的主节点的合作。它很大程度上被忽略了。</p></li>
+</ul>
+
+<p><strong>更多细节</strong></p>
+
+<p>为了进一步保障这个流程，我们还做了如下工作：</p>
+
+<ul>
+<li><p>HAProxy 配置了一个非常短的<code>hard-stop-after</code>。当它用写操作池中的一个新的后端服务器重新加载时，它会自动终止任何现存的与旧的主节点的连接。</p></li>
+<li><p>通过<code>hard-stop-after</code>，我们甚至不需要来自客户端的配合，而且这样减轻了裂脑场景。值的注意的是，这并不是严密的，在我们杀死旧连接之前会过去一段时间。但是在那之后，我们就可以放心不会出现令人讨厌的意外。</p></li>
+<li><p>我们并没有严格要求 Consul 在所有时间都是可用的。事实上，我们只需要它在故障恢复时可用。如果 Consul 碰巧挂掉了，GLB 会继续使用最近的已知值操作，不会采取剧烈的行动。</p></li>
+<li><p>GLB 被设置来验证新提升的主节点的身份。类似于我们的上下文感知 MySQL 池，在后端服务器进行检查，来确认它确实是一个写操作节点。如果碰巧删除了 Consul 中的主节点信息，没有问题；空白的条目会被忽略。如果我们在 Consul 中误写入了一个非主节点服务器的名称，没有问题；GLB 会拒绝更新它并使用上次已知的状态运行。</p></li>
+</ul>
+
+<p>我们会在下面章节中进一步解决担忧并追求高可用性目标。</p>
+
+<h2 id="toc_3">orchestrator/raft 故障检测</h2>
+
+<p><code>orchestrator</code>使用一种整体方案来检测故障，因此是非常可靠的。我们不观测假阳性：我们不会过早启动故障恢复，因此不会遭受不必要的宕机时间。</p>
+
+<p><code>orchestrator/raft</code>进一步解决了一个完整的数据中心网络隔离的情况（即数据中心围栏）。数据中心网络隔离会引起混淆：那个数据中心中的服务器能够彼此通信。是它们与其它数据中心网络隔离了？还是其它数据中心被网络隔离了？</p>
+
+<p>在一个<code>orchestrator/raft</code>设置中，<code>raft</code>领导节点是运行故障恢复的节点。领导节点是指获得大多数群体支持的节点。我们的<code>orchestrator</code>节点部署就是这样，没有单个数据中心占大多数支持，任何 n-1 个数据中心占大多数支持。</p>
+
+<p>在一个完整的数据中心网络隔离事件中，那个数据中心中的<code>orchestrator</code>节点与其他数据中心中的对等节点断开连接。因此，在隔离的数据中心中的<code>orchestrator</code>节点不能成为<code>raft</code>集群的领导节点。如果任何这种节点碰巧成为领导节点，它也会下台。一个新的领导节点会从其它数据中心分配。这个领导节点将获得所有其它数据中心的支持，而这些数据中心能够彼此通信。</p>
+
+<p>因此，<code>orchestrator</code>节点就是网络隔离的数据中心之外的一个节点。在一个隔离的数据中心应该有一个主节点，<code>orchestrator</code>将启动故障恢复，用可用数据中心之一里的一个服务器取代它。我们通过将决策委托给非隔离数据中心中的群体来减轻数据中心隔离。</p>
+
+<h2 id="toc_4">更快的通告</h2>
+
+<p>可以通过更快速地通告主节点变更来进一步减少总宕机时间。这如何实现呢？</p>
+
+<p>当<code>orchestrator</code>开始故障恢复时，它观测可被提升的服务器群。理解复制原则并遵从暗示和限制，能够基于最佳做法作出优化的决策。</p>
+
+<p>需要意识到，可用于提升的服务器也是一个理想的候选者，例如：</p>
+
+<ul>
+<li><p>没有什么可以阻止服务器的提升（而且用户已经潜在暗示这些服务器是首选提升对象）；</p></li>
+<li><p>这些服务器能够将其所有的兄弟节点作为复制品。</p></li>
+</ul>
+
+<p>在这种情况，<code>orchestrator</code>首先将服务器设置为可写的，然后迅速通告服务器的提升（写入 Consul KV），同时异步开始修复复制树（这个操作通常会花费更多时间）。</p>
+
+<p>很可能当我们的 GLB 服务器完全重新加载时，复制树已经完好无损了，但这不是严格必需的。服务器可以接收写操作！</p>
+
+<h2 id="toc_5">半同步复制</h2>
+
+<p>在 MySQL 的半同步复制中，在变更已经提交到一个或多个副本之前，主服务器不会承认这个事务提交。这提供了一种实现无损故障恢复的方法：任何提交到主节点的变更都已经应用或者等待被应用到某个副本。</p>
+
+<p>一致性伴随着成本：可用性风险。如果没有副本确认收到变更，主节点会阻塞并且写操作会停顿。幸运的是，有一个超时配置，超过超时时间，主节点能够恢复到异步复制模式，使得写操作再次可用。</p>
+
+<p>我们将我们的超时配置设置为一个合理的低值：<code>500ms</code>。这足够将主节点的变更传递给本地数据中心副本以及远程的数据中心。有了这个超时，我们就可以观测完美的半同步行为（不回滚到异步复制），同时在确认失败的情况下会感受到一个可接受的非常短的阻塞时间。</p>
+
+<p>我们在本地数据中心副本上启用半同步，而且在主节点挂掉事件中，我们期望（尽管并不严格强制）无损故障恢复。但是，我们不会期望一个完整的数据中心故障的无损故障恢复，因为它的代价非常大。</p>
+
+<p>在进行半同步超时实验时，我们还观察到一种对我们有利的现象：我们能够在主节点故障中影响理想的候选者的身份。通过在指定服务器上启用半同步并将它们标记为候选者，我们能够通过影响故障结果来减少总宕机时间。我们在实验中观察到，我们通常能够提升理想的候选者并因此快速进行通告。</p>
+
+<p><section class="" style="font-family: Avenir, -apple-system-font, 微软雅黑, sans-serif;line-height: 1.1;color: rgb(63, 63, 63);font-size: 20px;text-align: center;white-space: normal;background-color: rgb(255, 255, 255);">心跳注入</section></p>
+
+<p>我们选择在任何地方任何时间管理<code>pt-heartbeat</code>服务的开启 / 关闭，而不是只在提升 / 降级的主节点上管理<code>pt-heartbeat</code>服务的开启 / 关闭。这需要一些补丁，改变它们的<code>read_only</code>状态或者完全奔溃，以便使 pt-heartbeat 与服务器一致。</p>
+
+<p>在我们当前设置中，<code>pt-heartbeat</code>服务运行在主节点和副本上。在主节点上，它们生成心跳事件。在副本上，它们标识服务器是<code>read_only</code>并周期性检查它们的状态。一旦一个服务器被提升为主节点，那个服务器上的<code>pt-heartbeat</code>将其标识为可写的，并开始注入心跳事件。</p>
+
+<h2 id="toc_6">orchestrator 所有权委托</h2>
+
+<p>我们进一步委托给<code>orchestrator</code>：</p>
+
+<ul>
+<li><p>Preudo-GTID 注入</p></li>
+<li><p>将提升的主节点设置为可写的并清除它的复制状态</p></li>
+<li><p>如果可能的话，将旧的主节点设置为<code>read_only</code></p></li>
+</ul>
+
+<p>在新的主节点上，这减少了摩擦。被提升的主节点明显需要是活跃的和可访问的，否则我们不会提升它。那么，可以让<code>orchestrator</code>直接将变更应用到提升的主节点上。</p>
+
+<h2 id="toc_7">限制和缺陷</h2>
+
+<p>代理层使得 App 意识不到主节点的身份，同时它还对主节点屏蔽了 App 的身份。主节点看到的都是来自代理层的连接，而我们丢失了真正连接来源的信息。</p>
+
+<p>随着分布式系统的发展，我们仍然面临未处理过的场景。</p>
+
+<p>尤其是，在一个数据中心隔离场景中，假设主节点是在隔离的数据中心，那个数据中心的 App 仍然能够向主节点写入。一旦网络恢复，这可能导致状态不一致。我们通过从非常孤立的数据中心实现一个可靠的 STONITH 来减轻这种裂脑现象。像之前一样，主节点降级之前会经过一些时间，并且会存在一段时间的裂脑。避免裂脑现象的运维成本非常高。</p>
+
+<p>存在更多场景：故障恢复时 Consul 宕机；部分数据中心隔离；其它场景等。我们明白，在这种性质的分布式系统中，不可能关闭所有的漏洞，因此我们关注最重要的场景。</p>
+
+<h2 id="toc_8">结果</h2>
+
+<p>我们的 orchestrator/GLB/Consul 设置提供了：</p>
+
+<ul>
+<li><p>可靠的故障检测</p></li>
+<li><p>不依赖数据中心的故障恢复</p></li>
+<li><p>典型的无损故障恢复</p></li>
+<li><p>数据中心网络隔离支持</p></li>
+<li><p>减轻裂脑现象（更多工作仍在进行中）</p></li>
+<li><p>没有合作依赖</p></li>
+<li><p>大部分场景下的<code>10-13 秒</code>的总宕机时间</p></li>
+<li><p>总宕机时间在非常少的场景下会长达<code>20 秒</code>，在极端情况下会长达<code>25 秒</code>。</p></li>
+</ul>
+
+<h2 id="toc_9">结论</h2>
+
+<p>orchestratoion/proxy/service-discovery 范式在解耦架构中使用了众所周知且令人信赖的组件，使得它更容易部署、运维和观测，并且每个组件都可以独立地扩大或缩小规模。我们将不断测试我们的设置，从而不断寻求改进。</p>
 
                         
                       </div>
@@ -384,10 +389,10 @@ public class EmployeeRepository {
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/7/7</span>
+                    <span class="date">2018/7/15</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Java.html'>Java</a></span>
+          					    <span class="posted-in"><a href='HA.html'>HA</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -477,6 +482,12 @@ public class EmployeeRepository {
 	      
 		      
 			      <li class="post">
+			        <a href="15359384213292.html">Securing Spring Boot with JWTs</a>
+			      </li>
+		     
+		  
+		      
+			      <li class="post">
 			        <a href="15358820607055.html">Java 8 Concurrency Tutorial: Atomic Variables and ConcurrentMap</a>
 			      </li>
 		     
@@ -496,12 +507,6 @@ public class EmployeeRepository {
 		      
 			      <li class="post">
 			        <a href="15358756631902.html">Java 8 Stream Tutorial</a>
-			      </li>
-		     
-		  
-		      
-			      <li class="post">
-			        <a href="15358753472382.html">Migrate Maven Projects to Java 11</a>
 			      </li>
 		     
 		  

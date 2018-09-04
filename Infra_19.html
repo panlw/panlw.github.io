@@ -105,395 +105,301 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15301794059091.html">
+                <a class="clearlink" href="15301797659390.html">
                 
-                  <h1>架构设计：负载均衡层设计方案（2）——Nginx 安装</h1>
+                  <h1>架构设计：负载均衡层设计方案（3）——Nginx 进阶</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://blog.csdn.net/yinwenjie/article/details/46620711">https://blog.csdn.net/yinwenjie/article/details/46620711</a></p>
+<p><a href="https://blog.csdn.net/yinwenjie/article/details/46742661">https://blog.csdn.net/yinwenjie/article/details/46742661</a></p>
 </blockquote>
 
-<p>前一篇文章<a href="http://blog.csdn.net/yinwenjie/article/details/46605451">《架构设计：负载均衡层设计方案（1）——负载场景和解决方式》</a>中我们描述了要搭设负载均衡层的业务场景和负载均衡层搭建和扩展思路。从这篇文章开始的后几篇文章，我们将详细介绍 Nginx、LVS 和 Nginx+Keepalived、LVS+Keepalived 和 LVS+Nginx+Keepalived 的安装细节，以及它们的性能优化方式。</p>
+<p>上篇文章《架构设计：负载均衡层设计方案（2）——Nginx 安装》（<a href="http://blog.csdn.net/yinwenjie/article/details/46620711">http://blog.csdn.net/yinwenjie/article/details/46620711</a>），我们介绍了 Nginx 的核心设计思想、基本安装和使用。本来准备继续介绍 Nginx 的几个使用特性，但是奈何博文篇幅太长，只有将一篇文章拆成两篇。本文我们将承接上文，继续讲解 Nginx 的实用特性，包括 gzip 功能、rewirte 功能和一个第三方的节点监测模块。本文我们还将提到 Taobao 团队对 Nginx 的深度改造 Tengine。</p>
 
-<p>Nginx 和 LVS 都是可以独立工作的，Keepalived 作为检测机制，不但可以和 Nginx、LVS 集成也可以和其他软件集成形成高可用方案（例如可以和 MySQL 数据库集成、可以和 Jetty 服务器集成、还可以和自己写的程序集成）。所以首先我们先来详细讲述 Nginx 和 LVS 的核心工作原理、安装过程和优化方式，再分别讲解他们和 Keepalived 的集成方式。这样的方式应该可以使您更快的掌握其中的核心，并能最快的融会贯通。</p>
+<h1 id="toc_0"><a></a>1、Nginx 继续进阶</h1>
 
-<h1 id="toc_0"><a></a>1、Nginx 重要算法介绍</h1>
+<h2 id="toc_1"><a></a>1.1、gzip</h2>
 
-<p>Nginx 是什么，请自行百度。我们先介绍几个关键的算法，如果您还不了解这些算法在 Nginx 中所起的作用，请不要着急，本文后半部分将说明它们的作用。</p>
-
-<h2 id="toc_1"><a></a>1.1、一致性 Hash 算法</h2>
-
-<p><img src="https://img-blog.csdn.net/20150703172857890" alt=""/></p>
-
-<p>一致性 Hash 算法是现代系统架构中的最关键算法之一，在分布式计算系统、分布式存储系统、数据分析等众多领域中广泛应用。针对这个系列的博文，在负载均衡层、业务通信层、数据存储层都会有他的身影。</p>
+<p>nginx 对返回给浏览器的 http response body 是可以进行压缩的。虽然需要消耗一点 cpu 和内存资源，但是想到 100KB 的数据量可以压缩到 60KB 甚至更小进行传输，是否有一定的吸引力？这里我的建议是，不要为了节约成本将业务服务和负载层服务放在一台物理服务器上，这样做既影响性能又增加了运维难度。http 返回数据进行压缩的功能在很多场景下都实用：</p>
 
 <ul>
-<li><p>hash 算法的关键在于它能够根据不同的属性数据，生成一串不相同的 hash 值，并且能够将这个 hash 值转换为</p>
+<li><p>如果浏览器使用的是 3G/4G 网络，那么流量对于用户来说就是 money。</p></li>
+<li><p>压缩可节约服务器机房的对外带宽，为更多用户服务。按照目前的市场价良好的机房带宽资源的一般在 200RMB/Mbps，而服务器方案的压力往往也来自于机房带宽。</p></li>
+<li><p>主要注意的是，不是 Nginx 开启了 gzip 功能，HTTP 响应的数据就一定会被压缩，除了满足 Nginx 设置的 “需要压缩的 http 格式” 以外，客户端（浏览器）也需要支持 gzip（不然它怎么解压呢），一个好消息是，目前大多数浏览器和 API 都支持 http 压缩。</p>
 
-<p><span class="MathJax" id="MathJax-Element-1-Frame" tabindex="0" style="text-align: center; position: relative;" data-mathml="<math xmlns=&quot;http://www.w3.org/1998/Math/MathML&quot; display=&quot;block&quot;><nobr aria-hidden="true">0—232−1</nobr><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><mn>0</mn><mo>—</mo><msup><mn>2</mn><mrow class="MJX-TeXAtom-ORD"><mn>32</mn></mrow></msup><mo>−</mo><mn>1</mn></math><script type="math/tex; mode=display" id="MathJax-Element-1">0 — 2<sup>{32}-1</script>范围整数（即上图中的圆环）<mn>0</mn><mo>&amp;#x2014;</mo><msup><mn>2</mn>&lt;mrow</sup> class=&quot;MJX-TeXAtom-ORD&quot;&gt;<mn>32</mn></mrow></msup><mo>&amp;#x2212;</mo><mn>1</mn></math>&quot; role=&quot;presentation&quot;&gt;</span></p></li>
-<li><p>一台服务器的某个或者某一些属性当然也可以进行 hash 计算（通常是这个服务器的 IP 地址和开放端口），并且根据计算分布在这个圆环上的某一个点。也就是图中圆环上的蓝色点。</p></li>
-<li><p>一个处理请求当然也可以根据这个请求的某一个或者某一些属性进行 hash 计算（可以是这个请求的 IP、端口、cookie 值、URL 值或者请求时间等等），并且根据计算记过分布在这个圆环上的某一个点上。也就是上图圆环上的黄色点。</p></li>
-<li><p>我们约定落在某一个蓝点 A 左侧和蓝点 B 右侧的黄色点所代表的请求，都有蓝点 A 所代表的服务器进行处理，这样就完成解决了 “谁来处理” 的问题。在蓝色点稳定存在的前提下，来自于同一个 Hash 约定的请求所落在的位置都是一样的，这就保证了服务处理映射的稳定性。</p></li>
-<li><p>当某一个蓝色点由于某种原因下线，其所影响到的黄色点也是有限的。即下一次客户端的请求将由其他的蓝色点所代表的服务器进行处理。</p></li>
+<p>我们首先来讲解 Nginx 中的 gzip 的设置参数，然后我们讲解当开启压缩功能后，HTTP 的交互过程和过程中关键的几个属性。我们首先来看看 Nginx 中开启 gzip 的属性（gzip 的设置放置在 HTTP 主配置区域）：</p></li>
 </ul>
 
-<h2 id="toc_2"><a></a>1.2、轮询与加权轮询</h2>
+<pre><code class="language-conf">#开启 gzip 压缩服务，
+gzip on;
 
-<p><img src="https://img-blog.csdn.net/20150705093244323" alt=""/></p>
+#gzip 压缩是要申请临时内存空间的，假设前提是压缩后大小是小于等于压缩前的。例如，如果原始文件大小为 10K，那么它超过了 8K，所以分配的内存是 8 * 2 = 16K; 再例如，原始文件大小为 18K，很明显 16K 也是不够的，那么按照 8 * 2 * 2 = 32K 的大小申请内存。如果没有设置，默认值是申请跟原始数据相同大小的内存空间去存储 gzip 压缩结果。
+gzip_buffers 2 8k;
+
+#进行压缩的原始文件的最小大小值，也就是说如果原始文件小于 5K，那么就不会进行压缩了
+gzip_min_length 5K;
+
+#gzip 压缩基于的 http 协议版本，默认就是 HTTP 1.1
+gzip_http_version 1.1;
+
+# gzip 压缩级别 1-9，级别越高压缩率越大，压缩时间也就越长 CPU 越高
+gzip_comp_level 5;
+
+#需要进行 gzip 压缩的 Content-Type 的 Header 的类型。建议 js、text、css、xml、json 都要进行压缩；图片就没必要了，gif、jpge 文件已经压缩得很好了，就算再压，效果也不好，而且还耗费 cpu。
+Igzip_types text/HTML text/plain application/x-javascript text/css application/xml;
+</code></pre>
+
+<pre><code>设置完成后，重启 nginx，即可生效。下面我们来看看浏览器和服务器进行 gzip 压缩的请求和处理返回过程（实际上在我的《标准 Web 系统的架构分层》文章中，已经有所提及）：
+</code></pre>
+
+<p><img src="https://img-blog.csdn.net/20150709162940954" alt=""/></p>
 
 <ul>
-<li><p>当有任务需要传递到下层节点进行处理时，任务来源点会按照一个固定的顺序，将任务依次分配到下层节点，如果下层可用的节点数量为 X，那么第 N 个任务的分配规则为：</p>
-
-<p><span class="MathJax" id="MathJax-Element-2-Frame" tabindex="0" style="text-align: center; position: relative;" data-mathml="<math xmlns=&quot;http://www.w3.org/1998/Math/MathML&quot; display=&quot;block&quot;><nobr aria-hidden="true">目标节点 =(NmodX)+1</nobr> <math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><mrow class="MJX-TeXAtom-ORD"><mo>目</mo></mrow><mrow class="MJX-TeXAtom-ORD"><mo>标</mo></mrow><mrow class="MJX-TeXAtom-ORD"><mo>节</mo></mrow><mrow class="MJX-TeXAtom-ORD"><mo>点</mo></mrow> <mo>=</mo><mo stretchy="false">(</mo><mi>N</mi><mi>m</mi><mi>o</mi><mi>d</mi><mi>X</mi><mo stretchy="false">)</mo><mo>+</mo><mn>1</mn></math> <script type="math/tex; mode=display" id="MathJax-Element-2">目标节点 = (N mod X) + 1</script><mrow class=&quot;MJX-TeXAtom-ORD&quot;><mo>&amp;#x76EE;</mo></mrow><mrow class=&quot;MJX-TeXAtom-ORD&quot;><mo>&amp;#x6807;</mo></mrow><mrow class=&quot;MJX-TeXAtom-ORD&quot;><mo>&amp;#x8282;</mo></mrow><mrow class=&quot;MJX-TeXAtom-ORD&quot;><mo>&amp;#x70B9;</mo></mrow><mo>=</mo><mo stretchy=&quot;false&quot;>(</mo><mi>N</mi><mi>m</mi><mi>o</mi><mi>d</mi><mi>X</mi><mo stretchy=&quot;false&quot;>)</mo><mo>+</mo><mn>1</mn></math>&quot; role=&quot;presentation&quot;&gt;</span></p></li>
-<li><p>轮询处理在很多架构思想中都有体现：DNS 解析多 IP 时、LVS 向下转发消息时、Nginx 向下转发消息时、Zookeeper 向计算节点分配任务时。了解基本的轮询过程有助于我们在进行软件架构设计时进行思想借鉴。</p></li>
-<li><p>但是上面的轮询方式是有缺陷的，由于各种客观原因我们可能无法保证任务处理节点的处理能力都是一样的（CPU、IO、内存频率等不同）。所以 A 节点业务能同时处理 100 个任务，但是 B 节点可能同时只能处理 50 个任务。</p></li>
-<li><p>在这种情况下我们需要依据下层节点某个或者多个属性设置权值。这个属性可能是网络带宽、CPU 繁忙程度或者就是各一个固定的权值。</p></li>
+<li><p>整个请求过程来看，开启 gzip 和不开启 gip 功能，其 http 的请求和返回过程是一致的，不同的是参数。这个可以看看我的另外一篇文章《标准 Web 系统的架构分层》<a href="http://blog.csdn.net/yinwenjie/article/details/46480485">http://blog.csdn.net/yinwenjie/article/details/46480485</a></p></li>
+<li><p>当开启 HTTP 的 gzip 功能时，客户端发出 http 请求时，会通过 headers 中的 Accept-Encoding 属性告诉服务器 “我支持 gzip 解压，解压格式（算法）deflate,sdch 为：”。Accept-Encoding:gzip,deflate,sdch</p></li>
+<li><p>注意，不是 request 说自己支持解压，Nginx 返回 response 数据的时候就一定会压缩。这还要看本次 Nginx 返回数据的格式是什么，如果返回数据的原始数据格式，和设置的 gzip_types 相符合，这时 Nginx 才会进行压缩。</p></li>
+<li><p>Nginx 返回 response headers 是，如果数据被压缩了，就会在 Content-Encoding 属性中标示 gzip，表示接下来返回的 response content 是经过压缩的；并且在 Content-Type 属性中表示数据的原始格式。</p></li>
+<li><p>最后返回经过压缩的 response content 给客户端，客户端再进行解压。这里注意一下，在客户端发送的 headers 里面，有一个 deflate,sdch。这是两种压缩算法，如果读者感兴趣，可以查查相关的资料（我建议查查，了解哈弗曼压缩算法对扩展自己的架构思路很有帮助）</p></li>
 </ul>
 
-<p>那么加权轮询的分配依据是什么呢？有很多分配依据，例如：概率算法（此算法中包括蒙特卡罗算法，拉斯维加斯算法和舍伍德算法，在网络上有很多介绍资料）、最大公约数法。这里我们对最大公约数算法进行介绍，因为该方法简单实用：</p>
+<h2 id="toc_2"><a></a>1.2、rewrite</h2>
 
-<p><img src="https://img-blog.csdn.net/20150705113306874" alt=""/></p>
+<p>本小结内容，假定读者了解正则表达式。如果您不清楚正则表达式，请首先 Google 或者百度，正则表达式不在我们讨论的范围内。</p>
+
+<p>Nginx 的强大在于其对 URL 请求的重写（重定位）。Nginx 的 rewrite 功能依赖于 PCRE Lib，请一定在 Nginx 编译安装时，安装 Pcre lib。请参见我的上一篇文章《架构设计：负载均衡层设计方案（2）——Nginx 安装》<a href="http://blog.csdn.net/yinwenjie/article/details/46620711">http://blog.csdn.net/yinwenjie/article/details/46620711</a></p>
+
+<p>我们先从讲解 rewrite 的关键语法，然后出示几个示例，由示例进行讲解。先来说一下 Nginx 中几个关键的语法：</p>
+
+<p><strong>正在表达式匹配：</strong></p>
 
 <ul>
-<li><p>首先按照某种规则计算得到每个处理节点的权值，上文已经说到计算规则可能是这个服务节点的 CPU 利用率、网络占用情况或者在配置文件中的固定权重。</p></li>
-<li><p>求这些权值的最大公约数，在上图中三个节点的权值分别是 100、80、60. 那么求得的最大公约数就是 20（如果您忘记了最大公约数的定义，请自行复习）。那么这三个节点的被除结果分别是 5、4、3，求和值为 12。</p></li>
-<li><p>得到以上的计算结果，就可以开始进行请求分配了，公式同样为：</p>
-
-<p><span class="MathJax" id="MathJax-Element-3-Frame" tabindex="0" style="text-align: center; position: relative;" data-mathml="<math xmlns=&quot;http://www.w3.org/1998/Math/MathML&quot; display=&quot;block&quot;><nobr aria-hidden="true">(NmodX)+1=Y</nobr><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><mo stretchy="false">(</mo><mi>N</mi><mi>m</mi><mi>o</mi><mi>d</mi><mi>X</mi><mo stretchy="false">)</mo><mo>+</mo><mn>1</mn><mo>=</mo><mi>Y</mi></math><script type="math/tex; mode=display" id="MathJax-Element-3">(N mod X) + 1 = Y</script><br/>
-其中 N 表示当前的第 N 次任务；X 表示整除后的求和结果；Y 为处理节点。<mo stretchy=&quot;false&quot;>(</mo><mi>N</mi><mi>m</mi><mi>o</mi><mi>d</mi><mi>X</mi><mo stretchy=&quot;false&quot;>)</mo><mo>+</mo><mn>1</mn><mo>=</mo><mi>Y</mi></math>&quot; role=&quot;presentation&quot;&gt;</span></p></li>
+<li>  ~ 区分大小写进行正则表达式匹配</li>
+<li>  ~* 不区分大小写进行正则表达式匹配</li>
+<li>  !~ 区分大小写进行正则表达式不匹配</li>
+<li>  !~* 不区分大小写进行正则表达式不匹配</li>
 </ul>
 
-<blockquote>
-<p>总结一下：加权轮询是轮询方案的补充，通过将处理节点的属性转换成权值可以有效的描述处理节点的处理能力，实现更科学的处理任务分配。加权轮询的关键在于加权算法，最大公约数算法简单实用，定位效率高。</p>
-</blockquote>
+<p>举例说明:</p>
 
-<h1 id="toc_3"><a></a>2、Nginx 的安装</h1>
+<pre><code>示例1：location ~* \.(jpg|gif|png|ioc|jpeg)$
 
-<h2 id="toc_4"><a></a>2.1、准备工作</h2>
+location是Nginx中的关键字，代表当前的URL请求值。
+以上表达式表示对URL进行不区分大小写的匹配，一旦URL以jpg或gif或png或ioc或jpeg结尾时，匹配成功。
 
-<p>操作系统：centOS 6.5。</p>
+示例2：$var1 ~ ^(\d+)$
 
-<p>Nginx 的下载地址：<a href="http://nginx.org/en/download.html">http://nginx.org/en/download.html</a>。请下载 stable 的版本 1.8.0。后续 Nginx 肯定还会有升级，官网上面会持续更新 stable version。</p>
+var1是Nginx中使用set关键字定义的变量，以上语句代表var1和一个整数进行匹配。
 
-<p>最小必备组件：<br/>
-yum -y install make zlib zlib-devel gcc gcc-c++ ssh libtool</p>
+</code></pre>
 
-<h2 id="toc_5"><a></a>2.2、正式安装</h2>
+<p><strong>Nginx 中的全局变量：</strong><br/>
+从上面的各个实例中，我们已经发现 Nginx 是支持变量的，Nginx 还内置了一些全局变量，这里列举一些比较重要的全局变量：</p>
 
 <ul>
-<li><p>下载 nginx1.8.0 版本<br/>
-<img src="https://img-blog.csdn.net/20150705120030369" alt=""/></p></li>
-<li><p>解压 nginx 的 tar 文件<br/>
-<img src="https://img-blog.csdn.net/20150705120225553" alt=""/></p></li>
-<li><p>进行源码编译<br/>
-<img src="https://img-blog.csdn.net/20150705120707338" alt=""/></p></li>
+<li>  $content_length: 获取 request 中 header 部分的 “Content_Length” 值。</li>
+<li>  $content_type: 获取 request 中 header 部分的 “Content_type” 值。</li>
+<li>  $request_method: 请求方式，常用的有两种请求方式：POST、GET</li>
+<li>  $remote_addr: 发送请求的客户端 ip</li>
+<li>  $remote_port: 发送请求的客户端端口</li>
+<li>  $request_uri: 含有参数的完整的初始 URI</li>
+<li>  $server_addr: request 到达的 server 的 ip。</li>
+<li>  $server_port: 请求到达的服务器的端口号。</li>
 </ul>
 
-<p>我们看到这时编译检查报错，报错写得很清楚，为了支持 HTTP 重写模块，Nginx 需要 PCRElib 的支持。那我们到 <a href="http://ncu.dl.sourceforge.net/project/pcre/pcre/8.37/pcre-8.37.tar.gz">http://ncu.dl.sourceforge.net/project/pcre/pcre/8.37/pcre-8.37.tar.gz</a> 下载一个稳定的 pcre 版本编译安装即可（不一定是 8.37 版本）。</p>
+<p><strong>rewrite 语法</strong></p>
+
+<pre><code>rewrite regex replacement flag
+
+#regex：表示当前匹配的正则表达式。只有$url大小写相关匹配regex正则表达式，这个$url才会被rewrite进行重定向。
+
+#replacement：重定向目标规则。这个目标规则支持动态变量绑定，这个问题下文马上用示例来讲。
+
+#flag：重定向规则。
+
+</code></pre>
+
+<p><strong>rewrite 中的 Flag 关键字</strong></p>
 
 <ul>
-<li><p>再进行源码编译安装<br/>
-./configure –prefix=/usr/nginx-1.8.0<br/>
-make &amp;&amp; make install<br/>
-<img src="https://img-blog.csdn.net/20150705130214392" alt=""/></p></li>
-<li><p>整个验证、编译、安装过程不应该报任何错误。如果您使用 prefix 设置了安装目标目录，那么可能您还需要在 / etc/profix 文件中设置环境变量：<br/>
-<img src="https://img-blog.csdn.net/20150705130747519" alt=""/></p></li>
+<li>  redirect：通知客户端重定向到 rewrtie 后面的地址。</li>
+<li>  permanent：通知客户端永久重定向到 rewrtie 后面的地址。</li>
+<li>  last：将 rewrite 后的地址重新在 server 标签执行。</li>
+<li>  break：将 rewrite 后地址重新在当前的 location 标签执行。</li>
 </ul>
 
-<h2 id="toc_6"><a></a>2.3、安装验证和启动</h2>
+<p>实际上针对客户端来说，其效果是一样的，都是由客户端重新发起 http 请求，请求地址重新定位到 replacement 规则的 URL 地址；这里关键要讲解最常用的 last 和 break 两个关键字：</p>
 
-<p>下面介绍几个 nginx 常用的命令，如果您可以正常使用这些命令，那么说明 nginx 已经安装成功了。</p>
-
-<p>nginx：直接在命令行键入 nginx，就可以启动 nginx。</p>
-
-<p>nginx -t：检查配置文件是否正确。这个命令可以检查 nginx.conf 配置文件其格式、语法是否正确。如果配置文件存在错误，则会出现相应提示；如果 nginx.conf 文件正确，也会出现相应的成功提示。</p>
-
-<p>nginx -s reload：重加载 / 重启 nginx——以新的 nginx.conf 配置文件中的定义。</p>
-
-<p>nginx -s stop：停止 nginx。</p>
-
-<h1 id="toc_7"><a></a>3、进阶</h1>
-
-<p>Nginx 在安装完成后，不用更改任何配置信息就可以直接运行。但是很显然这不会满足我们生产环境的要求。所以我们要重点介绍 Nginx 的配置文件，以及其中重要的配置项的含义。</p>
-
-<h2 id="toc_8"><a></a>3.1、重要配置项</h2>
-
-<p>如果您是按照本文的描述方式安装的 Nginx，那么 Nginx 的主配置文件在：/usr/nginx-1.8.0/conf/nginx.conf 的位置，如果您在编译安装的时候并没有指定安装目录，那么 Nginx 的主配置文件在：/usr/local/nginx/conf/nginx.conf 的位置。当然您还可以在启动 Nginx 的时候使用 -c 的参数人为指定 Nginx 的配置文件位置（但是这种方式不建议）。</p>
-
-<p>我们重新整理了 Nginx 的配置文件，将其分块，以便于讲解：</p>
-
-<pre><code>#================================以下是全局配置项
-#指定运行nginx的用户和用户组，默认情况下该选项关闭（关闭的情况就是nobody）
-#user  nobody nobody;     
-#运行nginx的进程数量，后文详细讲解
-worker_processes  1;      
-#nginx运行错误的日志存放位置。当然您还可以指定错误级别
-#error_log  logs/error.log;    
-#error_log  logs/error.log  notice;
-#error_log  logs/error.log  info;
-#指定主进程id文件的存放位置，虽然worker_processes != 1的情况下，会有很多进程，管理进程只有一个
-#pid        logs/nginx.pid;    
-
-events {
-    #每一个进程可同时建立的连接数量，后问详细讲解
-    worker_connections  1024;   
-    #连接规则，可以采用[kqueue rtsig epoll select poll eventport ]，后文详细讲解
-    use   epoll;    
+<pre><code>所有的rewrite语句都是要在server中的location中书写的，如下：
+server {
+    。。。。。。
+    。。。。。。
+    location ... {
+        if(...) {
+            rewirte regex replacement flag;
+        }
+        rewirte regex replacement flag;
+    }
 }
-#================================以上是全局配置项
 
-http {
-    #================================以下是Nginx后端服务配置项
-    upstream backendserver1 {
-        #nginx向后端服务器分配请求任务的方式，默认为轮询；如果指定了ip_hash，就是hash算法（上文介绍的算法内容）
-        #ip_hash    
-        #后端服务器 ip:port ，如果有多个服务节点，这里就配置多个
-        server 192.168.220.131:8080; 
-        server 192.168.220.132:8080;    
-        #backup表示，这个是一个备份节点，只有当所有节点失效后，nginx才会往这个节点分配请求任务
-        #server 192.168.220.133:8080 backup;        
-        #weight，固定权重，还记得我们上文提到的加权轮询方式吧。
-        #server 192.168.220.134:8080 weight=100;    
+那么，break关键字说明重写的replacement地址在当前location的区域马上执行。
+last关键字说明重写的replacement地址在当前server所有的location中重新再做匹配。
+
+</code></pre>
+
+<p>下面我们结合 rewrite 关键字和 rewrite flag 关键字给出典型的示例进行讲解：</p>
+
+<pre><code>示例1：
+location ~* ^/(.+)/(.+)\.(jpg|gif|png|jpeg)$ {
+    rewrite ^/orderinfo/(.+)\.(jpg|gif|png|jpeg)$   /img/$1.$2   break;
+    root   /cephclient;
+}
+
+location在不进行大小写区分的情况下利用正则表达式对$url进行匹配。当匹配成功后进行rewrite重定位。
+rewrite进行重写url的规则是：regex表达式第一个括号中的内容对应$1，regex表达式第二个括号中的内容对应$2，以此类推。
+这样重定位的意义就很明确了：将任何目录下的文件名重定位到img目录下的对应文件名，
+并且马上在这个location中（注意是Nginx，而不是客户端）执行这个重写后的URL定位。
+
+示例2：
+server {
+    。。。。
+    。。。。
+    location ~* ^/orderinfo/(.+)\.(jpg|gif|png|jpeg)$ {
+        rewrite ^/orderinfo/(.+)\.(.+)$  /img/$1.$2   last;
     }
-    #================================以上是Nginx后端服务配置项
 
-    #=================================================以下是 http 协议主配置
-    #安装nginx后，在conf目录下除了nginx.conf主配置文件以外，有很多模板配置文件，这里就是导入这些模板文件
-    include       mime.types;
-    #HTTP核心模块指令，这里设定默认类型为二进制流，也就是当文件类型未定义时使用这种方式
-    default_type  application/octet-stream;     
-    #日志格式
-    #log_format  main  &#39;$remote_addr - $remote_user [$time_local] &quot;$request&quot; &#39;   
-                      &#39;$status $body_bytes_sent &quot;$http_referer&quot; &#39;
-                      &#39;&quot;$http_user_agent&quot; &quot;$http_x_forwarded_for&quot;&#39;;
-
-    #日志文件存放的位置
-    #access_log  logs/access.log  main;         
-
-    #sendfile 规则开启
-    sendfile        on;
-    #指定一个连接的等待时间（单位秒），如果超过等待时间，连接就会断掉。注意一定要设置，否则高并发情况下会产生性能问题。
-    keepalive_timeout  65;                      
-
-    #开启数据压缩，后文详细介绍
-    gzip  on;                                   
-    #=================================================以上是 http 协议主配置
-
-    #=================================================以下是一个服务实例的配置
-    server {
-        #这个代理实例的监听端口
-        listen       80;
-        #server_name 取个唯一的实例名都要想半天？
-        server_name  localhost; 
-        #文字格式
-        charset utf-8;  
-        #access_log  logs/host.access.log  main;    
-
-        #location将按照规则分流满足条件的URL。&quot;location /&quot;您可以理解为“默认分流位置”。
-        location / {
-            #root目录，这个html表示nginx主安装目录下的“html”目录。
-            root   html;   
-            #目录中的默认展示页面
-            index  index.html index.htm;        
-        }
-
-        #location支持正则表达式，“~” 表示匹配正则表达式。
-        location ~ ^/business/ {   
-            #方向代理。后文详细讲解。
-            proxy_pass http://backendserver1;   
-        }
-
-        #redirect server error pages to the static page /50x.html
-        #error_page  404              /404.html;
-        error_page   500 502 503 504  /50x.html;
-        location = /50x.html {
-            root   html;
-        }
+    location / {
+        root   /cephclient;
     }
-    #=================================================以上是一个服务实例的配置
+}
+
+在server中，有两个location位置，当url需要访问orderinfo目录下的某一个图片时，rewrite将重写这个url，
+并且重新带入这个url到server执行，这样“location /”这个location就会执行了，并找到图片存储的目录。
+
+</code></pre>
+
+<h2 id="toc_3"><a></a>1.3、健康检查模块</h2>
+
+<p>在本小节我们介绍一个用于 Nginx 对后端 UpStream 集群节点健康状态检查的第三方模块：nginx_upstream_check_module（<a href="https://github.com/yaoweibin/nginx_upstream_check_module">https://github.com/yaoweibin/nginx_upstream_check_module</a>）。这个模块有资料介绍是 TaoBao 团队开发的，但是我在 GitHua 上试图求证时并没有找到直接证据。</p>
+
+<p>这里需要说明的是，目前有很多 Nginx 模块实现 Nginx 对后端集群节点的健康监测，不止 nginx_upstream_check_module。Nginx 官方有一个模块 healthcheck_nginx_upstreams 也可以实现对后端节点的健康监测（<a href="https://github.com/cep21/healthcheck_nginx_upstreams">https://github.com/cep21/healthcheck_nginx_upstreams</a> 有详细的安装和使用介绍）</p>
+
+<p>我们回到对 nginx_upstream_check_module 的讲解，<strong>要使用这个第三方模块首先您需要进行下载，然后通过 patch 命令将补丁打入您原有的 Nginx 源码中，并且重新进行编译安装</strong>。下面我们来重点讲解一下这个模块的安装和使用。</p>
+
+<p><strong>下载 nginx_upstream_check_module 模块：</strong></p>
+
+<pre><code>wget https://codeload.github.com/yaoweibin/nginx_upstream_check_module/zip/master
+
+您也可以直接到GitHua上进行下载，还一个在linux系统上使用git命令进行下载。
+
+</code></pre>
+
+<p><strong>解压安装，并补丁打入 Nginx 源码</strong></p>
+
+<pre><code># unzip ./nginx_upstream_check_module-master.zip
+
+注意是将补丁打入Nginx源码，不是Nginx的安装路径：
+
+# cd ./nginx-1.6.2
+
+# patch -p1 &lt; ../nginx_upstream_check_module-master/check_1.5.12+.patch
+
+如果补丁安装成功，您将看到以下的提示信息：
+patching file src/http/modules/ngx_http_upstream_ip_hash_module.c
+patching file src/http/modules/ngx_http_upstream_least_conn_module.c
+patching file src/http/ngx_http_upstream_round_robin.c
+patching file src/http/ngx_http_upstream_round_robin.h
+
+这里请注意：在nginx_upstream_check_module官网的安装说明中，有一个打补丁的注意事项：
+If you use nginx-1.2.1 or nginx-1.3.0, the nginx upstream round robin
+module changed greatly. You should use the patch named
+&#39;check_1.2.1.patch&#39;.
+If you use nginx-1.2.2+ or nginx-1.3.1+, It added the upstream
+least_conn module. You should use the patch named &#39;check_1.2.2+.patch&#39;.
+If you use nginx-1.2.6+ or nginx-1.3.9+, It adjusted the round robin
+module. You should use the patch named &#39;check_1.2.6+.patch&#39;.
+If you use nginx-1.5.12+, You should use the patch named
+&#39;check_1.5.12+.patch&#39;.
+If you use nginx-1.7.2+, You should use the patch named
+&#39;check_1.7.2+.patch&#39;.
+
+这里我们的Nginx的版本是1.6.2，那么就应该打入check_1.5.12+.patch这个补丁
+
+</code></pre>
+
+<p><strong>重新编译安装 Nginx：</strong></p>
+
+<pre><code>注意重新编译Nginx，要使用add-module参数将这个第三方模块安装进去：
+
+# ./configure --prefix=/usr/nginx-1.6.2/ --add-module=../nginx_upstream_check_module-master/
+
+# make &amp;&amp; make install
+
+</code></pre>
+
+<p>通过以上的步骤，第三方的 nginx_upstream_check_module 模块就在 Nginx 中准备好了。接下来我们讲解一下如何使用这个模块。首先看一下 upstream 的配置信息：</p>
+
+<pre><code>upstream cluster {
+    # simple round-robin
+    server 192.168.0.1:80;
+    server 192.168.0.2:80;
+
+    check interval=5000 rise=1 fall=3 timeout=4000;
+
+    #check interval=3000 rise=2 fall=5 timeout=1000 type=ssl_hello;
+    #check interval=3000 rise=2 fall=5 timeout=1000 type=http;
+    #check_http_send &quot;HEAD / HTTP/1.0\r\n\r\n&quot;;
+    #check_http_expect_alive http_2xx http_3xx;
 }
 
 </code></pre>
 
-<p>以上是一个完整的 nginx 配置信息，可以直接粘贴使用，但不建议您这样做。因为上文中很多关键的配置属性都还没有讲解。这样粘贴复制不利于您的工作和学习。</p>
+<p>上面的代码中，check 部分就是调用 nginx_upstream_check_module 模块的语法：</p>
 
-<h3 id="toc_9"><a></a>3.1.1、use [kqueue | rtsig | epoll | select | poll]</h3>
+<pre><code>check interval=milliseconds [fall=count] [rise=count]
+[timeout=milliseconds] [default_down=true|false]
+[type=tcp|http|ssl_hello|mysql|ajp|fastcgi]
 
-<p>科技在发展，社会在进步，满足摩尔定义的 IT 行业更是这样。以前所有的连接都是阻断式的（blocking I/O）也就是说一个 TCP 连接线程在发出 Request 后，代码就不会再往下执行了，直到得到远端的 Response 为止；服务器端也一样的，在处理完某一个客户端的 Request 之前，其他客户端的请求都会等待。这种处理方式使客户端和服务器端的通讯性能大打折扣。</p>
+</code></pre>
 
-<p>很明显多线程貌似能够解决这个问题：一个线程处理不了，我可以再开线程来处理啊。但是多线程是有局限性的：</p>
+<p>interval：必要参数，检查请求的间隔时间。</p>
 
-<ul>
-<li><p>创建一个线程会消耗有限的资源。以 JAVA JVM 为例，创建一个新的线程 JVM 会单独开放 1MB 的栈内存空间（通过 - Xss 参数可设置），虽然栈内存不受 - Xmx 和 - Xms 两个参数影响，但是可以说明线程的创建是需要消耗额外资源的。</p></li>
-<li><p>多线程工作时，计算机的 CPU 会耗费大量的资源让多线程在不同的状态下进行切换。在后续的文章中本书还会介绍依据这样的原理让计算机的 CPU 呈波形变化的编程方式。</p></li>
-<li><p>在 Linux 操作系统下，单个用户能够创建的线程和进程总数、整个操作系统能够创建的线程总数都是有限的。通过 limit -a 命令，您可以查看相关的内核参数。</p></li>
-<li><p>所以依靠线程来解决 bio 的问题是不靠谱的，只能起到缓解处理并行请求的作用。您可以想象一次并发 10 万个处理请求的问题，是不可能在计算机上同时创建 10 万个线程来解决的。</p></li>
-</ul>
+<p>fall：当检查失败次数超过了 fall，这个服务节点就变成 down 状态。</p>
 
-<p>基于上面的描述，NIO（no blocking I/O）技术就这样诞生了。依靠 event loop 机制（想看这个机制的详细分析，请持续关注我的博客 <sup>_<sup>），单个线程可以同时处理多个</sup></sup> request 请求，并在处理完产生 response 的时候，回调相关的远程事件。根据 NIO 实现机制的不同，技术名称也就不同了。我要说什么，您，应该懂了。</p>
+<p>rise：当检查成功的次数超过了 rise，这个服务节点又会变成 up 状态。</p>
 
-<p>epoll、kqueue 等这些组件都是对多路复用网络 I/O 模型的实现，其中 epoll 是 poll 的升级版本，在 linux 环境下可以使用但限于 linux2.6 及以上版本。kqueue 用在 bsd 上使用。</p>
+<p>timeout：请求超时时间，超过等待时间后，这次检查就算失败。</p>
 
-<h3 id="toc_10"><a></a>3.1.2、worker_processes 和 worker_connections</h3>
+<p>default_down：后端服务器的初始状态。默认情况下，检查功能在 Nginx 启动的时候将会把所有后端节点的状态置为 down，检查成功后，在置为 up。</p>
 
-<p><strong>worker_processes</strong>：操作系统启动多少个工作进程运行 Nginx。注意是工作进程，不是有多少个 nginx 工程。在 Nginx 运行的时候，会启动两种进程，一种是主进程 master process；一种是工作进程 worker process。例如我在配置文件中将 worker_processes 设置为 4，启动 Nginx 后，使用进程查看命令观察名字叫做 nginx 的进程信息，我会看到如下结果：</p>
+<p>type：这是检查通信的协议类型，默认为 http。以上类型是检查功能所支持的所有协议类型。</p>
 
-<p><img src="https://img-blog.csdn.net/20150707193821782" alt=""/></p>
+<pre><code>check_http_send http_packet
 
-<p>图中可以看到 1 个 nginx 主进程，master process；还有四个工作进程，worker process。主进程负责监控端口，协调工作进程的工作状态，分配工作任务，工作进程负责进行任务处理。一般这个参数要和操作系统的 CPU 内核数成倍数。</p>
+http_packet的默认格式为：&quot;GET / HTTP/1.0\r\n\r\n&quot;
 
-<p><strong>worker_connections</strong>：这个属性是指单个工作进程可以允许同时建立外部连接的数量。无论这个连接是外部主动建立的，还是内部建立的。这里需要注意的是，一个工作进程建立一个连接后，进程将打开一个文件副本。所以这个数量还受<strong>操作系统设定的，进程最大可打开的文件数有关</strong>。网上 50% 的文章告诉了您这个事实，并要求您修改 worker_connections 属性的时候，一定要使用 ulimit -n 修改操作系统对进程最大文件数的限制，但是这样更改只能在当次用户的当次 shell 回话中起作用，并不是永久了。接着您继续 Google / 百度，发现 30% 的文章还告诉您，要想使 “进程最大可打开的文件数” 永久有效，还需要修改 / etc/security/limits.conf 这个主配置文件，但是您应该如何正确检查 “进程的最大可打开文件” 的方式，却没有说。</p>
+</code></pre>
 
-<p>下面本文告诉您全面的、正确的设置方式:</p>
+<p>check_http_send 设置，这个设置描述了检查模块在每次检查时，向后端节点发送什么样的信息</p>
 
-<ul>
-<li><p><strong>更改操作系统级别的 “进程最大可打开文件数” 的设置</strong>：<br/>
-首先您需要操作系统的 root 权限：</p>
+<pre><code>check_http_expect_alive [ http_2xx | http_3xx | http_4xx | http_5xx ]
 
-<blockquote>
-<p>叫您的操作系统管理员给您。</p>
-</blockquote>
+</code></pre>
 
-<p>修改 limits.conf 主配置文件</p>
+<p>这些状态代码表示服务器的 HTTP 响应上是 OK 的，后端节点是可用的。默认情况的设置是：http_2xx | http_3xx</p>
 
-<blockquote>
-<p>vim /etc/security/limits.conf</p>
-</blockquote>
+<p>当您根据您的配置要求完成检查模块的配置后，请首先使用 nginx -t 命令监测配置文件是否可用，然后在用 nginx -s reload 重启 nginx。</p>
 
-<p>在主配置文件最后加入下面两句：</p>
+<h2 id="toc_4"><a></a>1.4、不得不提的 tengine</h2>
 
-<blockquote>
-<ul>
-<li>soft nofile 65535</li>
-<li>hard nofile 65535</li>
-</ul>
-</blockquote>
+<p>Tengine 是由淘宝网发起的 Web 服务器项目。它在 Nginx 的基础上，针对大访问量网站的需求，添加了很多高级功能和特性。Tengine 的性能和稳定性已经在大型的网站如淘宝网，天猫商城等得到了很好的检验。它的最终目标是打造一个高效、稳定、安全、易用的 Web 平台（<a href="http://tengine.taobao.org/">http://tengine.taobao.org/</a>）。</p>
 
-<p>注意 “_” 是要加到文件里面的。这两句话的含义是 soft（应用软件）级别限制的最大可打开文件数的限制，hard 表示操作系统级别限制的最大可打开文件数的限制，“_” 表示所有用户都生效。保存这个文件（只有 root 用户能够有权限）。</p>
+<p>您应该懂了，我建议您根据业务的实际情况，适时在生产环境引入 Tengine。但在本博客发布时，Tengine 的 2.X 版本还不稳定，所以建议实用 1.5.2 的稳定版本。<strong>请记住 Tengine 就是经过升读改造后的 Nginx</strong>。</p>
 
-<p>保存这个文件后，配置是不会马上生效的，为了保证本次 shell 会话中的配置马上有效，我们需要通过 ulimit 命令更改本次的 shell 会话设置（当然您如果要重启系统，我也不能说什么）。</p>
+<h1 id="toc_5"><a></a>2、后文介绍</h1>
 
-<blockquote>
-<p>ulimit -n 65535</p>
-</blockquote>
-
-<p>执行命令后，配置马上生效。您可以用 ulimit -a 查看目前会话中的所有核心配置：</p>
-
-<blockquote>
-<p>ulimit -a<br/>
-core file size (blocks, -c) 0<br/>
-data seg size (kbytes, -d) unlimited<br/>
-scheduling priority (-e) 0<br/>
-file size (blocks, -f) unlimited<br/>
-pending signals (-i) 7746<br/>
-max locked memory (kbytes, -l) 64<br/>
-max memory size (kbytes, -m) unlimited<br/>
-open files (-n) 65535<br/>
-pipe size (512 bytes, -p) 8<br/>
-POSIX message queues (bytes, -q) 819200<br/>
-real-time priority (-r) 0<br/>
-stack size (kbytes, -s) 10240<br/>
-cpu time (seconds, -t) unlimited<br/>
-max user processes (-u) 7746<br/>
-virtual memory (kbytes, -v) unlimited<br/>
-file locks (-x) unlimited</p>
-</blockquote>
-
-<p>请注意 open files 这一项。</p></li>
-<li><p><strong>更改 Nginx 软件级别的 “进程最大可打开文件数” 的设置：</strong><br/>
-刚才更改的只是操作系统级别的 “进程最大可打开文件” 的限制，作为 Nginx 来说，我们还要对这个软件进行更改。打开 nginx.conf 主陪文件。您需要配合 worker_rlimit_nofile 属性。如下：</p>
-
-<blockquote>
-<p>user root root;<br/>
-worker_processes 4;<br/>
-<strong>worker_rlimit_nofile 65535;</strong></p>
-
-<h1 id="toc_11">error_log logs/error.log;</h1>
-
-<h1 id="toc_12">error_log logs/error.log notice;</h1>
-
-<h1 id="toc_13">error_log logs/error.log info;</h1>
-
-<h1 id="toc_14">pid logs/nginx.pid;</h1>
-
-<p>events {<br/>
-use epoll;<br/>
-<strong>worker_connections 65535;</strong><br/>
-}</p>
-</blockquote>
-
-<p>这里只粘贴了部分代码，其他的配置代码和主题无关，也就不需要粘贴了。请注意代码行中加粗的两个配置项，请一定两个属性全部配置。配置完成后，请通过 nginx -s reload 命令重新启动 Nginx。</p></li>
-<li><p><strong>验证 Nginx 的 “进程最大可打开文件数” 是否起作用：</strong></p>
-
-<p>那么我们如何来验证配置是否起作用了呢？在 linux 系统中，所有的进程都会有一个临时的核心配置文件描述，存放路径在 / pro / 进程号 / limit。</p>
-
-<p>首先我们来看一下，没有进行参数优化前的进程配置信息：</p>
-
-<blockquote>
-<p>ps -elf | grep nginx<br/>
-1 S root 1594 1 0 80 0 - 6070 rt_sig 05:06 ? 00:00:00 nginx: master process /usr/nginx-1.8.0/sbin/nginx<br/>
-5 S root 1596 1594 0 80 0 - 6176 ep_pol 05:06 ? 00:00:00 nginx: worker process<br/>
-5 S root 1597 1594 0 80 0 - 6176 ep_pol 05:06 ? 00:00:00 nginx: worker process<br/>
-5 S root 1598 1594 0 80 0 - 6176 ep_pol 05:06 ? 00:00:00 nginx: worker process<br/>
-5 S root 1599 1594 0 80 0 - 6176 ep_pol 05:06 ? 00:00:00 nginx: worker process</p>
-</blockquote>
-
-<p>可以看到，nginx 工作进程的进程号是：1596 1597 1598 1599。我们选择一个进程，查看其核心配置信息：</p>
-
-<blockquote>
-<p>cat /proc/1598/limits</p>
-</blockquote>
-
-<p><img src="https://img-blog.csdn.net/20150707204548230" alt=""/></p>
-
-<p>请注意其中的 Max open files ，分别是 1024 和 4096。那么更改配置信息，并重启 Nginx 后，配置信息就是下图所示了：</p>
-
-<p><img src="https://img-blog.csdn.net/20150707204756789" alt=""/></p></li>
-</ul>
-
-<h3 id="toc_15"><a></a>3.1.3、max client 的计算方式：</h3>
-
-<p>这个小结我们主要来说明两个在网上经常说的公式：</p>
-
-<ul>
-<li><p>max_client = worker_processes * worker_connections</p></li>
-<li><p>max_client = worker_processes * worker_connections / 4</p></li>
-</ul>
-
-<p>这两个公式分别说明，在 Nginx 充当服务器（例如 nginx 上面装载 PHP）的时候，Nginx 可同时承载的连接数量是最大工作线程 * 每个线程允许的连接数量；当 Nginx 充当反向代理服务的时候，其可同时承载的连接数量是最大工作线程 * 每个线程允许的连接数量 / 4。</p>
-
-<p>第一个问题很好理解，关键是第二个问题：为什么会除以 4。网上的帖子给出的答案是。浏览器 -&gt;Nginx、Nginx-&gt; 后端服务器、后端服务器 -&gt;Nginx、Nginx-&gt; 浏览器，所以需要除以四，我想说 TCP 协议是双向全双工协议，为什么需要这样建立连接呢？所以这个说法肯定是错误的。</p>
-
-<p>在 nginx 官方文档上有这样一句话：</p>
-
-<blockquote>
-<p>Since a browser opens 2 connections by default to a server and nginx uses the fds (file descriptors) from the same pool to connect to the upstream backend。</p>
-</blockquote>
-
-<p>翻译成中文的描述就是，浏览器会建立两条连接到 Nginx（注意两条连接都是浏览器建立的），Nginx 也会建立对应的两条连接到后端服务器。这样就是四条连接了。</p>
-
-<h3 id="toc_16"><a></a>3.1.4、gzip</h3>
-
-<p>后文补讲，放在这里算是一个扣子 <sup>_^</sup></p>
-
-<h2 id="toc_17"><a></a>3.2、健康检查模块</h2>
-
-<p>后文补讲，放在这里算是一个扣子 <sup>_^</sup></p>
-
-<h2 id="toc_18"><a></a>3.3、图片处理模块</h2>
-
-<p>后文补讲，放在这里算是一个扣子 <sup>_^</sup></p>
-
-<h2 id="toc_19"><a></a>3.4、Nginx 的 Rewrite 功能</h2>
-
-<p>后文补讲，放在这里算是一个扣子 <sup>_^</sup></p>
-
-<h1 id="toc_20"><a></a>4、后文介绍</h1>
-
-<p>我原本计划一篇文章就把 Nginx 的主要特性都进行介绍，奈何 Nginx 的强大功能确实太多了。为了保证您对知识的全面消化，这边文章就写到这里了。LVS 的讲解再往后拖一周左右吧，下篇文章我们继续讲解 Nginx 的强大功能，包括 gzip 功能、强大的 rewrite 功能，以及两个扩展模块：健康检查模块和图片处理模块，至于 Nginx 集成 PHP 作为服务器的特性，为了保证这个系列文章的中心线络就不再讲了，那又是一套完整的知识体系。敬请期待我的下一篇博客，谢谢。另外，目前一周一篇文章的频率我觉得是比较合适的，后面的文章我争取保持这个速度。</p>
+<p>花了两篇文章的功夫，终于将我想给大家讲解的 nginx 的实用特性讲完了，但是 nginx 远远不止这些特性。后面有时间我们会再回到 Nginx，重点讲解针对 Nginx 的脚本开发，我们还会讲解 Nginx 和 Lua 的集成。但是为了不扰乱这个系列博文的时间安排，下篇文章我们将开始介绍 LVS 技术，争取用一篇文章的篇幅讲清楚 LVS 核心设计思想、单节点安装和使用。再下篇文章我们介绍 Keepalived 技术，以及 keepalived 和 LVS、Nginx 分别进行集成，敬请关注。</p>
 
 <p><link rel="stylesheet" href="https://csdnimg.cn/release/phoenix/template/css/markdown_views-ea0013b516.css"></p>
 
@@ -597,6 +503,12 @@ use epoll;<br/>
 	      
 		      
 			      <li class="post">
+			        <a href="15359384213292.html">Securing Spring Boot with JWTs</a>
+			      </li>
+		     
+		  
+		      
+			      <li class="post">
 			        <a href="15358820607055.html">Java 8 Concurrency Tutorial: Atomic Variables and ConcurrentMap</a>
 			      </li>
 		     
@@ -616,12 +528,6 @@ use epoll;<br/>
 		      
 			      <li class="post">
 			        <a href="15358756631902.html">Java 8 Stream Tutorial</a>
-			      </li>
-		     
-		  
-		      
-			      <li class="post">
-			        <a href="15358753472382.html">Migrate Maven Projects to Java 11</a>
 			      </li>
 		     
 		  

@@ -105,107 +105,126 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15298011985624.html">
+                <a class="clearlink" href="15299316548658.html">
                 
-                  <h1>Java中的十个"单行代码编程"(One Liner)</h1>
+                  <h1>hbase 的架构及设计</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p>译文: <a href="http://www.rowkey.me/blog/2017/09/09/java-oneliners/">http://www.rowkey.me/blog/2017/09/09/java-oneliners/</a><br/>
-原文: <a href="https://github.com/aruld/java-oneliners/wiki">https://github.com/aruld/java-oneliners/wiki</a></p>
+<p><a href="https://blog.csdn.net/liweisnake/article/details/78086262">https://blog.csdn.net/liweisnake/article/details/78086262</a></p>
 </blockquote>
 
-<p>本文列举了十个使用一行代码即可独立完成 (不依赖其他代码) 的业务逻辑，主要依赖的是 Java8 中的 Lambda 和 Stream 等新特性以及 try-with-resources、JAXB 等。</p>
+<p>hbase 是强一致性的海量数据库，无论是读写性能，或是数据容量，还是一致性方面，hbase 都有非常优秀的表现。</p>
 
-<ol>
-<li><p>对列表 / 数组中的每个元素都乘以 2</p>
+<p>本文从架构方面探讨 hbase 的主要设计，从而在需要 hbase 的场合能够更好的设计和判断。</p>
 
-<pre><code class="language-java"> // Range是半开区间
- int[] ia = range(1, 10).map(i -&gt; i * 2).toArray();
- List&lt;Integer&gt; result = range(1, 10).map(i -&gt; i * 2).boxed().collect(toList());
-</code></pre></li>
-<li><p>计算集合 / 数组中的数字之和</p>
+<p>首先，先来看看 <strong>hbase 的整体架构</strong>。除了 DFS 组件，hbase 的基本组件图实际上就是 Zookeeper，HMaster，RegionServer。</p>
 
-<pre><code class="language-java"> range(1, 1000).sum();
- range(1, 1000).reduce(0, Integer::sum);
- Stream.iterate(0, i -&gt; i + 1).limit(1000).reduce(0, Integer::sum);
- IntStream.iterate(0, i -&gt; i + 1).limit(1000).reduce(0, Integer::sum);
-</code></pre></li>
-<li><p>验证字符串是否包含集合中的某一字符串</p>
+<p><img src="https://img-blog.csdn.net/20171007104837576?watermark/2/text/aHR0cDovL2Jsb2cuY3Nkbi5uZXQvbGl3ZWlzbmFrZQ==/font/5a6L5L2T/fontsize/400/fill/I0JBQkFCMA==/dissolve/70/gravity/Center" alt=""/></p>
 
-<pre><code class="language-java">final List&lt;String&gt; keywords = Arrays.asList(&quot;brown&quot;, &quot;fox&quot;, &quot;dog&quot;, &quot;pangram&quot;);
-final String tweet = &quot;The quick brown fox jumps over a lazy dog. #pangram http://www.rinkworks.com/words/pangrams.shtml&quot;;
+<p>其中，<strong>RegionServer</strong> 作为数据的实际存取服务器，主要负责数据的最终存取，一般情况都是多台；</p>
 
-keywords.stream().anyMatch(tweet::contains);
-keywords.stream().reduce(false, (b, keyword) -&gt; b || tweet.contains(keyword), (l, r) -&gt; l || r);
-</code></pre></li>
-<li><p>读取文件内容</p>
+<p>RegionServer 根据不同的 row key 划分为许多 region，每个 region 按顺序存放从 startKey 到 endKey 的数据。每个 RegionServer 有下面这些组件：</p>
 
-<blockquote>
-<p>原作者认为 try with resources 也是一种单行代码编程。</p>
-</blockquote>
+<p><img src="https://img-blog.csdn.net/20171015092617159?watermark/2/text/aHR0cDovL2Jsb2cuY3Nkbi5uZXQvbGl3ZWlzbmFrZQ==/font/5a6L5L2T/fontsize/400/fill/I0JBQkFCMA==/dissolve/70/gravity/Center" alt=""/><img src="https://img-blog.csdn.net/20171007212610301?watermark/2/text/aHR0cDovL2Jsb2cuY3Nkbi5uZXQvbGl3ZWlzbmFrZQ==/font/5a6L5L2T/fontsize/400/fill/I0JBQkFCMA==/dissolve/70/gravity/Center" alt=""/></p>
 
-<pre><code class="language-java"> try (BufferedReader reader = new BufferedReader(new FileReader(&quot;data.txt&quot;))) {
-   String fileText = reader.lines().reduce(&quot;&quot;, String::concat);
- }
+<p><strong>一个 WAL</strong>: write ahead log. 听名知其意，该文件是落库前先写的日志文件，它最主要的作用是恢复数据用，类似于 mysql 的 binlog。保存在 HDFS 中</p>
 
- try (BufferedReader reader = new BufferedReader(new FileReader(&quot;data.txt&quot;))) {
-   List&lt;String&gt; fileLines = reader.lines().collect(toCollection(LinkedList&lt;String&gt;::new));
- }
+<p><strong>一个 BlockCache</strong>: regionServer 的读缓存。保存使用最频繁的数据，使用 LRU 算法换出不需要的数据。</p>
 
- try (Stream&lt;String&gt; lines = Files.lines(new File(&quot;data.txt&quot;).toPath(), Charset.defaultCharset())) {
-   List&lt;String&gt; fileLines = lines.collect(toCollection(LinkedList&lt;String&gt;::new));
- }
-</code></pre></li>
-<li><p>输出歌曲《Happy Birthday to You!》 - 根据集合中不同的元素输出不同的字符串</p>
+<p><strong>多个 Region</strong>: 每个 region 包含多个 store，每个 CF 拥有一个 store</p>
 
-<pre><code class="language-java"> range(1, 5).boxed().map(i -&gt; { out.print(&quot;Happy Birthday &quot;); if (i == 3) return &quot;dear NAME&quot;; else return &quot;to You&quot;; }).forEach(out::println);
-</code></pre></li>
-<li><p>过滤并分组集合中的数字</p>
+<p><strong>store</strong>: 每个 store 包含多个 storeFile 和一个 memstore</p>
 
-<pre><code class="language-java"> Map&lt;String, List&lt;Integer&gt;&gt; result = Stream.of(49, 58, 76, 82, 88, 90).collect(groupingBy(forPredicate(i -&gt; i &gt; 60, &quot;passed&quot;, &quot;failed&quot;)));
-</code></pre></li>
-<li><p>获取并解析 xml 协议的 Web Service</p>
+<p><strong>Memstore</strong>: region 的写缓存。保存还未写入 HFile 的数据，写入数据前会先做排序，每个 region 每个 CF 都会拥有一个 Memstore，这就是为什么 CF 不能建太多的原因。</p>
 
-<pre><code class="language-java">FeedType feed = JAXB.unmarshal(new URL(&quot;http://search.twitter.com/search.atom?&amp;q=java8&quot;), FeedType.class);
-JAXB.marshal(feed, System.out);
-</code></pre></li>
-<li><p>获得集合中最小 / 最大的数字</p>
+<p><strong>storeFile</strong>: 真正存储 keyvalue 数据的文件，其保存的文件是排序过的。一个 storeFile 对应一个 HFile。保存在 HDFS 中</p>
 
-<pre><code class="language-java"> int min = Stream.of(14, 35, -7, 46, 98).reduce(Integer::min).get();
- min = Stream.of(14, 35, -7, 46, 98).min(Integer::compare).get();
- min = Stream.of(14, 35, -7, 46, 98).mapToInt(Integer::new).min();
+<p>HFile 分为数据块，索引块，bloom 过滤器以及 trailer。</p>
 
- int max = Stream.of(14, 35, -7, 46, 98).reduce(Integer::max).get();
- max = Stream.of(14, 35, -7, 46, 98).max(Integer::compare).get();
- max = Stream.of(14, 35, -7, 46, 98).mapToInt(Integer::new).max();
-</code></pre></li>
-<li><p>并行处理</p>
+<p><img src="https://img-blog.csdn.net/20171015100418759?watermark/2/text/aHR0cDovL2Jsb2cuY3Nkbi5uZXQvbGl3ZWlzbmFrZQ==/font/5a6L5L2T/fontsize/400/fill/I0JBQkFCMA==/dissolve/70/gravity/Center" alt=""/></p>
 
-<pre><code class="language-java"> long result = dataList.parallelStream().mapToInt(line -&gt; processItem(line)).sum();
-</code></pre></li>
-<li><p>集合上的各种查询 (LINQ in Java)</p>
+<p><strong>Trailer</strong> 主要记录了 HFile 的基本信息，各个部分的偏移和地址信息。</p>
 
-<pre><code class="language-java">List&lt;Album&gt; albums = Arrays.asList(unapologetic, tailgates, red);
+<p><strong>Data block</strong> 主要存储用户的 key-value 数据</p>
 
-//筛选出至少有一个track评级4分以上的专辑，并按照名称排序后打印出来。
-albums.stream()
-  .filter(a -&gt; a.tracks.stream().anyMatch(t -&gt; (t.rating &gt;= 4)))
-  .sorted(comparing(album -&gt; album.name))
-  .forEach(album -&gt; System.out.println(album.name));
+<p><strong>Bloom filter</strong> 主要用来快速定位文件是否不在数据块。</p>
 
-//合并所有专辑的track
-List&lt;Track&gt; allTracks = albums.stream()
-  .flatMap(album -&gt; album.tracks.stream())
-  .collect(toList());
+<p><img src="https://img-blog.csdn.net/20171015103532031?watermark/2/text/aHR0cDovL2Jsb2cuY3Nkbi5uZXQvbGl3ZWlzbmFrZQ==/font/5a6L5L2T/fontsize/400/fill/I0JBQkFCMA==/dissolve/70/gravity/Center" alt=""/></p>
 
-//根据track的评分对所有track分组
-Map&lt;Integer, List&lt;Track&gt;&gt; tracksByRating = allTracks.stream()
-  .collect(groupingBy(Track::getRating));
-</code></pre></li>
-</ol>
+<p><img src="https://img-blog.csdn.net/20171015103549504?watermark/2/text/aHR0cDovL2Jsb2cuY3Nkbi5uZXQvbGl3ZWlzbmFrZQ==/font/5a6L5L2T/fontsize/400/fill/I0JBQkFCMA==/dissolve/70/gravity/Center" alt=""/></p>
+
+<p>比较容易混淆的是 <strong>zookeeper 和 hmaster</strong>。</p>
+
+<p><strong>Zookeeper</strong> 负责保持多台 Hmaster 中只有一台是活跃的；存储 Hbase 的 schema，table，CF 等元信息；存储所有的 region 入口；监控 regionServer 的状态，并将该信息通知 hmaster。可以看出来，zookeeper 几乎是负责整个集群的关键信息存取以及关键状态监控。<strong>如果 zookeeper 挂了，那么整个 hbase 集群几乎就是不可用的状态</strong>。</p>
+
+<p><img src="https://img-blog.csdn.net/20171007233209495?watermark/2/text/aHR0cDovL2Jsb2cuY3Nkbi5uZXQvbGl3ZWlzbmFrZQ==/font/5a6L5L2T/fontsize/400/fill/I0JBQkFCMA==/dissolve/70/gravity/Center" alt=""/></p>
+
+<p><strong>Hmaster</strong> 则是负责对 table 元数据的管理；对 HRegion 的负载均衡，调整 HRegion 的布局，比如分裂和合并；包括恢复数据的迁移等。Hmaster 相当于对 RegionServer 的后台管理，对于一些定制的管理行为，zookeeper 不可能帮你完成，于是乎才有了 hmaster。<strong>如果 hmaster 挂了，除了不能对 table 进行管理配置，不能扩展 region，并不会影响整体服务的可用性</strong>。</p>
+
+<p>接下来我们来关注一些关键流程。</p>
+
+<p><strong>客户端首次读写的流程</strong>：</p>
+
+<p>1. 客户端首先从 zookeeper 中得到 META table 的位置，根据 META table 的存储位置得到具体的 RegionServer 是哪台</p>
+
+<p>2. 询问具体的 RegionServer</p>
+
+<p><strong>写流程</strong>：</p>
+
+<p>1. 首先写入 WAL 日志，以防 crash。</p>
+
+<p>2. 紧接着写入 Memstore，即写缓存。由于是内存写入，速度较快。</p>
+
+<p>3. 立马返回客户端表示写入完毕。</p>
+
+<p>4. 当 Memstore 满时，从 Memstore 刷新到 HFile，磁盘的顺序写速度非常快，并记录下最后一次最高的 sequence 号。这样系统能知道哪些记录已经持久化，哪些没有。</p>
+
+<p><strong>读流程</strong>：</p>
+
+<p>1. 首先到读缓存 BlockCache 中查找可能被缓存的数据</p>
+
+<p>2. 如果未找到，到写缓存查找已提交但是未落 HFile 的数据</p>
+
+<p>3. 如果还未找到， 到 HFile 中继续查找数据</p>
+
+<p><img src="https://img-blog.csdn.net/20171008110233034?watermark/2/text/aHR0cDovL2Jsb2cuY3Nkbi5uZXQvbGl3ZWlzbmFrZQ==/font/5a6L5L2T/fontsize/400/fill/I0JBQkFCMA==/dissolve/70/gravity/Center" alt=""/></p>
+
+<p><strong>数据紧凑</strong>：</p>
+
+<p>数据从 memStore 刷新到 HFile 时，为了保持简单，都是每个 memStore 放一个 HFile，这会带来大量小 HFile 文件，使得查询时效率相对较低，于是，采用数据紧凑的方式将多个小文件压缩为几个大文件。其中，minor compaction 是自动将相关的小文件做一些适当的紧凑，但不彻底；而 major compaction 则是放在午夜跑的定时任务，将文件做最大化的紧凑。</p>
+
+<p><img src="https://img-blog.csdn.net/20171008114505743?watermark/2/text/aHR0cDovL2Jsb2cuY3Nkbi5uZXQvbGl3ZWlzbmFrZQ==/font/5a6L5L2T/fontsize/400/fill/I0JBQkFCMA==/dissolve/70/gravity/Center" alt=""/></p>
+
+<p><img src="https://img-blog.csdn.net/20171008114703447?watermark/2/text/aHR0cDovL2Jsb2cuY3Nkbi5uZXQvbGl3ZWlzbmFrZQ==/font/5a6L5L2T/fontsize/400/fill/I0JBQkFCMA==/dissolve/70/gravity/Center" alt=""/></p>
+
+<p><strong>数据恢复流程</strong>：</p>
+
+<p>当 RegionServer 挂了，zookeeper 很快就能检测到，于是将其下的 region 状态设置为不可用。Hmaster 随即开始恢复的流程。</p>
+
+<p>1. HFile 本身有 2 个备份，而且有专门的 HDFS 来管理其下的文件。因此对 HFile 来说并不需要恢复。</p>
+
+<p>2. Hmaster 重置 region 到新的 regionServer</p>
+
+<p>3. 之前在 MemStore 中丢失的数据，通过 WAL 分裂先将 WAL 按照 region 切分。切分的原因是 WAL 并不区分 region，而是所有 region 的 log 都写入同一个 WAL。</p>
+
+<p>4. 根据 WAL 回放并恢复数据。回放的过程实际上先进 MemStore，再 flush 到 HFile</p>
+
+<p><img src="https://img-blog.csdn.net/20171008154723461?watermark/2/text/aHR0cDovL2Jsb2cuY3Nkbi5uZXQvbGl3ZWlzbmFrZQ==/font/5a6L5L2T/fontsize/400/fill/I0JBQkFCMA==/dissolve/70/gravity/Center" alt=""/></p>
+
+<p><img src="https://img-blog.csdn.net/20171008154745990?watermark/2/text/aHR0cDovL2Jsb2cuY3Nkbi5uZXQvbGl3ZWlzbmFrZQ==/font/5a6L5L2T/fontsize/400/fill/I0JBQkFCMA==/dissolve/70/gravity/Center" alt=""/></p>
+
+<h2 id="toc_0">参考资料</h2>
+
+<ul>
+<li><a href="https://yq.aliyun.com/articles/54410">我们为什么选择 hbase</a></li>
+<li><a href="https://mapr.com/blog/in-depth-look-hbase-architecture/">hbase 架构</a></li>
+<li><a href="http://hbasefly.com/2016/10/29/hbase-regionserver-recovering/">HBase 原理－RegionServer 宕机数据恢复</a></li>
+<li><a href="http://hbasefly.com/2016/03/25/hbase-hfile/">HBase – 存储文件 HFile 结构解析</a></li>
+<li><a href="http://blog.cloudera.com/blog/2012/06/hbase-io-hfile-input-output/">Apache HBase I/O – HFile</a></li>
+</ul>
 
                         
                       </div>
@@ -214,10 +233,10 @@ Map&lt;Integer, List&lt;Track&gt;&gt; tracksByRating = allTracks.stream()
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/6/24</span>
+                    <span class="date">2018/6/25</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Java.html'>Java</a></span>
+          					    <span class="posted-in"><a href='Persistence.html'>Persistence</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -307,6 +326,12 @@ Map&lt;Integer, List&lt;Track&gt;&gt; tracksByRating = allTracks.stream()
 	      
 		      
 			      <li class="post">
+			        <a href="15359384213292.html">Securing Spring Boot with JWTs</a>
+			      </li>
+		     
+		  
+		      
+			      <li class="post">
 			        <a href="15358820607055.html">Java 8 Concurrency Tutorial: Atomic Variables and ConcurrentMap</a>
 			      </li>
 		     
@@ -326,12 +351,6 @@ Map&lt;Integer, List&lt;Track&gt;&gt; tracksByRating = allTracks.stream()
 		      
 			      <li class="post">
 			        <a href="15358756631902.html">Java 8 Stream Tutorial</a>
-			      </li>
-		     
-		  
-		      
-			      <li class="post">
-			        <a href="15358753472382.html">Migrate Maven Projects to Java 11</a>
 			      </li>
 		     
 		  

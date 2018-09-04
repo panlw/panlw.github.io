@@ -105,292 +105,131 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15288661714760.html">
+                <a class="clearlink" href="15288672533707.html">
                 
-                  <h1>Python最广为使用的并发库futures使用入门与内部原理</h1>
+                  <h1>WebAssembly：系统编程语言的逆袭</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://mp.weixin.qq.com/s?__biz=MzI0MzQyMTYzOQ==&amp;mid=2247484110&amp;idx=1&amp;sn=66d31f0a59cac900975ca724465d5527&amp;chksm=e96c1a66de1b9370468b2f1ed9b7d669f5c933ff5942550b58479df3197440e664ff7b8f4b48&amp;mpshare=1&amp;scene=23&amp;srcid=0613YZmmW3drwtB11sjqs4ZN%23rd">原文地址</a></p>
+<p>2018年6月12日 李好<br/>
+<a href="https://insights.thoughtworks.cn/webassembly-system-programming-language/">https://insights.thoughtworks.cn/webassembly-system-programming-language/</a></p>
 </blockquote>
 
-<p>在使用 Python 处理任务时，限于单线程处理能力有限，需要将任务并行化，分散到多个线程或者是多个进程去执行。</p>
+<h3 id="toc_0">引子</h3>
 
-<p>concurrent.futures 就是这样一种库，它可以让用户可以非常方便的将任务并行化。这个名字有点长，后面我直接使用词汇 concurrent 来代替 concurrent.futures。</p>
+<blockquote>
+<p>Any application that can be written in JavaScript, will eventually be written in JavaScript. ——<a href="https://en.wikipedia.org/wiki/Jeff_Atwood">Atwood</a>‘s Law</p>
+</blockquote>
 
-<p><img src="media/15288661714760/15288662944396.jpg" alt=""/></p>
+<p>有人用 JavaScript 做<a href="https://pegjs.org/">语法词法解析</a>，有人写了 <a href="https://github.com/copy/v86">x86 模拟器</a>, 还有人用 JavaScript 写了可自举的 <a href="https://github.com/copy/v86">JavaScript 引擎</a>。JavaScript 早已经在” 重新发明一切” 的路上一骑绝尘了，JavaScript 的流行也使它始终位于各大语言排行榜上的前列，这无疑是属于 JavaScript 程序 yuan 们最好的时代。</p>
 
-<p>concurrent 提供了两种并发模型，一个是多线程 ThreadPoolExecutor，一个是多进程 ProcessPoolExecutor。对于 IO 密集型任务宜使用多线程模型。对于计算密集型任务应该使用多进程模型。</p>
+<p>这并非是因为 JavaScript 是门优秀的语言 (恰恰相反)，而是因为当今的世界是 Web 的世界，Web 的载体浏览器只会说 JavaScript。这难免使人眼红，王侯将相，世人无数次想要取代 JavaScript 的地位，目前为止的历史我们都看到了，无一不铩羽而归。求上不得，得其中，最新成果是大家 (伙儿) 齐心协力把 JavaScript 变成了新一代的汇编语言。请移步<a href="https://github.com/copy/v86">这里</a>看大家的最新成果。</p>
 
-<p>为什么要这样选择呢？是因为 Python GIL 的存在让 Python 虚拟机在进行运算时无法有效利用多核心。对于纯计算任务，它永远最多只能榨干单个 CPU 核心。如果要突破这个瓶颈，就必须 fork 出多个子进程来分担计算任务。而对于 IO 密集型任务，CPU 使用率往往是极低的，使用多线程虽然会加倍 CPU 使用率，但是还远远到不了饱和 (100%) 的地步，在单核心可以应付整体计算的前提下，自然是应该选择资源占用少的模式，也就是多线程模式。</p>
+<h3 id="toc_1">WebAssembly</h3>
 
-<p>接下来我们分别尝试一下两种模式来进行并行计算。</p>
+<p>去年 11 月 13 日，Mozilla 在其官方博客上发表了一篇文章，<a href="https://blog.mozilla.org/blog/2017/11/13/webassembly-in-browsers">WebAssembly support now shipping in all major browsers</a>，指出当今世界四大主流浏览器 Firefox，Chrome，Safari，Edge(排名分先后)，都已经支持了名为 WebAssembly 的新技术，并回顾了一路走来的艰难历程。最后指出这是新时代的开端，大家一起欢呼吧。那么，WebAssembly 到底是啥？让我们发出发聋振聩的三连问：</p>
 
-<h2 id="toc_0">多线程</h2>
+<h4 id="toc_2">可以吃吗？</h4>
 
-<p><img src="media/15288661714760/15288663302029.jpg" alt=""/></p>
+<p>请移步 <a href="https://webassembly.org/">WebAssembly 官网</a>。官网解释如下：</p>
 
-<p>多线程模式适合 IO 密集型运算，这里我要使用 sleep 来模拟一下慢速的 IO 任务。同时为了方便编写命令行程序，这里使用 Google fire 开源库来简化命令行参数处理。</p>
+<blockquote>
+<p>WebAssembly or wasm is a new portable, size- and load-time-efficient format suitable for compilation to the web.</p>
+</blockquote>
 
-<pre><code class="language-py"># coding: utf8
-# t.py
-import time
-import fire
-import threading
-from concurrent.futures import ThreadPoolExecutor, wait
-
-# 分割子任务
-def each_task(index):
-    time.sleep(1)  # 睡1s，模拟IO
-    print &quot;thread %s square %d&quot; % (threading.current_thread().ident, index)
-    return index * index  # 返回结果
-
-
-def run(thread_num, task_num):
-    # 实例化线程池，thread_num个线程
-    executor = ThreadPoolExecutor(thread_num)
-    start = time.time()
-    fs = []  # future列表
-    for i in range(task_num):
-        fs.append(executor.submit(each_task, i))  # 提交任务
-    wait(fs)  # 等待计算结束
-    end = time.time()
-    duration = end - start
-    s = sum([f.result() for f in fs])  # 求和
-    print &quot;total result=%s cost: %.2fs&quot; % (s, duration)
-    executor.shutdown()  # 销毁线程池
-
-if __name__ == &#39;__main__&#39;:
-    fire.Fire(run)
-</code></pre>
-
-<p>运行<code>python t.py 2 10</code>，也就是 2 个线程跑 10 个任务，观察输出</p>
-
-<pre><code class="language-log">thread 123145422131200 square 0
-thread 123145426337792 square 1
-thread 123145426337792 square 2
-thread 123145422131200 square 3
-thread 123145426337792 square 4
-thread 123145422131200 square 5
-thread 123145426337792 square 6
-thread 123145422131200 square 7
-thread 123145426337792 square 8
-thread 123145422131200 square 9
-total result=285 cost: 5.02s
-</code></pre>
-
-<p>我们看到计算总共花费了大概 5s，总共 sleep 了 10s 由两个线程分担，所以是 5s。读者也许会问，为什么输出乱了，这是因为 print 操作不是原子的，它是两个连续的 write 操作合成的，第一个 write 输出内容，第二个 write 输出换行符，write 操作本身是原子的，但是在多线程环境下，这两个 write 操作会交错执行，所以输出就不整齐了。如果将代码稍作修改，将 print 改成单个 write 操作，输出就整齐了 (关于 write 是否绝对原子性还需要进一步深入讨论)</p>
-
-<pre><code class="language-py"># 分割子任务
-def each_task(index):
-    time.sleep(1)  # 睡1s，模拟IO
-    import sys
-    sys.stdout.write(&quot;thread %s square %d\n&quot; % (threading.current_thread().ident, index))
-    return index * index  # 返回结果
-</code></pre>
-
-<p>我们再跑一下<code>python t.py 2 10</code>，观察输出</p>
-
-<pre><code class="language-log">thread 123145438244864 square 0
-thread 123145442451456 square 1
-thread 123145442451456 square 2
-thread 123145438244864 square 3
-thread 123145438244864 square 4
-thread 123145442451456 square 5
-thread 123145438244864 square 6
-thread 123145442451456 square 7
-thread 123145442451456 square 9
-thread 123145438244864 square 8
-total result=285 cost: 5.02s
-</code></pre>
-
-<p>接下来，我们改变参数，扩大到 10 个线程，看看所有任务总共需要多久完成</p>
-
-<pre><code class="language-log">&gt; python t.py 10 10
-thread 123145327464448 square 0
-thread 123145335877632 square 2
-thread 123145331671040 square 1
-thread 123145344290816 square 4
-thread 123145340084224 square 3
-thread 123145348497408 square 5
-thread 123145352704000 square 6
-thread 123145356910592 square 7
-thread 123145365323776 square 9
-thread 123145361117184 square 8
-total result=285 cost: 1.01s
-</code></pre>
-
-<p>可以看到 1s 中就完成了所有的任务。这就是多线程的魅力，可以将多个 IO 操作并行化，减少整体处理时间。</p>
-
-<h2 id="toc_1">多进程</h2>
-
-<p><img src="media/15288661714760/15288664619676.jpg" alt=""/></p>
-
-<p>相比多线程适合处理 IO 密集型任务，多进程适合计算密集型。接下来我们要模拟一下计算密集型任务。我的个人电脑有 2 个核心，正好可以体验多核心计算的优势。</p>
-
-<p>那这个密集型计算任务怎么模拟呢，我们可以使用圆周率计算公式。</p>
-
-<p><img src="media/15288661714760/15288664769272.jpg" alt=""/></p>
-
-<p>通过扩大级数的长度 n，就可以无限逼近圆周率。当 n 特别大时，计算会比较缓慢，这时候 CPU 就会一直处于繁忙状态，这正是我们所期望的。</p>
-
-<p>好，下面开写多进程并行计算代码</p>
-
-<pre><code class="language-py"># coding: utf8
-# p.py
-import os
-import sys
-import math
-import time
-import fire
-from concurrent.futures import ProcessPoolExecutor, wait
-
-# 分割子任务
-def each_task(n):
-    # 按公式计算圆周率
-    s = 0.0
-    for i in range(n):
-        s += 1.0/(i+1)/(i+1)
-    pi = math.sqrt(6*s)
-    # os.getpid可以获得子进程号
-    sys.stdout.write(&quot;process %s n=%d pi=%s\n&quot; % (os.getpid(), n, pi))
-    return pi
-    
-def run(process_num, *ns):  # 输入多个n值，分成多个子任务来计算结果
-    # 实例化进程池，process_num个进程
-    executor = ProcessPoolExecutor(process_num)
-    start = time.time()
-    fs = []  # future列表
-    for n in ns:
-        fs.append(executor.submit(each_task, int(n)))  # 提交任务
-    wait(fs)  # 等待计算结束
-    end = time.time()
-    duration = end - start
-    print &quot;total cost: %.2fs&quot; % duration
-    executor.shutdown()  # 销毁进程池
-
-if __name__ == &#39;__main__&#39;:
-    fire.Fire(run)
-</code></pre>
-
-<p>通过代码可以看出多进程模式在代码的编写上和多线程没有多大差异，仅仅是换了一个类名，其它都一摸一样。这也是 concurrent 库的魅力所在，将多线程和多进程模型抽象出了一样的使用接口。</p>
-
-<p>接下来我们运行一下<code>python p.py 1 5000000 5001000 5002000 5003000</code>，总共计算 4 次 pi，只用一个进程。观察输出</p>
-
-<pre><code class="language-log">process 96354 n=5000000 pi=3.1415924626
-process 96354 n=5001000 pi=3.14159246264
-process 96354 n=5002000 pi=3.14159246268
-process 96354 n=5003000 pi=3.14159246272
-total cost: 9.45s
-</code></pre>
-
-<p>可以看出来随着 n 的增大，结果越来越逼近圆周率，因为只用了一个进程，所以任务是串行执行，总共花了大约 9.5s。</p>
-
-<p>接下来再增加一个进程，观察输出</p>
-
-<pre><code>&gt; python p.py 2 5000000 5001000 5002000 5003000
-process 96529 n=5001000 pi=3.14159246264
-process 96530 n=5000000 pi=3.1415924626
-process 96529 n=5002000 pi=3.14159246268
-process 96530 n=5003000 pi=3.14159246272
-total cost: 4.98s
-</code></pre>
-
-<p>从耗时上看缩短了接近 1 半，说明多进程确实起到了计算并行化的效果。此刻如果使用 top 命令观察进程的 CPU 使用率，这两个进程的 CPU 使用率都占到了接近 100%。</p>
-
-<p>如果我们再增加 2 个进程，是不是还能继续压缩计算时间呢</p>
-
-<pre><code>&gt; python p.py 4 5000000 5001000 5002000 5003000
-process 96864 n=5002000 pi=3.14159246268
-process 96862 n=5000000 pi=3.1415924626
-process 96863 n=5001000 pi=3.14159246264
-process 96865 n=5003000 pi=3.14159246272
-total cost: 4.86s
-</code></pre>
-
-<p>看来耗时不能继续节约了，因为只有 2 个计算核心，2 个进程已经足以榨干它们了，即使再多加进程也只有 2 个计算核心可用。</p>
-
-<h2 id="toc_2">深入原理</h2>
-
-<p>concurrent 用的时候非常简单，但是内部实现并不是很好理解。在深入分析内部的结构之前，我们需要先理解一下 Future 这个对象。在前面的例子中，executor 提交 (submit) 任务后都会返回一个 Future 对象，它表示一个结果的坑，在任务刚刚提交时，这个坑是空的，一旦子线程运行任务结束，就会将运行的结果塞到这个坑里，主线程就可以通过 Future 对象获得这个结果。简单一点说，Future 对象是主线程和子线程通信的媒介。</p>
-
-<p><img src="media/15288661714760/15288665896000.jpg" alt=""/></p>
-
-<p>Future 对象的内部逻辑简单一点可以使用下面的代码进行表示</p>
-
-<pre><code class="language-py">class Future(object):
-
-    def __init__(self):
-        self._condition = threading.Condition()  # 条件变量
-        self._result = None
-
-    def result(self, timeout=None):
-        self._condition.wait(timeout)
-        return self._result
-
-    def set_result(self, result):
-        self._result = result
-        self._condition.notify_all()
-</code></pre>
-
-<p>主线程将任务塞进线程池后得到了这个 Future 对象，它内部的_result 还是空的。如果主线程调用 result() 方法获取结果，就会阻塞在条件变量上。如果子线程计算任务完成了就会立即调用 set_result() 方法将结果填充进 future 对象，并唤醒阻塞在条件变量上的线程，也就是主线程。这时主线程立即醒过来并正常返回结果。</p>
-
-<h2 id="toc_3">线程池内部结构</h2>
-
-<p>主线程和子线程交互分为两部分，第一部分是主线程如何将任务传递给子线程，第二部分是子线程如何将结果传递给主线程。第二部分已经讲过了是通过 Future 对象来完成的。那第一部分是怎么做到的呢？</p>
-
-<p><img src="media/15288661714760/15288666117893.jpg" alt=""/></p>
-
-<p>如上图所示，秘密就在于这个队列，主线程是通过队列将任务传递给多个子线程的。一旦主线程将任务塞进任务队列，子线程们就会开始争抢，最终只有一个线程能抢到这个任务，并立即进行执行，执行完后将结果放进 Future 对象就完成了这个任务的完整执行过程。</p>
-
-<h2 id="toc_4">线程池的缺点</h2>
-
-<p>concurrent 的线程池有个重大的设计问题，那就是任务队列是无界的。如果队列的生产者任务生产的太快，而线程池消费太慢处理不过来，任务就会堆积。如果堆积一直持续下去，内存就会持续增长直到 OOM，任务队列里堆积的所有任务全部彻底丢失。用户使用时一定要注意这点，并做好适当的控制。</p>
-
-<h2 id="toc_5">进程池内部结构</h2>
-
-<p>进程池内部结构复杂，连 concurent 库的作者自己也觉得特别复杂，所以在代码里专门画了一张 ascii 图来讲解模型内部结构</p>
-
-<p><img src="media/15288661714760/15288666342206.jpg" alt=""/></p>
-
-<p><img src="media/15288661714760/15288666482842.jpg" alt=""/></p>
-
-<p>我觉得作者的这张图还不够好懂，所以也单独画了一张图，请读者们仔细结合上面两张图，一起来过一边完整的任务处理过程。</p>
+<p><strong>关键词：</strong></p>
 
 <ol>
-<li> 主线程将任务塞进 TaskQueue(普通内存队列)，拿到 Future 对象</li>
-<li> 唯一的管理线程从 TaskQueue 获取任务，塞进 CallQueue(分布式跨进程队列)</li>
-<li> 子进程从 CallQueue 中争抢任务进行处理</li>
-<li> 子进程将处理结果塞进 ResultQueue(分布式跨进程队列)</li>
-<li> 管理线程从 ResultQueue 中获取结果，塞进 Future 对象</li>
-<li> 主线程从 Future 对象中拿到结果</li>
+<li> <strong>可移植：</strong> WebAssembly 是一种可移植的二进制格式，它不依赖于具体的浏览器平台。</li>
+<li> <strong>高效：</strong>WebAssembly 被设计为针对 Size 和 Load Time 进行优化的格式，可以在各个硬件平台上以 native speed 运行。</li>
+<li> <strong>安全：</strong>WebAssembly 是运行在沙盒内的，甚至可以和当前的 JavaScript 虚拟机共享一套环境，并且也遵守浏览器各种跨域不跨域的规章制度。</li>
+<li> <strong>开放：</strong>WebAssembly 是开放标准，不受某一家厂商控制 (Oracle 你听到了吗)。并且被设计为可以和 JavaScript API 和 Context 交互。</li>
 </ol>
 
-<p>这个复杂的流程中涉及到 3 个队列，还有中间附加的管理线程。那为什么作者要设计的这么复杂，这样的设计有什么好处？</p>
+<p>简而言之，WebAssembly 可以被看做是通过浏览器运行的某种高效的开放的二进制格式，并且可以和 JavaScript 环境互通。</p>
 
-<p>首先，我们看这张图的左半边，它和线程池的处理流程没有太多区别，区别仅仅是管理线程只有一个，而线程池的子线程会有多个。这样设计可以使得多进程模型和多线程模型的使用方法保持一致，这就是为什么两个模型使用起来没有任何区别的原因所在——通过中间的管理线程隐藏了背后的多进程交互逻辑。</p>
+<p><a href="https://insights.thoughtworks.cn/wp-content/uploads/2018/06/2-2.png"><img src="https://insights.thoughtworks.cn/wp-content/uploads/2018/06/2-2.png" alt=""/></a></p>
 
-<p>然后我们再看这张图的右半边，管理线程通过两个队列来和子进程们进行交互，这两个队列都是跨进程队列 (multiprocessing.Queue)。CallQueue 是单生产者多消费者，ResultQueue 是多生产者单消费者。</p>
+<p>WebAssembly 的目的是取代 JavaScript 吗？<a href="https://webassembly.org/docs/faq/">FAQ</a> 这样回答：不，WebAssembly 是被设计来补充而不是替代 JavaScript。随着时间推移，越来越多的语言可以被编译为 WebAssembly，但是 JavaScript 还是作为 Web 唯一的动态语言而存在。</p>
 
-<p>CallQueue 是个有界队列，它的上限在代码里写死了为「子进程数 + 1」。如果子进程们处理不过来，CallQueue 就会变满，管理线程就会停止往里面塞数据。但是这里也遭遇了和线程池一样的问题，TaskQueue 是无界队列，它的内容可不管消费者是否在持续 (管理线程) 消费，TaskQueue 会无限制的持续生长，于是最终也会会导致 OOM。</p>
+<p>这样看来老二的位置摆得很正嘛。对于 WebAssembly， 笔者最看重的一点是作为开放标准的同时有粗大腿的支持 (M$ Google Apple Mozilla)，这才是它有可能活下来的原因。问题是可以吃吗，答案当然是可以吃（佛系码农也可以不吃）。</p>
 
-<h2 id="toc_6">跨进程队列</h2>
+<h4 id="toc_3">怎么吃？</h4>
 
-<p>进程池模型中的跨进程队列是用 multiprocessing.Queue 实现的。那这个跨进程队列内部细节是怎样的，它又是用什么高科技来实现的呢</p>
+<p>WebAssembly 同时存在一个二进制格式和一个文本的描述格式，这很像是机器语言和汇编语言的关系。这里我们用一个例子解释一下。</p>
 
-<p>笔者仔细阅读了 multiprocessing.Queue 的源码发现，它使用无名套接字 sockerpair 来完成的跨进程通信，socketpair 和 socket 的区别就在于 socketpair 不需要端口，不需要走网络协议栈，通过内核的套接字读写缓冲区直接进行跨进程通信。</p>
+<p><a href="https://insights.thoughtworks.cn/wp-content/uploads/2018/06/%E5%B1%8F%E5%B9%95%E5%BF%AB%E7%85%A7-2018-06-11-18.59.49.png"><img src="https://insights.thoughtworks.cn/wp-content/uploads/2018/06/%E5%B1%8F%E5%B9%95%E5%BF%AB%E7%85%A7-2018-06-11-18.59.49.png" alt=""/></a></p>
 
-<p><img src="media/15288661714760/15288666709878.jpg" alt=""/></p>
+<p>事实上，WebAssembly 可以被看作是运行在一个 structured stack virtual machine 里，懂行的朋友一眼就可以看出这和 Java bytecode 非常的像。所以大家不要以为 WebAssembly 是在重新发明 Flash 了，这货明明是在重新发明 Java Applet 啊，好吧 Silverlight 也有点像…。顺带一提，Android 的 Dalvik 为了效率，使用的是 register-based virtual machine。对 WebAssembly spec 感兴趣的朋友可以移步<a href="https://github.com/WebAssembly/spec">这里</a>。</p>
 
-<p>当父进程要传递任务给子进程时，先使用 pickle 将任务对象进行序列化成字节数组，然后将字节数组通过 socketpair 的写描述符写入内核的 buffer 中。子进程接下来就可以从 buffer 中读取到字节数组，然后再使用 pickle 对字节数组进行反序列化来得到任务对象，这样总算可以执行任务了。同样子进程将结果传递给父进程走的也是一样的流程，只不过这里的 socketpair 是 ResultQueue 内部创建的无名套接字。</p>
+<p>作为 WebAssembly 的 MVP，C/C++ 及其类库的支持是首当其冲的。因为基于 LLVM 的平台，所以理论 LLVM 支持的语言都可以编译为 WebAssembly，C/C++，rust，甚至 .net 和 Java 也可以编译到 WebAssembly，只不过托管语言都需要附带一个巨大的 runtime。</p>
 
-<p>multiprocessing.Queue 是支持双工通信，数据流向可以是父到子，也可以是子到父，只不过在 concurrent 的进程池实现中只用到了单工通信。CallQueue 是从父到子，ResultQueue 是从子到父。</p>
+<p>下面我们以 C/C++ 为例，我们写一个函数给 JavaScript 使用。</p>
 
-<h2 id="toc_7">总结</h2>
+<p><strong>步骤：</strong></p>
 
-<p>concurrent.futures 框架非常好用，虽然内部实现机制异常复杂，读者也无需完全理解内部细节就可以直接使用了。但是需要特别注意的是不管是线程池还是进程池其内部的任务队列都是无界的，一定要避免消费者处理不及时内存持续攀升的情况发生。</p>
+<ul>
+<li>  安装 WebAssembly 构建工具链 emscripten，针对 macOS，请参考这里</li>
+<li>  安装后，执行 <code>emcc --version</code> 判断是否成功</li>
+<li>  创建 C++ source：<code>cat random.cc</code></li>
+</ul>
+
+<pre><code>#include &lt;random&gt;
+#include &lt;cmath&gt;
+
+extern &quot;C&quot; {
+
+long normal_rand() {
+    static std::random_device rd{};
+    static std::mt19937 gen{rd()};
+
+    return std::lround(std::normal_distribution&lt;&gt;(0, 100)(gen));
+}
+
+}
+
+</code></pre>
+
+<p>这里用 C++ 产生一个正态分布，期望为<code>0</code>，方差<code>100</code>的随机数，然后导出为一个 C 函数 <code>normal_rand</code></p>
+
+<p>执行 <code>emcc --bind -std=c++14 --emrun -s WASM=1 -s EXPORTED_FUNCTIONS=&#39;[&quot;_normal_rand&quot;]&#39; -O3 -o random.html random.cc</code> 顺利的话会在当前目录生成如下文件</p>
+
+<pre><code>$ ls -l
+total 496
+-rw-r--r--  1 haoli  staff     810 Dec 24 21:44 random.cc
+-rw-r--r--  1 haoli  staff  102728 Dec 24 22:17 random.html
+-rw-r--r--  1 haoli  staff  120624 Dec 24 22:17 random.js
+-rw-r--r--  1 haoli  staff   20130 Dec 24 22:17 random.wasm
+
+</code></pre>
+
+<p><code>random.wasm</code> 就是我们的 WebAssembly，<code>random.js</code> 和 <code>random.html</code> 是模板代码，帮助我们加载 WebAssembly。</p>
+
+<p>执行 <code>emrun --no_browser --port 8821 random.html</code> 启动一个 WebServer</p>
+
+<p>用支持 WebAssembly 的浏览器访问 <a href="http://localhost:8821/random.html">http://localhost:8821/random.html</a>，然后在 console 里面执行 <code>Module._normal_rand()</code> 即可看到结果</p>
+
+<h4 id="toc_4">怎么做好吃？</h4>
+
+<p>古往今来，在浏览器里面尝试改善 JavaScript 性能和增强功能的尝试大约都失败了吧，前有 ActiveX，Java Applet，Flash，后有 Silverlight，Flex，NaCl。WebAssembly 应该是各个浏览器大佬的最新尝试。不过这次大家都学乖了，没人指 (xi) 望一个私有标准会成功，于是联合起来开发一个开放的标准。</p>
+
+<p>至少目前看来，结果还是很让人欣喜的。因为开放标准的缘故，除了上面的 emscripten，还有大量的工具开始支持 WebAssembly，甚至 clang 可以直接指定 target 为 WebAssembly。加上浏览器把诸如 DOM API 以及 WebGL API 都暴露给了 WebAssembly，应用场景相当可观。首当其冲的就是游戏厂商，<a href="https://blog.mozilla.org/blog/2014/03/12/mozilla-and-epic-preview-unreal-engine-4-running-in-firefox/">Epic</a> 和 <a href="https://blogs.unity3d.com/2017/03/31/5-6-is-now-available-and-completes-the-unity-5-cycle/">Unity</a> 都是 WebAssembly 的早期尝试者，他们已经把自己的游戏引擎移植到 Web 平台而不用重写代码。不仅如此， WebAssembly 还支持 non-web 的场景，比如 NodeJs 也开始支持 WebAssembly。WebAssembly 官网有个 <a href="https://webassembly.org/docs/use-cases/">use case</a> 清单，列举了可能的应用场景。图形图像的处理，计算机辅助设计，AR/VR，VPN，加解密等等。到那时，前端可以玩出的花样，想象空间实在太大。</p>
+
+<p>有点过于美好了哈，我们还是就此打住，拭目以待吧。</p>
+
+<h3 id="toc_5">Reference</h3>
+
+<p>这里列举一些 WebAssembly 相关的资源，各位随喜：</p>
+
+<ol>
+<li> <a href="https://www.funkykarts.rocks/demo.html">Funky Karts</a>, 移植到 WebAssembly 的网页游戏，作者在网站记录了学习 WebAssembly 到移植成功的全过程。</li>
+<li> <a href="https://www.funkykarts.rocks/demo.html">WasmExplorer</a>，在线的 C/C++ to WebAssembly 编辑器，同时也可以查看 Assembly 内容。</li>
+<li> <a href="https://wasdk.github.io/WasmFiddle/">WasmFiddle</a>，另一个在线编辑 WebAssembly 的工具</li>
+<li> <a href="https://wasdk.github.io/WasmFiddle/">WasmRocks WebAssembly 新闻站</a>。</li>
+<li> <a href="https://kripken.github.io/emscripten-site/">emscripten 官网</a>。</li>
+</ol>
 
                         
                       </div>
@@ -402,7 +241,7 @@ total cost: 4.86s
                     <span class="date">2018/6/13</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Cocurrency.html'>Cocurrency</a></span>
+          					    <span class="posted-in"><a href='Node.js.html'>Node.js</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -492,6 +331,12 @@ total cost: 4.86s
 	      
 		      
 			      <li class="post">
+			        <a href="15359384213292.html">Securing Spring Boot with JWTs</a>
+			      </li>
+		     
+		  
+		      
+			      <li class="post">
 			        <a href="15358820607055.html">Java 8 Concurrency Tutorial: Atomic Variables and ConcurrentMap</a>
 			      </li>
 		     
@@ -511,12 +356,6 @@ total cost: 4.86s
 		      
 			      <li class="post">
 			        <a href="15358756631902.html">Java 8 Stream Tutorial</a>
-			      </li>
-		     
-		  
-		      
-			      <li class="post">
-			        <a href="15358753472382.html">Migrate Maven Projects to Java 11</a>
 			      </li>
 		     
 		  

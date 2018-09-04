@@ -105,325 +105,247 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15352957865945.html">
+                <a class="clearlink" href="15352960653784.html">
                 
-                  <h1>ES modules: A cartoon deep-dive</h1>
+                  <h1>如何用Go实现一款类似滴滴优步的网络约车软件(含源码)</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
-                        	<blockquote>
-<p><a href="https://hacks.mozilla.org/2018/03/es-modules-a-cartoon-deep-dive/">https://hacks.mozilla.org/2018/03/es-modules-a-cartoon-deep-dive/</a></p>
+                        	<pre><code>Andrew Minkin  高可用架构  2017-02-28
+</code></pre>
+
+<blockquote>
+<p><a href="https://mp.weixin.qq.com/s?__biz=MzAwMDU1MTE1OQ==&amp;mid=2653548297&amp;idx=1&amp;sn=71fc309da16f1ed2b3d8b0d847f730a0&amp;chksm=813a7e91b64df78734a2d155e79bedab66ebd078aed5d6ab3f01eb1b1b2a1d957f7c3ca204d5&amp;scene=21#wechat_redirect">https://mp.weixin.qq.com/s?__biz=MzAwMDU1MTE1OQ==&amp;mid=2653548297&amp;idx=1&amp;sn=71fc309da16f1ed2b3d8b0d847f730a0&amp;chksm=813a7e91b64df78734a2d155e79bedab66ebd078aed5d6ab3f01eb1b1b2a1d957f7c3ca204d5&amp;scene=21#wechat_redirect</a></p>
 </blockquote>
 
-<p>ES modules bring an official, standardized module system to JavaScript. It took a while to get here, though — nearly 10 years of standardization work.</p>
+<p>导读：我们经常使用打车软件出行，也经常思考其架构设计。本文作者在所在国家也负责开发一款打车软件，并且开源了其中大部分代码，可以帮助我们更好了解网络约车软件的架构体系。本文由高可用架构翻译。</p>
 
-<p>But the wait is almost over. With the release of Firefox 60 in May (<a href="https://www.mozilla.org/en-US/firefox/developer/">currently in beta</a>), all major browsers will support ES modules, and the Node modules working group is currently working on adding ES module support to <a href="https://nodejs.org/en/">Node.js</a>. And <a href="https://www.youtube.com/watch?v=qR_b5gajwug">ES module integration for WebAssembly</a> is underway as well.</p>
+<p><img src="http://mmbiz.qpic.cn/mmbiz_png/8XkvNnTiapOMnaWlypBttlyEyfP2FFJwMFfEjD6rrQsA0WwRZRO3qIAxXqlMnWvILWiadCNXYPEa33aJO5PsaLDQ/0?wx_fmt=png" alt=""/></p>
 
-<p>Many JavaScript developers know that ES modules have been controversial. But few actually understand how ES modules work.</p>
+<p>各位读者好，本文将给大家分享我们如何通过内存存储实现地图动画车效果。 我们公司也运营了一个类似 Uber 的软件 Namba Taxi，我们需要在客户端主屏幕上显示动画车。 这篇文章是关于功能如何完整实现的文章，主要目的不是介绍 Go 语言。</p>
 
-<p>Let’s take a look at what problem ES modules solve and how they are different from modules in other module systems.</p>
+<h2 id="toc_0"><strong>开始</strong></h2>
 
-<h3 id="toc_0">What problem do modules solve?</h3>
+<p>这个故事始于 2015 年，我们的移动开发人员开发一款软件，工作主题是为出租车司机提供打车服务。 在应用程序中，动画汽车看起来像下面的图中动画那样 [1] 。</p>
 
-<p>When you think about it, coding in JavaScript is all about managing variables. It’s all about assigning values to variables, or adding numbers to variables, or combining two variables together and putting them into another variable.</p>
+<p><img src="http://mmbiz.qpic.cn/mmbiz_png/8XkvNnTiapOMnaWlypBttlyEyfP2FFJwMxosd5hJ54PXZDDXnOFqibTIYtdsQGWtr4VTgYObn1zb2ULagtDvmMCg/0?wx_fmt=png" alt=""/></p>
 
-<p><strong><a href="https://2r4s9p1yi1fa2jd7j43zph8r-wpengine.netdna-ssl.com/files/2018/03/01_variables.png"><img src="https://2r4s9p1yi1fa2jd7j43zph8r-wpengine.netdna-ssl.com/files/2018/03/01_variables-500x178.png" alt=""/></a></strong></p>
+<p>我们的第一个挑战是缺乏地图跟踪数据。我们每 15 秒获取一次位置数据。 我们不能简单减小上报间隔，因为当司机端程序上行数据时候，同时需要获取当前订单，下一个订单，以及一些警报功能（一个 SOS 按钮， 当司机按下它，其他司机就可以帮助他）。当我们减少更新间隔时，系统流量更大。 我们不确认我们是否能够扛住如此大的刷新。</p>
 
-<p>Because so much of your code is just about changing variables, how you organize these variables is going to have a big impact on how well you can code… and how well you can maintain that code.</p>
+<h2 id="toc_1"><strong>实现的第一步</strong></h2>
 
-<p>Having just a few variables to think about at one time makes things easier. JavaScript has a way of helping you do this, called scope. Because of how scopes work in JavaScript, functions can’t access variables that are defined in other functions.</p>
-
-<p><a href="https://2r4s9p1yi1fa2jd7j43zph8r-wpengine.netdna-ssl.com/files/2018/03/02_module_scope_01.png"><img src="https://2r4s9p1yi1fa2jd7j43zph8r-wpengine.netdna-ssl.com/files/2018/03/02_module_scope_01-500x292.png" alt=""/></a></p>
-
-<p>This is good. It means that when you’re working on one function, you can just think about that one function. You don’t have to worry about what other functions might be doing to your variables.</p>
-
-<p>It also has a downside, though. It does make it hard to share variables between different functions.</p>
-
-<p>What if you do want to share your variable outside of a scope? A common way to handle this is to put it on a scope above you… for example, on the global scope.</p>
-
-<p>You probably remember this from the jQuery days. Before you could load any jQuery plug-ins, you had to make sure that jQuery was in the global scope.</p>
-
-<p><a href="https://2r4s9p1yi1fa2jd7j43zph8r-wpengine.netdna-ssl.com/files/2018/03/02_module_scope_02.png"><img src="https://2r4s9p1yi1fa2jd7j43zph8r-wpengine.netdna-ssl.com/files/2018/03/02_module_scope_02-500x450.png" alt=""/></a></p>
-
-<p>This works, but they are some annoying problems that result.</p>
-
-<p>First, all of your script tags need to be in the right order. Then you have to be careful to make sure that no one messes up that order.</p>
-
-<p>If you do mess up that order, then in the middle of running, your app will throw an error. When the function goes looking for jQuery where it expects it — on the global — and doesn’t find it, it will throw an error and stop executing.</p>
-
-<p><a href="https://2r4s9p1yi1fa2jd7j43zph8r-wpengine.netdna-ssl.com/files/2018/03/02_module_scope_03.png"><img src="https://2r4s9p1yi1fa2jd7j43zph8r-wpengine.netdna-ssl.com/files/2018/03/02_module_scope_03-500x450.png" alt=""/></a></p>
-
-<p>This makes maintaining code tricky. It makes removing old code or script tags a game of roulette. You don’t know what might break. The dependencies between these different parts of your code are implicit. Any function can grab anything on the global, so you don’t know which functions depend on which scripts.</p>
-
-<p>A second problem is that because these variables are on the global scope, every part of the code that’s inside of that global scope can change the variable. Malicious code can change that variable on purpose to make your code do something you didn’t mean for it to, or non-malicious code could just accidentally clobber your variable.</p>
-
-<h3 id="toc_1">How do modules help?</h3>
-
-<p>Modules give you a better way to organize these variables and functions. With modules, you group the variables and functions that make sense to go together.</p>
-
-<p>This puts these functions and variables into a module scope. The module scope can be used to share variables between the functions in the module.</p>
-
-<p>But unlike function scopes, module scopes have a way of making their variables available to other modules as well. They can say explicitly which of the variables, classes, or functions in the module should be available.</p>
-
-<p>When something is made available to other modules, it’s called an export. Once you have an export, other modules can explicitly say that they depend on that variable, class or function.</p>
-
-<p><a href="https://2r4s9p1yi1fa2jd7j43zph8r-wpengine.netdna-ssl.com/files/2018/03/02_module_scope_04.png"><img src="https://2r4s9p1yi1fa2jd7j43zph8r-wpengine.netdna-ssl.com/files/2018/03/02_module_scope_04-500x450.png" alt=""/></a></p>
-
-<p>Because this is an explicit relationship, you can tell which modules will break if you remove another one.</p>
-
-<p>Once you have the ability to export and import variables between modules, it makes it a lot easier to break up your code into small chunks that can work independently of each other. Then you can combine and recombine these chunks, kind of like Lego blocks, to create all different kinds of applications from the same set of modules.</p>
-
-<p>Since modules are so useful, there have been multiple attempts to add module functionality to JavaScript. Today there are two module systems that are actively being used. CommonJS (CJS) is what Node.js has used historically. ESM (EcmaScript modules) is a newer system which has been added to the JavaScript specification. Browsers already support ES modules, and Node is adding support.</p>
-
-<p>Let’s take an in-depth look at how this new module system works.</p>
-
-<h3 id="toc_2">How ES modules work</h3>
-
-<p>When you’re developing with modules, you build up a graph of dependencies. The connections between different dependencies come from any import statements that you use.</p>
-
-<p>These import statements are how the browser or Node knows exactly what code it needs to load. You give it a file to use as an entry point to the graph. From there it just follows any of the import statements to find the rest of the code.</p>
-
-<p><a href="https://2r4s9p1yi1fa2jd7j43zph8r-wpengine.netdna-ssl.com/files/2018/03/04_import_graph.png"><img src="https://2r4s9p1yi1fa2jd7j43zph8r-wpengine.netdna-ssl.com/files/2018/03/04_import_graph-500x291.png" alt=""/></a></p>
-
-<p>But files themselves aren’t something that the browser can use. It needs to parse all of these files to turn them into data structures called Module Records. That way, it actually knows what’s going on in the file.</p>
-
-<p><a href="https://2r4s9p1yi1fa2jd7j43zph8r-wpengine.netdna-ssl.com/files/2018/03/05_module_record.png"><img src="https://2r4s9p1yi1fa2jd7j43zph8r-wpengine.netdna-ssl.com/files/2018/03/05_module_record-500x287.png" alt=""/></a></p>
-
-<p>After that, the module record needs to be turned into a module instance. An instance combines two things: the code and state.</p>
-
-<p>The code is basically a set of instructions. It’s like a recipe for how to make something. But by itself, you can’t use the code to do anything. You need raw materials to use with those instructions.</p>
-
-<p>What is state? State gives you those raw materials. State is the actual values of the variables at any point in time. Of course, these variables are just nicknames for the boxes in memory that hold the values.</p>
-
-<p>So the module instance combines the code (the list of instructions) with the state (all the variables’ values).</p>
-
-<p><a href="https://2r4s9p1yi1fa2jd7j43zph8r-wpengine.netdna-ssl.com/files/2018/03/06_module_instance.png"><img src="https://2r4s9p1yi1fa2jd7j43zph8r-wpengine.netdna-ssl.com/files/2018/03/06_module_instance-500x372.png" alt=""/></a></p>
-
-<p>What we need is a module instance for each module. The process of module loading is going from this entry point file to having a full graph of module instances.</p>
-
-<p>For ES modules, this happens in three steps.</p>
+<p>我们第一次的尝试比较简单：</p>
 
 <ol>
-<li> Construction — find, download, and parse all of the files into module records.</li>
-<li> Instantiation —find boxes in memory to place all of the exported values in (but don’t fill them in with values yet). Then make both exports and imports point to those boxes in memory. This is called linking.</li>
-<li> Evaluation —run the code to fill in the boxes with the variables’ actual values.</li>
+<li><p>处理请求并保存坐标。</p></li>
+<li><p>创建另一个请求并为汽车设置动画。</p></li>
 </ol>
 
-<p><a href="https://2r4s9p1yi1fa2jd7j43zph8r-wpengine.netdna-ssl.com/files/2018/03/07_3_phases.png"><img src="https://2r4s9p1yi1fa2jd7j43zph8r-wpengine.netdna-ssl.com/files/2018/03/07_3_phases-500x184.png" alt=""/></a></p>
+<p>显而易见，这样做存在一些问题，如大家在一些打车软件所见，我们不能正确地绘制汽车路线，汽车可能跑在田野，森林，湖泊和公寓上，用这种方法后效果看起来是这样的 [2]。</p>
 
-<p>People talk about ES modules being asynchronous. You can think about it as asynchronous because the work is split into these three different phases — loading, instantiating, and evaluating — and those phases can be done separately.</p>
+<p><img src="http://mmbiz.qpic.cn/mmbiz_png/8XkvNnTiapOMnaWlypBttlyEyfP2FFJwMdWKnMmHpaANJJicc67qKbmkgTPExVVtAl0y9MOeW1bjbRBavJOakx4w/0?wx_fmt=gif" alt=""/></p>
 
-<p>This means the spec does introduce a kind of asynchrony that wasn’t there in CommonJS. I’ll explain more later, but in CJS a module and the dependencies below it are loaded, instantiated, and evaluated all at once, without any breaks in between.</p>
-
-<p>However, the steps themselves are not necessarily asynchronous. They can be done in a synchronous way. It depends on what’s doing the loading. That’s because not everything is controlled by the ES module spec. There are actually two halves of the work, which are covered by different specs.</p>
-
-<p>The <a href="https://tc39.github.io/ecma262/#sec-modules">ES module spec</a> says how you should parse files into module records, and how you should instantiate and evaluate that module. However, it doesn’t say how to get the files in the first place.</p>
-
-<p>It’s the loader that fetches the files. And the loader is specified in a different specification. For browsers, that spec is the <a href="https://html.spec.whatwg.org/#fetch-a-module-script-tree">HTML spec</a>. But you can have different loaders based on what platform you are using.</p>
-
-<p><a href="https://2r4s9p1yi1fa2jd7j43zph8r-wpengine.netdna-ssl.com/files/2018/03/07_loader_vs_es.png"><img src="https://2r4s9p1yi1fa2jd7j43zph8r-wpengine.netdna-ssl.com/files/2018/03/07_loader_vs_es-500x286.png" alt=""/></a></p>
-
-<p>The loader also controls exactly how the modules are loaded. It calls the ES module methods — <code>ParseModule</code>, <code>Module.Instantiate</code>, and <code>Module.Evaluate</code>. It’s kind of like a puppeteer controlling the JS engine’s strings.</p>
-
-<p><a href="https://2r4s9p1yi1fa2jd7j43zph8r-wpengine.netdna-ssl.com/files/2018/03/08_loader_as_puppeteer.png"><img src="https://2r4s9p1yi1fa2jd7j43zph8r-wpengine.netdna-ssl.com/files/2018/03/08_loader_as_puppeteer-500x330.png" alt=""/></a></p>
-
-<p>Now let’s walk through each step in more detail.</p>
-
-<h4 id="toc_3">Construction</h4>
-
-<p>Three things happen for each module during the Construction phase.</p>
+<p>作为问题的解决方案，我们使用 OpenStreetMap Routeing Machine（OSRM）来规划线路并改进我们的算法，并使用相同的超时设置。</p>
 
 <ol>
-<li> Figure out where to download the file containing the module from (aka module resolution)</li>
-<li> Fetch the file (by downloading it from a URL or loading it from the file system)</li>
-<li> Parse the file into a module record</li>
+<li><p>发起请求。</p></li>
+<li><p>获取坐标。</p></li>
+<li><p>将保存的坐标发送到服务器。</p></li>
+<li><p>通过 OSRM 构建路线。</p></li>
+<li><p>返回数据到客户端。</p></li>
 </ol>
 
-<h4 id="toc_4">Finding the file and fetching it</h4>
+<p>通过线路规划体系，现在似乎可以工作了，但我们又面临单向道路的问题</p>
 
-<p>The loader will take care of finding the file and downloading it. First it needs to find the entry point file. In HTML, you tell the loader where to find it by using a script tag.</p>
+<p><img src="http://mmbiz.qpic.cn/mmbiz_png/8XkvNnTiapOMnaWlypBttlyEyfP2FFJwMoo1cEvvjvZgAuZ35V80cBJRJxyqHyfIGvQmDxJzDfMgUS2xuzzbNZg/0?wx_fmt=png" alt=""/></p>
 
-<p><a href="https://2r4s9p1yi1fa2jd7j43zph8r-wpengine.netdna-ssl.com/files/2018/03/08_script_entry.png"><img src="https://2r4s9p1yi1fa2jd7j43zph8r-wpengine.netdna-ssl.com/files/2018/03/08_script_entry-500x188.png" alt=""/></a></p>
+<p>例如，司机停留在红点的十字路口。 但他的设备位置准确性有问题，导致数据标记在十字路口的对面。 在客户端，我们获取这些坐标，保存并发送到后端，OSRM 建立一个合法的路线，并返回给应用程序。因为客户端移动得非常快，所以这种情况路线规划很可笑。<br/>
+我们以一种朴素的方式解决了这个问题。 <strong>我们检查两点之间的最短距离，并且不建立距离小于 20 米的路线。</strong> 使用该算法经过几天的测试后，我们决定发布我们的应用程序并希望获取一些反馈。<br/>
+尽管如此，我们的版本还存在一些问题，所以我们决定进行第二次迭代。</p>
 
-<p>But how does it find the next bunch of modules — the modules that <code>main.js</code> directly depends on?</p>
+<ol>
+<li><p>第一是车费计算器，<strong>计算是在司机端（客户端）完成，这样避免发送无用的请求</strong>，可以节约很多服务端资源。 另一方面，为了安全等方面考虑，我们需要在服务器端复制数据并保存它。</p></li>
+<li><p>此外，我们意识到每 15 秒一次上报太少，因为用户在屏幕打开后，15 秒后才会看到车在移动。</p></li>
+<li><p>此外，我们在司机端的 GPS 模块有很多问题，这个可能跟司机的手机设备相关。</p></li>
+<li><p>最后，我们想要在主屏幕上渲染动画车。</p></li>
+</ol>
 
-<p>This is where import statements come in. One part of the import statement is called the module specifier. It tells the loader where it can find each next module.</p>
+<h2 id="toc_2"><strong>还需要解决的问题</strong></h2>
 
-<p><a href="https://2r4s9p1yi1fa2jd7j43zph8r-wpengine.netdna-ssl.com/files/2018/03/09_module_specifier.png"><img src="https://2r4s9p1yi1fa2jd7j43zph8r-wpengine.netdna-ssl.com/files/2018/03/09_module_specifier-500x105.png" alt=""/></a></p>
+<ol>
+<li><p>从司机收集更多的数据</p></li>
+<li><p>在主屏幕上显示动画车</p></li>
+<li><p>在服务器端存储行车过程中计费数据</p></li>
+<li><p>节约移动流量</p></li>
+<li><p>每秒收集一次数据</p></li>
+</ol>
 
-<p>One thing to note about module specifiers: they sometimes need to be handled differently between browsers and Node. Each host has its own way of interpreting the module specifier strings. To do this, it uses something called a module resolution algorithm, which differs between platforms. Currently, some module specifiers that work in Node won’t work in the browser, but there is <a href="https://github.com/domenic/package-name-maps">ongoing work to fix this</a>.</p>
+<p>我想谈一谈有关节约移动流量带宽的问题。在我们国家，出租车收费非常便宜，我们像使用公共交通那样使用出租车。 例如，从城市的一边跑到另一边可能只需要 2 欧元，这就跟在巴黎坐地铁价格差不多。但另外一方面移动带宽成本还也很高，如果我们每秒节约 100 字节，那么我们将给为公司节省差不多 2000 美元。</p>
 
-<p>Until that’s fixed, browsers only accept URLs as module specifiers. They will load the module file from that URL. But that doesn’t happen for the whole graph at the same time. You don’t know what dependencies the module needs you to fetch until you’ve parsed the file… and you can’t parse the file until you fetched it.</p>
+<h2 id="toc_3"><strong>数据追踪</strong></h2>
 
-<p>This means that we have to go through the tree layer-by-layer, parsing one file, then figuring out its dependencies, and then finding and loading those dependencies.</p>
+<ol>
+<li><p>司机位置（纬度，经度）</p></li>
+<li><p>司机当前的 session 信息，在登录时我们会给司机端提供 session id</p></li>
+<li><p>订单信息（订单 ID 和车费）</p></li>
+</ol>
 
-<p><a href="https://2r4s9p1yi1fa2jd7j43zph8r-wpengine.netdna-ssl.com/files/2018/03/10_construction.png"><img src="https://2r4s9p1yi1fa2jd7j43zph8r-wpengine.netdna-ssl.com/files/2018/03/10_construction-500x302.png" alt=""/></a></p>
+<p>我们决定每一次数据上报应小于 100 字节。 我们寻找传输协议来解决这个问题</p>
 
-<p>If the main thread were to wait for each of these files to download, a lot of other tasks would pile up in its queue.</p>
+<p>正如你可以看到，我们审视了以下几个协议：</p>
 
-<p>That’s because when you’re working in a browser, the downloading part takes a long time.</p>
+<ol>
+<li><p>HTTP</p></li>
+<li><p>WebSockets</p></li>
+<li><p>TCP</p></li>
+<li><p>UDP</p></li>
+</ol>
 
-<p><img src="https://2r4s9p1yi1fa2jd7j43zph8r-wpengine.netdna-ssl.com/files/2018/03/11_latency-500x270.png" alt=""/>Based on <a href="https://twitter.com/srigi/status/917998817051541504">this chart</a>.</p>
+<p><strong>对我们来说理想的选择是 UDP</strong>，因为：</p>
 
-<p>Blocking the main thread like this would make an app that uses modules too slow to use. This is one of the reasons that the ES module spec splits the algorithm into multiple phases. Splitting out construction into its own phase allows browsers to fetch files and build up their understanding of the module graph before getting down to the synchronous work of instantiating.</p>
+<ol>
+<li><p>我们只发送数据报</p></li>
+<li><p>我们不需要保证送达</p></li>
+<li><p>极简主义</p></li>
+<li><p>保存大量数据</p></li>
+<li><p>只有 20 字节开销</p></li>
+<li><p>在我们的国家的移动网络没有被阻止</p></li>
+</ol>
 
-<p>This approach—having the algorithm split up into phases—is one of the key differences between ES modules and CommonJS modules.</p>
+<p>至于数据序列化，我们考察了：</p>
 
-<p>CommonJS can do things differently because loading files from the filesystem takes much less time than downloading across the Internet. This means Node can block the main thread while it loads the file. And since the file is already loaded, it makes sense to just instantiate and evaluate (which aren’t separate phases in CommonJS). This also means that you’re walking down the whole tree, loading, instantiating, and evaluating any dependencies before you return the module instance.</p>
+<ol>
+<li><p>JSON</p></li>
+<li><p>MsgPack</p></li>
+<li><p>Protobuf</p></li>
+</ol>
 
-<p><a href="https://2r4s9p1yi1fa2jd7j43zph8r-wpengine.netdna-ssl.com/files/2018/03/12_cjs_require.png"><img src="https://2r4s9p1yi1fa2jd7j43zph8r-wpengine.netdna-ssl.com/files/2018/03/12_cjs_require-500x298.png" alt=""/></a></p>
+<p><strong>我们选择 ProtoBuf</strong>，因为它对小数据非常有效。</p>
 
-<p>The CommonJS approach has a few implications, and I will explain more about those later. But one thing that it means is that in Node with CommonJS modules, you can use variables in your module specifier. You are executing all of the code in this module (up to the <code>require</code> statement) before you look for the next module. That means the variable will have a value when you go to do module resolution.</p>
+<p><img src="http://mmbiz.qpic.cn/mmbiz_png/8XkvNnTiapOMnaWlypBttlyEyfP2FFJwMLibAuRGlVYtrciaab5sWnAvKNlqe2ia2EiawGkbC9UovDeibPfdU186oGrQ/0?wx_fmt=png" alt=""/></p>
 
-<p>But with ES modules, you’re building up this whole module graph beforehand… before you do any evaluation. This means you can’t have variables in your module specifiers, because those variables don’t have values yet.</p>
+<p>以看到最近的竞争对手是 PB 的三倍。（小编：可以参考 TimYang 的一条微博 [3] ）</p>
 
-<p><a href="https://2r4s9p1yi1fa2jd7j43zph8r-wpengine.netdna-ssl.com/files/2018/03/13_static_import.png"><img src="https://2r4s9p1yi1fa2jd7j43zph8r-wpengine.netdna-ssl.com/files/2018/03/13_static_import-500x146.png" alt=""/></a></p>
+<h2 id="toc_4"><strong>每次上报总共的数据</strong></h2>
 
-<p>But sometimes it is really useful to use variables for module paths. For example, you might want to switch which module you load depending on what the code is doing or what environment it is running in.</p>
+<ol>
+<li><p>42 字节的业务数据</p></li>
+<li><p>加上 20 字节的 IP 报头</p></li>
+<li><p>得到每次上报 62 字节数据</p></li>
+</ol>
 
-<p>To make this possible for ES modules, there’s a proposal called <a href="https://github.com/tc39/proposal-dynamic-import">dynamic import</a>. With it, you can use an import statement like <code>import(</code>${path}/foo.js<code>)</code>.</p>
+<p>当我们获得数据时，我们考虑如何存储。</p>
 
-<p>The way this works is that any file loaded using <code>import()</code> is handled as the entry point to a separate graph. The dynamically imported module starts a new graph, which is processed separately.</p>
+<h2 id="toc_5"><strong>数据存储</strong></h2>
 
-<p><a href="https://2r4s9p1yi1fa2jd7j43zph8r-wpengine.netdna-ssl.com/files/2018/03/14dynamic_import_graph.png"><img src="https://2r4s9p1yi1fa2jd7j43zph8r-wpengine.netdna-ssl.com/files/2018/03/14dynamic_import_graph-500x389.png" alt=""/></a></p>
+<p>我们需要存储这些数据：</p>
 
-<p>One thing to note, though — any module that is in both of these graphs is going to share a module instance. This is because the loader caches module instances. For each module in a particular global scope, there will only be one module instance.</p>
+<ol>
+<li><p>标识司机的会话信息 session id</p></li>
+<li><p>车牌号</p></li>
+<li><p>订单 ID 和计费信息</p></li>
+<li><p>执行搜索的最后位置</p></li>
+<li><p>N 次最后位置以规划路线</p></li>
+</ol>
 
-<p>This means less work for the engine. For example, it means that the module file will only be fetched once even if multiple modules depend on it. (That’s one reason to cache modules. We’ll see another in the evaluation section.)</p>
+<h2 id="toc_6"><strong>使用的存储</strong></h2>
 
-<p>The loader manages this cache using something called a <a href="https://html.spec.whatwg.org/multipage/webappapis.html#module-map">module map</a>. Each global keeps track of its modules in a separate module map.</p>
+<ol>
+<li><p>使用 Percona 存储所有数据。 我们存储司机，订单，计费等。</p></li>
+<li><p>Redis 作为用于缓存。</p></li>
+<li><p>Elasticsearch 用于地理编码</p></li>
+</ol>
 
-<p>When the loader goes to fetch a URL, it puts that URL in the module map and makes a note that it’s currently fetching the file. Then it will send out the request and move on to start fetching the next file.</p>
+<p>如上所述，当有大量在线司机时候，使用这些存储来保存数据并不方便。 所以我们需要地理索引。</p>
 
-<p><a href="https://2r4s9p1yi1fa2jd7j43zph8r-wpengine.netdna-ssl.com/files/2018/03/15_module_map.png"><img src="https://2r4s9p1yi1fa2jd7j43zph8r-wpengine.netdna-ssl.com/files/2018/03/15_module_map-500x170.png" alt=""/></a></p>
+<p>我们评估了两个地理索引：</p>
 
-<p>What happens if another module depends on the same file? The loader will look up each URL in the module map. If it sees <code>fetching</code> in there, it will just move on to the next URL.</p>
+<ol>
+<li><p>KD 树</p></li>
+<li><p>R 树。</p></li>
+</ol>
 
-<p>But the module map doesn’t just keep track of what files are being fetched. The module map also serves as a cache for the modules, as we’ll see next.</p>
+<p>我们对地理索引的要求：</p>
 
-<h4 id="toc_5">Parsing</h4>
+<ol>
+<li><p>搜索 N 个最近的点。</p></li>
+<li><p>我们需要一个平衡树，以在最糟糕的情况下提供最好的搜索</p></li>
+</ol>
 
-<p>Now that we have fetched this file, we need to parse it into a module record. This helps the browser understand what the different parts of the module are.</p>
+<h2 id="toc_7">KD 树<img src="http://mmbiz.qpic.cn/mmbiz_png/8XkvNnTiapOMnaWlypBttlyEyfP2FFJwMNpwaMWy5okg9EBiaHFXPRZuX6SwT3ceQKficI55o5bCebUcPNDgicySKw/0?wx_fmt=png" alt=""/></h2>
 
-<p><a href="https://2r4s9p1yi1fa2jd7j43zph8r-wpengine.netdna-ssl.com/files/2018/03/25_file_to_module_record.png"><img src="https://2r4s9p1yi1fa2jd7j43zph8r-wpengine.netdna-ssl.com/files/2018/03/25_file_to_module_record-500x199.png" alt=""/></a></p>
+<p>KD 树并不适合我们的需要，因为它是不平衡的，只能搜索一个最近的点。 我们可以在 kd-tree 上实现 k-nearest 邻居，但是没必要重造轮子，因为 R-tree 已经解决了这个问题。</p>
 
-<p>Once the module record is created, it is placed in the module map. This means that whenever it’s requested from here on out, the loader can pull it from that map.</p>
+<h2 id="toc_8">R - 树</h2>
 
-<p><a href="https://2r4s9p1yi1fa2jd7j43zph8r-wpengine.netdna-ssl.com/files/2018/03/25_module_map.png"><img src="https://2r4s9p1yi1fa2jd7j43zph8r-wpengine.netdna-ssl.com/files/2018/03/25_module_map-500x239.png" alt=""/></a></p>
+<p><img src="http://mmbiz.qpic.cn/mmbiz_png/8XkvNnTiapOMnaWlypBttlyEyfP2FFJwMsYQQnUbcAwXMXR5drAE1gxHPEDeKnYfct9TgYtzyQjEnQxxicicPGicnw/0?wx_fmt=png" alt=""/></p>
 
-<p>There is one detail in parsing that may seem trivial, but that actually has pretty big implications. All modules are parsed as if they had <code>&quot;use strict&quot;</code> at the top. There are also other slight differences. For example, the keyword <code>await</code> is reserved in a module’s top-level code, and the value of <code>this</code> is <code>undefined</code>.</p>
+<p>它看起来像这样。 我们可以执行搜索 N 个最近点，并且它是平衡树。 我们选择了这个。</p>
 
-<p>This different way of parsing is called a “parse goal”. If you parse the same file but use different goals, you’ll end up with different results. So you want to know before you start parsing what kind of file you’re parsing — whether it’s a module or not.</p>
+<p>您可以得到它的 Go 语言实现源码 [5]。</p>
 
-<p>In browsers this is pretty easy. You just put <code>type=&quot;module&quot;</code> on the script tag. This tells the browser that this file should be parsed as a module. And since only modules can be imported, the browser knows that any imports are modules, too.</p>
+<p>另外，我们需要一个过期机制，因为我们需要使司机的超时机制，比如司机端 900 秒没有响应则在服务器删除会话。 所以我们需要 LRU 数据结构来存储最后的位置。 同时因为我们只存储 N 个位置。 如果我们尝试添加数据时候，队列存储已满，我们则删除最少使用的那个条目。 </p>
 
-<p><a href="https://2r4s9p1yi1fa2jd7j43zph8r-wpengine.netdna-ssl.com/files/2018/03/26_parse_goal.png"><img src="https://2r4s9p1yi1fa2jd7j43zph8r-wpengine.netdna-ssl.com/files/2018/03/26_parse_goal-500x311.png" alt=""/></a></p>
+<p>下面是我们的存储架构。</p>
 
-<p>But in Node, you don’t use HTML tags, so you don’t have the option of using a <code>type</code> attribute. One way the community has tried to solve this is by using an <code>.mjs</code> extension. Using that extension tells Node, “this file is a module”. You’ll see people talking about this as the signal for the parse goal. The discussion is currently ongoing, so it’s unclear what signal the Node community will decide to use in the end.</p>
+<ol>
+<li><p>我们将所有数据存储在内存中。</p></li>
+<li><p><strong>我们使用 R-tree 执行搜索最近的司机</strong>。</p></li>
+<li><p>此外，我们使用两个检索图，可以并按车牌号或 session 执行搜索</p></li>
+</ol>
 
-<p>Either way, the loader will determine whether to parse the file as a module or not. If it is a module and there are imports, it will then start the process over again until all of the files are fetched and parsed.</p>
+<h2 id="toc_9"><strong>我们打车软件最终算法</strong></h2>
 
-<p>And we’re done! At the end of the loading process, you’ve gone from having just an entry point file to having a bunch of module records.</p>
+<p>这里是后端的最终算法：</p>
 
-<p><a href="https://2r4s9p1yi1fa2jd7j43zph8r-wpengine.netdna-ssl.com/files/2018/03/27_construction.png"><img src="https://2r4s9p1yi1fa2jd7j43zph8r-wpengine.netdna-ssl.com/files/2018/03/27_construction-500x406.png" alt=""/></a></p>
+<ol>
+<li><p>使用 UDP 传输数据</p></li>
+<li><p>尝试从存储获取司机</p></li>
+<li><p>如果存储不存在 - 则从 Redis 获取司机</p></li>
+<li><p>检查并验证数据</p></li>
+<li><p>将司机保存到存储</p></li>
+<li><p>如果不存在 - 初始化 LRU</p></li>
+<li><p>更新 r-tree</p></li>
+</ol>
 
-<p>The next step is to instantiate this module and link all of the instances together.</p>
+<h2 id="toc_10"><strong>HTTP 接口</strong></h2>
 
-<h4 id="toc_6">Instantiation</h4>
+<p>我们实现了这些接口：</p>
 
-<p>Like I mentioned before, an instance combines code with state. That state lives in memory, so the instantiation step is all about wiring things up to memory.</p>
+<ol>
+<li><p>返回最近的司机；</p></li>
+<li><p>从存储中删除司机（通过车牌号或 session id）</p></li>
+<li><p>获取行程信息</p></li>
+<li><p>获取司机信息</p></li>
+</ol>
 
-<p>First, the JS engine creates a module environment record. This manages the variables for the module record. Then it finds boxes in memory for all of the exports. The module environment record will keep track of which box in memory is associated with each export.</p>
+<h2 id="toc_11"><strong>结论</strong></h2>
 
-<p>These boxes in memory won’t get their values yet. It’s only after evaluation that their actual values will be filled in. There is one caveat to this rule: any exported function declarations are initialized during this phase. This makes things easier for evaluation.</p>
+<p>最后，我想给出我们在后端系统中总结的经验：</p>
 
-<p>To instantiate the module graph, the engine will do what’s called a depth first post-order traversal. This means it will go down to the bottom of the graph — to the dependencies at the bottom that don’t depend on anything else — and set up their exports.</p>
+<ol>
+<li><p>UDP + Protobuf 以节省数据</p></li>
+<li><p>内存存储</p></li>
+<li><p>R 树获取最近的司机</p></li>
+<li><p>LRU 缓存用于存储最后的 n 个位置</p></li>
+<li><p>OSRM 用于地图匹配和定制路线</p>
 
-<p><a href="https://2r4s9p1yi1fa2jd7j43zph8r-wpengine.netdna-ssl.com/files/2018/03/30_live_bindings_01.png"><img src="https://2r4s9p1yi1fa2jd7j43zph8r-wpengine.netdna-ssl.com/files/2018/03/30_live_bindings_01-500x206.png" alt=""/></a></p>
+<p><img src="http://mmbiz.qpic.cn/mmbiz_png/8XkvNnTiapOMnaWlypBttlyEyfP2FFJwM4mXrsdcMWvsrRnGLjT82TuFmG7CMibUeb7ONlhHxRscdWpTD34nImNg/0?wx_fmt=png" alt=""/></p></li>
+</ol>
 
-<p>The engine finishes wiring up all of the exports below a module — all of the exports that the module depends on. Then it comes back up a level to wire up the imports from that module.</p>
+<p>您可以在 github [5] 上查看上面整个过程的源代码。现在功能还比较简单，但实现了文章中描述的许多功能。</p>
 
-<p>Note that both the export and the import point to the same location in memory. Wiring up the exports first guarantees that all of the imports can be connected to matching exports.</p>
+<p><strong>参考资源</strong></p>
 
-<p><a href="https://2r4s9p1yi1fa2jd7j43zph8r-wpengine.netdna-ssl.com/files/2018/03/30_live_bindings_02.png"><img src="https://2r4s9p1yi1fa2jd7j43zph8r-wpengine.netdna-ssl.com/files/2018/03/30_live_bindings_02-500x206.png" alt=""/></a></p>
-
-<p>This is different from CommonJS modules. In CommonJS, the entire export object is copied on export. This means that any values (like numbers) that are exported are copies.</p>
-
-<p>This means that if the exporting module changes that value later, the importing module doesn’t see that change.</p>
-
-<p><a href="https://2r4s9p1yi1fa2jd7j43zph8r-wpengine.netdna-ssl.com/files/2018/03/31_cjs_variable.png"><img src="https://2r4s9p1yi1fa2jd7j43zph8r-wpengine.netdna-ssl.com/files/2018/03/31_cjs_variable-500x113.png" alt=""/></a></p>
-
-<p>In contrast, ES modules use something called live bindings. Both modules point to the same location in memory. This means that when the exporting module changes a value, that change will show up in the importing module.</p>
-
-<p>Modules that export values can change those values at any time, but importing modules cannot change the values of their imports. That being said, if a module imports an object, it can change property values that are on that object.</p>
-
-<p><a href="https://2r4s9p1yi1fa2jd7j43zph8r-wpengine.netdna-ssl.com/files/2018/03/30_live_bindings_04.png"><img src="https://2r4s9p1yi1fa2jd7j43zph8r-wpengine.netdna-ssl.com/files/2018/03/30_live_bindings_04-500x206.png" alt=""/></a></p>
-
-<p>The reason to have live bindings like this is then you can wire up all of the modules without running any code. This helps with evaluation when you have cyclic dependencies, as I’ll explain below.</p>
-
-<p>So at the end of this step, we have all of the instances and the memory locations for the exported/imported variables wired up.</p>
-
-<p>Now we can start evaluating the code and filling in those memory locations with their values.</p>
-
-<h4 id="toc_7">Evaluation</h4>
-
-<p>The final step is filling in these boxes in memory. The JS engine does this by executing the top-level code — the code that is outside of functions.</p>
-
-<p>Besides just filling in these boxes in memory, evaluating the code can also trigger side effects. For example, a module might make a call to a server.</p>
-
-<p><a href="https://2r4s9p1yi1fa2jd7j43zph8r-wpengine.netdna-ssl.com/files/2018/03/40_top_level_code.png"><img src="https://2r4s9p1yi1fa2jd7j43zph8r-wpengine.netdna-ssl.com/files/2018/03/40_top_level_code-500x146.png" alt=""/></a></p>
-
-<p>Because of the potential for side effects, you only want to evaluate the module once. As opposed to the linking that happens in instantiation, which can be done multiple times with exactly the same result, evaluation can have different results depending on how many times you do it.</p>
-
-<p>This is one reason to have the module map. The module map caches the module by canonical URL so that there is only one module record for each module. That ensures each module is only executed once. Just as with instantiation, this is done as a depth first post-order traversal.</p>
-
-<p>What about those cycles that we talked about before?</p>
-
-<p>In a cyclic dependency, you end up having a loop in the graph. Usually, this is a long loop. But to explain the problem, I’m going to use a contrived example with a short loop.</p>
-
-<p><a href="https://2r4s9p1yi1fa2jd7j43zph8r-wpengine.netdna-ssl.com/files/2018/03/41_cjs_cycle.png"><img src="https://2r4s9p1yi1fa2jd7j43zph8r-wpengine.netdna-ssl.com/files/2018/03/41_cjs_cycle-500x224.png" alt=""/></a></p>
-
-<p>Let’s look at how this would work with CommonJS modules. First, the main module would execute up to the require statement. Then it would go to load the counter module.</p>
-
-<p><a href="https://2r4s9p1yi1fa2jd7j43zph8r-wpengine.netdna-ssl.com/files/2018/03/41_cyclic_graph.png"><img src="https://2r4s9p1yi1fa2jd7j43zph8r-wpengine.netdna-ssl.com/files/2018/03/41_cyclic_graph-500x281.png" alt=""/></a></p>
-
-<p>The counter module would then try to access <code>message</code> from the export object. But since this hasn’t been evaluated in the main module yet, this will return undefined. The JS engine will allocate space in memory for the local variable and set the value to undefined.</p>
-
-<p><a href="https://2r4s9p1yi1fa2jd7j43zph8r-wpengine.netdna-ssl.com/files/2018/03/42_cjs_variable_2.png"><img src="https://2r4s9p1yi1fa2jd7j43zph8r-wpengine.netdna-ssl.com/files/2018/03/42_cjs_variable_2-500x113.png" alt=""/></a></p>
-
-<p>Evaluation continues down to the end of the counter module’s top level code. We want to see whether we’ll get the correct value for message eventually (after main.js is evaluated), so we set up a timeout. Then evaluation resumes on <code>main.js</code>.</p>
-
-<p><a href="https://2r4s9p1yi1fa2jd7j43zph8r-wpengine.netdna-ssl.com/files/2018/03/43_cjs_cycle.png"><img src="https://2r4s9p1yi1fa2jd7j43zph8r-wpengine.netdna-ssl.com/files/2018/03/43_cjs_cycle-500x224.png" alt=""/></a></p>
-
-<p>The message variable will be initialized and added to memory. But since there’s no connection between the two, it will stay undefined in the required module.</p>
-
-<p><strong><a href="https://2r4s9p1yi1fa2jd7j43zph8r-wpengine.netdna-ssl.com/files/2018/03/44_cjs_variable_2.png"><img src="https://2r4s9p1yi1fa2jd7j43zph8r-wpengine.netdna-ssl.com/files/2018/03/44_cjs_variable_2-500x216.png" alt=""/></a></strong></p>
-
-<p>If the export were handled using live bindings, the counter module would see the correct value eventually. By the time the timeout runs, <code>main.js</code>’s evaluation would have completed and filled in the value.</p>
-
-<p>Supporting these cycles is a big rationale behind the design of ES modules. It’s this three-phase design that makes them possible.</p>
-
-<h3 id="toc_8">What’s the status of ES modules?</h3>
-
-<p>With the release of Firefox 60 in early May, all major browsers will support ES modules by default. Node is also adding support, with a <a href="https://github.com/nodejs/modules">working group</a> dedicated to figuring out compatibility issues between CommonJS and ES modules.</p>
-
-<p>This means that you’ll be able to use the script tag with <code>type=module</code>, and use imports and exports. However, more module features are yet to come. The <a href="https://github.com/tc39/proposal-dynamic-import">dynamic import proposal</a> is at Stage 3 in the specification process, as is <a href="https://github.com/tc39/proposal-import-meta">import.meta</a> which will help support Node.js use cases, and the <a href="https://github.com/domenic/package-name-maps">module resolution proposal</a> will also help smooth over differences between browsers and Node.js. So you can expect working with modules to get even better in the future.</p>
-
-<h2 id="toc_9">Acknowledgements</h2>
-
-<p>Thank you to everyone who gave feedback on this post, or whose writing or discussions informed it, including Axel Rauschmayer, Bradley Farias, Dave Herman, Domenic Denicola, Havi Hoffman, Jason Weathersby, JF Bastien, Jon Coppeard, Luke Wagner, Myles Borins, Till Schneidereit, Tobias Koppers, and Yehuda Katz, as well as the members of the WebAssembly community group, the Node modules working group, and TC39.</p>
-
-<h2 id="toc_10">About <a href="http://code-cartoons.com">Lin Clark</a></h2>
-
-<p>Lin is an engineer on the Mozilla Developer Relations team. She tinkers with JavaScript, WebAssembly, Rust, and Servo, and also draws code cartoons.</p>
-
-<ul>
-<li>  <a href="http://code-cartoons.com">code-cartoons.com</a></li>
-<li>  <a href="http://twitter.com/linclark">@linclark</a></li>
-</ul>
-
-<p><a href="https://hacks.mozilla.org/author/lclarkmozilla-com/">More articles by Lin Clark…</a></p>
+<ol>
+<li><p>GIF 动画下载：<a href="https://cdn-images-1.medium.com/max/1600/1*nI6cNApASR1mg6F5Sjgp7Q.gif">https://cdn-images-1.medium.com/max/1600/1*nI6cNApASR1mg6F5Sjgp7Q.gif</a></p></li>
+<li><p><a href="https://cdn-images-1.medium.com/max/1600/1*KfGB1SARPoqOUtPtl4NNBg.gif">https://cdn-images-1.medium.com/max/1600/1*KfGB1SARPoqOUtPtl4NNBg.gif</a></p></li>
+<li><p><a href="http://weibo.com/10503/24F1QpDmL">http://weibo.com/10503/24F1QpDmL</a></p></li>
+<li><p><a href="https://github.com/dhconnelly/rtreego">https://github.com/dhconnelly/rtreego</a></p></li>
+<li><p><a href="https://github.com/maddevsio/openfreecabs">https://github.com/maddevsio/openfreecabs</a></p></li>
+<li><p>本文英文原文：<a href="https://blog.maddevs.io/how-we-built-a-backend-system-for-uber-like-map-with-animated-cars-on-it-using-go-29d5dcd517a#.npo2x5788">https://blog.maddevs.io/how-we-built-a-backend-system-for-uber-like-map-with-animated-cars-on-it-using-go-29d5dcd517a#.npo2x5788</a></p></li>
+</ol>
 
                         
                       </div>
@@ -435,7 +357,7 @@
                     <span class="date">2018/8/26</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Node.js.html'>Node.js</a></span>
+          					    <span class="posted-in"><a href='Go.html'>Go</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -525,6 +447,12 @@
 	      
 		      
 			      <li class="post">
+			        <a href="15359384213292.html">Securing Spring Boot with JWTs</a>
+			      </li>
+		     
+		  
+		      
+			      <li class="post">
 			        <a href="15358820607055.html">Java 8 Concurrency Tutorial: Atomic Variables and ConcurrentMap</a>
 			      </li>
 		     
@@ -544,12 +472,6 @@
 		      
 			      <li class="post">
 			        <a href="15358756631902.html">Java 8 Stream Tutorial</a>
-			      </li>
-		     
-		  
-		      
-			      <li class="post">
-			        <a href="15358753472382.html">Migrate Maven Projects to Java 11</a>
 			      </li>
 		     
 		  

@@ -105,88 +105,316 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15319631527349.html">
+                <a class="clearlink" href="15320998566522.html">
                 
-                  <h1>高可用Redis服务架构分析与搭建</h1>
+                  <h1>关键系统的JVM参数推荐(2018仲夏版)</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://www.cnblogs.com/xuning/p/8464625.html">https://www.cnblogs.com/xuning/p/8464625.html</a></p>
+<p><a href="http://calvin1978.blogcn.com/?p=1602">http://calvin1978.blogcn.com/?p=1602</a></p>
 </blockquote>
 
-<p>基于内存的 Redis 应该是目前各种 web 开发业务中最为常用的 key-value 数据库了，我们经常在业务中用其存储用户登陆态（Session 存储），加速一些热数据的查询（相比较 mysql 而言，速度有数量级的提升），做简单的消息队列（LPUSH 和 BRPOP）、订阅发布（PUB/SUB）系统等等。规模比较大的互联网公司，一般都会有专门的团队，将 Redis 存储以基础服务的形式提供给各个业务调用。</p>
+<p>年更贴，因为两年里遇到的事情，一些想法变了。也补充了不少 <a href="https://github.com/vipshop/vjtools/">VJTools</a> 的内容，比如为伸手党们准备的 <a href="https://github.com/vipshop/vjtools/blob/master/vjstar/src/main/script/jvm-options">jvm-options.sh</a>。</p>
 
-<p>不过任何一个基础服务的提供方，都会被调用方问起的一个问题是：你的服务是否具有高可用性？最好不要因为你的服务经常出问题，导致我这边的业务跟着遭殃。最近我所在的项目中也自己搭了一套小型的 “高可用”Redis 服务，在此做一下自己的总结和思考。</p>
+<p>在关键的业务系统里，除了继续追求技术人员最爱的高吞吐与低延时之外，系统的稳定性与排查问题的便捷性也很重要。这是本文的一个原则，后面也会一次又一次的强调。</p>
 
-<p>首先我们要定义一下对于 Redis 服务来说怎样才算是高可用，即在各种出现异常的情况下，依然可以正常提供服务。或者宽松一些，出现异常的情况下，只经过很短暂的时间即可恢复正常服务。所谓异常，应该至少包含了以下几种可能性：</p>
+<h4 id="toc_0">前言 1，资料</h4>
 
-<p>【异常 1】某个节点服务器的某个进程突然 down 掉（例如某开发手残，把一台服务器的 redis-server 进程 kill 了）</p>
+<p>1. 学习开源项目的启动脚本是个不错的主意，比如 <a href="https://github.com/elastic/elasticsearch/blob/master/distribution/src/config/jvm.options">ElasticSearch 家的</a>，<a href="https://github.com/apache/cassandra/blob/trunk/conf/jvm.options">Cassandra 家的</a>， 附送一篇<a href="http://tobert.github.io/pages/als-cassandra-21-tuning-guide.html">解释它的文章</a>。</p>
 
-<p>【异常 2】某台节点服务器 down 掉，相当于这个节点上所有进程都停了（例如某运维手残，把一个服务器的电源拔了；例如一些老旧机器出现硬件故障）</p>
+<p>2. VJTools 的 <a href="https://github.com/vipshop/vjtools/blob/master/vjstar/src/main/script/jvm-options">jvm-options.sh</a>，伸手党们最爱，根据自己需要稍微定制一下就行。</p>
 
-<p>【异常 3】任意两个节点服务器之间的通信中断了（例如某临时工手残，把用于两个机房通信的光缆挖断了）</p>
+<p>3. <a href="http://hllvm.group.iteye.com/group/topic/27945">JVM 调优的 &quot;标准参数&quot; 的各种陷阱</a> ，R 大的文章，在 JDK6 时写的，年年期待更新。</p>
 
-<p>其实以上任意一种异常都是小概率事件，而做到高可用性的基本指导思想就是：多个小概率事件同时发生的概率可以忽略不计。只要我们设计的系统可以容忍短时间内的单点故障，即可实现高可用性。</p>
+<h4 id="toc_1">前言 2， -XX:+PrintFlagsFinal 打印参数值</h4>
 
-<p>对于搭建高可用 Redis 服务，网上已有了很多方案，例如 Keepalived，Codis，Twemproxy，Redis Sentinel。其中 Codis 和 Twemproxy 主要是用于大规模的 Redis 集群中，也是在 Redis 官方发布 Redis Sentinel 之前 twitter 和豌豆荚提供的开源解决方案。我的业务中数据量并不大，所以搞集群服务反而是浪费机器了。最终在 Keepalived 和 Redis Sentinel 之间做了个选择，选择了官方的解决方案 Redis Sentinel。</p>
+<p>当你在网上兴冲冲找到一个可优化的参数时，先用 - XX: +PrintFlagsFinal 看看，它可能已经默认打开了，再找到一个，还是默认打开了...</p>
 
-<p>Redis Sentinel 可以理解为一个监控 Redis Server 服务是否正常的进程，并且一旦检测到不正常，可以自动地将备份（slave）Redis Server 启用，使得外部用户对 Redis 服务内部出现的异常无感知。我们按照由简至繁的步骤，搭建一个最小型的高可用的 Redis 服务。</p>
+<p>JDK7 与 JDK8，甚至 JDK7 中的不同小版本，有些参数值都不一样，所以不要轻信网上任何文章，一切以生产环境同版本的 JDK 打出来的为准。</p>
 
-<p><strong>方案 1：单机版 Redis Server，无 Sentinel</strong></p>
+<p>经常以类似下面的语句去查看参数，偷懒不起应用，用 - version 代替。有些参数设置后会影响其他参数，所以也要带上。</p>
 
-<p><img src="https://images2018.cnblogs.com/blog/566097/201802/566097-20180224104757825-317365999.png" alt=""/></p>
+<blockquote>
+<p>java -Xmx1024m -Xms1024m -XX:+UseConcMarkSweepGC -XX:+PrintFlagsFinal -version| grep ParallelGCThreads</p>
+</blockquote>
 
-<p>一般情况下，我们搭的个人网站，或者平时做开发时，会起一个单实例的 Redis Server。调用方直接连接 Redis 服务即可，甚至 Client 和 Redis 本身就处于同一台服务器上。这种搭配仅适合个人学习娱乐，毕竟这种配置总会有单点故障的问题无法解决。一旦 Redis 服务进程挂了，或者服务器 1 停机了，那么服务就不可用了。并且如果没有配置 Redis 数据持久化的话，Redis 内部已经存储的数据也会丢失。</p>
+<p>对于不同版本里的默认值，建议是顺势而为，JDK 在那个版本默认打开不打开总有它的理由。安全第一，没有很好的因由，不要随便因为网上某篇文章的推荐 (包括你现在在读的这篇) 就去设置。</p>
 
-<p><strong>方案 2：主从同步 Redis Server，单实例 Sentinel</strong></p>
+<h3 id="toc_2">1. 性能篇</h3>
 
-<p><img src="https://images2018.cnblogs.com/blog/566097/201802/566097-20180224104938975-2014456086.png" alt=""/></p>
+<h4 id="toc_3">1.1 建议的性能参数</h4>
 
-<p>为了实现高可用，解决方案 1 中所述的单点故障问题，我们必须增加一个备份服务，即在两台服务器上分别各启动一个 Redis Server 进程，一般情况下由 master 提供服务，slave 只负责同步和备份。与此同时，在额外启动一个 Sentinel 进程，监控两个 Redis Server 实例的可用性，以便在 master 挂掉的时候，及时把 slave 提升到 master 的角色继续提供服务，这样就实现了 Redis Server 的高可用。这基于一个高可用服务设计的依据，即单点故障本身就是个小概率事件，而多个单点同时故障（即 master 和 slave 同时挂掉），可以认为是（基本）不可能发生的事件。</p>
+<p><strong>1. 取消偏向锁 -XX:-UseBiasedLocking</strong></p>
 
-<p>对于 Redis 服务的调用方来说，现在要连接的是 Redis Sentinel 服务，而不是 Redis Server 了。常见的调用过程是，client 先连接 Redis Sentinel 并询问目前 Redis Server 中哪个服务是 master，哪些是 slave，然后再去连接相应的 Redis Server 进行操作。当然目前的第三方库一般都已经实现了这一调用过程，不再需要我们手动去实现（例如 Nodejs 的 ioredis，PHP 的 predis，Golang 的 go-redis/redis，JAVA 的 jedis 等）。</p>
+<p>JDK1.6 开始默认打开的偏向锁，会尝试把锁赋给第一个访问它的线程，取消同步块上的 synchronized 原语。如果始终只有一条线程在访问它，就成功略过同步操作以获得性能提升。</p>
 
-<p>然而，我们实现了 Redis Server 服务的主从切换之后，又引入了一个新的问题，即 Redis Sentinel 本身也是个单点服务，一旦 Sentinel 进程挂了，那么客户端就没办法链接 Sentinel 了。所以说，方案 2 的配置并无法实现高可用性。</p>
+<p>但一旦有第二条线程访问这把锁，JVM 就要撤销偏向锁恢复到未锁定线程的状态，如果打开安全点日志，可以看到不少 RevokeBiasd 的纪录，像 GC 一样 Stop The World 的干活，虽然只是很短的停顿，但对于多线程并发的应用，取消掉它反而有性能的提升，所以 Cassandra 就取消了它。</p>
 
-<p><strong>方案 3：主从同步 Redis Server，双实例 Sentinel</strong></p>
+<p><strong>2. 加大 Integer Cache -XX:AutoBoxCacheMax=20000</strong></p>
 
-<p><img src="https://images2018.cnblogs.com/blog/566097/201802/566097-20180224105121774-2039349597.png" alt=""/></p>
+<p><code>Integer i=3;</code>这语句有着 int 自动装箱成 Integer 的过程，JDK 默认只缓存 -128 ~ +127 的 Integer 和 Long，超出范围的数字就要即时构建新的 Integer 对象。设为 20000 后，我们应用的 QPS 有足足 4% 的影响。为什么是 2 万呢，因为 <strong>-XX:+AggressiveOpts</strong> 里也是这个值。详见 <a href="http://blog.csdn.net/chengzhezhijian/article/details/9628251">Java Integer(-128~127) 值的 == 和 equals 比较产生的思考</a>。</p>
 
-<p>为了解决方案 2 的问题，我们把 Redis Sentinel 进程也额外启动一份，两个 Sentinel 进程同时为客户端提供服务发现的功能。对于客户端来说，它可以连接任何一个 Redis Sentinel 服务，来获取当前 Redis Server 实例的基本信息。通常情况下，我们会在 Client 端配置多个 Redis Sentinel 的链接地址，Client 一旦发现某个地址连接不上，会去试图连接其他的 Sentinel 实例，这当然也不需要我们手动实现，各个开发语言中比较热门的 redis 连接库都帮我们实现了这个功能。我们预期是：即使其中一个 Redis Sentinel 挂掉了，还有另外一个 Sentinel 可以提供服务。</p>
+<p><strong>3. 启动时访问并置零内存页面 -XX:+AlwaysPreTouch</strong></p>
 
-<p>然而，愿景是美好的，现实却是很残酷的。如此架构下，依然无法实现 Redis 服务的高可用。方案 3 示意图中，红线部分是两台服务器之间的通信，而我们所设想的异常场景（【异常 2】）是，某台服务器整体 down 机，不妨假设服务器 1 停机，此时，只剩下服务器 2 上面的 Redis Sentinel 和 slave Redis Server 进程。这时，Sentinel 其实是不会将仅剩的 slave 切换成 master 继续服务的，也就导致 Redis 服务不可用，因为 Redis 的设定是只有当超过 50% 的 Sentinel 进程可以连通并投票选取新的 master 时，才会真正发生主从切换。本例中两个 Sentinel 只有一个可以连通，等于 50% 并不在可以主从切换的场景中。</p>
+<p>启动时就把参数里说好了的内存全部舔一遍，可能令得启动时慢上一点，但后面访问时会更流畅，比如页面会连续分配，比如不会在晋升新生代到老生代时才去访问页面使得 GC 停顿时间加长。ElasticSearch 和 Cassandra 都打开了它。</p>
 
-<p>你可能会问，为什么 Redis 要有这个 50% 的设定？假设我们允许小于等于 50% 的 Sentinel 连通的场景下也可以进行主从切换。试想一下【异常 3】，即服务器 1 和服务器 2 之间的网络中断，但是服务器本身是可以运行的。如下图所示：</p>
+<p><strong>4. SecureRandom 生成加速 -Djava.security.egd=file:/dev/./urandom</strong></p>
 
-<p><img src="https://images2018.cnblogs.com/blog/566097/201802/566097-20180224105223591-314651630.png" alt=""/></p>
+<p>此江湖偏方原因为 Tomcat 的 SecureRandom 显式使用 SHA1PRNG 算法时，初始因子默认从 / dev/random 读取会存在堵塞。额外效果是 SecureRandom 的默认算法也变成合适的 SHA1 了。详见 <a href="http://calvin1978.blogcn.com/articles/securerandom.html">SecureRandom 的江湖偏方与真实效果</a></p>
 
-<p>实际上对于服务器 2 来说，服务器 1 直接 down 掉和服务器 1 网络连不通是一样的效果，反正都是突然就无法进行任何通信了。假设网络中断时我们允许服务器 2 的 Sentinel 把 slave 切换为 master，结果就是你现在拥有了两个可以对外提供服务的 Redis Server。Client 做任何的增删改操作，有可能落在服务器 1 的 Redis 上，也有可能落在服务器 2 的 Redis 上（取决于 Client 到底连通的是哪个 Sentinel），造成数据混乱。即使后面服务器 1 和服务器 2 之间的网络又恢复了，那我们也无法把数据统一了（两份不一样的数据，到底该信任谁呢？），数据一致性完全被破坏。</p>
+<h4 id="toc_4">1.2 可选的性能参数</h4>
 
-<p><strong>方案 4：主从同步 Redis Server，三实例 Sentinel</strong></p>
+<p><strong>1. -XX:+PerfDisableSharedMem</strong></p>
 
-<p><img src="https://images2018.cnblogs.com/blog/566097/201802/566097-20180224105313568-148145342.png" alt=""/></p>
+<p>Cassandra 家的一个参数，一直没留意，直到发生高 IO 时的 JVM 停顿。原来 JVM 经常会默默的在 / tmp/hperf 目录写上一点 statistics 数据，如果刚好遇到 PageCache 刷盘，把文件阻塞了，就不能结束这个 Stop the World 的安全点了。<br/>
+禁止 JVM 写 statistics 数据的代价，是 jps 和 jstat 用不了，只能用 JMX，而 JMX 取新老生代的使用百分比还真没 jstat 方便，VJTools VJTools 里的 <a href="https://github.com/vipshop/vjtools/tree/master/vjmxcli">vjmxcli</a> 弥补了这一点。详见 <a href="http://www.evanjones.ca/jvm-mmap-pause.html">The Four Month Bug: JVM statistics cause garbage collection pauses</a></p>
 
-<p>鉴于方案 3 并没有办法做到高可用，我们最终的版本就是上图所示的方案 4 了。实际上这就是我们最终搭建的架构。我们引入了服务器 3，并且在 3 上面又搭建起一个 Redis Sentinel 进程，现在由三个 Sentinel 进程来管理两个 Redis Server 实例。这种场景下，不管是单一进程故障、还是单个机器故障、还是某两个机器网络通信故障，都可以继续对外提供 Redis 服务。</p>
+<p><strong>2. -XX:-UseCounterDecay</strong></p>
 
-<p>实际上，如果你的机器比较空闲，当然也可以把服务器 3 上面也开启一个 Redis Server，形成 1 master + 2 slave 的架构，每个数据都有两个备份，可用性会提升一些。当然也并不是 slave 越多越好，毕竟主从同步也是需要时间成本的。</p>
+<p>禁止 JIT 调用计数器衰减。默认情况下，每次 GC 时会对调用计数器进行砍半的操作，导致有些方法一直温热，永远都达不到触发 C2 编译的 1 万次的阀值。</p>
 
-<p>在方案 4 中，一旦服务器 1 和其他服务器的通信完全中断，那么服务器 2 和 3 会将 slave 切换为 master。对于客户端来说，在这么一瞬间会有 2 个 master 提供服务，并且一旦网络恢复了，那么所有在中断期间落在服务器 1 上的新数据都会丢失。如果想要部分解决这个问题，可以配置 Redis Server 进程，让其在检测到自己网络有问题的时候，立即停止服务，避免在网络故障期间还有新数据进来（可以参考 Redis 的 min-slaves-to-write 和 min-slaves-max-lag 这两个配置项）。</p>
+<p><strong>3. -XX:-TieredCompilation</strong></p>
 
-<p>至此，我们就用 3 台机器搭建了一个高可用的 Redis 服务。其实网上还有更加节省机器的办法，就是把一个 Sentinel 进程放在 Client 机器上，而不是服务提供方的机器上。只不过在公司里面，一般服务的提供方和调用方并不来自同一个团队。两个团队共同操作同一个机器，很容易因为沟通问题导致一些误操作，所以出于这种人为因素的考虑，我们还是采用了方案 4 的架构。并且由于服务器 3 上面只跑了一个 Sentinel 进程，对服务器资源消耗并不多，还可以用服务器 3 来跑一些其他的服务。</p>
+<p>多层编译是 JDK8 后默认打开的比较骄傲的功能，先以 C1 静态编译，采样足够后 C2 编译。</p>
 
-<p><strong>易用性：像使用单机版 Redis 一样使用 Redis Sentinel</strong></p>
+<p>但我们实测，性能最终略降 2%，可能是因为有些方法 C1 编译后 C2 不再编译了。应用启动时的偶发服务超时也多了，可能是忙于编译。所以我们将它禁止了，但记得打开前面的 - XX:-UseCounterDecay，避免有些温热的方法永远都要解释执行。</p>
 
-<p>作为服务的提供方，我们总是会讲到用户体验问题。在上述方案当中始终有一个让 Client 端用的不是那么舒服的地方。对于单机版 Redis，Client 端直接连接 Redis Server，我们只需要给一个 ip 和 port，Client 就可以使用我们的服务了。而改造成 Sentinel 模式之后，Client 不得不采用一些支持 Sentinel 模式的外部依赖包，并且还要修改自己的 Redis 连接配置，这对于 “矫情” 的用户来讲显然是不能接收的。有没有办法还是像在使用单机版的 Redis 那样，只给 Client 一个固定的 ip 和 port 就可以提供服务呢？</p>
+<h4 id="toc_5">1.3 不建议的性能参数</h4>
 
-<p><img src="https://images2018.cnblogs.com/blog/566097/201802/566097-20180224105513939-1484357459.png" alt=""/></p>
+<p><strong>1. -XX:+AggressiveOpts</strong></p>
 
-<p>答案当然是肯定的。这可能就要引入虚拟 IP（Virtual IP，VIP），如上图所示。我们可以把虚拟 IP 指向 Redis Server master 所在的服务器，在发生 Redis 主从切换的时候，会触发一个回调脚本，回调脚本中将 VIP 切换至 slave 所在的服务器。这样对于 Client 端来说，他仿佛在使用的依然是一个单机版的高可用 Redis 服务。</p>
+<p>一些还没默认打开的优化参数集合, -XX:AutoBoxCacheMax 是其中的一项。但如前所述，关键系统里不建议打开。虽然通过 - XX:+AggressiveOpts 与 -XX:-AggressiveOpts 的对比，目前才改变了三个参数，但为免以后某个版本的 JDK 里默默改变更多激进的配置，还是不要打开了。</p>
 
-<p><strong>结语</strong></p>
+<p>2. JIT Compile 相关的参数，函数调用多少次之后开始编译的阀值，内联函数大小的阀值等等，不要乱改。</p>
 
-<p>搭建任何一个服务，做到 “能用” 其实是非常简单的，就像我们运行一个单机版的 Redis。不过一旦要做到“高可用”，事情就会变得复杂起来。业务中使用了额外的两台服务器，3 个 Sentinel 进程 + 1 个 Slave 进程，只是为了保证在那小概率的事故中依然做到服务可用。在实际业务中我们还启用了 supervisor 做进程监控，一旦进程意外退出，会自动尝试重新启动。</p>
+<p>3. <strong>-server</strong>，在 64 位多核的 linux 中，你想设成 - client 都不行的，所以写了也是白写。</p>
+
+<h3 id="toc_6">2. 内存与 GC 篇</h3>
+
+<h4 id="toc_7">2.1 GC 策略</h4>
+
+<p>为了稳健，还是 8G 以下的堆还是 CMS 好了，G1 现在虽然是默认了，但其实在小堆里的表现也没有比 CMS 好，还是 JDK11 的 ZGC 引人期待。</p>
+
+<p><strong>1.CMS 基本写法</strong></p>
+
+<blockquote>
+<p>-XX:+UseConcMarkSweepGC -XX:CMSInitiatingOccupancyFraction=75 -XX:+UseCMSInitiatingOccupancyOnly</p>
+</blockquote>
+
+<p>因为我们的监控系统会通过 JMX 监控内存达到 90% 的状况，所以设置让它 75% 就开始跑了，早点开始也能减少 Full GC 等意外情况 (概念重申，这种主动的 CMS GC，和 JVM 的老生代、永久代、堆外内存完全不能分配内存了而强制 Full GC 是不同的概念)。<br/>
+为了让这个设置生效，还要设置 - XX:+UseCMSInitiatingOccupancyOnly，否则 75％只被用来做开始的参考值，后面还是 JVM 自己算。</p>
+
+<p><strong>2. -XX:MaxTenuringThreshold=2</strong></p>
+
+<p>这是改动效果最明显的一个参数了。对象在 Survivor 区最多熬过多少次 Young GC 后晋升到年老代，JDK8 里 CMS 默认是 6，其他如 G1 是 15。</p>
+
+<p>Young GC 是最大的应用停顿来源，而新生代里 GC 后存活对象的多少又直接影响停顿的时间，所以如果清楚 Young GC 的执行频率和应用里大部分临时对象的最长生命周期，可以把它设的更短一点，让其实不是临时对象的新生代对象赶紧晋升到年老代，别呆着。</p>
+
+<p>用 - XX:+PrintTenuringDistribution 观察下，如果后面几代的大小总是差不多，证明过了某个年龄后的对象总能晋升到老生代，就可以把晋升阈值设小，比如 JMeter 里 2 就足够了。</p>
+
+<p><strong>3. -XX:+ExplicitGCInvokesConcurrent 但不要 - XX:+DisableExplicitGC</strong></p>
+
+<p>​full gc 时，使用 CMS 算法，不是全程停顿，必选。</p>
+
+<p>但像 R 大说的，System GC 是保护机制（如堆外内存满时清理它的堆内引用对象），禁了 system.gc() 未必是好事，只要没用什么特别烂的类库，真有人调了总有调的原因，所以不应该加这个烂大街的参数。</p>
+
+<p><strong>4. ParallelRefProcEnabled 和 CMSParallelInitialMarkEnabled</strong></p>
+
+<p>并行的处理 Reference 对象，如 WeakReference，默认为 false，除非在 GC log 里出现 Reference 处理时间较长的日志，否则效果不会很明显，但我们总是要 JVM 尽量的并行，所以设了也就设了。同理还有 - XX:+CMSParallelInitialMarkEnabled，JDK8 已默认开启，但小版本比较低的 JDK7 甚至不支持。</p>
+
+<p><strong>5. ParGCCardsPerStrideChunk</strong></p>
+
+<p>Linkined 的黑科技， 上一个版本的文章不建议打开，后来发现有些场景的确能减少 YGC 时间，详见<a href="https://toutiao.io/posts/hltb1e/preview">难道他们说的都是真的</a>，简单说就是影响 YGC 时扫描老生代的时间，默认值 256 太小了，但 32K 也未必对，需要自己试验。</p>
+
+<p><code>-XX:+UnlockDiagnosticVMOptions -XX: ParGCCardsPerStrideChunk=1024</code></p>
+
+<h4 id="toc_8">2.2 可选的 GC 参数</h4>
+
+<p><strong>1. 并发收集线程数</strong></p>
+
+<blockquote>
+<p>ParallelGCThreads＝8+(Processor - 8) ( 5/8 )；<br/>
+ConcGCThreads = (ParallelGCThreads + 3)/4</p>
+</blockquote>
+
+<p>比如双 CPU，六核，超线程就是 24 个处理器，小于 8 个处理器时 ParallelGCThreads 按处理器数量，大于时按上述公式 YGC 线程数＝18， CMS GC 线程数＝5。</p>
+
+<p>CMS GC 线程数的公式太怪，也有人提议简单改为 YGC 线程数的 1/2。</p>
+
+<p>一些不在乎停顿时间的后台辅助程序，比如日志收集的 logstash，建议把它减少到 2，避免在 GC 时突然占用太多 CPU 核，影响主应用。</p>
+
+<p>而另一些并不独占服务器的应用，比如旁边跑着一堆 sidecar 的，也建议减少 YGC 线程数。</p>
+
+<p>一个真实的案例，24 核的服务器，默认 18 条 YGC 线程，但因为旁边有个繁忙的 Service Mesh Proxy 在跑着，这 18 条线程并不能 100% 的抢到 CPU，出现了不合理的慢 GC。把线程数降低到 12 条之后，YGC 反而快了很多。 所以那些贪心的把 YGC 线程数＝CPU 核数的，通常弄巧成拙。</p>
+
+<p><strong>2. -XX:－CMSClassUnloadingEnabled</strong></p>
+
+<p>在 CMS 中清理永久代中的过期的 Class 而不等到 Full GC，JDK7 默认关闭而 JDK8 打开。看自己情况，比如有没有运行动态语言脚本如 Groovy 产生大量的临时类。它有时会大大增加 CMS 的暂停时间。所以如果新类加载并不频繁，这个参数还是显式关闭的好。</p>
+
+<p><strong>3. -XX:+CMSScavengeBeforeRemark</strong></p>
+
+<p>默认为关闭，在 CMS remark 前，先执行一次 minor GC 将新生代清掉，这样从老生代的对象引用到的新生代对象的个数就少了，停止全世界的 CMS remark 阶段就短一些。如果打开了，会让一次 YGC 紧接着一次 CMS GC，使得停顿的总时间加长了。</p>
+
+<p>又一个真实案例，CMS GC 的时间和当时新生代的大小成比例，新生代很小时很快完成，新生代 80％时 CMS GC 停顿时间超过一秒，这时候就还是打开了划算。</p>
+
+<h4 id="toc_9">2.3 不建议的 GC 参数</h4>
+
+<p><strong>1. -XX:+UseParNewGC</strong></p>
+
+<p>用了 CMS，新生代收集默认就是，不用自己设。</p>
+
+<p><strong>2. -XX:CMSFullGCsBeforeCompaction</strong><br/>
+默认为 0，即每次 full gc 都对老生代进行碎片整理压缩。Full GC 不同于 老生代 75% 时触发的 CMS GC，只在老生代达到 100%，老生代碎片过大无法分配空间给新晋升的大对象，堆外内存满，这些特殊情况里发生，所以设为每次都进行碎片整理是合适的，详见<a href="http://hllvm.group.iteye.com/group/topic/28854">此贴里 R 大的解释</a>。</p>
+
+<p><strong>3.-XX:+GCLockerInvokesConcurrent</strong></p>
+
+<p>我们犯过的错，不是所有 Concurrent 字样的参数都是好参数，加上之后，原本遇上 JNI GCLocker 只需要补偿 YGC 就够的，变成要执行 YGC ＋ CMS GC 了。</p>
+
+<h4 id="toc_10">2.4 内存大小的设置</h4>
+
+<p>其实 JVM 除了显式设置的 <strong>-Xmx</strong> 堆内存，还有一堆其他占内存的地方 (堆外内存，线程栈，永久代，二进制代码 cache)，在容量规划的时候要留意。</p>
+
+<p>关键业务系统的服务器上内存一般都是够的，所以尽管设得宽松点。</p>
+
+<p><strong>1. -Xmx, -Xms,</strong> <br/>
+堆内存大小，2～4G 均可。</p>
+
+<p><strong>2. -Xmn or -XX:NewSize or -XX:NewRatio</strong></p>
+
+<p>JDK 默认新生代占堆大小的 1/3， 个人喜欢把对半分， 因为增大新生代能减少 GC 的频率，如果老生代里没多少长期对象的话，占 2/3 通常太多了。可以用 - Xmn 直接赋值 (等于 - XX:NewSize and -XX:MaxNewSize 同值的缩写)，或把 NewRatio 设为 1 来对半分。</p>
+
+<p><strong>3. -XX: PermSize=128m -XX:MaxPermSize=512m （JDK7）</strong><br/>
+<strong>-XX:MetaspaceSize=128m -XX:MaxMetaspaceSize=512m（JDK8）</strong></p>
+
+<p>现在的应用有 Hibernate/Spring 这些闹腾的家伙 AOP 之后类都比较多，可以一开始就把初始值从 64M 设到 128M（否则第一次自动扩张会造成大约 3 秒的 JVM 停顿），并设一个更大的 Max 值以求保险。</p>
+
+<p>JDK8 的永生代几乎可用完机器的所有内存，同样设一个 128M 的初始值，512M 的最大值保护一下。</p>
+
+<h4 id="toc_11">2.5 其他内存大小的设置</h4>
+
+<p><strong>1. -Xss</strong></p>
+
+<p>在堆之外，线程占用栈内存，默认每条线程为 1M（以前是 256K）。存放方法调用出参入参的栈，局部变量，标量替换后掉局部变量等，有人喜欢把它设回 256k，节约内存并开更多线程，有人则会在遇到错误后把它再设大点，特别是有很深的 JSON 解析之类的递归调用时。</p>
+
+<p><strong>2. -XX:SurvivorRatio</strong></p>
+
+<p>新生代中每个存活区的大小，默认为 8，即 1/10 的新生代 1/(SurvivorRatio+2)，有人喜欢设小点省点给新生代如 Cassandra，但要避免太小使得存活区放不下临时对象而被迫晋升到老生代，还是从 GC 日志里看实际情况了。</p>
+
+<p><strong>3. -XX:MaxDirectMemorySize</strong></p>
+
+<p>堆外内存的最大值，默认为 Heap 区总内存减去一个 Survivor 区的大小，详见 <a href="http://calvin1978.blogcn.com/articles/directbytebuffer.html">Netty 之堆外内存扫盲篇</a>，如果肯定用不了这么多，也可以把它主动设小，来获得一个比较清晰内存占用预估值，特别是在容器里。</p>
+
+<p><strong>4. -XX:ReservedCodeCacheSize</strong></p>
+
+<p>JIT 编译后二进制代码的存放区，满了之后就不再编译，对性能影响很大。 JDK7 默认不开多层编译 48M，开了 96M，而 JDK8 默认开多层编译 240M。可以在 JMX 里看看 CodeCache 的占用情况，也可以用 VJTools 里的 <a href="https://github.com/vipshop/vjtools/tree/master/vjtop">vjtop</a> 来看，JDK7 下默认的 48M 可以设大点，不抠这么点。</p>
+
+<h3 id="toc_12">3. 监控篇</h3>
+
+<p>JVM 输出的各种日志，如果未指定路径，通常会生成到运行应用的相同目录，为了避免有时候在不同的地方执行启动脚本，一般将日志路径集中设到一个固定的地方。</p>
+
+<h4 id="toc_13">3.1 监控建议配置</h4>
+
+<p><strong>1. -XX:+PrintCommandLineFlags</strong></p>
+
+<p>运维有时会对启动参数做一些临时的更改，将每次启动的参数输出到 stdout，将来有据可查。<br/>
+打印出来的是命令行里设置了的参数以及因为这些参数隐式影响的参数，比如开了 CMS 后，-XX:+UseParNewGC 也被自动打开。</p>
+
+<p><strong>2. -XX:-OmitStackTraceInFastThrow</strong></p>
+
+<p>为异常设置 StackTrace 是个昂贵的操作，所以当应用在相同地方抛出相同的异常 N 次 (两万?) 之后，JVM 会对某些特定异常如 NPE，数组越界等进行优化，不再带上异常栈。此时，你可能会看到日志里一条条 Nul Point Exception，而之前输出完整栈的日志早被滚动到不知哪里去了，也就完全不知道这 NPE 发生在什么地方，欲哭无泪。 所以，将它禁止吧，ElasticSearch 也这样干。</p>
+
+<h4 id="toc_14">3.2 Crash 文件</h4>
+
+<p><strong>1. -XX:ErrorFile</strong></p>
+
+<p>JVM crash 时，hotspot 会生成一个 error 文件，提供 JVM 状态信息的细节。如前所述，将其输出到固定目录，避免到时会到处找这文件。文件名中的 %p 会被自动替换为应用的 PID</p>
+
+<p><code>-XX:ErrorFile=${MYLOGDIR}/hs_err_%p.log</code></p>
+
+<p><strong>2. coredump</strong></p>
+
+<p>当然，更好的做法是生成 coredump，从 CoreDump 能够转出 Heap Dump 和 Thread Dump 还有 crash 的地方，非常实用。</p>
+
+<p>在启动脚本里加上 ulimit -c unlimited 或其他的设置方式，如果有 root 权限，设一下输出目录更好</p>
+
+<p><code>echo &quot;/{MYLOGDIR}/coredump.%p&quot; &gt; /proc/sys/kernel/core_pattern</code></p>
+
+<p>什么？你不知道 coredump 有什么用？看来你是没遇过 JVM Segment Fault 的幸福人。</p>
+
+<p><strong>3. -XX:+HeapDumpOnOutOfMemoryError(可选)</strong></p>
+
+<p>在 Out Of Memory，JVM 快死掉的时候，输出 Heap Dump 到指定文件。不然开发很多时候还真不知道怎么重现错误。</p>
+
+<p>路径只指向目录，JVM 会保持文件名的唯一性，叫 java_pid${pid}.hprof。因为如果指向文件，而文件已存在，反而不能写入。</p>
+
+<p><code>-XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=${LOGDIR}/</code></p>
+
+<p>但在容器环境下，输出 4G 的 HeapDump，在普通硬盘上会造成 20 秒以上的硬盘 IO 跑满，也是个十足的恶邻，影响了同一宿主机上所有其他的容器。</p>
+
+<h4 id="toc_15">3.3 GC 日志</h4>
+
+<p>JDK9 完全不一样了，这里还是写 JDK7/8 的配置。</p>
+
+<p><strong>1. 基本配置</strong></p>
+
+<p><code>-Xloggc:/dev/shm/gc-myapp.log -XX:+PrintGCDateStamps -XX:+PrintGCDetails</code></p>
+
+<p>有人担心写 GC 日志会影响性能，但测试下来实在没什么影响，GC 问题是 Java 里最常见的问题，没日志怎么行。</p>
+
+<p>后来又发现如果遇上高 IO 的情况，GC 时操作系统正在 flush pageCache 到磁盘，也可能导致 GC log 文件被锁住，从而让 GC 结束不了。所以把它指向了 / dev/shm 这种内存中文件系统，避免这种停顿，详见 <a href="%E2%80%9Chttp://engineering.linkedin.com/blog/2016/02/eliminating-large-jvm-gc-pauses-caused-by-background-io-traffic%E2%80%9D">Eliminating Large JVM GC Pauses Caused by Background IO Traffic</a></p>
+
+<p>用 PrintGCDateStamps 而不是 PrintGCTimeStamps，打印可读的日期而不是时间戳。</p>
+
+<p><strong>2. -XX:+PrintGCApplicationStoppedTime</strong></p>
+
+<p>这是个非常非常重要的参数，但它的名字没起好，其实除了打印清晰的完整的 GC 停顿时间外，还可以打印其他的 JVM 停顿时间，比如取消偏向锁，class 被 agent redefine，code deoptimization 等等，有助于发现一些原来没想到的问题。如果真的发现了一些不知是什么的停顿，需要打印安全点日志找原因（见后）。</p>
+
+<p><strong>3. -XX:+PrintGCCause</strong></p>
+
+<p>打印产生 GC 的原因，比如 AllocationFailure 什么的，在 JDK8 已默认打开，JDK7 要显式打开一下。</p>
+
+<p><strong>4. -XX:+PrintPromotionFailure</strong></p>
+
+<p>打开了就知道是多大的新生代对象晋升到老生代失败从而引发 Full GC 时的。</p>
+
+<p><strong>5. GC 日志滚动与备份</strong></p>
+
+<p>GC 日志默认会在重启后清空，有人担心长期运行的应用会把文件弄得很大，所以 &quot;-XX:+UseGCLogFileRotation -XX:NumberOfGCLogFiles=10 -XX:GCLogFileSize=1M&quot; 的参数可以让日志滚动起来。但真正用起来重启后的文件名太混乱太让人头痛，GC 日志再大也达不到哪里去，所以我们没有加滚动，而且自行在启动脚本里对旧日志做备份。</p>
+
+<h4 id="toc_16">3.4 安全点日志</h4>
+
+<p>如果 GC 日志里有非 GC 的 JVM 停顿时间，你得打出安全点日志来知道详情，详见 <a href="http://calvin1978.blogcn.com/articles/safepoint.html">JVM 的 Stop The World，安全点，黑暗的地底世界</a></p>
+
+<p><code>-XX:+PrintSafepointStatistics -XX: PrintSafepointStatisticsCount=1 -XX:+UnlockDiagnosticVMOptions -XX:- DisplayVMOutput -XX:+LogVMOutput -XX:LogFile=/dev/shm/vm-myapp.log</code></p>
+
+<h4 id="toc_17">3.5 JMX</h4>
+
+<blockquote>
+<p>-Dcom.sun.management.jmxremote.port=7001 -Dcom.sun.management.jmxremote -Dcom.sun.management.jmxremote.authenticate=false -Dcom.sun.management.jmxremote.ssl=false -Djava.rmi.server.hostname=127.0.0.1</p>
+</blockquote>
+
+<p>以上设置，只让本地的 Zabbix 之类监控软件通过 JMX 监控 JVM，不允许远程访问。</p>
+
+<p>如果应用忘记了加上述参数，又不想改参数重启服务，可以用 VJTools 的 <a href="https://github.com/vipshop/vjtools/tree/master/vjmxcli">vjmxcli</a> 来救急，它能通过 PID 直接连入目标 JVM 打开 JMX。</p>
+
+<h3 id="toc_18">4. 小结</h3>
+
+<p><a href="https://github.com/vipshop/vjtools/">VJTools</a> 刚刚开源了，里头东西不少，比如 <a href="https://github.com/vipshop/vjtools/blob/master/vjstar/src/main/script/jvm-options">jvm-options.sh</a>，伸手党们最爱，再啰嗦一次，麻烦大家给项目点个 Star。</p>
+
+<p>有什么写得不对的地方，明年再来更新啦。祝大家生产环境里的 JVM 都稳健无比，永远没 bug。</p>
+
+<p><a href="http://calvin1978.blogcn.com/?p=1602">《关键业务系统的 JVM 启动参数推荐》</a>，转载请保留链接。</p>
+
+<h3 id="toc_19">有关的...</h3>
+
+<ul>
+<li>  2018-06-06 -- <a href="http://calvin1978.blogcn.com/articles/vjtools123.html" title="唯品会Java核心项目VJTools开源了">唯品会 Java 核心项目 VJTools 开源了</a></li>
+<li>  2016-10-29 -- <a href="http://calvin1978.blogcn.com/articles/javatuning.html" title="Java性能优化指南1.8版，及唯品会的实战">Java 性能优化指南 1.8 版，及唯品会的实战</a></li>
+<li>  2016-09-14 -- <a href="http://calvin1978.blogcn.com/articles/btrace1.html" title="Btrace入门到熟练小工完全指南">Btrace 入门到熟练小工完全指南</a></li>
+<li>  2016-08-27 -- <a href="http://calvin1978.blogcn.com/articles/hashmap.html" title="高性能场景下，Map家族的优化使用建议">高性能场景下，Map 家族的优化使用建议</a></li>
+</ul>
 
                         
                       </div>
@@ -195,10 +423,10 @@
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/7/19</span>
+                    <span class="date">2018/7/20</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Cache.html'>Cache</a></span>
+          					    <span class="posted-in"><a href='Java.html'>Java</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -288,6 +516,12 @@
 	      
 		      
 			      <li class="post">
+			        <a href="15359384213292.html">Securing Spring Boot with JWTs</a>
+			      </li>
+		     
+		  
+		      
+			      <li class="post">
 			        <a href="15358820607055.html">Java 8 Concurrency Tutorial: Atomic Variables and ConcurrentMap</a>
 			      </li>
 		     
@@ -307,12 +541,6 @@
 		      
 			      <li class="post">
 			        <a href="15358756631902.html">Java 8 Stream Tutorial</a>
-			      </li>
-		     
-		  
-		      
-			      <li class="post">
-			        <a href="15358753472382.html">Migrate Maven Projects to Java 11</a>
 			      </li>
 		     
 		  

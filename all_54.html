@@ -105,90 +105,129 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15309354381443.html">
+                <a class="clearlink" href="15309734549526.html">
                 
-                  <h1>Intersection Types: Java Generics’ most underused feature</h1>
+                  <h1>Stream Improvements in Java 9</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="http://iteratrlearning.com/java/generics/2016/05/12/intersection-types-java-generics.html">http://iteratrlearning.com/java/generics/2016/05/12/intersection-types-java-generics.html</a></p>
+<p><a href="http://iteratrlearning.com/java9/2016/08/06/java9-streams.html">http://iteratrlearning.com/java9/2016/08/06/java9-streams.html</a></p>
 </blockquote>
 
-<p><u>Written on May 12, 2016</u></p>
+<p><u>Written on August 06, 2016</u></p>
 
-<p>Generic types were added to java way back in 2004 and have had extensive usage by different libraries and application developers ever since. Not all generics features have had equal usage though. In this blog post we’re going to explore Intersection Types: which are both one of the lesser-known features that Java Generics offers.</p>
+<p>We’ve found, while teaching developers about lambdas and Streams in Java 8, that many developers really appreciate the code that comes out at the other end. It tends to read a lot more like the problem that developers are trying to solve than traditional for loops and, as a side effect, is often shorter to boot. That doesn’t mean that the Streams API is perfect or even complete. In this article we will be looking at a few small improvements that are scheduled for Java 9 that make it even better.</p>
 
-<p>Intersection types are a form of generic type that look a bit like <code>&lt;T extends A &amp; B&gt;</code>, where <code>T</code> is a type parameter and <code>A</code> and <code>B</code> are two types. In order to understand intersection types we first need to talk about how the extends keyword is used in generics. If you see a generic type parameter like <code>&lt;T extends Comparable&gt;</code> then it means that you are going to require our generic type (T) to only be those classes that implement the interface <code>Comparable</code>. Remember when we say “extends” in generic types that could refer to either extending a class or also implementing an interface.</p>
+<h2 id="toc_0">ofNullable</h2>
 
-<p>Intersection types are for situations where we want to be really greedy with our requirements! We want to say only allow classes that extend both classes in the case of our intersection types. But, why on earth would we want to do this? Let’s walk through a worked example to understand intersection types properly.</p>
+<p>The <code>Stream</code> interface has a couple of factory methods called of() that allow you to create Streams from pre-specified values - one is an overload for a single value and the other takes a varargs parameter. These are incredibly useful both when you’re trying to test out Streams code and also when you want to just instantiate a Stream with a few values. Java 9 adds an <code>ofNullable()</code> factory - let’s see how you might use it and what it’s for.</p>
 
-<h2 id="toc_0">Deserializing DataInputStream and RandomAccessFile objects</h2>
+<p>Let’s suppose we’re trying to find a location to put some configuration files in a Java application. We want to look at a couple of different properties - e.g. “app.config” and “app.home”. Let’s write this code in Java 8:</p>
 
-<p>Let’s suppose we’ve got a <code>Person</code> class and every Person has a name and an age that are instantiated in the constructor.</p>
-
-<p><code>public Person(String name, int age)</code></p>
-
-<p>Our system is trying to de-serialise person instances from an input stream, like a storage file or a network connection. In order to do this we’ve got a read method that takes a DataInputStream. It reads out the name as a Unicode string and the age as an int. After the Person instance has been read out the DataInputStream gets closed.</p>
-
-<pre><code class="language-java">private static Person read(DataInputStream source) {
-   try(DataInputStream input = source) {
-       return new Person(input.readUTF(), input.readInt());
-   }
-   catch (IOException e) {
-       e.printStackTrace();
-       return null;
-    }
-}
+<pre><code class="language-java">final String configurationDirectory =
+   Stream.of(&quot;app.config&quot;, &quot;app.home&quot;, &quot;user.home&quot;)
+         .flatMap(key -&gt; {
+             final String property = System.getProperty(key);
+             if (property == null)
+             {
+                 return Stream.empty();
+             }
+             else
+             {
+                 return Stream.of(property);
+             }
+         })
+         .findFirst()
+         .orElseThrow(IllegalStateException::new);
 </code></pre>
 
-<p>After this code has been deployed in production for a while a new requirement appears. Software development is a job never done. The new requirement requires the code to de-serialise the data from a RandomAccessFile object. Ideally you would like to re-use the logic of the read method which accepts a source of type DataInputStream. Unfortunately, an object of type <code>RandomAccessFile</code> is not a subtype of <code>DataInputStream</code> so this won’t work.</p>
+<p>Hmm, that’s a little bit ugly right - What’s going on here? Well we’re looking up each property in our Stream and using the flatMap operation. We use flatMap here because it allows us to map an element to 0 or 1 elements in the Stream. If we can lookup the system property then we return a Stream containing only it, but if we can’t look it up then we return an empty Stream in its place. This results in no element being added into the stream.</p>
 
-<h2 id="toc_1">Dummy interfaces</h2>
+<p>Unfortunately what we’ve ended up with is a fairly large statement style lambda expression with a null check in the middle of the code. One alternative would be to use a ternary operator</p>
 
-<p>What can you do? You can notice that both DataInputStream and RandomAccessFile implement the interfaces DataInput and Closeable. Consequently, you could refactor the method read by introducing a “dummy” interface whose only purpose is to create a type that extends both DataInput and Closeable:</p>
-
-<pre><code class="language-java">interface DataInputCloseable extends DataInput, Closeable {}
+<pre><code class="language-java">final String configurationDirectory =
+   Stream.of(&quot;app.config&quot;, &quot;app.home&quot;, &quot;user.home&quot;)
+         .flatMap(key -&gt; {
+              final String property = System.getProperty(key);
+              return property == null ? Stream.empty() : Stream.of(property);
+         })
+         .findFirst()
+         .orElseThrow(IllegalStateException::new);
 </code></pre>
 
-<p>You can now refactor the method read to use this interface as follows:</p>
+<p>Even after this refactor, however, the code reads slightly inelegantly. Java 9’s <code>ofNullable</code> would allow us to write the same pattern much more succinctly and more readably.</p>
 
-<pre><code class="language-java">private static Person read(DataInputCloseable source) {
-   try(DataInputStream input = source) {
-       return new Person(input.readUTF(), input.readInt());
-   }
-   catch (IOException e) {
-       e.printStackTrace();
-       return null;
-   }
-}
+<pre><code class="language-java">final String configurationDirectory =
+   Stream.of(&quot;app.config&quot;, &quot;app.home&quot;, &quot;user.home&quot;)
+         .flatMap(key -&gt; Stream.ofNullable(System.getProperty(key)))
+         .findFirst()
+         .orElseThrow(IllegalStateException::new);
 </code></pre>
 
-<p>Thanks to this refactoring, you have gained both code re-use and flexibility. You are now able to re-use the same implementation of the method read but pass DataInputStream objects and RandomAccessFile objects.</p>
+<p>It’s worth noting for the sake of completeness that this isn’t the only way to solve this problem in code, we could also have mapped over the System.getProperty() function and then filtered out the null values. That is perhaps a more natural way of writing this code for some people, but has the downside of resulting in null values getting into our Stream - something we try to steer clear of.</p>
 
-<h2 id="toc_2">Using intersection types</h2>
+<h2 id="toc_1">takeWhile and dropWhile</h2>
 
-<p>Nonetheless, you had to introduce a kind of “dummy” interface whose only purpose is to create a new type which extends two types (DataInput and Closeable). Not only that, but because you were depending upon classes in the core JDK libraries you couldn’t retrofit that interface to the actual implementing classes. This is a situation where intersection types can be convenient. They let you do just that without introducing an unnecessary interface or class in your code. You can refactor the method read as follows:</p>
+<p>We have an application that is processing payments being made on an ecommerce website and we’re maintaining a list of all payments in the current day that are sorted from the most expensive down to the cheapest. We have a business requirement to produce a report on every payment that is £500 or greater in value at the end of the day. A natural way of writing this code using Java 8 Streams might be:</p>
 
-<pre><code class="language-java">private static &lt;I extends DataInput &amp; Closeable&gt; Person read(I source) {
-    try(I input = source) {
-        return new Person(input.readUTF(), input.readInt());
-    }
-    catch (IOException e) {
-       e.printStackTrace();
-       return null;
-    }
-}
+<pre><code class="language-java">final List&lt;Payment&gt; expensivePayments = paymentsByValue
+   .stream()
+   .filter(transaction -&gt; transaction.getValue() &gt;= 500)
+   .collect(Collectors.toList());
 </code></pre>
 
-<p>In the code above, you introduced an intersection type <code>&lt;I extends DataInput &amp; Closeable&gt;</code> which says the type parameter <code>I</code> extends both <code>DataInput</code> and <code>Closeable</code>. You can then use this type parameter as argument to the method to indicate the input should extends both <code>DataInput</code> and <code>Closeable</code>.</p>
+<p>Unfortunately the downside of this approach is that if you start processing lots and lots of transactions in a day the <code>filter</code> operation gets applied to every transaction in your input list. You know that your input list is sorted by descending value of the transaction, so once you have found a transaction that fails your predicate every transaction after that point can be filtered out. Thankfully Java 9 solves this problem with the addition of a takeWhile operation.</p>
+
+<pre><code class="language-java">final List&lt;Payment&gt; expensivePayments = paymentsByValue
+   .stream()
+   .takeWhile(transaction -&gt; transaction.getValue() &gt;= 500)
+   .collect(Collectors.toList());
+</code></pre>
+
+<p>While <code>filter</code> retains all elements in the Stream that match its predicate, <code>takeWhile</code> stops once it has found an element that fails to match. The <code>dropWhile</code> operation does the inverse: throws away the elements at the start where the predicate is false.</p>
+
+<p>One subtlety that affects <code>takeWhile()</code> and <code>dropWhile()</code> relates to infinite streams. If you have an infinite stream and apply a <code>takeWhile</code> operation that eventually returns false on an element in the stream then it gets truncated at that point. When applying the <code>dropWhile</code> operation to an infinite stream, the result can still be an infinite stream. If the the predicate always returns true then the Stream will continue to drop elements. Consider:</p>
+
+<pre><code class="language-java">IntStream.iterate(0, i -&gt; i)
+         .dropWhile(i -&gt; true)
+         .forEach(System.out::println);
+</code></pre>
+
+<p>If you run this, the program will look like it’s hanging and not terminate. This is because the <code>dropWhile</code> results in an infinite stream with no elements. If we re-wrote it as the following program, then it would terminate:</p>
+
+<pre><code class="language-java">IntStream.iterate(0, i -&gt; i)
+         .takeWhile(i -&gt; false)
+         .forEach(System.out::println);
+</code></pre>
+
+<p>Now so far we’ve talked about streams that have a defined order: an encounter order. The order of streams can be defined at its source, for example if we’re streaming from a list of values then the order in the list is the encounter order. It is also possible to have stream operations that introduce an encounter order into their pipeline, for example <code>sorted()</code>. Most, but not all, of the practical use cases of <code>takeWhile()</code> and <code>dropWhile()</code> rely upon their input streams having a defined encounter order.</p>
+
+<p>One usecase for wanting to apply <code>takeWhile()</code> on an unordered stream if you want to be able to stop the Stream operation. For example perhaps you have a Stream operation that may operate on an infinite stream, processing all the data in it, but you want to be able to stop the Stream when you application shuts down or if a user needs to cancel the stream pipeline. You can do this with a takeWhile() operation that reads from a piece of external state, such as a volatile boolean flag. When you want to stop the stream pipeline, you simply set it to be false.</p>
+
+<h2 id="toc_2">iterate</h2>
+
+<p>A related update is the introduction of an alternative <code>iterate()</code> method for creating streams. The vintage <code>iterate</code> method from Java 8 takes an initial value and a function that provides the next value in the Stream. Take a look at the following code example.</p>
+
+<pre><code class="language-java">IntStream.iterate(3, x -&gt; x + 3)
+         .filter(x -&gt; x &lt; 100)
+         .forEach(System.out::println);
+</code></pre>
+
+<p>This code prints out all the numbers that are divisible by 3 and less than 100. We start with 3, which is divisible by 3 and add 3 every time we iterate. We then filter to ensure that the numbers are less than 100 and use a method reference to print out the resulting numbers. Looks simple, but if you run it you’ll find that there’s a pretty big problem. Go on try it!</p>
+
+<p>That’s right. The program never terminates, it keeps on adding 3 in a loop indefinitely. That’s because there’s no way to know in the filter that the numbers continue to increase. We can solve that problem with the new version of <code>iterate</code> in Java 9 which also takes a predicate as its second argument that tells us when to continue iterating up until. So we rewrite our code as follows.</p>
+
+<pre><code class="language-java">IntStream.iterate(3, x -&gt; x &lt; 100, x -&gt; x + 3)
+         .forEach(System.out::println);
+</code></pre>
+
+<p>Hey presto, it now stops running after it has printed out the number 99. Our sample code here used the <code>IntStream</code> interface since we were operating on primitive int values, but the <code>iterate()</code> methods appear on both the primitive and regular Stream interfaces.</p>
 
 <h2 id="toc_3">Conclusion</h2>
 
-<p>In this blog post, we showed that intersection types can be convenient in situations where you need “to extend from” two, or more, types in an existing library but you don’t have an existing interface or class to model that. In many cases this is unnecessary. Often introducing new types via an interface or class gives us an explicit name which helps the readability of your code. If the concept and name makes sense then that’s what we would recommend doing. In this case that wasn’t possible and intersection types helped save the day.</p>
-
-<p>If you are interested in improving your Java skills, check out our <a href="http://iteratrlearning.com/javabootcamp">Java Software Development Bootcamp</a></p>
+<p>In this article we’ve gone through four new additions to the Streams API that appear in Java 9 and help fill in some small gaps in its functionality. In our next article we will talking about the upcoming improvements to the Collectors API in Java 9. Hopefully you will join us for that, or on one of our in-house <a href="http://iteratrlearning.com">training courses</a>.</p>
 
                         
                       </div>
@@ -290,6 +329,12 @@
 	      
 		      
 			      <li class="post">
+			        <a href="15359384213292.html">Securing Spring Boot with JWTs</a>
+			      </li>
+		     
+		  
+		      
+			      <li class="post">
 			        <a href="15358820607055.html">Java 8 Concurrency Tutorial: Atomic Variables and ConcurrentMap</a>
 			      </li>
 		     
@@ -309,12 +354,6 @@
 		      
 			      <li class="post">
 			        <a href="15358756631902.html">Java 8 Stream Tutorial</a>
-			      </li>
-		     
-		  
-		      
-			      <li class="post">
-			        <a href="15358753472382.html">Migrate Maven Projects to Java 11</a>
 			      </li>
 		     
 		  

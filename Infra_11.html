@@ -105,282 +105,88 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15316410286252.html">
+                <a class="clearlink" href="15319631527349.html">
                 
-                  <h1>GitHub的MySQL高可用性实践</h1>
+                  <h1>高可用Redis服务架构分析与搭建</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://mp.weixin.qq.com/s/J1dFPs_ijEk20f3q6GismQ">https://mp.weixin.qq.com/s/J1dFPs_ijEk20f3q6GismQ</a></p>
+<p><a href="https://www.cnblogs.com/xuning/p/8464625.html">https://www.cnblogs.com/xuning/p/8464625.html</a></p>
 </blockquote>
 
-<pre><code>作者｜Shlomi Noach
-译者｜张健欣
-</code></pre>
+<p>基于内存的 Redis 应该是目前各种 web 开发业务中最为常用的 key-value 数据库了，我们经常在业务中用其存储用户登陆态（Session 存储），加速一些热数据的查询（相比较 mysql 而言，速度有数量级的提升），做简单的消息队列（LPUSH 和 BRPOP）、订阅发布（PUB/SUB）系统等等。规模比较大的互联网公司，一般都会有专门的团队，将 Redis 存储以基础服务的形式提供给各个业务调用。</p>
 
-<blockquote>
-<p>本文阐述了 GitHub 的 MySQL 高可用性和主服务发现解决方案，这个方案使得 GitHub 能够可靠地进行跨数据中心运维、克服数据中心隔离的影响并实现故障时的短宕机时间。</p>
-</blockquote>
+<p>不过任何一个基础服务的提供方，都会被调用方问起的一个问题是：你的服务是否具有高可用性？最好不要因为你的服务经常出问题，导致我这边的业务跟着遭殃。最近我所在的项目中也自己搭了一套小型的 “高可用”Redis 服务，在此做一下自己的总结和思考。</p>
 
-<p>GitHub 使用 MySQL 作为所有非<code>git</code>项目的主要数据存储，因此 MySQL 的可用性对于 GitHub 的运维来说至关重要。站点本身、GitHub 的 API、身份验证等都需要数据库访问。我们运行多个 MySQL 集群来服务我们的不同服务和任务。我们的集群使用经典的主 - 副设置，其中集群的单个节点（主节点）能够接受写操作。其它集群节点（副节点）异步更新主节点的变更并服务我们的读流量。</p>
+<p>首先我们要定义一下对于 Redis 服务来说怎样才算是高可用，即在各种出现异常的情况下，依然可以正常提供服务。或者宽松一些，出现异常的情况下，只经过很短暂的时间即可恢复正常服务。所谓异常，应该至少包含了以下几种可能性：</p>
 
-<p>主节点的可用性特别地重要。主节点不可用时，集群就不能接受写操作：任何需要持久化的写操作都不能被持久化。任何传入的变更，例如提交代码、提问题、用户创建、代码审查、新建代码库等等，都会失败。</p>
+<p>【异常 1】某个节点服务器的某个进程突然 down 掉（例如某开发手残，把一台服务器的 redis-server 进程 kill 了）</p>
 
-<p>为了支持写操作，我们显然需要有一个可用的写节点，即集群的主节点。但同样重要的是，我们需要能够识别，或者发现，那个节点。</p>
+<p>【异常 2】某台节点服务器 down 掉，相当于这个节点上所有进程都停了（例如某运维手残，把一个服务器的电源拔了；例如一些老旧机器出现硬件故障）</p>
 
-<p>遇到一个故障时，比如主节点崩溃的场景，我们必须确保存在一个新的主节点，并且能够快速通告其身份。检测故障、运行故障恢复以及通告新主节点身份所花费的时间组成了总宕机时间。</p>
+<p>【异常 3】任意两个节点服务器之间的通信中断了（例如某临时工手残，把用于两个机房通信的光缆挖断了）</p>
 
-<p>本文阐述了 GitHub 的 MySQL 高可用性和主服务发现解决方案，这个方案使得我们能够可靠地进行跨数据中心运维、克服数据中心隔离的影响并实现故障时的短宕机时间。</p>
+<p>其实以上任意一种异常都是小概率事件，而做到高可用性的基本指导思想就是：多个小概率事件同时发生的概率可以忽略不计。只要我们设计的系统可以容忍短时间内的单点故障，即可实现高可用性。</p>
 
-<h2 id="toc_0">高可用性目标</h2>
+<p>对于搭建高可用 Redis 服务，网上已有了很多方案，例如 Keepalived，Codis，Twemproxy，Redis Sentinel。其中 Codis 和 Twemproxy 主要是用于大规模的 Redis 集群中，也是在 Redis 官方发布 Redis Sentinel 之前 twitter 和豌豆荚提供的开源解决方案。我的业务中数据量并不大，所以搞集群服务反而是浪费机器了。最终在 Keepalived 和 Redis Sentinel 之间做了个选择，选择了官方的解决方案 Redis Sentinel。</p>
 
-<p>本文描述的解决方案是对 GitHub 先前实现的高可用性（HA）解决方案的迭代和改进。随着我们规模的扩大，我们的 MySQL HA 策略必须适应变化。我们希望对我们的 MySQL 和 GitHub 的其它服务运用相似的 HA 策略。</p>
+<p>Redis Sentinel 可以理解为一个监控 Redis Server 服务是否正常的进程，并且一旦检测到不正常，可以自动地将备份（slave）Redis Server 启用，使得外部用户对 Redis 服务内部出现的异常无感知。我们按照由简至繁的步骤，搭建一个最小型的高可用的 Redis 服务。</p>
 
-<p>当考虑高可用性和服务发现时，一些问题可以指导你找到一个恰当的解决方案。这些问题包括但不限于：</p>
+<p><strong>方案 1：单机版 Redis Server，无 Sentinel</strong></p>
 
-<ul>
-<li><p>你能容忍的宕机时间是多久？</p></li>
-<li><p>崩溃检测的可靠性如何？你能容忍假阳性（过早进行故障恢复）吗？</p></li>
-<li><p>故障恢复的可靠性如何？它在哪些情况下会失败？</p></li>
-<li><p>解决方案跨数据中心能力如何？在低延迟和高延迟网络的能力如何？</p></li>
-<li><p>解决方案能克服完整的数据中心故障或网络隔离的影响吗？</p></li>
-<li><p>如果有的话，什么机制能够防止或减轻脑裂现象（两个服务器都宣称是指定集群的主节点，都独立地彼此无意识地接受写操作）？</p></li>
-<li><p>你能够承受数据丢失吗？到什么程度？</p></li>
-</ul>
+<p><img src="https://images2018.cnblogs.com/blog/566097/201802/566097-20180224104757825-317365999.png" alt=""/></p>
 
-<p>为了说明上述一些问题，让我们先看一下我们之前的 HA 迭代以及为什么我们要改变它。</p>
+<p>一般情况下，我们搭的个人网站，或者平时做开发时，会起一个单实例的 Redis Server。调用方直接连接 Redis 服务即可，甚至 Client 和 Redis 本身就处于同一台服务器上。这种搭配仅适合个人学习娱乐，毕竟这种配置总会有单点故障的问题无法解决。一旦 Redis 服务进程挂了，或者服务器 1 停机了，那么服务就不可用了。并且如果没有配置 Redis 数据持久化的话，Redis 内部已经存储的数据也会丢失。</p>
 
-<h2 id="toc_1">远离基于 VIP 和 DNS 的服务发现</h2>
+<p><strong>方案 2：主从同步 Redis Server，单实例 Sentinel</strong></p>
 
-<p>在我们之前的迭代中，我们使用：</p>
+<p><img src="https://images2018.cnblogs.com/blog/566097/201802/566097-20180224104938975-2014456086.png" alt=""/></p>
 
-<ul>
-<li><p>orchestrator (<a href="https://githubengineering.com/orchestrator-github/">https://githubengineering.com/orchestrator-github/</a>) 用于故障监听和故障恢复</p></li>
-<li><p>VIP 和 DNS 用于发现主节点</p></li>
-</ul>
+<p>为了实现高可用，解决方案 1 中所述的单点故障问题，我们必须增加一个备份服务，即在两台服务器上分别各启动一个 Redis Server 进程，一般情况下由 master 提供服务，slave 只负责同步和备份。与此同时，在额外启动一个 Sentinel 进程，监控两个 Redis Server 实例的可用性，以便在 master 挂掉的时候，及时把 slave 提升到 master 的角色继续提供服务，这样就实现了 Redis Server 的高可用。这基于一个高可用服务设计的依据，即单点故障本身就是个小概率事件，而多个单点同时故障（即 master 和 slave 同时挂掉），可以认为是（基本）不可能发生的事件。</p>
 
-<p>在那个迭代中，客户端通过使用一个名称，例如<code>mysql-writer-1.github.net</code>来发现写节点。这个名称解析为主节点获取的虚拟 IP 地址（Virtual IP address，VIP）。</p>
+<p>对于 Redis 服务的调用方来说，现在要连接的是 Redis Sentinel 服务，而不是 Redis Server 了。常见的调用过程是，client 先连接 Redis Sentinel 并询问目前 Redis Server 中哪个服务是 master，哪些是 slave，然后再去连接相应的 Redis Server 进行操作。当然目前的第三方库一般都已经实现了这一调用过程，不再需要我们手动去实现（例如 Nodejs 的 ioredis，PHP 的 predis，Golang 的 go-redis/redis，JAVA 的 jedis 等）。</p>
 
-<p>因此，平常的时候，客户端会只解析这个名称，连接解析到的 IP 地址，然后找到正在另一端监听的主节点。</p>
+<p>然而，我们实现了 Redis Server 服务的主从切换之后，又引入了一个新的问题，即 Redis Sentinel 本身也是个单点服务，一旦 Sentinel 进程挂了，那么客户端就没办法链接 Sentinel 了。所以说，方案 2 的配置并无法实现高可用性。</p>
 
-<p>这个副本拓扑，跨越 3 个不同的数据中心：</p>
+<p><strong>方案 3：主从同步 Redis Server，双实例 Sentinel</strong></p>
 
-<p><img src="https://mmbiz.qpic.cn/mmbiz_png/FE4VibF0SjfNElvLNcBKtkApBEKRqzNbx8remfnnePa5aPxXwZ0cXfZia36ibrMbn2icLEBciaarLZ7AP49AniaCib6OA/640?wx_fmt=png" alt=""/></p>
+<p><img src="https://images2018.cnblogs.com/blog/566097/201802/566097-20180224105121774-2039349597.png" alt=""/></p>
 
-<p>当发生一个主节点故障事件时，一个新的服务器（副本之一），必须被提升为主节点。</p>
+<p>为了解决方案 2 的问题，我们把 Redis Sentinel 进程也额外启动一份，两个 Sentinel 进程同时为客户端提供服务发现的功能。对于客户端来说，它可以连接任何一个 Redis Sentinel 服务，来获取当前 Redis Server 实例的基本信息。通常情况下，我们会在 Client 端配置多个 Redis Sentinel 的链接地址，Client 一旦发现某个地址连接不上，会去试图连接其他的 Sentinel 实例，这当然也不需要我们手动实现，各个开发语言中比较热门的 redis 连接库都帮我们实现了这个功能。我们预期是：即使其中一个 Redis Sentinel 挂掉了，还有另外一个 Sentinel 可以提供服务。</p>
 
-<p><code>orchestrator</code>将监测到一个故障，提升一个新的主节点，然后采取行动重新分配名称 /VIP。客户端并不知道主节点的身份：它们所知道的只是一个名称，而那个名称现在一定解析到了新的主节点。然而，注意：</p>
+<p>然而，愿景是美好的，现实却是很残酷的。如此架构下，依然无法实现 Redis 服务的高可用。方案 3 示意图中，红线部分是两台服务器之间的通信，而我们所设想的异常场景（【异常 2】）是，某台服务器整体 down 机，不妨假设服务器 1 停机，此时，只剩下服务器 2 上面的 Redis Sentinel 和 slave Redis Server 进程。这时，Sentinel 其实是不会将仅剩的 slave 切换成 master 继续服务的，也就导致 Redis 服务不可用，因为 Redis 的设定是只有当超过 50% 的 Sentinel 进程可以连通并投票选取新的 master 时，才会真正发生主从切换。本例中两个 Sentinel 只有一个可以连通，等于 50% 并不在可以主从切换的场景中。</p>
 
-<p>VIP 是协作的：它们被数据库服务器本身声明和拥有。为了获取或释放一个 VIP，一个服务器必须发送一个 ARP 请求。在新提升的主节点获取这个 VIP 之前，拥有这个 VIP 的服务器必须先释放这个 VIP。这有一些不如人意的效果：</p>
+<p>你可能会问，为什么 Redis 要有这个 50% 的设定？假设我们允许小于等于 50% 的 Sentinel 连通的场景下也可以进行主从切换。试想一下【异常 3】，即服务器 1 和服务器 2 之间的网络中断，但是服务器本身是可以运行的。如下图所示：</p>
 
-<ul>
-<li><p>一个故障恢复操作按顺序首先会请求挂掉的主节点释放 VIP，然后请求新提升的主节点获取这个 VIP。但如果老的主节点无法访问或者拒绝释放 VIP 呢？假设在那台服务器上一开始发生了一个故障，那么它也很可能不会及时响应或者根本不响应。</p></li>
-<li><p>我们会面临裂脑处境：两个主机声称拥有相同的 VIP。不同的客户端根据最短网络路径，可能会连接到其中任何一个服务器。</p></li>
-<li><p>这个问题的根源是依赖于两个独立服务器的合作，而这种设置是不可靠的。</p></li>
-<li><p>即使旧的主节点合作，这个工作流也浪费了宝贵的时间：切换到新的主节点时，需要等待与旧的主节点的联系。</p></li>
-<li><p>而且当 VIP 改变时，不能保证现有的客户端与旧的服务器的连接断开，从而导致我们仍面临裂脑处境。</p></li>
-</ul>
+<p><img src="https://images2018.cnblogs.com/blog/566097/201802/566097-20180224105223591-314651630.png" alt=""/></p>
 
-<p>在我们的设置中，VIP 与物理地址绑定。它们属于一个交换机或路由器。因此，我们只能将 VIP 重新分配给相互定位的服务器。特别是，在某些情况下，我们不能将 VIP 分配给在不同数据中心提升的服务器，并且必须更改 DNS。</p>
+<p>实际上对于服务器 2 来说，服务器 1 直接 down 掉和服务器 1 网络连不通是一样的效果，反正都是突然就无法进行任何通信了。假设网络中断时我们允许服务器 2 的 Sentinel 把 slave 切换为 master，结果就是你现在拥有了两个可以对外提供服务的 Redis Server。Client 做任何的增删改操作，有可能落在服务器 1 的 Redis 上，也有可能落在服务器 2 的 Redis 上（取决于 Client 到底连通的是哪个 Sentinel），造成数据混乱。即使后面服务器 1 和服务器 2 之间的网络又恢复了，那我们也无法把数据统一了（两份不一样的数据，到底该信任谁呢？），数据一致性完全被破坏。</p>
 
-<ul>
-<li>  DNS 的变化需要更长的时间来传播。客户端会为了预配置时间而缓存 DNS 名称。一个跨数据中心的故障意味着更长的宕机时间：让所有客户端意识到新主节点的身份需要花费更长时间。</li>
-</ul>
+<p><strong>方案 4：主从同步 Redis Server，三实例 Sentinel</strong></p>
 
-<p>仅仅这些限制就足以促使我们去寻找一种新的解决方案，但还有更多的顾虑：</p>
+<p><img src="https://images2018.cnblogs.com/blog/566097/201802/566097-20180224105313568-148145342.png" alt=""/></p>
 
-<ul>
-<li><p>主节点通过<code>pt-heartbeat</code>服务来自我注入心跳，从而达到延迟测量和节流控制的目的。这个服务必须在新提升的主节点上开启。如果可能的话，这个服务会在旧的主节点上会被关停。</p></li>
-<li><p>同样地，Pseudo-GTID 注入是由主节点自我管理的。它需要在新的主节点上开启，而且最好在旧的主节点上关停。</p></li>
-<li><p>新的主节点被设置为可写的。如果可能的话，旧的主节点被设置为<code>read_only</code>。</p></li>
-</ul>
+<p>鉴于方案 3 并没有办法做到高可用，我们最终的版本就是上图所示的方案 4 了。实际上这就是我们最终搭建的架构。我们引入了服务器 3，并且在 3 上面又搭建起一个 Redis Sentinel 进程，现在由三个 Sentinel 进程来管理两个 Redis Server 实例。这种场景下，不管是单一进程故障、还是单个机器故障、还是某两个机器网络通信故障，都可以继续对外提供 Redis 服务。</p>
 
-<p>这些额外的步骤的执行时间构成了总宕机时间的一部分，并且引入了它们自己的故障和冲突。</p>
+<p>实际上，如果你的机器比较空闲，当然也可以把服务器 3 上面也开启一个 Redis Server，形成 1 master + 2 slave 的架构，每个数据都有两个备份，可用性会提升一些。当然也并不是 slave 越多越好，毕竟主从同步也是需要时间成本的。</p>
 
-<p>这个解决方案是有效的，而且 GitHub 已经有运行良好的非常成功的 MySQL 故障恢复措施，但是我们想要在以下方面提升我们的高可用性：</p>
+<p>在方案 4 中，一旦服务器 1 和其他服务器的通信完全中断，那么服务器 2 和 3 会将 slave 切换为 master。对于客户端来说，在这么一瞬间会有 2 个 master 提供服务，并且一旦网络恢复了，那么所有在中断期间落在服务器 1 上的新数据都会丢失。如果想要部分解决这个问题，可以配置 Redis Server 进程，让其在检测到自己网络有问题的时候，立即停止服务，避免在网络故障期间还有新数据进来（可以参考 Redis 的 min-slaves-to-write 和 min-slaves-max-lag 这两个配置项）。</p>
 
-<ul>
-<li><p>不依赖数据中心。</p></li>
-<li><p>克服数据中心故障的影响。</p></li>
-<li><p>移除不可靠的协作工作流。</p></li>
-<li><p>减少总宕机时间。</p></li>
-<li><p>尽可能实现无损故障恢复。</p></li>
-</ul>
+<p>至此，我们就用 3 台机器搭建了一个高可用的 Redis 服务。其实网上还有更加节省机器的办法，就是把一个 Sentinel 进程放在 Client 机器上，而不是服务提供方的机器上。只不过在公司里面，一般服务的提供方和调用方并不来自同一个团队。两个团队共同操作同一个机器，很容易因为沟通问题导致一些误操作，所以出于这种人为因素的考虑，我们还是采用了方案 4 的架构。并且由于服务器 3 上面只跑了一个 Sentinel 进程，对服务器资源消耗并不多，还可以用服务器 3 来跑一些其他的服务。</p>
 
-<h2 id="toc_2">GitHub 的高可用性方案：orchestrator、Consul 和 GLB</h2>
+<p><strong>易用性：像使用单机版 Redis 一样使用 Redis Sentinel</strong></p>
 
-<p>我们的新策略以及附带的改进，解决或者减轻了上述的许多担忧。在目前的高可用性设置中我们使用：</p>
+<p>作为服务的提供方，我们总是会讲到用户体验问题。在上述方案当中始终有一个让 Client 端用的不是那么舒服的地方。对于单机版 Redis，Client 端直接连接 Redis Server，我们只需要给一个 ip 和 port，Client 就可以使用我们的服务了。而改造成 Sentinel 模式之后，Client 不得不采用一些支持 Sentinel 模式的外部依赖包，并且还要修改自己的 Redis 连接配置，这对于 “矫情” 的用户来讲显然是不能接收的。有没有办法还是像在使用单机版的 Redis 那样，只给 Client 一个固定的 ip 和 port 就可以提供服务呢？</p>
 
-<ul>
-<li><p>orchestrator 用来运行故障监听和故障恢复。我们使用了如下图所示的一个跨数据中心的 orchestrator/raft。</p></li>
-<li><p>Hashicorp 公司的用于服务发现的 Consul。</p></li>
-<li><p>作为客户端和写操作节点之间的代理层的 GLB/HAProxy。</p></li>
-<li><p>用于网络路由的<code>anycast</code>。</p></li>
-</ul>
+<p><img src="https://images2018.cnblogs.com/blog/566097/201802/566097-20180224105513939-1484357459.png" alt=""/></p>
 
-<p><img src="https://mmbiz.qpic.cn/mmbiz_png/FE4VibF0SjfNElvLNcBKtkApBEKRqzNbxtzJR0SWVD6clpF03I1T9Gewm2KLm54OEic0qdXicGUI4hicOndlhfo4eQ/640?wx_fmt=png" alt=""/></p>
+<p>答案当然是肯定的。这可能就要引入虚拟 IP（Virtual IP，VIP），如上图所示。我们可以把虚拟 IP 指向 Redis Server master 所在的服务器，在发生 Redis 主从切换的时候，会触发一个回调脚本，回调脚本中将 VIP 切换至 slave 所在的服务器。这样对于 Client 端来说，他仿佛在使用的依然是一个单机版的高可用 Redis 服务。</p>
 
-<p>新设置完全删除了 VIP 和 DNS 更改。并且在引入更多组件的同时，我们使得组件解耦并简化了任务，还使用了稳健的解决方案。详解如下：</p>
+<p><strong>结语</strong></p>
 
-<p><strong>一个普通的工作流</strong></p>
-
-<p>平常，App 通过 GLB/HAProxy 连接到写操作节点。</p>
-
-<p>App 不会意识到主节点的身份。和以前一样，它们使用一个名称。例如，<code>cluster1</code>的主节点会是<code>mysql-writer-1.github.net</code>。然而，在我们目前的设置中，这个名称会被解析到一个任播（anycast）IP。</p>
-
-<p>通过<code>anycast</code>方法，这个名称在任何地方都被解析为相同的 IP，但是流量会根据客户端位置分别进行路由。特别地，我们的每个数据中心都在多个区域部署了 GLB（我们的高可用负载均衡）。到<code>mysql-writer-1.github.net</code>的流量通常路由到本地数据中心的 GLB 集群。因此，所有的客户端都是由本地代理服务的。</p>
-
-<p>我们在 HAProxy 上运行 GLB。我们的 HAProxy 有写操作池：每个 MySQL 集群一个池，而每个池有一个后端服务器作为这个集群的主节点。所有的 GLB/HAProxy 区域在所有的数据中心都拥有相同的写操作池，而它们都指向这些池中完全相同的后端服务器。因此，如果一个 App 想要向<code>mysql-writer-1.github.net</code>写入，这跟它与哪个 GLB 服务器连接无关。它将总是被路由到<code>cluster1</code>主节点。</p>
-
-<p>就 App 而言，服务发现在 GLB 终止，并且永远不需要重新发现。流量都是在 GLB 上路由到正确的目的地。</p>
-
-<p>那么，GLB 如何知道将哪些服务器作为后端列表，以及我们如何将更改传播到 GLB？</p>
-
-<p><strong>Consul 的服务发现</strong></p>
-
-<p>Consul 作为一种服务发现解决方案而闻名，并且还提供 DNS 服务。然而在我们的解决方案中，我们用它作为一个高可用的键值对（KV）存储器。</p>
-
-<p>我们使用 Consul 的 KV 存储器写入集群主节点的身份。对于每个集群，都有一套 KV 记录表明集群的主节点的 fqdn、port、ipv4 和 ipv6。</p>
-
-<p>每个 GLB/HAProxy 节点都运行 consul-template：一个监听 Consul 数据变化的服务（在我们的案例中：是指集群主节点数据的变化）。<code>console-template</code>会生成一个有效的配置文件，并且能够基于配置的变化重新加载 HAProxy。</p>
-
-<p>因此，Consul 中每个主节点身份的改变都被每个 GLB/HAProxy 观测，然后重新配置自身，将新的主节点设置为一个集群的后端池的单个实体，然后重新加载以反映那些变化。</p>
-
-<p>在 GitHub，我们在每个数据中心都有一个 Consul 设置，而且每个设置都是高可用的。然而，这些设置是彼此独立的。它们不会彼此复制，也不共享任何数据。</p>
-
-<p>那么，Consul 是如何得知变化的呢？这些信息又是如何跨平台分布的呢？</p>
-
-<p><strong>orchestrator/raft</strong></p>
-
-<p>我们运行一个<code>orchestrator/raft</code>设置：<code>orchestrator</code>节点通过 raft 共识相互通信。我们每个数据中心有 1 到 2 个<code>orchestrator</code>节点。</p>
-
-<p><code>orchestrator</code>负责故障检测、MySQL 故障恢复并将主节点的变更通知 Consul。故障恢复由单个<code>orchestrator/raft</code>领导节点维护，但是集群现在有一个新的主节点这个变更消息是通过 raft 机制传播给所有<code>orchestrator</code>节点的。</p>
-
-<p>当<code>orchestrator</code>节点接收到主节点变更消息时，它们都会通知他们的本地 Consul 设置：它们各自调用一次 KV 写操作。拥有 1 个以上<code>orchestrator</code>的数据中心将会向 Consul 有多次（等同的）写操作。</p>
-
-<p><strong>整合工作流</strong></p>
-
-<p>在一个主节点宕机场景：</p>
-
-<ul>
-<li><p><code>orchestrator</code>节点监测到故障。</p></li>
-<li><p><code>orchestrator/raft</code>领导开始一次恢复措施，提升一个新的主节点。</p></li>
-<li><p><code>orchestrator/raft</code>将主节点变更通告给所有 raft 集群节点。</p></li>
-<li><p>每个<code>orchestrator/raft</code>成员接收到一个领导变更通知。它们各自在本地 Consul 的 KV 存储器中更新新的主节点的身份。</p></li>
-<li><p>每个 GLB/HAProxy 都运行了<code>consul-template</code>，监控 Consul 的 KV 存储中的变更，然后重新配置和加载 HAProxy。</p></li>
-<li><p>客户端流量被重定向到新的主节点。</p></li>
-</ul>
-
-<p>此外：</p>
-
-<ul>
-<li><p>无需传播 DNS 变更。</p></li>
-<li><p>没有 TTL。</p></li>
-<li><p>这个流程不需要挂掉的主节点的合作。它很大程度上被忽略了。</p></li>
-</ul>
-
-<p><strong>更多细节</strong></p>
-
-<p>为了进一步保障这个流程，我们还做了如下工作：</p>
-
-<ul>
-<li><p>HAProxy 配置了一个非常短的<code>hard-stop-after</code>。当它用写操作池中的一个新的后端服务器重新加载时，它会自动终止任何现存的与旧的主节点的连接。</p></li>
-<li><p>通过<code>hard-stop-after</code>，我们甚至不需要来自客户端的配合，而且这样减轻了裂脑场景。值的注意的是，这并不是严密的，在我们杀死旧连接之前会过去一段时间。但是在那之后，我们就可以放心不会出现令人讨厌的意外。</p></li>
-<li><p>我们并没有严格要求 Consul 在所有时间都是可用的。事实上，我们只需要它在故障恢复时可用。如果 Consul 碰巧挂掉了，GLB 会继续使用最近的已知值操作，不会采取剧烈的行动。</p></li>
-<li><p>GLB 被设置来验证新提升的主节点的身份。类似于我们的上下文感知 MySQL 池，在后端服务器进行检查，来确认它确实是一个写操作节点。如果碰巧删除了 Consul 中的主节点信息，没有问题；空白的条目会被忽略。如果我们在 Consul 中误写入了一个非主节点服务器的名称，没有问题；GLB 会拒绝更新它并使用上次已知的状态运行。</p></li>
-</ul>
-
-<p>我们会在下面章节中进一步解决担忧并追求高可用性目标。</p>
-
-<h2 id="toc_3">orchestrator/raft 故障检测</h2>
-
-<p><code>orchestrator</code>使用一种整体方案来检测故障，因此是非常可靠的。我们不观测假阳性：我们不会过早启动故障恢复，因此不会遭受不必要的宕机时间。</p>
-
-<p><code>orchestrator/raft</code>进一步解决了一个完整的数据中心网络隔离的情况（即数据中心围栏）。数据中心网络隔离会引起混淆：那个数据中心中的服务器能够彼此通信。是它们与其它数据中心网络隔离了？还是其它数据中心被网络隔离了？</p>
-
-<p>在一个<code>orchestrator/raft</code>设置中，<code>raft</code>领导节点是运行故障恢复的节点。领导节点是指获得大多数群体支持的节点。我们的<code>orchestrator</code>节点部署就是这样，没有单个数据中心占大多数支持，任何 n-1 个数据中心占大多数支持。</p>
-
-<p>在一个完整的数据中心网络隔离事件中，那个数据中心中的<code>orchestrator</code>节点与其他数据中心中的对等节点断开连接。因此，在隔离的数据中心中的<code>orchestrator</code>节点不能成为<code>raft</code>集群的领导节点。如果任何这种节点碰巧成为领导节点，它也会下台。一个新的领导节点会从其它数据中心分配。这个领导节点将获得所有其它数据中心的支持，而这些数据中心能够彼此通信。</p>
-
-<p>因此，<code>orchestrator</code>节点就是网络隔离的数据中心之外的一个节点。在一个隔离的数据中心应该有一个主节点，<code>orchestrator</code>将启动故障恢复，用可用数据中心之一里的一个服务器取代它。我们通过将决策委托给非隔离数据中心中的群体来减轻数据中心隔离。</p>
-
-<h2 id="toc_4">更快的通告</h2>
-
-<p>可以通过更快速地通告主节点变更来进一步减少总宕机时间。这如何实现呢？</p>
-
-<p>当<code>orchestrator</code>开始故障恢复时，它观测可被提升的服务器群。理解复制原则并遵从暗示和限制，能够基于最佳做法作出优化的决策。</p>
-
-<p>需要意识到，可用于提升的服务器也是一个理想的候选者，例如：</p>
-
-<ul>
-<li><p>没有什么可以阻止服务器的提升（而且用户已经潜在暗示这些服务器是首选提升对象）；</p></li>
-<li><p>这些服务器能够将其所有的兄弟节点作为复制品。</p></li>
-</ul>
-
-<p>在这种情况，<code>orchestrator</code>首先将服务器设置为可写的，然后迅速通告服务器的提升（写入 Consul KV），同时异步开始修复复制树（这个操作通常会花费更多时间）。</p>
-
-<p>很可能当我们的 GLB 服务器完全重新加载时，复制树已经完好无损了，但这不是严格必需的。服务器可以接收写操作！</p>
-
-<h2 id="toc_5">半同步复制</h2>
-
-<p>在 MySQL 的半同步复制中，在变更已经提交到一个或多个副本之前，主服务器不会承认这个事务提交。这提供了一种实现无损故障恢复的方法：任何提交到主节点的变更都已经应用或者等待被应用到某个副本。</p>
-
-<p>一致性伴随着成本：可用性风险。如果没有副本确认收到变更，主节点会阻塞并且写操作会停顿。幸运的是，有一个超时配置，超过超时时间，主节点能够恢复到异步复制模式，使得写操作再次可用。</p>
-
-<p>我们将我们的超时配置设置为一个合理的低值：<code>500ms</code>。这足够将主节点的变更传递给本地数据中心副本以及远程的数据中心。有了这个超时，我们就可以观测完美的半同步行为（不回滚到异步复制），同时在确认失败的情况下会感受到一个可接受的非常短的阻塞时间。</p>
-
-<p>我们在本地数据中心副本上启用半同步，而且在主节点挂掉事件中，我们期望（尽管并不严格强制）无损故障恢复。但是，我们不会期望一个完整的数据中心故障的无损故障恢复，因为它的代价非常大。</p>
-
-<p>在进行半同步超时实验时，我们还观察到一种对我们有利的现象：我们能够在主节点故障中影响理想的候选者的身份。通过在指定服务器上启用半同步并将它们标记为候选者，我们能够通过影响故障结果来减少总宕机时间。我们在实验中观察到，我们通常能够提升理想的候选者并因此快速进行通告。</p>
-
-<p><section class="" style="font-family: Avenir, -apple-system-font, 微软雅黑, sans-serif;line-height: 1.1;color: rgb(63, 63, 63);font-size: 20px;text-align: center;white-space: normal;background-color: rgb(255, 255, 255);">心跳注入</section></p>
-
-<p>我们选择在任何地方任何时间管理<code>pt-heartbeat</code>服务的开启 / 关闭，而不是只在提升 / 降级的主节点上管理<code>pt-heartbeat</code>服务的开启 / 关闭。这需要一些补丁，改变它们的<code>read_only</code>状态或者完全奔溃，以便使 pt-heartbeat 与服务器一致。</p>
-
-<p>在我们当前设置中，<code>pt-heartbeat</code>服务运行在主节点和副本上。在主节点上，它们生成心跳事件。在副本上，它们标识服务器是<code>read_only</code>并周期性检查它们的状态。一旦一个服务器被提升为主节点，那个服务器上的<code>pt-heartbeat</code>将其标识为可写的，并开始注入心跳事件。</p>
-
-<h2 id="toc_6">orchestrator 所有权委托</h2>
-
-<p>我们进一步委托给<code>orchestrator</code>：</p>
-
-<ul>
-<li><p>Preudo-GTID 注入</p></li>
-<li><p>将提升的主节点设置为可写的并清除它的复制状态</p></li>
-<li><p>如果可能的话，将旧的主节点设置为<code>read_only</code></p></li>
-</ul>
-
-<p>在新的主节点上，这减少了摩擦。被提升的主节点明显需要是活跃的和可访问的，否则我们不会提升它。那么，可以让<code>orchestrator</code>直接将变更应用到提升的主节点上。</p>
-
-<h2 id="toc_7">限制和缺陷</h2>
-
-<p>代理层使得 App 意识不到主节点的身份，同时它还对主节点屏蔽了 App 的身份。主节点看到的都是来自代理层的连接，而我们丢失了真正连接来源的信息。</p>
-
-<p>随着分布式系统的发展，我们仍然面临未处理过的场景。</p>
-
-<p>尤其是，在一个数据中心隔离场景中，假设主节点是在隔离的数据中心，那个数据中心的 App 仍然能够向主节点写入。一旦网络恢复，这可能导致状态不一致。我们通过从非常孤立的数据中心实现一个可靠的 STONITH 来减轻这种裂脑现象。像之前一样，主节点降级之前会经过一些时间，并且会存在一段时间的裂脑。避免裂脑现象的运维成本非常高。</p>
-
-<p>存在更多场景：故障恢复时 Consul 宕机；部分数据中心隔离；其它场景等。我们明白，在这种性质的分布式系统中，不可能关闭所有的漏洞，因此我们关注最重要的场景。</p>
-
-<h2 id="toc_8">结果</h2>
-
-<p>我们的 orchestrator/GLB/Consul 设置提供了：</p>
-
-<ul>
-<li><p>可靠的故障检测</p></li>
-<li><p>不依赖数据中心的故障恢复</p></li>
-<li><p>典型的无损故障恢复</p></li>
-<li><p>数据中心网络隔离支持</p></li>
-<li><p>减轻裂脑现象（更多工作仍在进行中）</p></li>
-<li><p>没有合作依赖</p></li>
-<li><p>大部分场景下的<code>10-13 秒</code>的总宕机时间</p></li>
-<li><p>总宕机时间在非常少的场景下会长达<code>20 秒</code>，在极端情况下会长达<code>25 秒</code>。</p></li>
-</ul>
-
-<h2 id="toc_9">结论</h2>
-
-<p>orchestratoion/proxy/service-discovery 范式在解耦架构中使用了众所周知且令人信赖的组件，使得它更容易部署、运维和观测，并且每个组件都可以独立地扩大或缩小规模。我们将不断测试我们的设置，从而不断寻求改进。</p>
+<p>搭建任何一个服务，做到 “能用” 其实是非常简单的，就像我们运行一个单机版的 Redis。不过一旦要做到“高可用”，事情就会变得复杂起来。业务中使用了额外的两台服务器，3 个 Sentinel 进程 + 1 个 Slave 进程，只是为了保证在那小概率的事故中依然做到服务可用。在实际业务中我们还启用了 supervisor 做进程监控，一旦进程意外退出，会自动尝试重新启动。</p>
 
                         
                       </div>
@@ -389,10 +195,10 @@
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/7/15</span>
+                    <span class="date">2018/7/19</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='HA.html'>HA</a></span>
+          					    <span class="posted-in"><a href='Cache.html'>Cache</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -482,6 +288,12 @@
 	      
 		      
 			      <li class="post">
+			        <a href="15359384213292.html">Securing Spring Boot with JWTs</a>
+			      </li>
+		     
+		  
+		      
+			      <li class="post">
 			        <a href="15358820607055.html">Java 8 Concurrency Tutorial: Atomic Variables and ConcurrentMap</a>
 			      </li>
 		     
@@ -501,12 +313,6 @@
 		      
 			      <li class="post">
 			        <a href="15358756631902.html">Java 8 Stream Tutorial</a>
-			      </li>
-		     
-		  
-		      
-			      <li class="post">
-			        <a href="15358753472382.html">Migrate Maven Projects to Java 11</a>
 			      </li>
 		     
 		  

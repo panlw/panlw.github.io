@@ -105,356 +105,189 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15281293926383.html">
+                <a class="clearlink" href="15281296238206.html">
                 
-                  <h1>在 Spring Boot 中集成 SOFABoot 类隔离能力</h1>
+                  <h1>SOFABoot 类隔离原理剖析</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p>张奇龙 <a href="https://zhuanlan.zhihu.com/p/36909393">https://zhuanlan.zhihu.com/p/36909393</a></p>
-
-<h2 id="toc_0">SOFABoot 类隔离能力简介</h2>
+<p>林小树 <a href="https://zhuanlan.zhihu.com/p/37665305">https://zhuanlan.zhihu.com/p/37665305</a></p>
 </blockquote>
 
-<p>SOFABoot 是蚂蚁金服中间件团队开源的基于 Spring Boot 的一个开发框架，其在 Spring Boot 基础能力之上，增加了类隔离能力。蚂蚁金服内部丰富的实践场景表明，类隔离能力对解决类冲突、版本管控有其特殊的优势。</p>
+<p><strong>原创声明</strong>：本文系作者原创，谢绝个人、媒体、公众号或网站未经授权转载，违者追究其法律责任。</p>
 
-<p>SOFABoot 的类隔离能力由单独的组件 SOFAArk 实现，相比业界遵循 OSGi（<a href="https://link.zhihu.com/?target=https%3A//www.osgi.org/">https://www.osgi.org</a>） 规范的 Equinox 或者 Felix，SOFAArk 专注于类隔离，简化了类加载模型，是一款更加轻量的类隔离框架。</p>
+<blockquote>
+<p>SOFABoot 是蚂蚁金服中间件团队开源的基于 Spring Boot 的一个开发框架，其在 Spring Boot 基础能力之上，增加了类隔离能力，以更好地解决随着工程应用变得臃肿庞大后带来的包冲突问题。类隔离能力天生带来模块化能力，同样给协作开发带来便利。<br/>
+SOFABoot 的类隔离能力借助单独的组件 SOFAArk 实现，遵循 Spring Boot 依赖即服务的思想，只要工程中引入了 SOFAArk 组件依赖，类隔离能力即生效。<br/>
+在上一篇文章 <a href="https://zhuanlan.zhihu.com/p/36909393">《在 Spring Boot 中集成 SOFABoot 类隔离能力》</a>中，我们详细介绍了 SOFABoot 类隔离能力的使用背景及其使用方式。本文将介绍 SOFABoot 类隔离组件 SOFAArk 的实现原理。</p>
+</blockquote>
 
-<p>本文将介绍 SOFABoot 类隔离能力的背景及其使用方式。</p>
+<h2 id="toc_0"><strong>理解 SOFAArk 三要素</strong></h2>
 
-<h2 id="toc_1">1. 背景</h2>
+<p>SOFAArk 类隔离框架定义了三个概念，Ark Container，Ark Plugin，Ark Biz。</p>
 
-<p>在 Java 世界中，依赖的 JAR 包之间相互冲突永远是一个痛，Spring Boot 采用统一的依赖管理机制规避了大部分依赖冲突问题。理想很美好，现实却很骨感，作为蚂蚁金服这类大体量的公司，各业务线纷繁复杂、基础服务组件繁多，很难做到对所有 JAR 包做统一管控，尤其涉及到多个跨团队模块组件相互依赖时，因为各自技术栈历史包袱的存在，难以有效统一冲突包版本。</p>
-
-<p>假设如下场景，工程需要引入两个三方组件：A 和 B，组件 A 需要依赖 Hessian 3，组件 B 需要依赖 Hessian 4，因为 Hessian 3 和 Hessian 4 是不兼容的。作为开发者，遇到这种包冲突问题，如果不借助类隔离框架，只能耗费精力升级到统一版本。</p>
-
-<p><img src="https://pic2.zhimg.com/v2-523ebc71ae694f6bbe1196b458711c38_b.jpg" alt=""/><img src="https://pic2.zhimg.com/v2-523ebc71ae694f6bbe1196b458711c38_r.jpg" alt=""/></p>
-
-<p>为了彻底解决类似的包冲突问题，我们需要借助类隔离机制，使用不同的类加载器加载冲突的三方依赖包，进而做到在同一个应用运行时共存。</p>
-
-<p>基于此背景，SOFABoot 提供了一个轻量级的类隔离框架，也是本文的主角，SOFAArk。</p>
-
-<h2 id="toc_2">2. 基本原理</h2>
-
-<p>在介绍 SOFAArk 类隔离框架使用之前，我们简单了解下其背后的实现原理。正如前文中描述，SOFAArk 是通过独立的类加载器加载相互冲突的三方依赖包，从而做到隔离包冲突。那么我们不禁要问，SOFAArk 是如何区分应用中哪些依赖包是需要单独的类加载器加载呢？原因是 Ark Plugin，它是 SOFAArk 框架定义的一种特殊的 JAR 包文件格式，SOFAArk 框架会自动识别 Ark Plugin 这种特殊依赖。</p>
-
-<p>何为 Ark Plugin ? Ark Plugin 本质上是一个 FatJar，借助 SOFABoot 官方提供的 maven 打包插件，开发者可以把若干普通的 JAR 包打包成 Ark Plugin 供应用依赖或者把普通的 Java 模块改造成 Ark Plugin。通常来说，如果把一个普通 JAR 打包成 Ark Plugin，那么该 JAR 包依赖的其他三方包也会被打入同一个 Ark Plugin，默认情况下 SOFABoot 官方打包插件会自动把间接依赖也打入到 Ark Plugin。</p>
-
-<p>应用使用添加 maven 依赖的方式引入 Ark Plugin，运行时，SOFAArk 框架会自动识别应用的三方依赖包中是否含有 Ark Plugin，进而使用单独的类加载器加载。为了更加直观，下图是应用运行时逻辑分层图：</p>
-
-<p><img src="https://pic3.zhimg.com/v2-af38a66b654feefe65e91996a60a2700_b.jpg" alt=""/><img src="https://pic3.zhimg.com/v2-af38a66b654feefe65e91996a60a2700_r.jpg" alt=""/></p>
-
-<p>可以看到，在应用运行时，SOFAArk 容器处于最底层，负责启动应用。应用依赖的所有 Ark Plugin 处于中间层，每个 Ark Plugin 都由 SOFAArk 容器使用独立的类加载器加载，相互隔离。应用业务代码及其他非 Ark Plugin 的普通三方依赖包，为了描述简单，统称为 Ark Biz，它运行在最上层，需要依赖中间层的 Ark Plugin。</p>
-
-<p>一个标准 Ark Plugin 会包含一些配置文件，主要包含导出类和导入类配置。导出类即把 Ark Plugin 中的类导出给 Ark Biz 和其他 Ark Plugin 可见。默认情况下，所有 Ark Plugin 的导出类对于 Ark Biz 来说都是可见的，即 Ark Biz 可以使用 Ark Plugin 的导出类。对于 Ark Plugin 来说，如果需要使用其他 Ark Plugin 的导出类，必须声明为自身的导入类。关于 Ark Plugin 详细说明可以参考文末相关链接。</p>
-
-<p>下面我们来演示如何开发一个简单的 Ark Plugin。</p>
-
-<h2 id="toc_3">3. Java 模块改造成 Ark Plugin</h2>
-
-<h2 id="toc_4">3.1 新建工程</h2>
-
-<p>Demo <a href="https://link.zhihu.com/?target=https%3A//github.com/QilongZhang/ark-plugin-demo">工程地址</a></p>
-
-<p>运行需要 JDK 6 及以上、 Maven 3.2.5 以上。</p>
-
-<p>首先我们在 IDE 里新建一个普通 Maven 工程，并创建三个普通的 Java 模块。以前文描述的 Hessian 冲突为例，在演示工程中定义了三个模快：</p>
-
-<ul>
-<li>  pojo-module: 定义了一个简单的 PoJo 类 SamplePoJo，并设置为导出类，打包成 <code>pojo-ark-plugin</code> 。</li>
-<li>  hessian3-module：定义了一个服务类 Hessian3Service，实现了简单的序列化和反序列逻辑，使用的版本是 Hessian 3，并导入了 SamplePoJo，打包成 <code>hessian3-ark-plugin</code> 。</li>
-<li>  hessian4-module：定义了一个服务类 Hessian4Service，和 Hessian3Service 功能类似，使用的版本是 Hessian 4，并导入了 SamplePoJo，打包成 <code>hessian4-ark-plugin</code> 。</li>
-</ul>
-
-<p>该用例是为了演示如何将普通的 Java 模块及其三方依赖包打包成 Ark Plugin，以 <code>hessian3-module</code> 模块为例来讲解打包流程。</p>
-
-<h2 id="toc_5">3.2 编写服务类</h2>
-
-<p>在 <code>hessian3-module</code>中，提供了一个简单的序列化和反序列化功能类 Hessian3Service：</p>
-
-<pre><code>package com.alipay.sofa.demo.hessian3;
-
-import com.caucho.hessian.io.HessianInput;
-import com.caucho.hessian.io.HessianOutput;
-
-import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
-
-/**
- * @author qilong.zql
- */
-public class Hessian3Service {
-    public byte[] serialize(Object obj) throws IOException {
-        if(obj==null) throw new NullPointerException();
-
-        ByteArrayOutputStream os = new ByteArrayOutputStream();
-        HessianOutput ho = new HessianOutput(os);
-        ho.writeObject(obj);
-        return os.toByteArray();
-    }
-
-    public Object deserialize(byte[] by) throws IOException {
-        if(by==null) throw new NullPointerException();
-
-        ByteArrayInputStream is = new ByteArrayInputStream(by);
-        HessianInput hi = new HessianInput(is);
-        return hi.readObject();
-    }
-}
-
-</code></pre>
-
-<p>该功能类非常简单，提供了两个方法调用，分别实现对象的序列化和发序列化。</p>
-
-<h2 id="toc_6">3.3 Ark Plugin 配置</h2>
-
-<p>因为 Ark Plugin 的配置大同小异，在这里以普通的 Java 模块 <code>hessian3-module</code> 打包成 <code>hessian3-ark-plugin</code> 为例，介绍 Ark Plugin 的一般配置。</p>
-
-<p>首先，我们需要添加 SOFABoot 官方提供的 maven 打包插件：</p>
+<p>在介绍这三个主角之前，我们先来介绍另一个管家：<strong>Ark 包</strong>。我们都知道一个标准的 Spring Boot 应用可以借助 Spring 官方提供的打包插件：</p>
 
 <pre><code>&lt;plugin&gt;
-    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
-    &lt;artifactId&gt;sofa-ark-plugin-maven-plugin&lt;/artifactId&gt;
-    &lt;version&gt;0.2.0&lt;version&gt;
+    &lt;groupId&gt;org.springframework.boot&lt;/groupId&gt;
+    &lt;artifactId&gt;spring-boot-maven-plugin&lt;/artifactId&gt;
 &lt;/plugin&gt;
 
 </code></pre>
 
-<p>然后在<code>hessian3-module</code> 演示用例中，只需要在模块 <code>pom.xml</code> 文件中添加一个导出类和一个导入类配置，配置如下：</p>
+<p>将应用打包成一个可执行 FatJar。相对应的，Ark 包则是 SOFABoot 官方提供的打包插件：</p>
 
-<pre><code>&lt;build&gt;
-    &lt;plugins&gt;
-        &lt;plugin&gt;
-            &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
-            &lt;artifactId&gt;sofa-ark-plugin-maven-plugin&lt;/artifactId&gt;
-            &lt;version&gt;0.2.0&lt;/version&gt;
-            &lt;executions&gt;
-                &lt;execution&gt;
-                    &lt;id&gt;default-cli&lt;/id&gt;
-                    &lt;goals&gt;
-                        &lt;goal&gt;ark-plugin&lt;/goal&gt;
-                    &lt;/goals&gt;
-
-                    &lt;configuration&gt;
-                        &lt;!-- configure imported class --&gt;
-                        &lt;imported&gt;
-                            &lt;!-- configure class-level imported class --&gt;
-                            &lt;classes&gt;
-                                &lt;class&gt;com.alipay.sofa.demo.pojo.SamplePoJo&lt;/class&gt;
-                            &lt;/classes&gt;
-                        &lt;/imported&gt;
-
-                        &lt;!-- configure exported class --&gt;
-                        &lt;exported&gt;
-                            &lt;!-- configure class-level exported class --&gt;
-                            &lt;classes&gt;
-                                &lt;class&gt;com.alipay.sofa.demo.hessian3.Hessian3Service&lt;/class&gt;
-                            &lt;/classes&gt;
-                        &lt;/exported&gt;
-                    &lt;/configuration&gt;
-                &lt;/execution&gt;
-            &lt;/executions&gt;
-        &lt;/plugin&gt;
-    &lt;/plugins&gt;
-&lt;/build&gt;
+<pre><code>&lt;plugin&gt;
+    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
+    &lt;artifactId&gt;sofa-ark-maven-plugin&lt;/artifactId&gt;
+&lt;/plugin&gt;
 
 </code></pre>
 
-<p>可以看到，<code>hessian3-ark-plugin</code> 导入基础实体类 <code>com.alipay.sofa.demo.pojo.SamplePoJo</code>，导出服务类 <code>com.alipay.sofa.demo.hessian3.Hessian3Service</code> 供 Ark Biz 使用。</p>
+<p>将应用打包成一个具有类隔离能力的可执行 FatJar，称之为 Ark 包。下图是粗略地对比两者的目录结构差别：</p>
 
-<p>使用 maven 打包命令 <code>maven package</code> 即可将 <code>hessian3-module</code> 打包成 Ark Plugin，该插件包含模块代码及其依赖包，其 maven 坐标为：</p>
+<p><img src="https://pic3.zhimg.com/v2-096b7865cea9b432d6dee8990d2b2dc1_b.jpg" alt=""/><img src="https://pic3.zhimg.com/v2-096b7865cea9b432d6dee8990d2b2dc1_r.jpg" alt=""/></p>
 
-<pre><code>&lt;dependency&gt;
-    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
-    &lt;artifactId&gt;hessian3-ark-plugin&lt;/artifactId&gt;
-    &lt;classifier&gt;ark-plugin&lt;/classifier&gt;
-    &lt;version&gt;1.0.0&lt;/version&gt;
-&lt;/dependency&gt;
-
-</code></pre>
-
-<p>关于 Ark Plugin 的导入、导出类，这里强调一下，在实际开发中，和业务本身无关的实体类或者基础服务类，如果多个 Ark Plugin 和 Ark Biz 都需要统一版本时，可以把这类基础 Jar 统一打包成 Ark Plugin 设置为导出类。在该演示用例中，我们假设 <code>SamplePoJo</code> 是一个基础实体类，和业务逻辑无关，而 <code>hessian3-ark-plugin</code> 和 <code>hessian4-ark-plugin</code> 都需要使用，于是单独打包成了一个 Ark Plugin。</p>
-
-<p>到此为止，这就是一个简单的 Ark Plugin 从开发的步骤，看起来是不是很简单呢？</p>
-
-<p>下面，我们演示下如何在 Spring Boot 工程中，快速集成 SOFABoot 的类隔离能力，并使用这三个 Ark Plugin。</p>
-
-<h2 id="toc_7">4. Spring Boot 工程集成 SOFAArk 组件</h2>
-
-<p>Demo <a href="https://link.zhihu.com/?target=https%3A//github.com/QilongZhang/springboot-ark-demo">工程地址</a></p>
-
-<p>运行需要 JDK 6 及以上、 Maven 3.2.5 以上。Spring Boot 版本要求 1.4.2.RELEASE 以上，目前还不兼容 2.0.0 及以上版本。</p>
-
-<p>该用例工程主要为了演示如何在 Spring Boot 工程中集成 SOFABoot 类隔离能力并使用 Ark Plugin。这里以前文提到的 Ark Plugin 为例，示例工程将会引入三个 Ark Plugin:<code>pojo-ark-plugin</code>，<code>hessian3-ark-plugin</code> 和 <code>hessian4-ark-plugin</code>，并使用后两者的导出类 <code>Hessian3Service</code> 和 <code>Hessian4Service</code>。</p>
-
-<h2 id="toc_8">4.1 新建工程</h2>
-
-<p>在 Spring Boot 官网 <a href="https://link.zhihu.com/?target=https%3A//start.spring.io/">https://start.spring.io</a> 新建一个 web 工程，并设置 Spring Boot 版本号为 1.4.2.RELEASE。在 Spring Boot 工程中集成 SOFABoot 类隔离能力，只需要添加 SOFABoot 提供的类隔离框架 starter。修改 maven 项目的配置文件 <code>pom.xml</code>，将</p>
-
-<pre><code>&lt;parent&gt;
-    &lt;groupId&gt;org.springframework.boot&lt;/groupId&gt;
-    &lt;artifactId&gt;spring-boot-starter-parent&lt;/artifactId&gt;
-    &lt;version&gt;1.4.2.RELEASE&lt;/version&gt;
-    &lt;relativePath/&gt; 
-&lt;/parent&gt;
-
-</code></pre>
-
-<p>替换为：</p>
-
-<pre><code>&lt;parent&gt;
-    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
-    &lt;artifactId&gt;sofaboot-dependencies&lt;/artifactId&gt;
-    &lt;version&gt;2.3.1&lt;/version&gt;
-&lt;/parent&gt;
-
-</code></pre>
-
-<p>并添加如下 SOFAArk Starter 依赖：</p>
-
-<pre><code>&lt;!--ark spring boot starter--&gt;
-&lt;dependency&gt;
-    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
-    &lt;artifactId&gt;sofa-ark-springboot-starter&lt;/artifactId&gt;
-&lt;/dependency&gt;
-
-</code></pre>
-
-<p>如此，一个 Spring Boot 工程便集成了 SOFABoot 提供的类隔离能力。</p>
-
-<h2 id="toc_9">4.2 添加 Ark Plugin 依赖</h2>
-
-<p>前文中提到，将普通 Java 模块打包成 Ark Plugin，其 maven 坐标不会发生变化，但是需要添加 <code>classifier=ark-plugin</code> 标志，因此如下添加三个 Ark Plugin 的依赖：</p>
-
-<pre><code>&lt;!--ark plugin--&gt;
-&lt;dependency&gt;
-    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
-    &lt;artifactId&gt;pojo-ark-plugin&lt;/artifactId&gt;
-    &lt;classifier&gt;ark-plugin&lt;/classifier&gt;
-    &lt;version&gt;1.0.0&lt;/version&gt;
-&lt;/dependency&gt;
-
-&lt;dependency&gt;
-    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
-    &lt;artifactId&gt;hessian3-ark-plugin&lt;/artifactId&gt;
-    &lt;classifier&gt;ark-plugin&lt;/classifier&gt;
-    &lt;version&gt;1.0.0&lt;/version&gt;
-&lt;/dependency&gt;
-
-&lt;dependency&gt;
-    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
-    &lt;artifactId&gt;hessian4-ark-plugin&lt;/artifactId&gt;
-    &lt;classifier&gt;ark-plugin&lt;/classifier&gt;
-    &lt;version&gt;1.0.0&lt;/version&gt;
-&lt;/dependency&gt;
-
-</code></pre>
-
-<p>需要指出的是，因为 ark plugin 是一个 FatJar，为了让应用编译期通过，需要在工程主 <code>pom.xml</code> 中增加如下依赖：</p>
-
-<pre><code>&lt;!--just for compile success--&gt;
-&lt;dependency&gt;
-    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
-    &lt;artifactId&gt;pojo-ark-plugin&lt;/artifactId&gt;
-    &lt;version&gt;1.0.0&lt;/version&gt;
-    &lt;scope&gt;provided&lt;/scope&gt;
-&lt;/dependency&gt;
-
-&lt;dependency&gt;
-    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
-    &lt;artifactId&gt;hessian3-ark-plugin&lt;/artifactId&gt;
-    &lt;version&gt;1.0.0&lt;/version&gt;
-    &lt;scope&gt;provided&lt;/scope&gt;
-&lt;/dependency&gt;
-
-&lt;dependency&gt;
-    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
-    &lt;artifactId&gt;hessian4-ark-plugin&lt;/artifactId&gt;
-    &lt;version&gt;1.0.0&lt;/version&gt;
-    &lt;scope&gt;provided&lt;/scope&gt;
-&lt;/dependency&gt;
-
-</code></pre>
-
-<p>4.3 编写 Rest 接口</p>
-
-<p>为了演示更加直观，编写如下 Rest 接口：</p>
-
-<pre><code>package com.alipay.sofa.springbootarkdemo.controller;
-
-import com.alipay.sofa.demo.hessian3.Hessian3Service;
-import com.alipay.sofa.demo.hessian4.Hessian4Service;
-import com.alipay.sofa.demo.pojo.SamplePoJo;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RestController;
-
-import java.io.IOException;
-
-/**
- * @author qilong.zql
- */
-@RestController
-public class HelloController {
-
-    @RequestMapping(&quot;/hello-hessian3&quot;)
-    public String hessian3() throws IOException {
-        SamplePoJo samplePoJo = new SamplePoJo(&quot;Hello, hessian3.&quot;);
-        Hessian3Service hessian3Service = new Hessian3Service();
-        byte[] bytes = hessian3Service.serialize(samplePoJo);
-        Object pojo = hessian3Service.deserialize(bytes);
-        return pojo.toString();
-    }
-
-    @RequestMapping(&quot;/hello-hessian4&quot;)
-    public String hessian4() throws IOException {
-        SamplePoJo samplePoJo = new SamplePoJo(&quot;Hello, hessian4.&quot;);
-        Hessian4Service hessian4Service = new Hessian4Service();
-        byte[] bytes = hessian4Service.serialize(samplePoJo);
-        Object pojo = hessian4Service.deserialize(bytes);
-        return pojo.toString();
-    }
-
-}
-
-</code></pre>
-
-<p>该 Rest 接口主要为了本地启动应用后，能够直观演示 Ark Plugin 使用结果。启动该 Web Spring 工程，可以看到控制台打印结果：</p>
-
-<pre><code>...
-2018-05-14 10:04:06.573  INFO 85393 --- [           main] s.b.c.e.t.TomcatEmbeddedServletContainer : Tomcat started on port(s): 8080 (http)
-2018-05-14 10:04:06.577  INFO 85393 --- [           main] c.a.s.s.SpringbootArkDemoApplication     : Started SpringbootArkDemoApplication in 2.111 seconds (JVM running for 3.562)
-2018-05-14 10:04:06,578 INFO  main                             - Finish to start biz: Startup In IDE
-2018-05-14 10:04:06,578 INFO  main                             - Finish to process pipeline stage: com.alipay.sofa.ark.container.pipeline.DeployBizStage
-Ark container started in 2720 ms.
-
-</code></pre>
-
-<p>可以看到类似 <code>Ark container started in XXXXms</code> 字样，即表示该工程运行在 SOFABoot 类隔离框架之上。访问如下两个请求即可看到工程调用 <code>Hessian3Service</code> 和 <code>Hessian4Service</code> 的调用结果</p>
+<p>可以看到 Ark 包作为应用部署包的分发格式，它包含有 Ark Container，Ark Plugin 和 Ark Biz 三种格式模块。这里我们不对 Ark 包或者其他格式模块的目录结构作分析，感兴趣的同学可以点开文末附上的相关链接。我们重点介绍这三个角色的功能。</p>
 
 <ul>
-<li>  <code>http://localhost:8080/hello-hessian3</code></li>
-<li>  <code>http://localhost:8080/hello-hessian4</code></li>
+<li>  Ark Container: Ark 容器，是组件 SOFAArk 的核心，运行 Ark 包时，Ark 容器会最先启动，负责应用运行时的管理，主要包括构建 Ark Plugin 和 Ark Biz 的类导入导出关系表、启动并初始化 Ark Plugin 和 Ark Biz、管理 Ark Plugin 服务的发布和引用等等。</li>
+<li>  Ark Plugin: SOFAArk 定义的一种模块格式，由若干个 Jar 包组成的一个 FatJar，开发人员可以借助官方提供的 maven 打包插件将若干 Jar 包打包成一个 Ark Plugin 供应用依赖。运行时，由独立的类加载器加载，因此有隔离需求的 Jar 包建议打包成 Ark Plugin 供应用依赖。</li>
+<li>  Ark Biz: SOFAArk 定义的一种模块格式，是应用及其依赖的所有三方包组成的一个 FatJar，需要注意的是，Ark Biz 不会包含应用依赖的 Ark Plugin。运行时，Ark Biz 由独立的类加载器加载，借助类导入导出关系表，Ark Biz 可以使用 Ark Plugin 的导出类和资源。</li>
 </ul>
 
-<p>以上就是 Spring Boot 集成 SOFABoot 类隔离框架的一般步骤。可以看到，作为开发者，基本上无需过多关心自身应用是否使用类隔离框架，只需要引入 SOFABoot 提供的类隔离框架 Starter，即可快速完成类隔离能力的集成。</p>
+<h2 id="toc_1"><strong>SOFAArk 运行时隔离</strong></h2>
 
-<h2 id="toc_10">5. 总结</h2>
+<p>根据上一节的描述可以知道 SOFABoot 类隔离关键是理解 SOFAArk 定义的三个概念，Ark Container，Ark Plugin 和 Ark Biz。下图表示的是应用启动后，运行时 Ark Container，Ark Plugin，Ark Biz 的逻辑分层图：</p>
 
-<p>本文主要介绍了 SOFABoot 基于 Spring Boot 开发的类隔离框架组件 SOFAArk。通过两个简单的用例工程，分别介绍了如何开发一个自己的 Ark Plugin 以及在 Spring Boot 快速集成 SOFABoot 的类隔离能力。SOFABoot 官方提供了 SOFARPC 打包的 Ark Plugin，开发者可以按需隔离 SOFARPC 和自身应用。另外，在 SOFAArk 类隔离容器之上，SOFABoot 提供了一整套兼容 JUnit 和 TestNG 测试框架的方案，感兴趣的读者可以下载文末给出的 Demo 工程，并按照官方文档学习。</p>
+<p><img src="https://pic3.zhimg.com/v2-27569011d5bddb7723b45797dc66758e_b.jpg" alt=""/><img src="https://pic3.zhimg.com/v2-27569011d5bddb7723b45797dc66758e_r.jpg" alt=""/></p>
 
-<h2 id="toc_11">6. 相关资源</h2>
+<p>我们将先以 Ark Plugin 入手来介绍 SOFABoot 类隔离的实现原理。</p>
+
+<h2 id="toc_2"><strong>Ark Plugin 隔离</strong></h2>
+
+<p>开发者借助 SOFABoot 官方提供的插件：</p>
+
+<pre><code>&lt;plugin&gt;
+    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
+    &lt;artifactId&gt;sofa-ark-plugin-maven-plugin&lt;/artifactId&gt;
+&lt;/plugin&gt;
+
+</code></pre>
+
+<p>可以将 Java 模块打包成一个 Ark Plugin，这里我们不讨论该打包插件的配置参数和使用方式，感兴趣的同学可以点开文末附上的相关链接以及学习 SOFABoot 类隔离能力使用篇。只需要知道，Ark Plugin 主要包含元信息有：插件启动器、导出类、导入类、导出资源、导入资源、优先级等，这些元信息保存在 Ark Plugin 中的 META-INF/MANIFEST.MF 中，一份典型的 MANIFEST.MF 文件样式如下：</p>
+
+<pre><code>Manifest-Version: 1.0
+groupId: com.alipay.sofa
+artifactId: sample-ark-plugin
+version: 0.3.0-SNAPSHOT
+priority: 1000
+pluginName: sample-ark-plugin
+activator: com.alipay.sofa.ark.sample.activator.SamplePluginActivator
+import-packages: 
+import-classes: 
+import-resources: 
+export-packages: com.alipay.sofa.ark.sample.common.*,com.alipay.sofa.ark.sample
+export-classes: com.alipay.sofa.ark.sample.facade.SamplePluginService
+export-resources: Sample_Resource_Exported
+
+</code></pre>
+
+<p>在上面我们提到，运行 Ark 包时，类隔离容器 Ark Container 会最先启动，然后 Ark Container 会接管整个应用的启动过程。针对 Ark Plugin 处理逻辑如下：</p>
 
 <ul>
-<li>  <a href="https://link.zhihu.com/?target=https%3A//github.com/QilongZhang/ark-plugin-demo">ark-plugin-demo</a></li>
-<li>  <a href="https://link.zhihu.com/?target=https%3A//github.com/QilongZhang/springboot-ark-demo">springboot-ark-demo</a></li>
-<li>  <a href="https://link.zhihu.com/?target=https%3A//github.com/alipay/sofa-boot">SOFABoot 源码</a></li>
-<li>  <a href="https://link.zhihu.com/?target=https%3A//github.com/alipay/sofa-rpc">SOFARPC 源码</a></li>
-<li>  <a href="https://link.zhihu.com/?target=https%3A//github.com/alipay/sofa-rpc-boot-projects">SOFARPC Ark Plugin</a></li>
-<li>  <a href="https://link.zhihu.com/?target=https%3A//github.com/alipay/sofa-ark">SOFAArk 源码</a></li>
-<li>  <a href="https://link.zhihu.com/?target=https%3A//alipay.github.io/sofastack.github.io/docs/ark-plugin.html">Ark Plugin 文档</a></li>
+<li>  首先解析 Ark 包中引入的所有 Ark Plugin，读取插件元信息，构建类 / 资源导入导出关系索引表。</li>
+<li>  提前生成所有插件类加载器，每个 Ark Plugin 都使用独立的类加载器，管理插件类加载逻辑，借助第一步生成的类导入导出关系表，突破 Java 原生的双亲委派模型，可以委托其他插件加载所需类，构建一个类 OSGi 的网状类加载模型。</li>
+<li>  根据插件优先级，依次调用插件启动器。在插件启动器中，插件开发者可以向容器注册服务以方便其他插件引用，也可以引用其他插件发布的服务，及插件启动所需的初始化操作。</li>
+</ul>
+
+<p>需要明确一点，为了让类加载模型足够简单，Ark 容器在启动任何插件前，会把所有的插件类加载器提前构建完毕。Ark Plugin 可以相互委托加载，插件优先级只是影响插件的启动顺序，而且也不强制要求每个 Ark Plugin 都要有启动器。</p>
+
+<p>启动完所有插件后，Ark Container 则开始负责启动 Ark Biz 模块。</p>
+
+<h2 id="toc_3"><strong>Ark Biz 隔离</strong></h2>
+
+<p>Ark Container 在完成 Ark Plugin 的隔离和启动后，则开始准备 Ark Biz 的隔离和启动。</p>
+
+<p>在上文中提到，应用打成 Ark 包后，Ark 包会包含 Ark Plugin 模块和 Ark Biz 模块。实际上 Ark Biz 其实就是应用及其所有的三方依赖打成的 FatJar 包，Ark Biz 不会包含应用引入的 Ark Plugin。开发者借助 SOFABoot 官方提供的插件：</p>
+
+<pre><code>&lt;plugin&gt;
+    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
+    &lt;artifactId&gt;sofa-ark-maven-plugin&lt;/artifactId&gt;
+&lt;/plugin&gt;
+
+</code></pre>
+
+<p>可以将 Java（Spring Boot） 应用打包成一个 Ark Biz，这里我们不讨论该打包插件的配置参数和使用方式，感兴趣的同学可以点开文末附上的相关链接以及学习 SOFABoot 类隔离能力使用篇。只需要知道，Ark Biz 主要包含元信息有：应用启动入口、禁止导入类、禁止导入资源等。这些元信息保存在 Ark Biz 中的 META-INF/MANIFEST.MF 中，一份典型的 MANIFEST.MF 文件样式如下：</p>
+
+<pre><code>Manifest-Version: 1.0
+Archiver-Version: Plexus Archiver
+Created-By: Apache Maven 3.2.5
+Build-Jdk: 1.8.0_101
+Built-By: qilong.zql
+Ark-Biz-Name: sofa-ark-sample-springboot-ark
+deny-import-resources:
+deny-import-packages:
+deny-import-classes:
+Main-Class: com.alipay.sofa.ark.sample.springbootdemo.SpringbootDemoApplication
+
+</code></pre>
+
+<p>Ark Biz 和 Ark Plugin 有很大的不同，最明显的则是 Ark Biz 单向依赖 Ark Plugin，即 Ark Biz 只能单向委托 Ark Plugin 加载类和资源，反之则不可以。实际上在运行时，Ark Biz 是运行在 Ark Plugin 之上，Ark Container 也是先启动所有 Ark Plugin 然后启动 Ark Biz。默认情况下，Ark Plugin 导出的所有类和资源都能被 Ark Biz 委托加载到，为了方便应用开发者能够自主控制类加载逻辑，允许在打包插件中配置禁止导入类和禁止导入资源，如此，对于配置的类和资源， Ark Biz 能够优先加载内部包含的类，而不会委托给 Ark Plugin 加载。Ark Container 针对 Ark Biz 处理逻辑如下：</p>
+
+<ul>
+<li>  首先解析 Ark 包中 Ark Biz 模块，读取元信息，构建类 / 资源导入导出关系索引表。</li>
+<li>  生成 Ark Biz 类加载器，管理 Ark Biz 类加载逻辑，借助第一步生成的类导入导出关系表，突破 Java 原生的双亲委派模型，可以委托 Ark Plugin 加载所需类和资源。</li>
+<li>  调用应用启动入口，启动应用。</li>
+</ul>
+
+<p>如此，Ark 包即完成整个启动过程。</p>
+
+<h2 id="toc_4"><strong>和 OSGi 对比</strong></h2>
+
+<p>作为开源界早负盛名的动态模块系统，基于 OSGi 规范的 Equinox、Felix 等同样具备类隔离能力，然而他们更多强调的是一种编程模型，面向模块化开发，有一整套模块生命周期的管理，定义模块通信机制以及复杂的类加载模型。作为专注于解决依赖冲突的隔离框架，SOFAArk 专注于类隔离，简化了类加载模型，因此显得更加轻量。</p>
+
+<p>其次在 OSGi 规范中，所有的模块定义成 Bundle 形式，作为应用开发者，他需要了解 OSGi 背后的工作原理，对开发者要求比较高。在 SOFAArk 中，定义了两层模块类型，Ark Plugin 和 Ark Biz，应用开发者只需要添加隔离的 Ark Plugin 依赖，对本身的开发没有任何影响，基本没有开发门槛。</p>
+
+<h2 id="toc_5"><strong>正在做的事</strong></h2>
+
+<p>全文读下来，你可能会产生这样的一个疑惑：如果在应用中引入其他应用打包的 Ark Biz 会如何呢？</p>
+
+<p>目前 SOFAArk 是可以启动多个 Ark Biz 的，比较遗憾的是，现在 Ark Biz 之间没法做到服务通信。如果你之前读完过上一篇 SOFABoot 类隔离使用篇及这篇原理篇，你也许会发现，虽然 SOFAArk 是一个纯粹的类隔离框架，但是基于 SOFAArk 之上，可以开发各具功能特色的 Ark Plugin，补充框架能力，供应用开发者按需依赖使用，比如已经推出的 SOFARPC Ark Plugin。回到上面的问题，为了解决多个 Ark Biz 合并部署的问题，我们正在开发一个新的 Ark Plugin，Jarslink2.0。</p>
+
+<p>在蚂蚁内部，多个应用合并部署在同一个 JVM 之上，是一件常见的事情。这样带来的主要优势如下：</p>
+
+<ul>
+<li>  无关应用合并部署：有些应用在独立部署时，相互之间没有服务依赖，而且这些应用承担业务体量都偏小，单独占有一台物理机部署比较浪费资源。这些应用合并部署，能够节省成本。</li>
+<li>  相关应用合并部署：多个应用之间存在服务依赖，独立部署时，各应用之间使用 RPC 调用，虽然使用了分布式架构，稳定性高，但依然存在网络抖动导致的延时性问题。这些应用合并部署，RPC 调用转为 JVM 内部调用，缩减调用开销。</li>
+</ul>
+
+<p>当然，作为蚂蚁内部非常重要的一项技术创新，合并部署在特定的业务背景下有着更为重要的意义，也远不止上面提到的两点优势，比如故障的隔离等等。</p>
+
+<p>说回到 Jarslink2.0，这个 SOFABoot 官方开发的 Ark Plugin，主要是为了解决多个 Ark Biz 运行时管理问题。我们知道，每个 Java(Spring Boot) 应用，都可以通过我们的 maven 插件打包成 Ark Biz 供其他应用依赖。目前 SOFAArk 框架只能做到隔离 Ark Biz，作为框架能力的补充，Jarslink2.0 插件专门管理多个 Ark Biz 的运行时。这里默认每个 Ark Biz 都是一个 SOAFBoot/Spring Boot 工程，Jarslink2.0 提供的能力如下：</p>
+
+<ul>
+<li>  动态安装、卸载 Ark Biz。</li>
+<li>  Ark Biz 之间使用注解和 xml 两种形式发布和引用 jvm 服务，解决多 Ark Biz 服务依赖问题。</li>
+<li>  Ark Biz 如果使用了 SOFARPC 能力，可以自动完成 RPC 转 JVM 内部调用。</li>
+</ul>
+
+<p>在这里特别感谢方腾飞， 蚂蚁内部花名 @清英 ，也是我们熟知的并发编程网 (<a href="https://link.zhihu.com/?target=http%3A//ifeve.com/">http://ifeve.com/</a>)创始人。清英在蚂蚁内部开发的 Jarslink1.0 在网商银行已经落地使用很长一段时间，Jarslink2.0 是在 Jarslink1.0 基础之上，结合 SOFABoot 类隔离框架，提供了更加通用的应用 (模块) 隔离和通信的实现方案，敬请期待！</p>
+
+<h2 id="toc_6">欢迎微博关注 @SOFAStack 与我们互动，相关传送门：</h2>
+
+<ul>
+<li>  Ark 包目录结构及其打包插件的使用
+<a href="https://link.zhihu.com/?target=https%3A//alipay.github.io/sofastack.github.io/docs/ark-jar.html">https://alipay.github.io/sofastack.github.io/docs/ark-jar.html</a></li>
+<li>  Ark Plugin 目录结构及其打包插件的使用
+<a href="https://link.zhihu.com/?target=https%3A//alipay.github.io/sofastack.github.io/docs/ark-plugin.html">https://alipay.github.io/sofastack.github.io/docs/ark-plugin.html</a></li>
+<li>  Ark Biz 目录结构及其打包插件的使用
+<a href="https://link.zhihu.com/?target=https%3A//alipay.github.io/sofastack.github.io/docs/ark-biz.html">https://alipay.github.io/sofastack.github.io/docs/ark-biz.html</a></li>
+<li>  Ark Plugin 的工程示例
+<a href="https://link.zhihu.com/?target=https%3A//github.com/alipay/sofa-ark/tree/master/sofa-ark-samples/sample-ark-plugin">https://github.com/alipay/sofa-ark/tree/master/sofa-ark-samples/sample-ark-plugin</a></li>
+<li>  Spring Boot <a href="https://link.zhihu.com/?target=https%3A//github.com/alipay/sofa-ark/tree/master/sofa-ark-samples/sample-springboot-ark">https://github.com/alipay/sofa-ark/tree/master/sofa-ark-samples/sample-springboot-ark</a></li>
 </ul>
 
                         
@@ -557,6 +390,12 @@ Ark container started in 2720 ms.
 	      
 		      
 			      <li class="post">
+			        <a href="15359384213292.html">Securing Spring Boot with JWTs</a>
+			      </li>
+		     
+		  
+		      
+			      <li class="post">
 			        <a href="15358820607055.html">Java 8 Concurrency Tutorial: Atomic Variables and ConcurrentMap</a>
 			      </li>
 		     
@@ -576,12 +415,6 @@ Ark container started in 2720 ms.
 		      
 			      <li class="post">
 			        <a href="15358756631902.html">Java 8 Stream Tutorial</a>
-			      </li>
-		     
-		  
-		      
-			      <li class="post">
-			        <a href="15358753472382.html">Migrate Maven Projects to Java 11</a>
 			      </li>
 		     
 		  

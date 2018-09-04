@@ -105,311 +105,403 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15277856731195.html">
+                <a class="clearlink" href="15277861393795.html">
                 
-                  <h1>Functor and monad examples in plain Java</h1>
+                  <h1>深入浅出Netty - EventLoop, EventLoopGroup</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://www.nurkiewicz.com/2016/06/functor-and-monad-examples-in-plain-java.html">https://www.nurkiewicz.com/2016/06/functor-and-monad-examples-in-plain-java.html</a><br/>
-June 23, 2016</p>
+<p>DECEMBER 24 2016 <a href="https://caorong.github.io/2016/12/24/head-first-netty-1/">原文地址</a></p>
 </blockquote>
 
-<p>This article was initially an appendix in our <a href="http://amzn.to/28NV8eJ">Reactive Programming with RxJava</a> book. However introduction to monads, albeit very much related to reactive programming, didn&#39;t suit very well. So I decided to take it out and publish separately as a blog post. I am aware that &quot;_my very own, half correct and half complete explanation of monads_&quot; is the new &quot;_Hello, world_&quot; on programming blogs. Yet the article looks at functors and monads from a specific angle of Java data structures and libraries. Thus I thought it&#39;s worthwhile sharing.</p>
+<p>近年来netty 十分流行，至于为何那么流行，因为它性能好，能更有效的利用系统资源。</p>
 
-<p>RxJava was designed and built on top of very fundamental concepts like <u>functors</u> , <u>monoids</u> and <u>monads</u> . Even though Rx was modeled initially for imperative C# language and we are learning about RxJava, working on top of similarly imperative language, the library has its roots in functional programming. You should not be surprised after you realize how compact RxJava API is. There are pretty much just a handful of core classes, typically immutable, and everything is composed using mostly pure functions.</p>
+<p>但是， netty 很容易上手， 但是很多时候却无法理解设计的初衷， 比如为什么会有 EventLoop 这个东东， 本文从历史阐述原因。</p>
 
-<p>With a recent rise of functional programming (or functional style), most commonly expressed in modern languages like Scala or Clojure, monads became a widely discussed topic. There is a lot of folklore around them:</p>
+<h2 id="toc_0"><a href="#%E5%90%8C%E6%AD%A5%E7%BD%91%E7%BB%9C%E6%A8%A1%E5%9E%8B" title="同步网络模型"></a>同步网络模型</h2>
 
-<p>A monad is a monoid in the category of endofunctors, what&#39;s the problem?<br/>
-<a href="http://james-iry.blogspot.com/2009/05/brief-incomplete-and-mostly-wrong.html">_James Iry_</a></p>
+<p>首先说说同步模型， 也就是常说的 bio， bio 是基于 stream 的。 网上找到一个图如下</p>
 
-<p>The curse of the monad is that once you get the epiphany, once you understand - &quot;oh that&#39;s what it is&quot; - you lose the ability to explain it to anybody.<br/>
-<a href="https://www.youtube.com/watch?v=dkZFtimgAcM">_Douglas Crockford_</a></p>
+<p><img src="media/15277861393795/15277864485883.jpg" alt=""/></p>
 
-<p>The vast majority of programmers, especially those without functional programming background, tend to believe monads are some arcane computer science concept, so theoretical that it can not possibly help in their programming career. This negative perspective can be attributed to dozens of articles and blog posts being either too abstract or too narrow. But it turns out that monads are all around us, even is standard Java library, especially since Java Development Kit (JDK) 8 (more on that later). What is absolutely brilliant is that once you understand monads for the first time, suddenly several unrelated classes and abstractions, serving entirely different purposes, become familiar.</p>
+<p>从图可知，对于bio 来说，我的程序何时处理完需要靠 看 datasource 何时发完数据。</p>
 
-<p>Monads generalize various seemingly independent concepts so that learning yet another incarnation of monad takes very little time. For example you do not have to learn how <code>CompletableFuture</code> works in Java 8, once you realize it is a monad, you know precisely how it works and what can you expect from its semantics. And then you hear about RxJava which sounds so much different but because <code>Observable</code> is a monad, there is not much to add. There are numerous other examples of monads you already came across without knowing that. Therefore this section will be a useful refresher even if you fail to actually use RxJava.</p>
+<p>这是非常坑爹的， 举个例子， 如果我的服务是一个多线程的 bio 的服务(比如 10个线程)，然后某个黑客建10个 telnet 连上你的server， holding住 不发数据，那么你的服务就down了。</p>
 
-<h1 id="toc_0">Functors</h1>
+<p>那么如何解决这种问题？ 如果 waiting client 发的数据不阻塞 worker 线程不就行了？</p>
 
-<p>Before we explain what a monad is, let&#39;s explore simpler construct called a <u>functor</u> . A functor is a typed data structure that encapsulates some value(s). From syntactic perspective a functor is a container with the following API:</p>
+<p>于是出现了 异步网络模型</p>
 
-<pre><code class="language-java">import java.util.function.Function;
- 
-interface Functor&lt;T&gt; {
-     
-    &lt;R&gt; Functor&lt;R&gt; map(Function&lt;T, R&gt; f);
-     
-}
-</code></pre>
+<h2 id="toc_1"><a href="#%E5%BC%82%E6%AD%A5%E7%BD%91%E7%BB%9C%E6%A8%A1%E5%9E%8B" title="异步网络模型"></a>异步网络模型</h2>
 
-<p>But mere syntax is not enough to understand what functor is. The only operation that functor provides is <code>map()</code> that takes a function <code>f</code>. This function receives whatever is inside a box, transforms it and wraps the result as-is into a second functor. Please read that carefully. <code>Functor&lt;T&gt;</code> is always an immutable container, thus <code>map</code> never mutates original object it was executed on. Instead it returns the result (or results - be patient) wrapped in a brand new functor, possibly of different type <code>R</code>. Additionally functors should not perform any actions when identity function is applied, that is <code>map(x -&gt; x)</code>. Such a pattern should always return either the same functor or an equal instance.</p>
+<p>异步网络模型， 也就是非阻塞IO， 在java 中由于 jdk1.4 之后才被引入所以被称之为 Nio (New IO)</p>
 
-<p>Often <code>Functor&lt;T&gt;</code> is compared to a box holding instance of <code>T</code> where the only way of interacting with this value is by transforming it. However there is no idiomatic way of unwrapping or escaping from the functor. The value(s) always stay within the context of functor. Why are functors useful? They generalize multiple common idioms like collections, promises, optionals, etc. with a single, uniform API that works across all of them. Let me introduce a couple of functors to make you more fluent with this API:</p>
+<p>网上同样找到个图</p>
 
-<pre><code class="language-java">interface Functor&lt;T,F extends Functor&lt;?,?&gt;&gt; {
-    &lt;R&gt; F map(Function&lt;T,R&gt; f);
-}
- 
-class Identity&lt;T&gt; implements Functor&lt;T,Identity&lt;?&gt;&gt; {
- 
-    private final T value;
- 
-    Identity(T value) { this.value = value; }
- 
-    public &lt;R&gt; Identity&lt;R&gt; map(Function&lt;T,R&gt; f) {
-        final R result = f.apply(value);
-        return new Identity&lt;&gt;(result);
-    }
-     
-}
-</code></pre>
+<p><img src="media/15277861393795/15277864586815.jpg" alt=""/></p>
 
-<p>An extra <code>F</code> type parameter was required to make <code>Identity</code> compile. What you saw in the preceding example was the simplest functor just holding a value. All you can do with that value is transforming it inside <code>map</code> method, but there is no way to extract it. This is considered beyond the scope of pure functor. The only way to interact with functor is by applying sequences of type-safe transformations:</p>
+<p>由图可知， 实现异步的原理是 系统帮你给每一个连接(channel) 都维护了一个 <code>buffer</code>。<br/>
+将 client 发来的数据暂存到 <code>buffer</code> 中, 待 java 进程需要的时候一次性做一次内存拷贝，在 java 进程中使用。</p>
 
-<pre><code class="language-java">Identity&lt;String&gt; idString = new Identity&lt;&gt;(&quot;abc&quot;);
-Identity&lt;Integer&gt; idInt = idString.map(String::length);
-</code></pre>
+<p>当然， 写出也是同样的 写到 <code>buffer</code> 中，当 <code>buffer</code> 满 或者 手动调用 <code>flush</code> 写出去。</p>
 
-<p>Or fluently, just like you compose functions:</p>
+<p>下面有个简单的 非阻塞 echo server demo， 当读到 q 时关闭连接。</p>
 
-<pre><code class="language-java">Identity&lt;byte[]&gt; idBytes = new Identity&lt;&gt;(customer)
-        .map(Customer::getAddress)
-        .map(Address::street)
-        .map((String s) -&gt; s.substring(0, 3))
-        .map(String::toLowerCase)
-        .map(String::getBytes);
-</code></pre>
+<pre><code class="language-java">ServerSocketChannel serverSocketChannel = ServerSocketChannel.open();
 
-<p>From this perspective mapping over a functor is not much different than just invoking chained functions:</p>
+serverSocketChannel.socket().bind(new InetSocketAddress(9999));
+serverSocketChannel.configureBlocking(false);
 
-<pre><code class="language-java">byte[] bytes = customer
-        .getAddress()
-        .street()
-        .substring(0, 3)
-        .toLowerCase()
-        .getBytes();
-</code></pre>
+final List&lt;SocketChannel&gt; socketChannelList = Lists.newLinkedList();
 
-<p>Why would you even bother with such verbose wrapping that not only does not provide any added value, but also is not capable of extracting the contents back? Well, it turns out you can model several other concepts using this raw functor abstraction. For example <code>java.util.Optional&lt;T&gt;</code> starting from Java 8 is a functor with <code>map()</code> method. Let us implement it from scratch:</p>
-
-<pre><code class="language-java">class FOptional&lt;T&gt; implements Functor&lt;T,FOptional&lt;?&gt;&gt; {
- 
-    private final T valueOrNull;
- 
-    private FOptional(T valueOrNull) {
-        this.valueOrNull = valueOrNull;
-    }
- 
-    public &lt;R&gt; FOptional&lt;R&gt; map(Function&lt;T,R&gt; f) {
-        if (valueOrNull == null)
-            return empty();
-        else
-            return of(f.apply(valueOrNull));
-    }
- 
-    public static &lt;T&gt; FOptional&lt;T&gt; of(T a) {
-        return new FOptional&lt;T&gt;(a);
-    }
- 
-    public static &lt;T&gt; FOptional&lt;T&gt; empty() {
-        return new FOptional&lt;T&gt;(null);
-    }
- 
-}
-</code></pre>
-
-<p>Now it becomes interesting. An <code>FOptional&lt;T&gt;</code> functor <u>may</u> hold a value, but just as well it might be empty. It&#39;s a type-safe way of encoding <code>null</code>. There are two ways of constructing <code>FOptional</code> - by supplying a value or creating <code>empty()</code> instance. In both cases, just like with <code>Identity</code>, <code>FOptional</code> is immutable and we can only interact with the value from inside. What differs <code>FOptional</code> is that the transformation function <code>f</code> may not be applied to any value if it is empty. This means functor may not necessarily encapsulate exactly one value of type <code>T</code>. It can just as well wrap arbitrary number of values, just like <code>List</code>... functor:</p>
-
-<pre><code class="language-java">import com.google.common.collect.ImmutableList;
- 
-class FList&lt;T&gt; implements Functor&lt;T, FList&lt;?&gt;&gt; {
- 
-    private final ImmutableList&lt;T&gt; list;
- 
-    FList(Iterable&lt;T&gt; value) {
-        this.list = ImmutableList.copyOf(value);
-    }
- 
-    @Override
-    public &lt;R&gt; FList&lt;?&gt; map(Function&lt;T, R&gt; f) {
-        ArrayList&lt;R&gt; result = new ArrayList&lt;R&gt;(list.size());
-        for (T t : list) {
-            result.add(f.apply(t));
+new Thread(new Runnable() {
+  @Override
+  public void run() {
+    while (true) {
+      // 处理 每个连接是否可读, 这里的逻辑是 读4个字节后切断连接
+      for (SocketChannel socketChannel : Lists.newArrayList(socketChannelList)) {
+        try {
+          ByteBuffer buf = ByteBuffer.allocate(4);
+          int readed = socketChannel.read(buf);
+          System.out.println(readed);
+          System.out.println(Arrays.toString(buf.array()));
+          if (readed &gt; 0 &amp;&amp; buf.array()[0] == &#39;q&#39;) {
+            // close
+            socketChannel.close();
+            // remove from list
+            socketChannelList.remove(socketChannel);
+          }
+        } catch (Throwable e) {
+          e.printStackTrace();
         }
-        return new FList&lt;&gt;(result);
+      }
+      try {
+        Thread.sleep(100);
+      } catch (InterruptedException e) {
+      }
     }
+  }
+}, &quot;server-handler-thread&quot;).start();
+
+// 等待新连接连进来
+while (true) {
+  SocketChannel socketChannel = serverSocketChannel.accept();
+  if (socketChannel != null) {
+    socketChannelList.add(socketChannel);
+  }
+  Thread.sleep(1000);
 }
 </code></pre>
 
-<p>The API remains the same: you take a functor in a transformation <code>T -&gt; R</code> - but the behavior is much different. Now we apply a transformation on each and every item in the <code>FList</code>, declaratively transforming whole list. So if you have a list of <code>customers</code> and you want a list of their streets, it&#39;s as simple as:</p>
+<p>简单分析下上面的代码，</p>
 
-<pre><code class="language-java">import static java.util.Arrays.asList;
- 
-FList&lt;Customer&gt; customers = new FList&lt;&gt;(asList(cust1, cust2));
- 
-FList&lt;String&gt; streets = customers
-        .map(Customer::getAddress)
-        .map(Address::street);
+<ol>
+<li> 由于 accept 是非阻塞的， 所以我们要一直轮询 判断是否有新连接进来。</li>
+<li> 连接进来后，由于我们不知道 client 何时能发完数据， 所以我们维护了一个列表 <code>socketChannelList</code> 定期去轮询列表，看是否有数据可读。</li>
+</ol>
+
+<p>但是后来大家发现， 每当用 nonblocking socket 的时候都要做类似的操作， 于是想把它们提出来，提取成一个通用模块， 让代码实现更容易，</p>
+
+<p>在 <a href="https://en.wikipedia.org/wiki/Berkeley_sockets">berkeley socket</a> 中这个模块被称为 select, poll, epoll. (后面2个是加强版)</p>
+
+<p>而在java中， java 在他们之上抽象成 Selector</p>
+
+<h2 id="toc_2"><a href="#Selector-select-poll-epoll" title="Selector(select, poll, epoll)"></a>Selector(select, poll, epoll)</h2>
+
+<p>既然 select 是一个使用 nonblocking io 的通用封装， 那么在 linux 中， 为什么要有 select, poll, epoll 这么多的选择呢？</p>
+
+<p>我猜测，最早其实只有 select， 然后由于linux 是一个开源， 所以， 后来别人实现了性能更好的 poll, 再之后 epoll 也是这样。</p>
+
+<p>但是, 由于它们都在 linux 2.6.12 之前就已经被实现了， 在github上 都看不到具体提交历史了。。</p>
+
+<p><a href="https://github.com/torvalds/linux/commits/a379f71a30dddbd2e7393624e455ce53c87965d1/fs/select.c?after=Y3Vyc29yOqN59xow3dvS5zk2JORVzlPIeWXRKzY5">select.c</a>,<br/>
+<a href="https://github.com/torvalds/linux/commits/5924bbecd0267d87c24110cbe2041b5075173a25/include/linux/poll.h">poll.h</a>,<br/>
+<a href="https://github.com/torvalds/linux/commits/5924bbecd0267d87c24110cbe2041b5075173a25/include/linux/eventpoll.h">eventpoll.h</a></p>
+
+<p>我们再来看看 使用了 selector 后的非阻塞 IO 的编码, 同样实现一个 echo server</p>
+
+<pre><code class="language-java">Selector selector = Selector.open();
+ServerSocketChannel servChannel = ServerSocketChannel.open();
+servChannel.configureBlocking(false);
+// 建立一个server socket，到本地端口9999， backlog 1024
+servChannel.socket().setReuseAddress(true);
+servChannel.socket().bind(new InetSocketAddress(9999), 1024);
+// selector 关心 server 上的 ACCEPT 事件
+servChannel.register(selector, SelectionKey.OP_ACCEPT); 
+
+while (start) {
+  try {
+    // 阻塞等待 直到有IO事件可读(系统IO事件队列不为空)
+    selector.select();
+    // 获取 事件 以及 事件所对应的 channel (client server 的连接)
+    Set&lt;SelectionKey&gt; selectedKeys = selector.selectedKeys();
+    Iterator&lt;SelectionKey&gt; it = selectedKeys.iterator();
+    SelectionKey key = null;
+    while (it.hasNext()) {
+      key = it.next();
+      it.remove();
+      try {
+        if (key.isValid()) {
+          // OP_ACCEPT 事件 表示有个新client 完成了三次握手。连接上了本服务器
+          if (key.isAcceptable()) {
+            // Accept the new connection
+            ServerSocketChannel ssc = (ServerSocketChannel) key.channel();
+            SocketChannel sc = ssc.accept();
+            sc.configureBlocking(false);
+            // 将该连接的可读事件 注册到 selector， 到时候他发起请求的时候，我会收到新事件
+            sc.register(selector, SelectionKey.OP_READ);
+          }
+          // OP_READ 事件 说明 client 发的数据已经发到了系统缓冲区，server 可以去读了。
+          if (key.isReadable()) {
+            SocketChannel sc = (SocketChannel) key.channel();
+            // 分配用户台空间, 将数据从内核态 拷贝到 用户态
+            ByteBuffer readBuffer = ByteBuffer.allocate(4);
+            int readBytes = sc.read(readBuffer);
+            if (readBytes &gt; 0) {
+              // 切换读写模式 详见下面的图, 表示自己目前可以读 [position, limit]
+              readBuffer.flip();
+              byte[] bytes = new byte[readBuffer.remaining()];
+              // 将buffer 数据拷贝到 bytes 数组
+              // 如果这里只收到一半的数据怎么办？
+              String body = new String(bytes, &quot;UTF-8&quot;);
+              System.out.println(body);
+              // 将 read的数据 写回去
+              ByteBuffer writeBuffer = ByteBuffer.allocate(bytes.length);
+              writeBuffer.put(bytes);
+              writeBuffer.flip();
+              sc.write(writeBuffer);
+            } else if (readBytes &lt; 0) {
+              // 对端链路关闭
+              key.cancel();
+              sc.close();
+            } else
+              ;
+          }
+        }
+      } catch (Exception e) {
+        if (key != null) {
+          key.cancel();
+          if (key.channel() != null)
+            key.channel().close();
+        }
+      }
+    }
+  } catch (Exception e) {
+    throw e;
+  }
+}
 </code></pre>
 
-<p>It&#39;s no longer as simple as saying <code>customers.getAddress().street()</code>, you can&#39;t invoke <code>getAddress()</code> on a collection of customers, you must invoke <code>getAddress()</code> on each individual customer and then place it back in a collection. By the way Groovy found this pattern so common that it actually has a syntax sugar for that: <code>customer*.getAddress()*.street()</code>. This operator, known as spread-dot, is actually a <code>map</code> in disguise. Maybe you are wondering why I iterate over <code>list</code> manually inside <code>map</code> rather than using <code>Stream</code>s from Java 8: <code>list.stream().map(f).collect(toList())</code>? Does this ring a bell? What if I told you <code>java.util.stream.Stream&lt;T&gt;</code> in Java is a functor as well? And by the way, also a monad?</p>
-
-<p>Now you should see the first benefits of functors - they abstract away the internal representation and provide consistent, easy to use API over various data structures. As the last example let me introduce <u>promise</u> functor, similar to <code>Future</code>. <code>Promise</code> &quot;promises&quot; that a value will become available one day. It is not yet there, maybe because some background computation was spawned or we are waiting for external event. But it will appear some time in the future. The mechanics of completing a <code>Promise&lt;T&gt;</code> are not interesting, but the functor nature is:</p>
-
-<pre><code class="language-java">Promise&lt;Customer&gt; customer = //...
-Promise&lt;byte[]&gt; bytes = customer
-        .map(Customer::getAddress)
-        .map(Address::street)
-        .map((String s) -&gt; s.substring(0, 3))
-        .map(String::toLowerCase)
-        .map(String::getBytes);
+<pre><code class="language-sh">~ ᐅ nc localhost 9999
+1
+1
+2
+2
 </code></pre>
 
-<p>Looks familiar? That is the point! The implementation of <code>Promise</code> functor is beyond the scope of this article and not even important. Enough to say that we are very close to implementing <code>CompletableFuture</code> from Java 8 and we almost discovered <code>Observable</code> from RxJava. But back to functors. <code>Promise&lt;Customer&gt;</code> does not hold a value of <code>Customer</code> just yet. It promises to have such value in the future. But we can still map over such functor, just like we did with <code>FOptional</code> and <code>FList</code> - the syntax and semantics are exactly the same. The behavior follows what the functor represents. Invoking <code>customer.map(Customer::getAddress)</code> yields <code>Promise&lt;Address&gt;</code> which means <code>map</code> is non-blocking. <code>customer.map()</code> will <u>not</u> wait for the underlying <code>customer</code> promise to complete. Instead it returns another promise, of different type. When upstream promise completes, downstream promise applies a function passed to <code>map()</code> and passes the result downstream. Suddenly our functor allows us to pipeline asynchronous computations in a non-blocking manner. But you do not have to understand or learn that - because <code>Promise</code> is a functor, it must follow syntax and laws.</p>
+<p>但是， 很奇怪的是，代码更长了。。。</p>
 
-<p>There are many other great examples of functors, for example representing value or error in a compositional manner. But it is high time to look at monads.</p>
+<p>因为其实真正的 selector 将所有的socket 的时间都封装进去了。</p>
 
-<h1 id="toc_1">From functors to monads</h1>
+<p>带来的结果是， java 层的代码 只要一个线程就能处理所有了，(我之前的实现需要2个线程)。</p>
 
-<p>I assume you understand how functors work and why are they a useful abstraction. But functors are not that universal as one might expect. What happens if your transformation function (the one passed as an argument to <code>map()</code>) returns functor instance rather than simple value? Well, functor is just a value as well, so nothing bad happens. Whatever was returned is placed back in a functor so all behaves consistently. However imagine you have this handy method for parsing <code>String</code>s:</p>
+<p>当然还有个问题是， 及时用了 selector， 我们依然认为代码可读性非常差， 代码容易写错。</p>
 
-<pre><code class="language-java">FOptional&lt;Integer&gt; tryParse(String s) {
+<p>于是， netty 登场了， 他在 selector 之上， 又封装了一层， 让我们先看下 同样实现 netty 的代码。</p>
+
+<h2 id="toc_3"><a href="#netty-echo-server" title="netty echo server"></a>netty echo server</h2>
+
+<pre><code class="language-java">public class Netty4Demo {
+  public class EchoHandler extends SimpleChannelInboundHandler {
+    @Override
+    public void channelRead0(ChannelHandlerContext ctx, Object msg) throws Exception {
+      // 为什么 这里可以强转String？
+      String in = (String) msg;
+      System.out.print(in);
+      // 将数据写回
+      ctx.writeAndFlush(in);
+    }
+  }
+
+  public void run() throws Exception {
+    EventLoopGroup acceptGroup = new NioEventLoopGroup(1); // 指定 Acceptor 线程池大小
+    EventLoopGroup ioGroup = new NioEventLoopGroup(1); // 指定 NIO线程池大小
     try {
-        final int i = Integer.parseInt(s);
-        return FOptional.of(i);
-    } catch (NumberFormatException e) {
-        return FOptional.empty();
+      ServerBootstrap b = new ServerBootstrap(); // 创建 ServerBootstrap 对象，他是Netty 用于启动NIO 服务端的辅助启动类，目的是降低服务端的开发复杂度。
+      b.group(acceptGroup, ioGrou).channel(
+          NioServerSocketChannel.class) // 指定使用 java 的NioServerSocketChannel
+          .childHandler(new ChannelInitializer&lt;SocketChannel&gt;() { // 创建 IOThread 的 pipeline
+            @Override
+            public void initChannel(SocketChannel ch) throws Exception {
+              ch.pipeline()
+                .addLast(new StringDecoder())
+                .addLast(new StringEncoder()); // 添加echo Handler
+                .addLast(new EchoHandler())
+            }
+          }).option(ChannelOption.SO_BACKLOG, 128)          // server socket config backlog 设置为 128
+          .childOption(ChannelOption.SO_KEEPALIVE, true); // client socket config 设置 keepalive = true
+      // 绑定端口，开始接收进来的连接
+      ChannelFuture f = b.bind(9999).sync(); // 同步等待绑定本地端口
+
+      // 等待服务器  socket 关闭 。
+      // 在这个例子中，这不会发生，但你可以优雅地关闭你的服务器。
+      f.channel().closeFuture().sync();
+    } finally {
+      // 释放两个线程池
+      acceptGroup.shutdownGracefully();
+      ioGrou.shutdownGracefully();
+    }
+  }
+
+  public static void main(String[] args) throws Exception {
+    new Netty4Demo().run();
+  }
+}
+</code></pre>
+
+<pre><code class="language-sh">~ ᐅ nc localhost 9999
+1
+1
+2
+2
+3
+3
+</code></pre>
+
+<p>代码短了一些， 关键是少了很多 if 判断， 代码可读性更好了。</p>
+
+<p>但是， 可读性提高(抽象)的同时， 又带出了了问题， EventLoop 是什么 , EventloopGroup 是什么？ 为什么要有它们？</p>
+
+<p>这里要解释以上的问题， 要先从 线程模型说起</p>
+
+<h2 id="toc_4"><a href="#%E7%BA%BF%E7%A8%8B%E6%A8%A1%E5%9E%8B" title="线程模型"></a>线程模型</h2>
+
+<p>首先是 单线程模型， 如下图</p>
+
+<p><img src="media/15277861393795/15277864778610.jpg" alt=""/></p>
+
+<p>上面直接用 selector 实现的 echo server 就是单线程模型，<br/>
+还有类似存在 GIL 问题的语言比如 python 的 tornado 也是 单线程模型。</p>
+
+<p>然后是多线程模型</p>
+
+<p><img src="media/15277861393795/15277864864829.jpg" alt=""/></p>
+
+<p>多线程模型的区别就是 让接收连接 和 对连接读写的处理 分别用不同的线程处理。 比如上面的 echo server demo 就可以被称为一个 多线程模型。<br/>
+只不过扩展性差了些。。。</p>
+
+<p>netty 的 EventloopGroup 其实就是线程池， 通过它来配置 接收连接 和 处理连接读写 的线程池大小。</p>
+
+<h2 id="toc_5"><a href="#netty-%E4%B9%8B-EventloopGroup" title="netty 之 EventloopGroup"></a>netty 之 EventloopGroup</h2>
+
+<p><img src="media/15277861393795/15277864950859.jpg" alt=""/></p>
+
+<p>上图就是 EventLoopGroup 的大致模块图。</p>
+
+<p>Boss EventloopGroup 和 worker EventloopGroup 分别 处理 接收连接， 和读写。</p>
+
+<p>而 Eventloop 里则封装了类似上面单线程的 echo server 的模块下面会详细说。</p>
+
+<p>对于开发者来说，主要关心紫色圈出部分。 其余的都已经封装完毕</p>
+
+<p>有几个关键点。</p>
+
+<ol>
+<li> Eventloopsize 建议设置为 2 的次方，dispatch 使用位移，更快。</li>
+<li> 侦听一个端口，只会绑定到 BossEventLoopGroup 中的一个 Eventloop，所以， BossEventLoopGroup 配置多个也无用。</li>
+</ol>
+
+<h2 id="toc_6"><a href="#EventLoop" title="EventLoop"></a>EventLoop</h2>
+
+<p>如果只使用 tcp 和 异步阻塞的话主要关心以下2个 EventLoop (本文也只介绍这2个)</p>
+
+<p>NioEventLoop - 基于java 原生nio</p>
+
+<pre><code>level-triggered （水平触发）
+
+</code></pre>
+
+<p>EpollEventLoop - native jni 直接调用 epoll, only work on linux</p>
+
+<pre><code>edge-triggered （边缘触发）更少的系统调用
+C代码，更少GC，更少synchronized
+暴露了更多的Socket配置参数
+
+</code></pre>
+
+<h3 id="toc_7"><a href="#%E6%B5%81%E7%A8%8B%E5%9B%BE" title="流程图"></a>流程图</h3>
+
+<p><img src="media/15277861393795/15277865072620.jpg" alt=""/></p>
+
+<p>关键点</p>
+
+<ol>
+<li> 整个loop 干的事情就是 <code>select -&gt; processIO -&gt; runAllTask</code></li>
+<li> 这是一个死循环</li>
+<li> 那么这个loop 如何自己优雅退出？ noway，只能通过外部添加 CloseTask， 比如添加到 MpscQueue</li>
+<li> deadline 为 定时任务的触发时间，避免 select 阻塞, 让 定时任务不能及时执行。</li>
+<li> 在select 这一步 解决 epollbug</li>
+</ol>
+
+<p>关于解决 epoll bug的原理是 应当 “阻塞”的 select 变得不再阻塞。<br/>
+所以只需要统计下 select 次数就行了</p>
+
+<p>部分关键代码:</p>
+
+<pre><code class="language-java">for(;;){
+    int selectedKeys = selector.select(timeoutMillis); // select with timeout
+    selectCnt ++;
+    // 我由于 select 阻塞 而等待了 timeoutMillis 毫秒， 说明， 我阻塞了，说明没有bug
+    if (time - TimeUnit.MILLISECONDS.toNanos(timeoutMillis) &gt;= currentTimeNanos) {
+        selectCnt = 1;
+    } else if (SELECTOR_AUTO_REBUILD_THRESHOLD &gt; 0 &amp;&amp;
+            selectCnt &gt;= SELECTOR_AUTO_REBUILD_THRESHOLD) {
+        // 在小于 timeoutMillis 毫秒的时间内 select 的次数超过了 阀值(512) 次
+        rebuildSelector();
+        selector = this.selector;
+
+        selector.selectNow();// Select again
+        selectCnt = 1;
+        break;
     }
 }
 </code></pre>
 
-<p>Exceptions are side-effects that undermine type system and functional purity. In pure functional languages there is no place for exceptions, after all we never heard about throwing exceptions during math classes, right? Errors and illegal conditions are represented explicitly using values and wrappers. For example <code>tryParse()</code> takes a <code>String</code> but does not simply return an <code>int</code> or silently throw an exception at runtime. We explicitly tell, through the type system, that <code>tryParse()</code> can fail, there is nothing exceptional or erroneous in having a malformed string. This semi-failure is represented by optional result. Interestingly Java has checked exceptions, the ones that must be declared and handled, so in some sense Java is purer in that regard, it does not hide side-effects. But for better or worse checked exceptions are often discouraged in Java, so let&#39;s get back to <code>tryParse()</code>. It seems useful to compose <code>tryParse</code> with <code>String</code> already wrapped in <code>FOptional</code>:</p>
+<h2 id="toc_8"><a href="#other" title="other"></a>other</h2>
 
-<pre><code class="language-java">FOptional&lt;String&gt; str = FOptional.of(&quot;42&quot;);
-FOptional&lt;FOptional&lt;Integer&gt;&gt; num = str.map(this::tryParse);
-</code></pre>
+<h3 id="toc_9"><a href="#Selector-wakeup" title="Selector.wakeup()"></a>Selector.wakeup()</h3>
 
-<p>That should not come as a surprise. If <code>tryParse()</code> would return an <code>int</code> you would get <code>FOptional&lt;Integer&gt; num</code>, but because <code>map()</code> function returns <code>FOptional&lt;Integer&gt;</code> itself, it gets wrapped twice into awkward <code>FOptional&lt;FOptional&lt;Integer&gt;&gt;</code>. Please look carefully at the types, you must understand why we got this double wrapper here. Apart from looking horrible, having a functor in functor ruins composition and fluent chaining:</p>
+<p>java 的 Selector 在原生的 select api 之上 增加了个 Selector.wakeup()</p>
 
-<pre><code class="language-java">FOptional&lt;Integer&gt; num1 = //...
-FOptional&lt;FOptional&lt;Integer&gt;&gt; num2 = //...
- 
-FOptional&lt;Date&gt; date1 = num1.map(t -&gt; new Date(t));
- 
-//doesn&#39;t compile!
-FOptional&lt;Date&gt; date2 = num2.map(t -&gt; new Date(t));
-</code></pre>
+<p>她的目的是唤醒 阻塞在 <code>select()</code> 的线程, (通过写一个字节)</p>
 
-<p>Here we try to map over the contents of <code>FOptional</code> by turning <code>int</code> into +Date+. Having a function of <code>int -&gt; Date</code> we can easily transform from <code>Functor&lt;Integer&gt;</code> to <code>Functor&lt;Date&gt;</code>, we know how it works. But in case of <code>num2</code> situation becomes complicated. What <code>num2.map()</code> receives as input is no longer an <code>int</code> but an <code>FOoption&lt;Integer&gt;</code> and obviously <code>java.util.Date</code> does not have such a constructor. We broke our functor by double wrapping it. However having a function that returns a functor rather than simple value is so common (like <code>tryParse()</code>) that we can not simply ignore such requirement. One approach is to introduce a special parameterless <code>join()</code> method that &quot;flattens&quot; nested functors:</p>
+<p>为什么要唤醒？ 什么时候需要唤醒？</p>
 
-<pre><code class="language-java">FOptional&lt;Integer&gt; num3 = num2.join()
-</code></pre>
+<ol>
+<li>注册了新的 channel 或者事件。</li>
+<li>channel 关闭， 取消注册。</li>
+<li>优先级更高的事件触发（如定时器事件）， 希望及时处理。</li>
+</ol>
 
-<p>It works but because this pattern is so common, special method named <code>flatMap()</code> was introduced. <code>flatMap()</code> is very similar to <code>map</code> but expects the function received as an argument to return a functor - or <u>monad</u> to be precise:</p>
+<h4 id="toc_10"><a href="#%E5%8E%9F%E7%90%86" title="原理"></a>原理</h4>
 
-<pre><code class="language-java">interface Monad&lt;T,M extends Monad&lt;?,?&gt;&gt; extends Functor&lt;T,M&gt; {
-    M flatMap(Function&lt;T,M&gt; f);
-}
-</code></pre>
+<p>Linux上利用pipe调用创建一个管道，Windows上则是一个loopback的tcp连接。这是因为win32的管道无法加入select的fd set，将管道或者TCP连接加入select fd set。</p>
 
-<p>We simply concluded that <code>flatMap</code> is just a syntactic sugar to allow better composition. But <code>flatMap</code> method (often called <code>bind</code> or <code>&gt;&gt;=</code> from Haskell) makes all the difference since it allows complex transformations to be composed in a pure, functional style. If <code>FOptional</code> was an instance of monad, parsing suddenly works as expected:</p>
+<p>wakeup往管道或者连接写入一个字节，阻塞的select因为有I/O事件就绪，立即返回。可见，wakeup的调用开销不可忽视。</p>
 
-<pre><code class="language-java">FOptional&lt;String&gt; num = FOptional.of(&quot;42&quot;);
-FOptional&lt;Integer&gt; answer = num.flatMap(this::tryParse);
-</code></pre>
+<p>之前看到的 coolshell 也分析过 –&gt; Java NIO类库Selector机制解析（<a href="http://blog.csdn.net/haoel/archive/2008/03/27/2224055.aspx">上</a>，<a href="http://blog.csdn.net/haoel/archive/2008/03/27/2224069.aspx">下</a>，<a href="http://blog.csdn.net/haoel/archive/2008/05/04/2379586.aspx">续</a>）</p>
 
-<p>Monads do not need to implement <code>map</code>, it can be implemented on top of <code>flatMap()</code> easily. As a matter of fact <code>flatMap</code> is the essential operator that enables a whole new universe of transformations. Obviously just like with functors, syntactic compliance is not enough to call some class a monad, the <code>flatMap()</code> operator has to follow monad laws, but they are fairly intuitive like associativity of <code>flatMap()</code> and identity. The latter requires that <code>m(x).flatMap(f)</code> is the same as <code>f(x)</code> for any monad holding a value <code>x</code> and any function <code>f</code>. We are not going to dive too deep into monad theory, instead let&#39;s focus on practical implications. Monads shine when their internal structure is not trivial, for example <code>Promise</code> monad that will hold a value in the future. Can you guess from the type system how <code>Promise</code> will behave in the following program? First all methods that can potentially take some time to complete return a <code>Promise</code>:</p>
+<h1 id="toc_11"><a href="#reference" title="reference"></a>reference</h1>
 
-<pre><code class="language-java">import java.time.DayOfWeek;
- 
- 
-Promise&lt;Customer&gt; loadCustomer(int id) {
-    //...
-}
- 
-Promise&lt;Basket&gt; readBasket(Customer customer) {
-    //...
-}
- 
-Promise&lt;BigDecimal&gt; calculateDiscount(Basket basket, DayOfWeek dow) {
-    //...
-}
-</code></pre>
+<p><a href="http://www.infoq.com/cn/articles/netty-threading-model">http://www.infoq.com/cn/articles/netty-threading-model</a></p>
 
-<p>We can now compose these functions as if they were all blocking using monadic operators:</p>
+<p><a href="http://calvin1978.blogcn.com/articles/netty-performance.html">http://calvin1978.blogcn.com/articles/netty-performance.html</a></p>
 
-<pre><code class="language-java">Promise&lt;BigDecimal&gt; discount = 
-    loadCustomer(42)
-        .flatMap(this::readBasket)
-        .flatMap(b -&gt; calculateDiscount(b, DayOfWeek.FRIDAY));
-</code></pre>
+<p><a href="http://calvin1978.blogcn.com/articles/netty-performance2.html">http://calvin1978.blogcn.com/articles/netty-performance2.html</a></p>
 
-<p>This becomes interesting. <code>flatMap()</code> must preserve monadic type therefor all intermediate objects are <code>Promise</code>s. It is not just about keeping the types in order - preceding program is suddenly fully asynchronous! <code>loadCustomer()</code> returns a <code>Promise</code> so it does not block. <code>readBasket()</code> takes whatever the <code>Promise</code> has (will have) and applies a function returning another <code>Promise</code> and so on and so forth. Basically we built an asynchronous pipeline of computation where the completion of one step in background automatically triggers next step.</p>
-
-<h1 id="toc_2">Exploring <code>flatMap()</code></h1>
-
-<p>It is very common to have two monads and combining the value they enclose together. However both functors and monads do not allow direct access to their internals, which would be impure. Instead we must carefully apply transformation without escaping the monad. Imagine you have two monads and you want to combine them:</p>
-
-<pre><code class="language-java">import java.time.LocalDate;
-import java.time.Month;
- 
- 
-Monad&lt;Month&gt; month = //...
-Monad&lt;Integer&gt; dayOfMonth = //...
- 
-Monad&lt;LocalDate&gt; date = month.flatMap((Month m) -&gt;
-        dayOfMonth
-                .map((int d) -&gt; LocalDate.of(2016, m, d)));
-</code></pre>
-
-<p>Please take your time to study the preceding pseudo-code. I don&#39;t use any real monad implementation like <code>Promise</code> or <code>List</code> to emphasize the core concept. We have two independent monads, one of type <code>Month</code> and the other of type <code>Integer</code>. In order to build <code>LocalDate</code> out of them we must build a nested transformation that has access to the internals of both monads. Work through the types, especially making sure you understand why we use <code>flatMap</code> in one place and <code>map()</code> in the other. Think how you would structure this code if you had a third <code>Monad&lt;Year&gt;</code> as well. This pattern of applying a function of two arguments (<code>m</code> and <code>d</code> in our case) is so common that in Haskell there is special helper function called <code>liftM2</code> that does exactly this transformation, implemented on top of <code>map</code> and <code>flatMap</code>. In Java pseudo-syntax it would look somewhat like this:</p>
-
-<pre><code class="language-java">Monad&lt;R&gt; liftM2(Monad&lt;T1&gt; t1, Monad&lt;T2&gt; t2, BiFunction&lt;T1, T2, R&gt; fun) {
-    return t1.flatMap((T1 tv1) -&gt;
-            t2.map((T2 tv2) -&gt; fun.apply(tv1, tv2))
-    );
-}
-</code></pre>
-
-<p>You don&#39;t have to implement this method for every monad, <code>flatMap()</code> is enough, moreover it works consistently for all monads. <code>liftM2</code> is extremely useful when you consider how it can be used with various monads. For example <code>liftM2(list1, list2, function)</code> will apply <code>function</code> on every possible pair of items from <code>list1</code> and <code>list2</code> (Cartesian product). On the other hand for optionals it will apply a function only when both optionals are non-empty. Even better, for <code>Promise</code> monad a function will be executed asynchronously when both <code>Promise</code>s are completed. This means we just invented a simple synchronization mechanism (<code>join()</code> in fork-join algorithms) of two asynchronous steps.</p>
-
-<p>Another useful operator that we can easily build on top of <code>flatMap()</code> is <code>filter(Predicate&lt;T&gt;)</code> which takes whatever is inside a monad and discards it entirely if it does not meet certain predicate. In a way it is similar to <code>map</code> but rather than 1-to-1 mapping we have 1-to-0-or-1. Again <code>filter()</code> has the same semantics for every monad but quite amazing functionality depending on which monad we actually use. Obviously it allows filtering out certain elements from a list:</p>
-
-<pre><code class="language-java">FList&lt;Customer&gt; vips = 
-    customers.filter(c -&gt; c.totalOrders &gt; 1_000);
-</code></pre>
-
-<p>But it works just as well e.g. for optionals. In that case we can transform non-empty optional into an empty one if the contents of optional does not meet some criteria. Empty optionals are left intact.</p>
-
-<h1 id="toc_3">From list of monads to monad of list</h1>
-
-<p>Another useful operator that originates from <code>flatMap()</code> is <code>sequence()</code>. You can easily guess what it does simply by looking at type signature:</p>
-
-<pre><code class="language-java">Monad&lt;Iterable&lt;T&gt;&gt; sequence(Iterable&lt;Monad&lt;T&gt;&gt; monads)
-</code></pre>
-
-<p>Often we have a bunch of monads of the same type and we want to have a single monad of a list of that type. This might sounds abstract to you, but it is impressively useful. Imagine you wanted to load a few customers from the database concurrently by ID so you used <code>loadCustomer(id)</code> method several times for different IDs, each invocation returning <code>Promise&lt;Customer&gt;</code>. Now you have a list of <code>Promise</code>s but what you really want is a list of customers, e.g. to be displayed in the web browser. <code>sequence()</code> (in RxJava <code>sequence()</code> is called <code>concat()</code> or <code>merge()</code>, depending on use-case) operator is built just for that:</p>
-
-<pre><code class="language-java">FList&lt;Promise&lt;Customer&gt;&gt; custPromises = FList
-    .of(1, 2, 3)
-    .map(database::loadCustomer);
- 
-Promise&lt;FList&lt;Customer&gt;&gt; customers = custPromises.sequence();
- 
-customers.map((FList&lt;Customer&gt; c) -&gt; ...);
-</code></pre>
-
-<p>Having an <code>FList&lt;Integer&gt;</code> representing customer IDs we <code>map</code> over it (do you see how it helps that <code>FList</code> is a functor?) by calling <code>database.loadCustomer(id)</code> for each ID. This leads to rather inconvenient list of <code>Promise</code>s. <code>sequence()</code> saves the day, but once again this is not just a syntactic sugar. Preceding code is fully non-blocking. For different kinds of monads <code>sequence()</code> still makes sense, but in a different computational context. For example it can change a <code>FList&lt;FOptional&lt;T&gt;&gt;</code> into <code>FOptional&lt;FList&lt;T&gt;&gt;</code>. And by the way, you can implement <code>sequence()</code> (just like <code>map()</code>) on top of <code>flatMap()</code>.</p>
-
-<p>This is just the tip of the iceberg when it comes to usefulness of <code>flatMap()</code> and monads in general. Despite coming from rather obscure category theory, monads proved to be extremely useful abstraction even in object-oriented programming languages such as Java. Being able to compose functions returning monads is so universally helpful that dozens of unrelated classes follow monadic behavior.</p>
-
-<p>Moreover once you encapsulate data inside monad, it is often hard to get it out explicitly. Such operation is not part of the monad behavior and often leads to non-idiomatic code. For example <code>Promise.get()</code> on <code>Promise&lt;T&gt;</code> can technically return <code>T</code>, but only by blocking, whereas all operators based on <code>flatMap()</code> are non-blocking. Another example is <code>FOptional.get()</code> that can fail because <code>FOptional</code> may be empty. Even <code>FList.get(idx)</code> that peeks particular element from a list sounds awkward because you can replace <code>for</code> loops with <code>map()</code> quite often.</p>
-
-<p>I hope you now understand why monads are so popular these days. Even in object-oriented(-ish) language like Java they are quite useful abstraction.</p>
+<p><a href="http://tech.meituan.com/nio.html">http://tech.meituan.com/nio.html</a></p>
 
                         
                       </div>
@@ -421,7 +513,7 @@ customers.map((FList&lt;Customer&gt; c) -&gt; ...);
                     <span class="date">2018/6/1</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Java.html'>Java</a></span>
+          					    <span class="posted-in"><a href='Network.html'>Network</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -511,6 +603,12 @@ customers.map((FList&lt;Customer&gt; c) -&gt; ...);
 	      
 		      
 			      <li class="post">
+			        <a href="15359384213292.html">Securing Spring Boot with JWTs</a>
+			      </li>
+		     
+		  
+		      
+			      <li class="post">
 			        <a href="15358820607055.html">Java 8 Concurrency Tutorial: Atomic Variables and ConcurrentMap</a>
 			      </li>
 		     
@@ -530,12 +628,6 @@ customers.map((FList&lt;Customer&gt; c) -&gt; ...);
 		      
 			      <li class="post">
 			        <a href="15358756631902.html">Java 8 Stream Tutorial</a>
-			      </li>
-		     
-		  
-		      
-			      <li class="post">
-			        <a href="15358753472382.html">Migrate Maven Projects to Java 11</a>
 			      </li>
 		     
 		  

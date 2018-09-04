@@ -105,215 +105,185 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15340909313052.html">
+                <a class="clearlink" href="15340910961772.html">
                 
-                  <h1>去哪儿网前后端分离实践</h1>
+                  <h1>RocketMQ 4.3 正式发布，支持分布式事务</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://www.zybuluo.com/qinyun/note/1224827">https://www.zybuluo.com/qinyun/note/1224827</a></p>
+<p>原文地址 <a href="http://www.infoq.com/cn/news/2018/08/rocketmq-4.3-release">http://www.infoq.com/cn/news/2018/08/rocketmq-4.3-release</a></p>
 </blockquote>
 
-<h2 id="toc_0">前后端分离方案</h2>
+<p>近日，Apache RocketMQ 社区正式发布 4.3 版本。此次发布不仅包括提升性能，减少内存使用等原有特性增强，还修复了部分社区提出的若干问题，更重要的是该版本开源了社区最为关心的分布式事务消息，而且实现了对外部组件的零依赖。接下来，本文将详细探秘 RocketMQ 事务消息的设计原理以及实现机制。</p>
 
-<p>去哪儿网主要有三种前后端的分离方案。</p>
+<h2 id="toc_0"><strong>一</strong> <strong>需求缘起</strong></h2>
 
-<p><img src="https://static.geekbang.org/infoq/5b615d2070539.png" alt=""/></p>
+<p>在微服务架构中，随着服务的逐步拆分，数据库私有已经成为共识，这也导致所面临的分布式事务问题成为微服务落地过程中一个非常难以逾越的障碍，但是目前尚没有一个完整通用的解决方案。</p>
 
-<p>第一种方式是项目分离，页面分离，它的特点是简单快速，前端只需要关注浏览器方面，浏览器之外，全是由后端去负责，但沟通成本会非常高，因为在前期，前端需要使用 NG，或使用代理工具进行调试，后期还要把一些页面给到后端，并且让后端新建一个所对应的一个路由，这样来来回回调试非常复杂，一旦前后端同学涉及到跨部门，跨楼层合路的时候，这些成本又会相应地增加。</p>
+<p>其实不仅仅是在微服务架构中，随着用户访问量的逐渐上涨，数据库甚至是服务的分片、分区、水平拆分、垂直拆分已经逐渐成为较为常用的提升瓶颈的解决方案，因此越来越多的原子操作变成了跨库甚至是跨服务的事务操作。最终结果是在对高性能、高扩展性，高可用性的追求的道路上，我们开始逐渐放松对一致性的追求，但是在很多场景下，尤其是账务，电商等业务中，不可避免的存在着一致性问题，使得我们不得不去探寻一种机制，用以在分布式环境中保证事务的一致性。</p>
 
-<p><img src="https://static.geekbang.org/infoq/5b615d4c2c36c.png" alt=""/></p>
+<h2 id="toc_1"><strong>二</strong> <strong>理论基石</strong></h2>
 
-<p>第二种方案还是项目分离，后端的页面放到了前端项目里，后端只需要配置路由就行了，最终上线的时候，由发布系统负责把前端中的页面自动同步到后端所相对应的目录文件里面。当然，在前期，前后端需要约定一下，要同步一个路径，不然在后端渲染页面的时候就会找不到相应的文件，相比第一种方案，稍微有点进步，沟通成本有一点降低。</p>
+<p>微服务使得单体架构扩展为分布式架构，在扩展的过程中，逐渐丧失了单体架构中数据源单一，可以直接依赖于数据库进行事务操作的能力，而关系型数据库中，提供了强大的事务处理能力，可以满足 ACID（Atomicity，Consistency，Isolation，Durability）的特性，这种特性保证了数据操作的强一致性，这也是分布式环境中弱一致性以及最终一致性能够得以实现的基础。</p>
 
-<p><img src="https://static.geekbang.org/infoq/5b615cf9f0aac.png" alt=""/></p>
+<p>数据一致性分为三个种类型：强一致性，弱一致性以及最终一致性，正如上文所述，数据库实现的就是强一致性，能够保证在写入一份新的数据库，立即使其可见。最终一致性是弱一致性的强化版，系统保证在没有后续更新的前提下，系统最终返回上一次更新操作的值。在没有故障发生的前提下，不一致窗口的时间主要受通信延迟，系统负载和复制副本的个数影响。</p>
 
-<p>第三种方案，使用 Node.js 作为页面渲染层，后端只负责数据的生产工作，这也是在去哪儿网内部最主要的方式。它的优点是前端同学对于整个页面的生命周期有完全的控制权，包括开发调试，部署，上线，监控等，另外可做的事情也非常多，比如我们不能做 React SSR，而使用 Node.js 很容易做这件事情。</p>
+<p>然而，微服务作为分布式系统，同样受 CAP<sup>[1]</sup> 原理的制约，在 CAP 理论中， C：Consistency、A：Availability、P：Partition tolerance 三者不可同时满足，而服务化中，更多的是提升 A 以及 P，在这个过程中不可避免的会降低对 C 的要求，因此，BASE 理论随之而来。</p>
 
-<h2 id="toc_1">静态资源离线包方案（qp)</h2>
+<p>BASE<sup>[2]</sup> 理论来源于 ebay 在 2008 年 ACM 中发表的论文，BASE 理论的基本原则有三个：Basically Available，Soft state，Eventually consistent，主要目的是为了提升分布式系统的可伸缩性，论文同样阐述了如何对业务进行调整以及折中的手段，BASE 理论的提出为分布式事务的发展指出了一个方向。</p>
 
-<p>在三种方案演变的过程中，为了让用户快速的看到页面，我们还设计了一个静态资源包的方案，这是它的整体的流程图：</p>
+<p>在最终一致性的实现过程中，最基本的操作就是保证事务参与者的幂等性，所谓的幂等性，就是业务方能够使用相关的手段，保证单个事务多次提交依然能够保证达到同样的目的。</p>
 
-<p><img src="https://static.geekbang.org/infoq/5b56f6dc0f4b4.png" alt=""/></p>
+<h2 id="toc_2"><strong>三</strong> <strong>当前解决方案</strong></h2>
 
-<p>第一部分由前端同学负责，就是做一些配置文件；</p>
+<h3 id="toc_3">1. 2PC/3PC</h3>
 
-<p>第二部分是打包平台，需要把我们的配置文件读到，然后进行打包，打包期间，我们还要进行数据加密的操作，比如使用私钥，让 qp 包生成一个 MD5 文件，送到 qp 服务端，最后到客户端，客户端用私钥对 QD 再次求 MD5，用一个 QP 服务端返回的一个 MD5 质量进行对比教验，如果通过说明是一个我们需要的包，而不是说被恶意篡改的包。</p>
+<p>谈到分布式事务，首先要说的就是 2PC（two phase commit）方案，如下图所示 <sup>[3]</sup>：</p>
 
-<p>在客户端的时候，需要客户端同学做很多事情，为什么？因为这涉及到一个网络环境的问题，如果用户的环境是 WiFi 的情况下，我们会自动拉取所有的离线包，如果是非 WiFi 网络的环境，比如说 4G、2G 等之类的，我们是不会自动拉取离线包的。因为这样为了减少用户的流量，当用户进入到特定我们的页面的时候，会检查我们的本地是否存在有这样的离线包，如果有的话，就用我们离线包资源，如果没有的话直接走线上环境，它会静默在我们的后台，去静默下载，这是我们的客户端需要做的事情。</p>
+<p><a href="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/14image001-1533615962474.png"><img src="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/14image001-1533615962474.png" alt=""/></a></p>
 
-<p>那么项目怎么去使用呢？很简单，只需要在项目的根目录中新建一个 index.yaml 的配置文件就可以了，其中包含几个主要内容：</p>
+<p>2PC 把事务的执行分为两个阶段，第一个阶段即 prepare 阶段，这个阶段实际上就是投票阶段，协调者向参与者确认是否可以共同提交，再得到全部参与者的所有回答后，协调者向所有的参与者发布共同提交或者共同回滚的指令，用以保证事务达到一致性。            </p>
 
-<ul>
-<li><p>唯一标识 QP 包的 ID</p></li>
-<li><p>针对 IOS 或安卓，特定的版本号去做一些限制</p></li>
-<li><p>确定打包内容，因为并不是所有的资源都需要在 QP 文件的，因为体积会增加</p></li>
-<li><p>最后是忽略内容，就是需要把我们的文件去忽略。</p></li>
-</ul>
+<p>但是分布式系统中的所有通信均存在着三种状态：成功，失败，超时。其中，超时状态的存在是我们在设计分布式系统时所面对的永远的痛，2PC 同样存在问题，尤其是在发送完可以提交的指令后，参与者在没有收到提交或者回滚的指令时，面对已经上锁的资源，面对已经写出去的 undo 或者 redo 日志，参与者会一时陷入手足无措的状态，为了解决这个问题，3PC 应运而生，如下图所示 [4]：</p>
 
-<p>第二步就是相应的开发，或者 QA 去进入打包平台进行发布，也很简单，只要添置一些配置项就可以了，也不需要去人工干预。</p>
+<p><a href="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/14image003-1533615963768.png"><img src="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/14image003-1533615963768.png" alt=""/></a></p>
 
-<p>用户对离线包是完全透明，并且无感知的，大家从整个流程上看相关的一些功能，可能觉得很简单，不复杂，但实际上考虑的事情非常多：</p>
+<p>3PC 在 commit 之前增加了 preCommit 的过程，使得在参与者在收不到确认时，依然可以从容 commit 或者 rollback，避免资源锁定太久导致浪费。但是 3PC 同样存在着很多问题。实现起来非常复杂，因为很难通过多次询问来解决系统间分歧问题，尤其是存在超时状态互不信任的分布式网络中，这也就是著名的拜占庭将军问题 <sup>[5]</sup>。</p>
+
+<p>总结一下，2PC 是几乎所有分布式事务算法的基础，后续的分布式事务算法几乎都由此改进而来，其优缺点非常明显：</p>
 
 <ul>
-<li><p>首先，保证资源的安全性，不被中间人恶意篡改，主要体现在传输安全和存储安全上。</p></li>
-<li><p>第二，如何保证 QP 包快速回滚，因为不能保证 QP 发下去之后没有问题，有时候出现问题之后，怎么去保证快速回滚呢？起初我们用的是假回滚机制。假回滚就是每次有问题的时候，流程再走一遍，因为它的版本号是递增的，在实际的操作起来成本高。如果代码变动，那么打出的包的内容也会变，我们后期把它变成了一个真正的回滚机制。</p></li>
+<li>  优点：在于已经有较为成熟的实现方案，比如 XA。</li>
+<li>  缺点：XA 是一个阻塞协议。服务在投票后需要等待协调器的决定，此时服务会阻塞并锁定资源。由于其阻塞机制和最差时间复杂度高， 因此，这种设计不能适应随着事务涉及的服务数量增加而扩展的需要，很难用于并发较高以及子事务声明周期较长 (long-running transactions) 的分布式服务中。</li>
 </ul>
 
-<p>第三，下线和强制更新。下线就是当某个 qp 包有问题的时候，我们需要针对这个 qp 包进行下线的操作，不让用户访问到了，针对的是当前的这个离线包。那么强制更新呢？它的意思是说，当某个 QP 包希望用户或者某一批用户下载到时，我需要做一个强制更新的操作，那么它针对的要点是将要下载的包，这两个是不同的概念。</p>
+<h3 id="toc_4">2. SAGA</h3>
 
-<p>再者，就是提高更新率，主要有三个方法：第一，减少 qp 包大小，也就是体积；第二，使用 HTTP2 协议；第三，尽量使用差分包，而不使用全量包，因为全量包很大，我们只要不涉及到大更新，就不需要发全量包，尽量使用差分包的机制。</p>
+<p>SAGA 算法 <sup>[6]</sup>于 1987 年提出，是一种异步的分布式事务解决方案，其理论基础在于，其假设所有事件按照顺序推进，总能达到系统的最终一致性，因此 saga 需要服务分别定义提交接口以及补偿接口，当某个事务分支失败时，调用其它的分支的补偿接口来进行回滚，saga 的具体实现分为两种：Choreography 以及 Orchestration，</p>
 
-<p>最后，关于更新率的效果：</p>
+<p>（1）   Choreography：如下图所示：</p>
 
-<p><img src="https://static.geekbang.org/infoq/5b582a9526c4d.png" alt=""/></p>
+<p><a href="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/13image005-1533615965769.png"><img src="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/13image005-1533615965769.png" alt=""/></a></p>
 
-<p><img src="https://static.geekbang.org/infoq/5b582ad590e42.png" alt=""/></p>
+<p>这种模式下不存在协调器的概念，每个节点均对自己的上下游负责，在监听处理上游节点事件的同时，对下游节点发布事件。</p>
 
-<p>强制更新和普通更新这两个机制实现的方式不一样，所以它的更新效果也不一样，强制更新的效果最明显，它能在两个小时之内达到一个 90% 的水平，普通更新得七八个小时之后才能稳定到 75% 左右。</p>
+<p>（2）   Orchestration：存在中心节点的模式，如下图所示：</p>
 
-<h2 id="toc_2">Node.js 实践</h2>
+<p><a href="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/11image007-1533615966677.png"><img src="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/11image007-1533615966677.png" alt=""/></a></p>
 
-<p><strong>为什么 Node 没有大规模使用呢？我总结大概的原因：</strong></p>
+<p>该中心节点，即协调器知道整个事务的分布状态，相比于无中心节点方式，该方式有着许多优点：</p>
 
-<ul>
-<li><p>一些前端开发者，只关注浏览器器端，服务器器端开发关注很少，或者根本就不关注；</p></li>
-<li><p>认为 Node.js 只适合开发一些⼯工具类的功能，对于后端开发是个玩具；</p></li>
-<li><p>Node 生态不如其他后端语言生态健全；</p></li>
-<li><p>涉及到后端开发的知识面比较广，在没有这些基础知识或者经验积累的基础上，考虑问题比较片面，最终做出的系统问题比较多，容易被后端鄙视；</p></li>
-<li><p>对于 Node 开发后端，对项目负责人要求比较高（项目的目录规范，开发规范，系统的安全性，稳定<br/>
-终做出的系统问题⽐比较多，容易易被后端鄙视性，可靠性，扩展性，维护成本等)；</p></li>
-<li><p>以往前端不需要 7 x 24 保持待命状态，但是接触后端后，需要接受报警短信，有时出现问题还需要⻢马上随时随地解决；</p></li>
-</ul>
+<ol>
+<li> 能够避免事务之间的循环依赖关系。</li>
+<li> 参与者只需要执行命令 / 回复 (其实回复消息也是一种事件消息)，降低参与者的复杂性。</li>
+<li> 开发测试门槛低。</li>
+<li> 在添加新步骤时，事务复杂性保持线性，回滚更容易管理。因此大多数 saga 模型实现均采用了这种思路。</li>
+</ol>
 
-<p><strong>Node.js 到底能解决我们哪些的问题和痛点呢？</strong></p>
+<p>总结一下：SAGA 模型的优点在于其降低了事务粒度，使得事务扩展更加容易，同时采用了异步化方式提升性能。但是其缺点在于很多时候很难定义补偿接口，回滚代价高，而且由于 SAGA 在执行过程中采用了先提交后补偿的思路进行操作，所以单个子事务在并发提交时的隔离性很难保证。</p>
 
-<p>首先，提高开发效率，因为有了 Node 之后就不需要配置 Nginx 了，也不需要配置一些代理工具了，所有的页面生命周期都是由前端统一去管理的，这时候不需要其他人进行合作。</p>
+<h3 id="toc_5">3. TCC</h3>
 
-<p>第二，降低沟通成本，除了接口格式外，不需要和后端进行交互了；</p>
+<p>TCC(Try-Confirm-Concel) 模型 <sup>[7]</sup> 同样是一种补偿性事务，主要分为 Try：检查、保留资源，Confirm：执行事务，Concel：释放资源三个阶段，如下图所示：</p>
 
-<p>第三，前后端职责也更为清晰，因为这时候，界限更为清晰了，后端只负责生产数据，它只提供数据就可以了，至于数据怎么消费，以及怎么用，都由前端去做；</p>
+<p><a href="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/10image009-1533615965391.png"><img src="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/10image009-1533615965391.png" alt=""/></a></p>
 
-<p>第四，可以同时使用 React SSR 技术，做到首屏渲染，提高用户体验，除了首屏之外，还可以做异步的加载、SEO 等操作。</p>
+<p>其中，活动管理器记录了全局事务的推进状态以及各子事务的执行状态，负责推进各个子事务共同进行提交或者回滚。同时负责在子事务处理超时后不停重试，重试不成功后转手工处理，用以保证事务的最终一致性。</p>
 
-<p>最后，Node.js 可提供一些服务，不仅能让我们使用，还可以对外使用，如 RESTful API，这样就不用有求于后端了。</p>
+<p>总结一下，相比于 SAGA 模型，其优点在于尝试阶段仅仅只是对业务系统做检测，并保留业务资源，并没有真正提交，所以后续 SAGA 需要针对提交的事务做补偿，而 TCC 则仅仅需要释放保留资源，降低了补偿成本；并且，由于在 Try 阶段对资源进行了保留锁定，所以相比于 SAGA 模式，TCC 模式拥有更高的隔离性。</p>
 
-<p>去哪儿网在三年前用的是基于 express 的解决方案，包括日志收集，监控，模板，以及异常等。</p>
+<p>缺点：相比于 SAGA 模式，TCC 模式多增加了一个状态，导致在业务开发过程中，复杂度上升，而且协调器与子事务的通信过程增加，状态轮转处理也更为复杂。</p>
 
-<p>在实际的开发使用过程中，或多或少有些问题，主要体现在以下方面：</p>
+<h2 id="toc_6"><strong>四</strong> <strong>事务消息</strong></h2>
 
-<p>1. 如何确定项⽬目⽬目录划分的规范，命名规范 (view or views)；</p>
+<p>以购物场景为例，张三购买物品，账户扣款 100 元的同时，需要保证在下游的会员服务中给该账户增加 100 积分。由于数据库私有，所以导致在实际的操作过程中会出现很多问题，比如先发送消息，可能会因为扣款失败导致账户积分无故增加，如果先执行扣款，则有可能因服务宕机，导致积分不能增加，无论是先发消息还是先执行本地事务，都有可能导致出现数据不一致的结果。</p>
 
-<p>2. 确定规范后，如何保证⼤大家都认可，并且严格遵守；</p>
+<p><a href="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/9image011-1533615967660.png"><img src="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/9image011-1533615967660.png" alt=""/></a></p>
 
-<p>3. 如何保证系统的安全性、稳定性和扩展性，怎么保证和我们内部系统做很无缝的去对接，这就要求有很好的扩展性；</p>
+<p>事务消息的本质就是为了解决此类问题，解决本地事务执行与消息发送的原子性问题。目前，事务消息在多种分布式消息中间件种均有实现，但是其实现方式思路却各有不同。</p>
 
-<p>4. 守护进程程序的选择 (pm2 or supervisor)；</p>
+<h3 id="toc_7">1. 传统事务消息实现</h3>
 
-<p>5. 怎么保证多环境运⾏行行规则 (local / beta / prod)，因为在我们实际项目中，可能对我们的 Local 或者对 Bata 或者对 PID 都有不同的规则，如果这时候没有去做这件事，就有可能对我们的实际应用有可能造成一定的障碍；</p>
+<p>传统事务消息实现，一种思路是依赖于 AMQP 协议用来确保消息发送成功，AMQP 模式下需要在发送在发送事务消息时进行两阶段提交，首先进行 tx_select 开启事务，然后再进行消息发送，最后进行消息的 commit 或者是 rollback。这个过程可以保证在消息发送成功的同时本地事务也一定成功执行，但事务粒度不好控制，而且会导致性能急剧下降，同时依然无法解决本地事务执行与消息发送的原子性问题。</p>
 
-<p>6. 如何利利⽤用系统 cpu 多核，以及多进程之间的通信。</p>
+<p>还有另外一种思路，就是通过保证多条消息的同时可见性来保证事务一致性。但是此类消息事务实现机制更多的是用到 consume-transform-produce 场景中，其本质还是用来保证消息自身事务，并没有把外部事务包含进来。</p>
 
-<p>针对这些问题，去哪儿网也进行了一些改进，开始 Revial 和调研，最终，在文档说明、框架扩展、插件数量、部署流畅性以及开发体验上，我们选择的是 Egg.js。</p>
+<h3 id="toc_8">2. RocketMQ 事务消息</h3>
 
-<h3 id="toc_3">插件开发</h3>
+<p>RocketMQ 事务消息设计则主要是为了解决 Producer 端的消息发送与本地事务执行的原子性问题，RocketMQ 的设计中 broker 与 producer 端的双向通信能力，使得 broker 天生可以作为一个事务协调者存在；而 RocketMQ 本身提供的存储机制，则为事务消息提供了持久化能力；RocketMQ 的高可用机制以及可靠消息设计，则为事务消息在系统在发生异常时，依然能够保证事务的最终一致性达成。</p>
 
-<p>同时，为了对接我们的内部系统，我们还开发了不同功能的一些插件，比如 egg-qversion，它能关联我们前后端版本号，因为不管你是原来那种 Java 和 Java 合作的模式，还是现在 Node.js，都需要版本号的关联。</p>
+<p><strong>2.1 RocketMQ </strong><strong>事务消息设计</strong></p>
 
-<p>由于，我们用 webpack 进行打包，webpack 打包出来是一个 MD5 一个串，那保证这些串关联起来呢？我们做了一个 egg-qversion 的插件；</p>
+<p>事务消息作为一种异步确保型事务， 将两个事务分支通过 MQ 进行异步解耦，RocketMQ 事务消息的设计流程同样借鉴了两阶段提交理论，整体交互流程如下图所示：</p>
 
-<p>第二个是 egg-qconfig，这个是对接内部的 q 系统；</p>
+<p><a href="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/8image013-1533615967005.png"><img src="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/8image013-1533615967005.png" alt=""/></a></p>
 
-<p>第三个就是对接我们的 qwatcher 系统的 egg-qwatcher。</p>
+<ol>
+<li> 事务发起方首先发送 prepare 消息到 MQ。</li>
+<li> 在发送 prepare 消息成功后执行本地事务。</li>
+<li> 根据本地事务执行结果返回 commit 或者是 rollback。</li>
+<li> 如果消息是 rollback，MQ 将删除该 prepare 消息不进行下发，如果是 commit 消息，MQ 将会把这个消息发送给 consumer 端。</li>
+<li> 如果执行本地事务过程中，执行端挂掉，或者超时，MQ 将会不停的询问其同组的其它 producer 来获取状态。</li>
+<li> Consumer 端的消费成功机制有 MQ 保证。</li>
+</ol>
 
-<p>不带 Q 的的插件，就是对外的，比如说 egg-accesslog，对于 Java 来说，egg-accesslog 不需要大家去关心，因为他们在 NG 上做了处理，或者在 Java 本身做了处理，但是 Node 没有做处理，这个需要我们自己去做。</p>
+<p><strong>2.2 RocketMQ</strong> <strong>事务消息实现</strong></p>
 
-<p>还有 egg-healthcheck，这是心跳检测的一个功能，就是检测我们的应用，或者检测我们服务器是否在下线或者上线的过程；</p>
+<p>RocketMQ 事务消息在实现上充分利用了 RocketMQ 本身机制，在实现零依赖的基础上，同样实现了高性能、可扩展、全异步等一系列特性。</p>
 
-<p>egg-checkurl 是检查我们的应用是否存活；</p>
+<p>在具体实现上，RocketMQ 通过使用 Half Topic 以及 Operation Topic 两个内部队列来存储事务消息推进状态，如下图所示：</p>
 
-<p>最后一个是对接 egg-swift 的系统，就是存储的系统，后四个都是公开的。</p>
+<p><a href="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/6image015-1533615967327.png"><img src="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/6image015-1533615967327.png" alt=""/></a></p>
 
-<h3 id="toc_4">去哪儿网原来的部署流程（service 方式) 问题</h3>
+<p>其中，Half Topic 对应队列中存放着 prepare 消息，Operation Topic 对应的队列则存放了 prepare message 对应的 commit/rollback 消息，消息体中则是 prepare message 对应的 offset，服务端通过比对两个队列的差值来找到尚未提交的超时事务，进行回查。</p>
 
-<p>1. 不能利⽤发布系统中相应的端口和⽬录字段，只能在 qunar_xx 服务中写死， 不友好</p>
+<p>在具体实现上，事务消息作为普通消息的一个应用场景，在实现过程中进行了分层抽象，从而避免了对 RocketMQ 原有存储机制的修改，如下图所示：</p>
 
-<p>2. 不能区分多环境策略如 beta 环境和 prod 环境配置规则不一样</p>
+<p><a href="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/4image017-1533615969003.png"><img src="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/4image017-1533615969003.png" alt=""/></a></p>
 
-<p>3. 启动过程中出现错误，不方便定位问题，需要到机器上排查</p>
+<p>从用户侧来说，用户需要分别实现本地事务执行以及本地事务回查方法，因此只需关注本地事务的执行状态即可；而在 service 层，则对事务消息的两阶段提交进行了抽象，同时针对超时事务实现了回查逻辑，通过不断扫描当前事务推进状态，来不断反向请求 Producer 端获取超时事务的执行状态，在避免事务挂起的同时，也避免了 Producer 端的单点故障。而在存储层，RocketMQ 通过 Bridge 封装了与底层队列存储的相关操作，用以操作两个对应的内部队列，用户也可以依赖其它存储介质实现自己的 service，RocketMQ 会通过 ServiceProvider 加载进来。</p>
 
-<p>4. 写系统服务需要了解 shell 命令和系统服务格式，对于前端开发同学，成本稍高</p>
+<p>从上述事务消息设计中可以看到，RocketMQ 事务消息较好的解决了事务的最终一致性问题，事务发起方仅需要关注本地事务执行以及实现回查接口给出事务状态判定等实现，而且在上游事务峰值高时，可以通过消息队列，避免对下游服务产生过大压力。</p>
 
-<p>5. 除了端口、项目路径、运行环境，node.js 启动方式外，处理逻辑相似</p>
+<p>事务消息不仅适用于上游事务对下游事务无依赖的场景，还可以与一些传统分布式事务架构相结合，而 MQ 的服务端作为天生的具有高可用能力的协调者，使得我们未来可以基于 RocketMQ 提供一站式轻量级分布式事务解决方案，用以满足各种场景下的分布式事务需求。</p>
 
-<h3 id="toc_5">改进过的部署方式</h3>
+<h2 id="toc_9"><strong>五</strong> <strong>参考文献</strong></h2>
 
-<ul>
-<li><p>在项目中建立 deploy_scripts 目录，新增 start.sh (名称可以随便命名)</p></li>
-<li><p>在 start.sh 中填⼊ Node.js 启动逻辑，比如 node index.js (之前是 N 行，<br/>
-如今最多两⾏）</p></li>
-<li><p>在发布系统选择 node 发布方式，填⼊端⼝号，发布路径，以及启动脚本名称（start.sh)，停止脚本填入发布系统内置的 stop.sh(按照端口杀掉进程)</p></li>
-</ul>
+<p>[1] <a href="https://en.wikipedia.org/wiki/Cap">https://en.wikipedia.org/wiki/Cap</a></p>
 
-<p>这是 start.sh 的一个样例：</p>
+<p>[2] <a href="https://dl.acm.org/citation.cfm?id=1394128">https://dl.acm.org/citation.cfm?id=1394128</a></p>
 
-<p><img src="https://static.geekbang.org/infoq/5b61539b85800.png" alt=""/></p>
+<p>[3] <a href="https://en.wikipedia.org/wiki/Two-phase_commit_protocol">https://en.wikipedia.org/wiki/Two-phase_commit_protocol</a></p>
 
-<p>第二，我们可以安装一些依赖。</p>
+<p>[4] <a href="https://en.wikipedia.org/wiki/Three-phase_commit_protocol">https://en.wikipedia.org/wiki/Three-phase_commit_protocol</a></p>
 
-<p>第三，启动 Node.js，因为我们用的是 egg.js，启动的逻辑是参照 Node.js 的起动方式发布的。</p>
+<p>[5] <a href="https://people.eecs.berkeley.edu/%7Eluca/cs174/byzantine.pdf">https://people.eecs.berkeley.edu/~luca/cs174/byzantine.pdf</a></p>
 
-<h2 id="toc_6">React SSR 实践：</h2>
+<p>[6] <a href="https://www.cs.cornell.edu/andru/cs711/2002fa/reading/sagas.pdf">https://www.cs.cornell.edu/andru/cs711/2002fa/reading/sagas.pdf</a></p>
 
-<p>这是大致的结构：</p>
+<p>[7] <a href="https://www.cloud.alipay.com/docs/2/69656">https://www.cloud.alipay.com/docs/2/69656</a></p>
 
-<p><img src="https://static.geekbang.org/infoq/5b6155429b34e.png" alt=""/></p>
+<h2 id="toc_10">作者介绍</h2>
 
-<p>这是 React SSR 实现的结构。</p>
+<p><strong>冯嘉</strong>，Apache RocketMQ 联合创始人，LInux OpenMessaging 标准创始人。阿里巴巴高级技术专家，带领团队、社区打造了中国分布式云计算领域第一个 Apache 顶级开源中间件项目，创立分布式消息领域的国际标准 OpenMessaging。 冯嘉作为阿里巴巴 RocketMQ 技术负责人，具有丰富的分布式软件架构、高并发网站设计、性能调优经验，拥有国内外多项分布式、推荐领域的专利授权。目前专注于大规模分布式系统、分布式消息引擎、流计算领域，关注 Hbase/Hadoop/Spark/Flink 等大数据技术栈。</p>
 
-<p><img src="https://static.geekbang.org/infoq/5b6166d8509d7.png" alt=""/></p>
+<p><strong>杜恒</strong>，阿里巴巴技术专家，Apache RocketMQ 内核控，拥有多年分布式系统研发经验，对 Microservice, Messaging，Storage 等领域有深刻理解，拥有多年金融领域开发设计经验。目前专注 RocketMQ 内核优化以及 Messaging 生态建设。</p>
 
-<p>即使不使用 React SSR，我们这个项目同样能跑，基于这两点，我们使用 React 进行一些操作，红圈就是引用我们前端一个 JS 代码，然后最后就是做一些那个异步，同步加载的过程。</p>
+<p><input type="hidden"></p>
 
-<p><img src="https://static.geekbang.org/infoq/5b6167160d065.png" alt=""/></p>
+<p>相关内容</p>
 
-<p>这是 reactRender 的写法。</p>
+<h3 id="toc_11"><a href="http://www.infoq.com/cn/presentations/message-engine-under-the-flood-peak-of-trillions-of-data-apache-rocketmq?utm_source=infoq&amp;utm_medium=related_content_link&amp;utm_campaign=relatedContent_undefined_clk">万亿级数据洪峰下的消息引擎——Apache RocketMQ</a></h3>
 
-<p><img src="https://static.geekbang.org/infoq/5b61685404d54.png" alt=""/></p>
+<h3 id="toc_12"><a href="http://www.infoq.com/cn/articles/rocketmq-incubation-in-apache?utm_source=infoq&amp;utm_medium=related_content_link&amp;utm_campaign=relatedContent_undefined_clk">RocketMQ Apache 顶级项目之路</a></h3>
 
-<h3 id="toc_7">React SSR 遇到的问题</h3>
+<h3 id="toc_13"><a href="http://www.infoq.com/cn/news/2018/08/kafka2.0-new-features?utm_source=infoq&amp;utm_medium=related_content_link&amp;utm_campaign=relatedContent_undefined_clk">Kafka 2.0 重磅发布，新特性独家解读</a></h3>
 
-<h4 id="toc_8">共享代码如何处理请求</h4>
+<h3 id="toc_14"><a href="http://www.infoq.com/cn/articles/how-to-design-an-outstanding-microservice-framework?utm_source=infoq&amp;utm_medium=related_content_link&amp;utm_campaign=relatedContent_undefined_clk">如何设计一个优质的微服务框架：Apache ServiceComb 的开放性设计</a></h3>
 
-<p><img src="https://static.geekbang.org/infoq/5b6168a4ad1d3.png" alt=""/></p>
-
-<h4 id="toc_9">共享代码如何处理错误</h4>
-
-<p><img src="https://static.geekbang.org/infoq/5b6168d2d5670.png" alt=""/></p>
-
-<h4 id="toc_10">后端代码获得设备信息</h4>
-
-<p><img src="https://static.geekbang.org/infoq/5b616919960c5.png" alt=""/></p>
-
-<h2 id="toc_11">性能监控</h2>
-
-<p>对于性能方面，我们做得不是太多，因为 eggjs 本身已经经历过淘宝双十一的洗礼， 相信在阿⾥内部对这块已经做了不少优化，所以简单使用的是公司级别的机器监控。</p>
-
-<p><img src="https://static.geekbang.org/infoq/5b6169ac6de75.png" alt=""/></p>
-
-<p>在应用方面，我们做的比较多，应用分成两个方面，一个是应用级别的错误，还有一个是前端页面级别的错误。</p>
-
-<p>应用级别的错误，就是记录应用用户数，使用后端接口消耗时长，以及它所对应的接口异常等。</p>
-
-<p>前端页面级别错误，如脚本错误，还有静态资源文件夹的错误、异步错误。</p>
-
-<p>针对这两方面的错误，我们有了两个系统，一个是日志系统，一个是 Watcher 系统，这两个系统是搭配合作的。</p>
-
-<p><img src="https://static.geekbang.org/infoq/5b616c52e9926.png" alt=""/></p>
-
-<p><img src="https://static.geekbang.org/infoq/5b616c90819d7.png" alt=""/></p>
+<h3 id="toc_15"><a href="http://www.infoq.com/cn/news/2018/04/apache-servicecomb?utm_source=infoq&amp;utm_medium=related_content_link&amp;utm_campaign=relatedContent_undefined_clk">Apache ServiceComb（incubating） 第一个版本发布</a></h3>
 
                         
                       </div>
@@ -325,7 +295,7 @@
                     <span class="date">2018/8/13</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Node.js.html'>Node.js</a></span>
+          					    <span class="posted-in"><a href='MQ.html'>MQ</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -415,6 +385,12 @@
 	      
 		      
 			      <li class="post">
+			        <a href="15359384213292.html">Securing Spring Boot with JWTs</a>
+			      </li>
+		     
+		  
+		      
+			      <li class="post">
 			        <a href="15358820607055.html">Java 8 Concurrency Tutorial: Atomic Variables and ConcurrentMap</a>
 			      </li>
 		     
@@ -434,12 +410,6 @@
 		      
 			      <li class="post">
 			        <a href="15358756631902.html">Java 8 Stream Tutorial</a>
-			      </li>
-		     
-		  
-		      
-			      <li class="post">
-			        <a href="15358753472382.html">Migrate Maven Projects to Java 11</a>
 			      </li>
 		     
 		  

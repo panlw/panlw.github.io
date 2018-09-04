@@ -105,240 +105,1023 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15331745470579.html">
+                <a class="clearlink" href="15331749691571.html">
                 
-                  <h1>ZooKeeper基本原理</h1>
+                  <h1>基于ZooKeeper的分布式锁和队列</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://www.cnblogs.com/luxiaoxun/p/4887452.html">https://www.cnblogs.com/luxiaoxun/p/4887452.html</a></p>
-
-<p>作者：<a href="http://www.cnblogs.com/luxiaoxun/">阿凡卢</a></p>
-
-<p>出处：<a href="http://www.cnblogs.com/luxiaoxun/">http://www.cnblogs.com/luxiaoxun/</a></p>
+<p><a href="http://www.cnblogs.com/luxiaoxun/p/4889764.html">http://www.cnblogs.com/luxiaoxun/p/4889764.html</a></p>
 </blockquote>
 
-<p><strong>ZooKeeper</strong> <strong>简介</strong></p>
+<p>在分布式系统中，往往需要一些分布式同步原语来做一些协同工作，<a href="http://www.cnblogs.com/luxiaoxun/p/4887452.html">上一篇</a>文章介绍了 Zookeeper 的基本原理，本文介绍下基于 Zookeeper 的 Lock 和 Queue 的实现，主要代码都来自 Zookeeper 的官方 recipe。</p>
 
-<p>ZooKeeper 是一个开放源码的分布式应用程序协调服务，它包含一个简单的原语集，分布式应用程序可以基于它实现同步服务，配置维护和命名服务等。</p>
+<h3 id="toc_0">锁（Lock）</h3>
 
-<p><img src="https://images2015.cnblogs.com/blog/434101/201510/434101-20151019093350567-692728278.jpg" alt=""/></p>
+<p>完全分布式锁是全局同步的，这意味着在任何时刻没有两个客户端会同时认为它们都拥有相同的锁，使用 Zookeeper 可以实现分布式锁，需要首先定义一个锁节点（lock root node）。</p>
 
-<p><strong>ZooKeeper 设计目的</strong></p>
-
-<p>1. 最终一致性：client 不论连接到哪个 Server，展示给它都是同一个视图，这是 zookeeper 最重要的性能。</p>
-
-<p>2. 可靠性：具有简单、健壮、良好的性能，如果消息 m 被到一台服务器接受，那么它将被所有的服务器接受。</p>
-
-<p>3. 实时性：Zookeeper 保证客户端将在一个时间间隔范围内获得服务器的更新信息，或者服务器失效的信息。但由于网络延时等原因，Zookeeper 不能保证两个客户端能同时得到刚更新的数据，如果需要最新数据，应该在读数据之前调用 sync() 接口。</p>
-
-<p>4. 等待无关（wait-free）：慢的或者失效的 client 不得干预快速的 client 的请求，使得每个 client 都能有效的等待。</p>
-
-<p>5. 原子性：更新只能成功或者失败，没有中间状态。</p>
-
-<p>6. 顺序性：包括全局有序和偏序两种：全局有序是指如果在一台服务器上消息 a 在消息 b 前发布，则在所有 Server 上消息 a 都将在消息 b 前被发布；偏序是指如果一个消息 b 在消息 a 后被同一个发送者发布，a 必将排在 b 前面。</p>
-
-<p><strong>ZooKeeper</strong> <strong>数据模型</strong></p>
-
-<p>Zookeeper 会维护一个具有层次关系的数据结构，它非常类似于一个标准的文件系统，如图所示：</p>
-
-<p><img src="https://images2015.cnblogs.com/blog/434101/201510/434101-20151017140829960-1863595007.jpg" alt=""/></p>
-
-<p>Zookeeper 这种数据结构有如下这些特点：</p>
-
-<p>1）每个子目录项如 NameService 都被称作为 znode，这个 znode 是被它所在的路径唯一标识，如 Server1 这个 znode 的标识为 / NameService/Server1。</p>
-
-<p>2）znode 可以有子节点目录，并且每个 znode 可以存储数据，注意 EPHEMERAL（临时的）类型的目录节点不能有子节点目录。</p>
-
-<p>3）znode 是有版本的（version），每个 znode 中存储的数据可以有多个版本，也就是一个访问路径中可以存储多份数据，version 号自动增加。</p>
-
-<p>4）znode 的类型：</p>
-
-<ul>
-<li>  <strong>_Persistent _</strong>节点，一旦被创建，便不会意外丢失，即使服务器全部重启也依然存在。每个 Persist 节点即可包含数据，也可包含子节点。</li>
-<li><p><strong>_Ephemeral _</strong>节点，在创建它的客户端与服务器间的 Session 结束时自动被删除。服务器重启会导致 Session 结束，因此 Ephemeral 类型的 znode 此时也会自动删除。</p></li>
-<li><p><strong>_Non-sequence _</strong>节点，多个客户端同时创建同一 Non-sequence 节点时，只有一个可创建成功，其它匀失败。并且创建出的节点名称与创建时指定的节点名完全一样。</p></li>
-<li><p><strong>_Sequence _</strong>节点，创建出的节点名在指定的名称之后带有 10 位 10 进制数的序号。多个客户端创建同一名称的节点时，都能创建成功，只是序号不同。</p></li>
-</ul>
-
-<p>5）znode 可以被监控，包括这个目录节点中存储的数据的修改，子节点目录的变化等，一旦变化可以通知设置监控的客户端，这个是 Zookeeper 的核心特性，Zookeeper 的很多功能都是基于这个特性实现的。</p>
-
-<p>6）ZXID：每次对 Zookeeper 的状态的改变都会产生一个 zxid（ZooKeeper Transaction Id），zxid 是全局有序的，如果 zxid1 小于 zxid2，则 zxid1 在 zxid2 之前发生。</p>
-
-<p><strong>ZooKeeper Session</strong></p>
-
-<p>Client 和 Zookeeper 集群建立连接，整个 session 状态变化如图所示：</p>
-
-<p><img src="https://images2015.cnblogs.com/blog/434101/201510/434101-20151017140903647-942632156.jpg" alt=""/></p>
-
-<p>如果 Client 因为 Timeout 和 Zookeeper Server 失去连接，client 处在 CONNECTING 状态，会自动尝试再去连接 Server，如果在 session 有效期内再次成功连接到某个 Server，则回到 CONNECTED 状态。</p>
-
-<p>注意：如果因为网络状态不好，client 和 Server 失去联系，client 会停留在当前状态，会尝试主动再次连接 Zookeeper Server。client 不能宣称自己的 session expired，session expired 是由 Zookeeper Server 来决定的，client 可以选择自己主动关闭 session。</p>
-
-<p><strong>ZooKeeper Watch</strong></p>
-
-<p>Zookeeper watch 是一种监听通知机制。Zookeeper 所有的读操作 getData(), getChildren() 和 exists() 都可以设置监视 (watch)，监视事件可以理解为一次性的触发器，官方定义如下： a watch event is one-time trigger, sent to the client that set the watch, whichoccurs when the data for which the watch was set changes。Watch 的三个关键点：</p>
-
-<p>*（一次性触发）One-time trigger</p>
-
-<p>当设置监视的数据发生改变时，该监视事件会被发送到客户端，例如，如果客户端调用了 getData(&quot;/znode1&quot;, true) 并且稍后 /znode1 节点上的数据发生了改变或者被删除了，客户端将会获取到 /znode1 发生变化的监视事件，而如果 /znode1 再一次发生了变化，除非客户端再次对 / znode1 设置监视，否则客户端不会收到事件通知。</p>
-
-<p>*（发送至客户端）Sent to the client</p>
-
-<p>Zookeeper 客户端和服务端是通过 socket 进行通信的，由于网络存在故障，所以监视事件很有可能不会成功地到达客户端，监视事件是异步发送至监视者的，Zookeeper 本身提供了顺序保证 (ordering guarantee)：即客户端只有首先看到了监视事件后，才会感知到它所设置监视的 znode 发生了变化 (a client will never see a change for which it has set a watch until it first sees the watch event)。网络延迟或者其他因素可能导致不同的客户端在不同的时刻感知某一监视事件，但是不同的客户端所看到的一切具有一致的顺序。</p>
-
-<p>*（被设置 watch 的数据）The data for which the watch was set</p>
-
-<p>这意味着 znode 节点本身具有不同的改变方式。你也可以想象 Zookeeper 维护了两条监视链表：数据监视和子节点监视 (data watches and child watches) getData() 和 exists() 设置数据监视，getChildren()设置子节点监视。或者你也可以想象 Zookeeper 设置的不同监视返回不同的数据，getData() 和 exists() 返回 znode 节点的相关信息，而 getChildren() 返回子节点列表。因此，setData() 会触发设置在某一节点上所设置的数据监视（假定数据设置成功），而一次成功的 create() 操作则会出发当前节点上所设置的数据监视以及父节点的子节点监视。一次成功的 delete 操作将会触发当前节点的数据监视和子节点监视事件，同时也会触发该节点父节点的 child watch。</p>
-
-<p>Zookeeper 中的监视是轻量级的，因此容易设置、维护和分发。当客户端与 Zookeeper 服务器失去联系时，客户端并不会收到监视事件的通知，只有当客户端重新连接后，若在必要的情况下，以前注册的监视会重新被注册并触发，对于开发人员来说这通常是透明的。只有一种情况会导致监视事件的丢失，即：通过 exists() 设置了某个 znode 节点的监视，但是如果某个客户端在此 znode 节点被创建和删除的时间间隔内与 zookeeper 服务器失去了联系，该客户端即使稍后重新连接 zookeeper 服务器后也得不到事件通知。</p>
-
-<p><strong>Consistency Guarantees</strong></p>
-
-<p>Zookeeper 是一个高效的、可扩展的服务，read 和 write 操作都被设计为快速的，read 比 write 操作更快。</p>
-
-<p>顺序一致性（Sequential Consistency）：从一个客户端来的更新请求会被顺序执行。</p>
-
-<p>原子性（Atomicity）：更新要么成功要么失败，没有部分成功的情况。</p>
-
-<p>唯一的系统镜像（Single System Image）：无论客户端连接到哪个 Server，看到系统镜像是一致的。</p>
-
-<p>可靠性（Reliability）：更新一旦有效，持续有效，直到被覆盖。</p>
-
-<p>时间线（Timeliness）：保证在一定的时间内各个客户端看到的系统信息是一致的。</p>
-
-<p><strong>ZooKeeper</strong> <strong>的工作原理</strong></p>
-
-<p>在 zookeeper 的集群中，各个节点共有下面 3 种角色和 4 种状态：</p>
-
-<ul>
-<li>  角色：leader,follower,observer</li>
-<li>  状态：leading,following,observing,looking</li>
-</ul>
-
-<p>Zookeeper 的核心是原子广播，这个机制保证了各个 Server 之间的同步。实现这个机制的协议叫做 Zab 协议（ZooKeeper Atomic Broadcast protocol）。Zab 协议有两种模式，它们分别是恢复模式（Recovery 选主）和广播模式（Broadcast 同步）。当服务启动或者在领导者崩溃后，Zab 就进入了恢复模式，当领导者被选举出来，且大多数 Server 完成了和 leader 的状态同步以后，恢复模式就结束了。状态同步保证了 leader 和 Server 具有相同的系统状态。</p>
-
-<p>为了保证事务的顺序一致性，zookeeper 采用了递增的事务 id 号（zxid）来标识事务。所有的提议（proposal）都在被提出的时候加上了 zxid。实现中 zxid 是一个 64 位的数字，它高 32 位是 epoch 用来标识 leader 关系是否改变，每次一个 leader 被选出来，它都会有一个新的 epoch，标识当前属于那个 leader 的统治时期。低 32 位用于递增计数。</p>
-
-<p>每个 Server 在工作过程中有 4 种状态：</p>
-
-<p>LOOKING：当前 Server 不知道 leader 是谁，正在搜寻。</p>
-
-<p>LEADING：当前 Server 即为选举出来的 leader。</p>
-
-<p>FOLLOWING：leader 已经选举出来，当前 Server 与之同步。</p>
-
-<p>OBSERVING：observer 的行为在大多数情况下与 follower 完全一致，但是他们不参加选举和投票，而仅仅接受 (observing) 选举和投票的结果。</p>
-
-<p><strong>Leader Election</strong></p>
-
-<p>当 leader 崩溃或者 leader 失去大多数的 follower，这时候 zk 进入恢复模式，恢复模式需要重新选举出一个新的 leader，让所有的 Server 都恢复到一个正确的状态。Zk 的选举算法有两种：一种是基于 basic paxos 实现的，另外一种是基于 fast paxos 算法实现的。系统默认的选举算法为 fast paxos。先介绍 basic paxos 流程：</p>
-
-<p>1. 选举线程由当前 Server 发起选举的线程担任，其主要功能是对投票结果进行统计，并选出推荐的 Server；</p>
-
-<p>2. 选举线程首先向所有 Server 发起一次询问（包括自己）；</p>
-
-<p>3. 选举线程收到回复后，验证是否是自己发起的询问（验证 zxid 是否一致），然后获取对方的 id（myid），并存储到当前询问对象列表中，最后获取对方提议的 leader 相关信息（id,zxid），并将这些信息存储到当次选举的投票记录表中；</p>
-
-<p>4. 收到所有 Server 回复以后，就计算出 zxid 最大的那个 Server，并将这个 Server 相关信息设置成下一次要投票的 Server；</p>
-
-<p>5. 线程将当前 zxid 最大的 Server 设置为当前 Server 要推荐的 Leader，如果此时获胜的 Server 获得 n/2 + 1 的 Server 票数，设置当前推荐的 leader 为获胜的 Server，将根据获胜的 Server 相关信息设置自己的状态，否则，继续这个过程，直到 leader 被选举出来。</p>
-
-<p>通过流程分析我们可以得出：要使 Leader 获得多数 Server 的支持，则 Server 总数必须是奇数 2n+1，且存活的 Server 的数目不得少于 n+1.</p>
-
-<p>每个 Server 启动后都会重复以上流程。在恢复模式下，如果是刚从崩溃状态恢复的或者刚启动的 server 还会从磁盘快照中恢复数据和会话信息，zk 会记录事务日志并定期进行快照，方便在恢复时进行状态恢复。</p>
-
-<p>fast paxos 流程是在选举过程中，某 Server 首先向所有 Server 提议自己要成为 leader，当其它 Server 收到提议以后，解决 epoch 和 zxid 的冲突，并接受对方的提议，然后向对方发送接受提议完成的消息，重复这个流程，最后一定能选举出 Leader。</p>
-
-<p><strong>Leader</strong> <strong>工作流程</strong></p>
-
-<p>Leader 主要有三个功能：</p>
-
-<p>1. 恢复数据；</p>
-
-<p>2. 维持与 follower 的心跳，接收 follower 请求并判断 follower 的请求消息类型；</p>
-
-<p>3.follower 的消息类型主要有 PING 消息、REQUEST 消息、ACK 消息、REVALIDATE 消息，根据不同的消息类型，进行不同的处理。</p>
-
-<p>PING 消息是指 follower 的心跳信息；REQUEST 消息是 follower 发送的提议信息，包括写请求及同步请求；</p>
-
-<p>ACK 消息是 follower 的对提议的回复，超过半数的 follower 通过，则 commit 该提议；</p>
-
-<p>REVALIDATE 消息是用来延长 SESSION 有效时间。</p>
-
-<p><strong>Follower</strong> <strong>工作流程</strong></p>
-
-<p>Follower 主要有四个功能：</p>
-
-<p>1. 向 Leader 发送请求（PING 消息、REQUEST 消息、ACK 消息、REVALIDATE 消息）；</p>
-
-<p>2. 接收 Leader 消息并进行处理；</p>
-
-<p>3. 接收 Client 的请求，如果为写请求，发送给 Leader 进行投票；</p>
-
-<p>4. 返回 Client 结果。</p>
-
-<p>Follower 的消息循环处理如下几种来自 Leader 的消息：</p>
-
-<p>1.PING 消息：心跳消息</p>
-
-<p>2.PROPOSAL 消息：Leader 发起的提案，要求 Follower 投票</p>
-
-<p>3.COMMIT 消息：服务器端最新一次提案的信息</p>
-
-<p>4.UPTODATE 消息：表明同步完成</p>
-
-<p>5.REVALIDATE 消息：根据 Leader 的 REVALIDATE 结果，关闭待 revalidate 的 session 还是允许其接受消息</p>
-
-<p>6.SYNC 消息：返回 SYNC 结果到客户端，这个消息最初由客户端发起，用来强制得到最新的更新。</p>
-
-<p><strong>Zab: Broadcasting State Updates</strong></p>
-
-<p>Zookeeper Server 接收到一次 request，如果是 follower，会转发给 leader，Leader 执行请求并通过 Transaction 的形式广播这次执行。Zookeeper 集群如何决定一个 Transaction 是否被 commit 执行？通过 “两段提交协议”（a two-phase commit）：</p>
+<p>需要获得锁的客户端按照以下步骤来获取锁：</p>
 
 <ol>
-<li> Leader 给所有的 follower 发送一个 PROPOSAL 消息。</li>
-<li> 一个 follower 接收到这次 PROPOSAL 消息，写到磁盘，发送给 leader 一个 ACK 消息，告知已经收到。</li>
-<li> 当 Leader 收到法定人数（quorum）的 follower 的 ACK 时候，发送 commit 消息执行。</li>
+<li> 保证锁节点（lock root node）这个父根节点的存在，这个节点是每个要获取 lock 客户端共用的，这个节点是 PERSISTENT 的。</li>
+<li><p>第一次需要创建本客户端要获取 lock 的节点，调用 create( )，并设置 节点为 EPHEMERAL_SEQUENTIAL 类型，表示该节点为临时的和顺序的。如果获取锁的节点挂掉，则该节点自动失效，可以让其他节点获取锁。</p></li>
+<li><p>在父锁节点（lock root node）上调用 getChildren() ，不需要设置监视标志。 (为了避免 “羊群效应”).</p></li>
+<li><p>按照 Fair 竞争的原则，将步骤 3 中的子节点（要获取锁的节点）按照节点顺序的大小做排序，取出编号最小的一个节点做为 lock 的 owner，判断自己的节点 id<br/>
+是否就为 owner id，如果是则返回，lock 成功。如果不是则调用 exists( ) 监听比自己小的前一位的 id，关注它锁释放的操作（也就是 exist watch）。</p></li>
+<li><p>如果第 4 步监听 exist 的 watch 被触发，则继续按 4 中的原则判断自己是否能获取到 lock。</p></li>
 </ol>
 
-<p>Zab 协议保证：</p>
+<p>释放锁：需要释放锁的客户端只需要删除在第 2 步中创建的节点即可。</p>
+
+<p>注意事项：</p>
+
+<p>一个节点的删除只会导致一个客户端被唤醒，因为每个节点只被一个客户端 watch，这避免了 “羊群效应”。</p>
+
+<p>一个分布式 lock 的实现：</p>
+
+<pre><code class="language-java">package org.apache.zookeeper.recipes.lock;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.apache.zookeeper.KeeperException;
+import org.apache.zookeeper.WatchedEvent;
+import org.apache.zookeeper.Watcher;
+import static org.apache.zookeeper.CreateMode.EPHEMERAL_SEQUENTIAL;
+import org.apache.zookeeper.ZooKeeper;
+import org.apache.zookeeper.data.ACL;
+import org.apache.zookeeper.data.Stat;
+
+import java.util.List;
+import java.util.SortedSet;
+import java.util.TreeSet;
+
+/**
+ * A &lt;a href=&quot;package.html&quot;&gt;protocol to implement an exclusive
+ *  write lock or to elect a leader&lt;/a&gt;. &lt;p/&gt; You invoke {@link #lock()} to 
+ *  start the process of grabbing the lock; you may get the lock then or it may be 
+ *  some time later. &lt;p/&gt; You can register a listener so that you are invoked 
+ *  when you get the lock; otherwise you can ask if you have the lock
+ *  by calling {@link #isOwner()}
+ *
+ */
+public class WriteLock extends ProtocolSupport {
+    private static final Logger LOG = LoggerFactory.getLogger(WriteLock.class);
+
+    private final String dir;
+    private String id;
+    private ZNodeName idName;
+    private String ownerId;
+    private String lastChildId;
+    private byte[] data = {0x12, 0x34};
+    private LockListener callback;
+    private LockZooKeeperOperation zop;
+
+    /**
+     * zookeeper contructor for writelock
+     * @param zookeeper zookeeper client instance
+     * @param dir the parent path you want to use for locking
+     * @param acls the acls that you want to use for all the paths, 
+     * if null world read/write is used.
+     */
+    public WriteLock(ZooKeeper zookeeper, String dir, List&lt;ACL&gt; acl) {
+        super(zookeeper);
+        this.dir = dir;
+        if (acl != null) {
+            setAcl(acl);
+        }
+        this.zop = new LockZooKeeperOperation();
+    }
+
+    /**
+     * zookeeper contructor for writelock with callback
+     * @param zookeeper the zookeeper client instance
+     * @param dir the parent path you want to use for locking
+     * @param acl the acls that you want to use for all the paths
+     * @param callback the call back instance
+     */
+    public WriteLock(ZooKeeper zookeeper, String dir, List&lt;ACL&gt; acl, 
+            LockListener callback) {
+        this(zookeeper, dir, acl);
+        this.callback = callback;
+    }
+
+    /**
+     * return the current locklistener
+     * @return the locklistener
+     */
+    public LockListener getLockListener() {
+        return this.callback;
+    }
+
+    /**
+     * register a different call back listener
+     * @param callback the call back instance
+     */
+    public void setLockListener(LockListener callback) {
+        this.callback = callback;
+    }
+
+    /**
+     * Removes the lock or associated znode if 
+     * you no longer require the lock. this also 
+     * removes your request in the queue for locking
+     * in case you do not already hold the lock.
+     * @throws RuntimeException throws a runtime exception
+     * if it cannot connect to zookeeper.
+     */
+    public synchronized void unlock() throws RuntimeException {
+
+        if (!isClosed() &amp;&amp; id != null) {
+            // we don&#39;t need to retry this operation in the case of failure
+            // as ZK will remove ephemeral files and we don&#39;t wanna hang
+            // this process when closing if we cannot reconnect to ZK
+            try {
+                ZooKeeperOperation zopdel = new ZooKeeperOperation() {
+                    public boolean execute() throws KeeperException,
+                        InterruptedException {
+                        zookeeper.delete(id, -1);   
+                        return Boolean.TRUE;
+                    }
+                };
+                zopdel.execute();
+            } catch (InterruptedException e) {
+                LOG.warn(&quot;Caught: &quot; + e, e);
+                //set that we have been interrupted.
+               Thread.currentThread().interrupt();
+            } catch (KeeperException.NoNodeException e) {
+                // do nothing
+            } catch (KeeperException e) {
+                LOG.warn(&quot;Caught: &quot; + e, e);
+                throw (RuntimeException) new RuntimeException(e.getMessage()).
+                    initCause(e);
+            }
+            finally {
+                if (callback != null) {
+                    callback.lockReleased();
+                }
+                id = null;
+            }
+        }
+    }
+
+    /** 
+     * the watcher called on  
+     * getting watch while watching 
+     * my predecessor
+     */
+    private class LockWatcher implements Watcher {
+        public void process(WatchedEvent event) {
+            // lets either become the leader or watch the new/updated node
+            LOG.debug(&quot;Watcher fired on path: &quot; + event.getPath() + &quot; state: &quot; + 
+                    event.getState() + &quot; type &quot; + event.getType());
+            try {
+                lock();
+            } catch (Exception e) {
+                LOG.warn(&quot;Failed to acquire lock: &quot; + e, e);
+            }
+        }
+    }
+
+    /**
+     * a zoookeeper operation that is mainly responsible
+     * for all the magic required for locking.
+     */
+    private  class LockZooKeeperOperation implements ZooKeeperOperation {
+
+        /** find if we have been created earler if not create our node
+         * 
+         * @param prefix the prefix node
+         * @param zookeeper teh zookeeper client
+         * @param dir the dir paretn
+         * @throws KeeperException
+         * @throws InterruptedException
+         */
+        private void findPrefixInChildren(String prefix, ZooKeeper zookeeper, String dir) 
+            throws KeeperException, InterruptedException {
+            List&lt;String&gt; names = zookeeper.getChildren(dir, false);
+            for (String name : names) {
+                if (name.startsWith(prefix)) {
+                    id = dir + &quot;/&quot; + name;
+                    if (LOG.isDebugEnabled()) {
+                        LOG.debug(&quot;Found id created last time: &quot; + id);
+                    }
+                    break;
+                }
+            }
+            if (id == null) {
+                id = zookeeper.create(dir + &quot;/&quot; + prefix, data, 
+                        getAcl(), EPHEMERAL_SEQUENTIAL);
+
+                if (LOG.isDebugEnabled()) {
+                    LOG.debug(&quot;Created id: &quot; + id);
+                }
+            }
+
+        }
+
+        /**
+         * the command that is run and retried for actually 
+         * obtaining the lock
+         * @return if the command was successful or not
+         */
+        public boolean execute() throws KeeperException, InterruptedException {
+            do {
+                if (id == null) {
+                    long sessionId = zookeeper.getSessionId();
+                    String prefix = &quot;x-&quot; + sessionId + &quot;-&quot;;
+                    // lets try look up the current ID if we failed 
+                    // in the middle of creating the znode
+                    findPrefixInChildren(prefix, zookeeper, dir);
+                    idName = new ZNodeName(id);
+                }
+                if (id != null) {
+                    List&lt;String&gt; names = zookeeper.getChildren(dir, false);
+                    if (names.isEmpty()) {
+                        LOG.warn(&quot;No children in: &quot; + dir + &quot; when we&#39;ve just &quot; +
+                        &quot;created one! Lets recreate it...&quot;);
+                        // lets force the recreation of the id
+                        id = null;
+                    } else {
+                        // lets sort them explicitly (though they do seem to come back in order ususally :)
+                        SortedSet&lt;ZNodeName&gt; sortedNames = new TreeSet&lt;ZNodeName&gt;();
+                        for (String name : names) {
+                            sortedNames.add(new ZNodeName(dir + &quot;/&quot; + name));
+                        }
+                        ownerId = sortedNames.first().getName();
+                        SortedSet&lt;ZNodeName&gt; lessThanMe = sortedNames.headSet(idName);
+                        if (!lessThanMe.isEmpty()) {
+                            ZNodeName lastChildName = lessThanMe.last();
+                            lastChildId = lastChildName.getName();
+                            if (LOG.isDebugEnabled()) {
+                                LOG.debug(&quot;watching less than me node: &quot; + lastChildId);
+                            }
+                            Stat stat = zookeeper.exists(lastChildId, new LockWatcher());
+                            if (stat != null) {
+                                return Boolean.FALSE;
+                            } else {
+                                LOG.warn(&quot;Could not find the&quot; +
+                                        &quot; stats for less than me: &quot; + lastChildName.getName());
+                            }
+                        } else {
+                            if (isOwner()) {
+                                if (callback != null) {
+                                    callback.lockAcquired();
+                                }
+                                return Boolean.TRUE;
+                            }
+                        }
+                    }
+                }
+            }
+            while (id == null);
+            return Boolean.FALSE;
+        }
+    };
+
+    /**
+     * Attempts to acquire the exclusive write lock returning whether or not it was
+     * acquired. Note that the exclusive lock may be acquired some time later after
+     * this method has been invoked due to the current lock owner going away.
+     */
+    public synchronized boolean lock() throws KeeperException, InterruptedException {
+        if (isClosed()) {
+            return false;
+        }
+        ensurePathExists(dir);
+
+        return (Boolean) retryOperation(zop);
+    }
+
+    /**
+     * return the parent dir for lock
+     * @return the parent dir used for locks.
+     */
+    public String getDir() {
+        return dir;
+    }
+
+    /**
+     * Returns true if this node is the owner of the
+     *  lock (or the leader)
+     */
+    public boolean isOwner() {
+        return id != null &amp;&amp; ownerId != null &amp;&amp; id.equals(ownerId);
+    }
+
+    /**
+     * return the id for this lock
+     * @return the id for this lock
+     */
+    public String getId() {
+       return this.id;
+    }
+}
+</code></pre>
+
+<p>注意这里的 lock，可能会失败，会尝试多次，每次失败后会 Sleep 一段时间。</p>
+
+<p>PS：官方的代码有个小 bug，id 和 ownerId 应该都是全路径，即 id = dir + &quot;/&quot; + name; 原代码在 findPrefixInChildren 里有问题。</p>
+
+<p>用于辅助节点大小顺序排序的类：</p>
+
+<pre><code class="language-java">package org.apache.zookeeper.recipes.lock;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/**
+ * Represents an ephemeral znode name which has an ordered sequence number and
+ * can be sorted in order
+ * 
+ */
+class ZNodeName implements Comparable&lt;ZNodeName&gt; {
+    private final String name;
+    private String prefix;
+    private int sequence = -1;
+    private static final Logger LOG = LoggerFactory.getLogger(ZNodeName.class);
+
+    public ZNodeName(String name) {
+        if (name == null) {
+            throw new NullPointerException(&quot;id cannot be null&quot;);
+        }
+        this.name = name;
+        this.prefix = name;
+        int idx = name.lastIndexOf(&#39;-&#39;);
+        if (idx &gt;= 0) {
+            this.prefix = name.substring(0, idx);
+            try {
+                this.sequence = Integer.parseInt(name.substring(idx + 1));
+                // If an exception occurred we misdetected a sequence suffix,
+                // so return -1.
+            } catch (NumberFormatException e) {
+                LOG.info(&quot;Number format exception for &quot; + idx, e);
+            } catch (ArrayIndexOutOfBoundsException e) {
+                LOG.info(&quot;Array out of bounds for &quot; + idx, e);
+            }
+        }
+    }
+
+    @Override
+    public String toString() {
+        return name.toString();
+    }
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o)
+            return true;
+        if (o == null || getClass() != o.getClass())
+            return false;
+
+        ZNodeName sequence = (ZNodeName) o;
+
+        if (!name.equals(sequence.name))
+            return false;
+
+        return true;
+    }
+
+    @Override
+    public int hashCode() {
+        return name.hashCode() + 37;
+    }
+
+    public int compareTo(ZNodeName that) {
+        int s1 = this.sequence;
+        int s2 = that.sequence;
+        if (s1 == -1 &amp;&amp; s2 == -1) {
+            return this.name.compareTo(that.name);
+        }
+        if (s1 == -1) {
+            return -1;
+        } else if (s2 == -1) {
+            return 1;
+        } else {
+            return s1 - s2;
+        }
+    }
+
+    /**
+     * Returns the name of the znode
+     */
+    public String getName() {
+        return name;
+    }
+
+    /**
+     * Returns the sequence number
+     */
+    public int getZNodeName() {
+        return sequence;
+    }
+
+    /**
+     * Returns the text prefix before the sequence number
+     */
+    public String getPrefix() {
+        return prefix;
+    }
+}
+</code></pre>
+
+<p>PS：这个 ZNodeName 类是被我修改过的，官方的代码比较有问题，官方的先用了节点路径的前缀 prefix 比较，再去比较 sequence 序号是不对的，这样会导致 sessionid 小的总是能拿到锁。应该直接比较全局有序的 sequence 序号，小的先拿到锁，先到先得。</p>
+
+<p>Zookeeper 统一操作 ZooKeeperOperation 接口：</p>
+
+<pre><code class="language-java">public interface ZooKeeperOperation {
+
+    /**
+     * Performs the operation - which may be involved multiple times if the connection
+     * to ZooKeeper closes during this operation
+     *
+     * @return the result of the operation or null
+     * @throws KeeperException
+     * @throws InterruptedException
+     */
+    public boolean execute() throws KeeperException, InterruptedException;
+}
+</code></pre>
+
+<p>因为 Zookeeper 的操作会失败，这个类封装了多次尝试：</p>
+
+<pre><code class="language-java">/**
+ *
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package org.apache.zookeeper.recipes.lock;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.apache.zookeeper.CreateMode;
+import org.apache.zookeeper.KeeperException;
+import org.apache.zookeeper.ZooDefs;
+import org.apache.zookeeper.ZooKeeper;
+import org.apache.zookeeper.data.ACL;
+import org.apache.zookeeper.data.Stat;
+import org.apache.zookeeper.recipes.lock.ZooKeeperOperation;
+
+import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
+
+/**
+ * A base class for protocol implementations which provides a number of higher 
+ * level helper methods for working with ZooKeeper along with retrying synchronous
+ *  operations if the connection to ZooKeeper closes such as 
+ *  {@link #retryOperation(ZooKeeperOperation)}
+ *
+ */
+class ProtocolSupport {
+    private static final Logger LOG = LoggerFactory.getLogger(ProtocolSupport.class);
+
+    protected final ZooKeeper zookeeper;
+    private AtomicBoolean closed = new AtomicBoolean(false);
+    private long retryDelay = 500L;
+    private int retryCount = 10;
+    private List&lt;ACL&gt; acl = ZooDefs.Ids.OPEN_ACL_UNSAFE;
+
+    public ProtocolSupport(ZooKeeper zookeeper) {
+        this.zookeeper = zookeeper;
+    }
+
+    /**
+     * Closes this strategy and releases any ZooKeeper resources; but keeps the
+     *  ZooKeeper instance open
+     */
+    public void close() {
+        if (closed.compareAndSet(false, true)) {
+            doClose();
+        }
+    }
+
+    /**
+     * return zookeeper client instance
+     * @return zookeeper client instance
+     */
+    public ZooKeeper getZookeeper() {
+        return zookeeper;
+    }
+
+    /**
+     * return the acl its using
+     * @return the acl.
+     */
+    public List&lt;ACL&gt; getAcl() {
+        return acl;
+    }
+
+    /**
+     * set the acl 
+     * @param acl the acl to set to
+     */
+    public void setAcl(List&lt;ACL&gt; acl) {
+        this.acl = acl;
+    }
+
+    /**
+     * get the retry delay in milliseconds
+     * @return the retry delay
+     */
+    public long getRetryDelay() {
+        return retryDelay;
+    }
+
+    /**
+     * Sets the time waited between retry delays
+     * @param retryDelay the retry delay
+     */
+    public void setRetryDelay(long retryDelay) {
+        this.retryDelay = retryDelay;
+    }
+
+    /**
+     * Allow derived classes to perform 
+     * some custom closing operations to release resources
+     */
+    protected void doClose() {
+    }
+
+    /**
+     * Perform the given operation, retrying if the connection fails
+     * @return object. it needs to be cast to the callee&#39;s expected 
+     * return type.
+     */
+    protected Object retryOperation(ZooKeeperOperation operation) 
+        throws KeeperException, InterruptedException {
+        KeeperException exception = null;
+        for (int i = 0; i &lt; retryCount; i++) {
+            try {
+                return operation.execute();
+            } catch (KeeperException.SessionExpiredException e) {
+                LOG.warn(&quot;Session expired for: &quot; + zookeeper + &quot; so reconnecting due to: &quot; + e, e);
+                throw e;
+            } catch (KeeperException.ConnectionLossException e) {
+                if (exception == null) {
+                    exception = e;
+                }
+                LOG.debug(&quot;Attempt &quot; + i + &quot; failed with connection loss so &quot; +
+                        &quot;attempting to reconnect: &quot; + e, e);
+                retryDelay(i);
+            }
+        }
+        throw exception;
+    }
+
+    /**
+     * Ensures that the given path exists with no data, the current
+     * ACL and no flags
+     * @param path
+     */
+    protected void ensurePathExists(String path) {
+        ensureExists(path, null, acl, CreateMode.PERSISTENT);
+    }
+
+    /**
+     * Ensures that the given path exists with the given data, ACL and flags
+     * @param path
+     * @param acl
+     * @param flags
+     */
+    protected void ensureExists(final String path, final byte[] data,
+            final List&lt;ACL&gt; acl, final CreateMode flags) {
+        try {
+            retryOperation(new ZooKeeperOperation() {
+                public boolean execute() throws KeeperException, InterruptedException {
+                    Stat stat = zookeeper.exists(path, false);
+                    if (stat != null) {
+                        return true;
+                    }
+                    zookeeper.create(path, data, acl, flags);
+                    return true;
+                }
+            });
+        } catch (KeeperException e) {
+            LOG.warn(&quot;Caught: &quot; + e, e);
+        } catch (InterruptedException e) {
+            LOG.warn(&quot;Caught: &quot; + e, e);
+        }
+    }
+
+    /**
+     * Returns true if this protocol has been closed
+     * @return true if this protocol is closed
+     */
+    protected boolean isClosed() {
+        return closed.get();
+    }
+
+    /**
+     * Performs a retry delay if this is not the first attempt
+     * @param attemptCount the number of the attempts performed so far
+     */
+    protected void retryDelay(int attemptCount) {
+        if (attemptCount &gt; 0) {
+            try {
+                Thread.sleep(attemptCount * retryDelay);
+            } catch (InterruptedException e) {
+                LOG.debug(&quot;Failed to sleep: &quot; + e, e);
+            }
+        }
+    }
+}
+</code></pre>
+
+<p>这个类是本客户端获取到 lock 和释放 lock 的时候触发操作的接口：</p>
+
+<pre><code class="language-java">public interface LockListener {
+    /**
+     * call back called when the lock 
+     * is acquired
+     */
+    public void lockAcquired();
+
+    /**
+     * call back called when the lock is 
+     * released.
+     */
+    public void lockReleased();
+}
+</code></pre>
+
+<h3 id="toc_1">队列（Queue）</h3>
+
+<p>分布式队列是通用的数据结构，为了在 Zookeeper 中实现分布式队列，首先需要指定一个 Znode 节点作为队列节点（queue node）， 各个分布式客户端通过调用 create() 函数向队列中放入数据，调用 create() 时节点路径名带 &quot;qn-&quot; 结尾，并设置顺序（_sequence_）节点标志。 由于设置了节点的顺序标志，新的路径名具有以下字符串模式：&quot;_path-to-queue-node_/qn-X&quot;，X 是唯一自增号。需要从队列中获取数据 / 移除数据的客户端首先调用 getChildren() 函数，有数据则获取（获取数据后可以删除也可以不删），没有则在队列节点（queue node）上将 _watch_ 设置为 true，等待触发并处理最小序号的节点（即从序号最小的节点中取数据）。</p>
+
+<p>实现步骤基本如下：</p>
+
+<p>前提：需要一个队列 root 节点 dir</p>
+
+<p>入队：使用 create() 创建节点，将共享数据 data 放在该节点上，节点类型为 PERSISTENT_SEQUENTIAL，永久顺序性的（也可以设置为临时的，看需求）。</p>
+
+<p>出队：因为队列可能为空，2 种方式处理：一种如果为空则 wait 等待，一种返回异常。</p>
+
+<p>等待方式：这里使用了 CountDownLatch 的等待和 Watcher 的通知机制，使用了 TreeMap 的排序获取节点顺序最小的数据（FIFO）。</p>
+
+<p>抛出异常：getChildren() 获取队列数据时，如果 size==0 则抛出异常。</p>
+
+<p>一个分布式 Queue 的实现，详细代码：</p>
+
+<pre><code class="language-java">package org.apache.zookeeper.recipes.queue;
+
+import java.util.List;
+import java.util.NoSuchElementException;
+import java.util.TreeMap;
+import java.util.concurrent.CountDownLatch;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.apache.zookeeper.CreateMode;
+import org.apache.zookeeper.KeeperException;
+import org.apache.zookeeper.WatchedEvent;
+import org.apache.zookeeper.Watcher;
+import org.apache.zookeeper.ZooDefs;
+import org.apache.zookeeper.ZooKeeper;
+import org.apache.zookeeper.data.ACL;
+import org.apache.zookeeper.data.Stat;
+
+/**
+ * 
+ * A &lt;a href=&quot;package.html&quot;&gt;protocol to implement a distributed queue&lt;/a&gt;.
+ * 
+ */
+public class DistributedQueue {
+    private static final Logger LOG = LoggerFactory.getLogger(DistributedQueue.class);
+
+    private final String dir;
+
+    private ZooKeeper zookeeper;
+    private List&lt;ACL&gt; acl = ZooDefs.Ids.OPEN_ACL_UNSAFE;
+
+    private final String prefix = &quot;qn-&quot;;
+
+    public DistributedQueue(ZooKeeper zookeeper, String dir, List&lt;ACL&gt; acl){
+        this.dir = dir;
+
+        if(acl != null){
+            this.acl = acl;
+        }
+        this.zookeeper = zookeeper;
+
+        //Add root dir first if not exists
+        if (zookeeper != null) {
+            try {
+                Stat s = zookeeper.exists(dir, false);
+                if (s == null) {
+                    zookeeper.create(dir, new byte[0], acl, CreateMode.PERSISTENT);
+                }
+            } catch (KeeperException e) {
+                LOG.error(e.toString());
+            } catch (InterruptedException e) {
+                LOG.error(e.toString());
+            }
+        }
+    }
+
+    /**
+     * Returns a Map of the children, ordered by id.
+     * @param watcher optional watcher on getChildren() operation.
+     * @return map from id to child name for all children
+     */
+    private TreeMap&lt;Long,String&gt; orderedChildren(Watcher watcher) throws KeeperException, InterruptedException {
+        TreeMap&lt;Long,String&gt; orderedChildren = new TreeMap&lt;Long,String&gt;();
+
+        List&lt;String&gt; childNames = null;
+        try{
+            childNames = zookeeper.getChildren(dir, watcher);
+        }catch (KeeperException.NoNodeException e){
+            throw e;
+        }
+
+        for(String childName : childNames){
+            try{
+                //Check format
+                if(!childName.regionMatches(0, prefix, 0, prefix.length())){
+                    LOG.warn(&quot;Found child node with improper name: &quot; + childName);
+                    continue;
+                }
+                String suffix = childName.substring(prefix.length());
+                Long childId = new Long(suffix);
+                orderedChildren.put(childId,childName);
+            }catch(NumberFormatException e){
+                LOG.warn(&quot;Found child node with improper format : &quot; + childName + &quot; &quot; + e,e);
+            }
+        }
+
+        return orderedChildren;
+    }
+
+    /**
+     * Find the smallest child node.
+     * @return The name of the smallest child node.
+     */
+    private String smallestChildName() throws KeeperException, InterruptedException {
+        long minId = Long.MAX_VALUE;
+        String minName = &quot;&quot;;
+
+        List&lt;String&gt; childNames = null;
+
+        try{
+            childNames = zookeeper.getChildren(dir, false);
+        }catch(KeeperException.NoNodeException e){
+            LOG.warn(&quot;Caught: &quot; +e,e);
+            return null;
+        }
+
+        for(String childName : childNames){
+            try{
+                //Check format
+                if(!childName.regionMatches(0, prefix, 0, prefix.length())){
+                    LOG.warn(&quot;Found child node with improper name: &quot; + childName);
+                    continue;
+                }
+                String suffix = childName.substring(prefix.length());
+                long childId = Long.parseLong(suffix);
+                if(childId &lt; minId){
+                    minId = childId;
+                    minName = childName;
+                }
+            }catch(NumberFormatException e){
+                LOG.warn(&quot;Found child node with improper format : &quot; + childName + &quot; &quot; + e,e);
+            }
+        }
+
+        if(minId &lt; Long.MAX_VALUE){
+            return minName;
+        }else{
+            return null;
+        }
+    }
+
+    /**
+     * Return the head of the queue without modifying the queue.
+     * @return the data at the head of the queue.
+     * @throws NoSuchElementException
+     * @throws KeeperException
+     * @throws InterruptedException
+     */
+    public byte[] element() throws NoSuchElementException, KeeperException, InterruptedException {
+        TreeMap&lt;Long,String&gt; orderedChildren;
+
+        // element, take, and remove follow the same pattern.
+        // We want to return the child node with the smallest sequence number.
+        // Since other clients are remove()ing and take()ing nodes concurrently, 
+        // the child with the smallest sequence number in orderedChildren might be gone by the time we check.
+        // We don&#39;t call getChildren again until we have tried the rest of the nodes in sequence order.
+        while(true){
+            try{
+                orderedChildren = orderedChildren(null);
+            }catch(KeeperException.NoNodeException e){
+                throw new NoSuchElementException();
+            }
+            if(orderedChildren.size() == 0 ) throw new NoSuchElementException();
+
+            for(String headNode : orderedChildren.values()){
+                if(headNode != null){
+                    try{
+                        return zookeeper.getData(dir+&quot;/&quot;+headNode, false, null);
+                    }catch(KeeperException.NoNodeException e){
+                        //Another client removed the node first, try next
+                    }
+                }
+            }
+
+        }
+    }
+
+    /**
+     * Attempts to remove the head of the queue and return it.
+     * @return The former head of the queue
+     * @throws NoSuchElementException
+     * @throws KeeperException
+     * @throws InterruptedException
+     */
+    public byte[] remove() throws NoSuchElementException, KeeperException, InterruptedException {
+        TreeMap&lt;Long,String&gt; orderedChildren;
+        // Same as for element.  Should refactor this.
+        while(true){
+            try{
+                orderedChildren = orderedChildren(null);
+            }catch(KeeperException.NoNodeException e){
+                throw new NoSuchElementException();
+            }
+            if(orderedChildren.size() == 0) throw new NoSuchElementException();
+
+            for(String headNode : orderedChildren.values()){
+                String path = dir +&quot;/&quot;+headNode;
+                try{
+                    byte[] data = zookeeper.getData(path, false, null);
+                    zookeeper.delete(path, -1);
+                    return data;
+                }catch(KeeperException.NoNodeException e){
+                    // Another client deleted the node first.
+                }
+            }
+        }
+    }
+
+    private class LatchChildWatcher implements Watcher {
+
+        CountDownLatch latch;
+
+        public LatchChildWatcher(){
+            latch = new CountDownLatch(1);
+        }
+
+        public void process(WatchedEvent event){
+            LOG.debug(&quot;Watcher fired on path: &quot; + event.getPath() + &quot; state: &quot; + 
+                    event.getState() + &quot; type &quot; + event.getType());
+            latch.countDown();
+        }
+        public void await() throws InterruptedException {
+            latch.await();
+        }
+    }
+
+    /**
+     * Removes the head of the queue and returns it, blocks until it succeeds.
+     * @return The former head of the queue
+     * @throws NoSuchElementException
+     * @throws KeeperException
+     * @throws InterruptedException
+     */
+    public byte[] take() throws KeeperException, InterruptedException {
+        TreeMap&lt;Long,String&gt; orderedChildren;
+        // Same as for element.  Should refactor this.
+        while(true){
+            LatchChildWatcher childWatcher = new LatchChildWatcher();
+            try{
+                orderedChildren = orderedChildren(childWatcher);
+            }catch(KeeperException.NoNodeException e){
+                zookeeper.create(dir, new byte[0], acl, CreateMode.PERSISTENT);
+                continue;
+            }
+            if(orderedChildren.size() == 0){
+                childWatcher.await();
+                continue;
+            }
+
+            for(String headNode : orderedChildren.values()){
+                String path = dir +&quot;/&quot;+headNode;
+                try{
+                    byte[] data = zookeeper.getData(path, false, null);
+                    zookeeper.delete(path, -1);
+                    return data;
+                }catch(KeeperException.NoNodeException e){
+                    // Another client deleted the node first.
+                }
+            }
+        }
+    }
+
+    /**
+     * Inserts data into queue.
+     * @param data
+     * @return true if data was successfully added
+     */
+    public boolean offer(byte[] data) throws KeeperException, InterruptedException{
+        for(;;){
+            try{
+                zookeeper.create(dir+&quot;/&quot;+prefix, data, acl, CreateMode.PERSISTENT_SEQUENTIAL);
+                return true;
+            }catch(KeeperException.NoNodeException e){
+                zookeeper.create(dir, new byte[0], acl, CreateMode.PERSISTENT);
+            }
+        }
+    }
+
+    /**
+     * Returns the data at the first element of the queue, or null if the queue is empty.
+     * @return data at the first element of the queue, or null.
+     * @throws KeeperException
+     * @throws InterruptedException
+     */
+    public byte[] peek() throws KeeperException, InterruptedException{
+        try{
+            return element();
+        }catch(NoSuchElementException e){
+            return null;
+        }
+    }
+
+    /**
+     * Attempts to remove the head of the queue and return it. Returns null if the queue is empty.
+     * @return Head of the queue or null.
+     * @throws KeeperException
+     * @throws InterruptedException
+     */
+    public byte[] poll() throws KeeperException, InterruptedException {
+        try{
+            return remove();
+        }catch(NoSuchElementException e){
+            return null;
+        }
+    }
+}
+</code></pre>
+
+<p><strong>Apache Curator</strong></p>
+
+<p>Curator 是一个封装 Zookeeper 操作的库，使用这个库的好处是 Curator 帮你管理和 Zookeeper 的连接，当连接有问题时会自动重试（retry）。</p>
+
+<pre><code class="language-java">RetryPolicy retryPolicy = new ExponentialBackoffRetry(1000, 3)
+CuratorFramework client = CuratorFrameworkFactory.newClient(zookeeperConnectionString, retryPolicy);
+client.start();
+</code></pre>
+
+<p>Curator 已经封装了一些常用的 Recipes</p>
+
+<h4 id="toc_2">Distributed Lock</h4>
+
+<pre><code class="language-java">InterProcessMutex lock = new InterProcessMutex(client, lockPath);
+if ( lock.acquire(maxWait, waitUnit) ) 
+{
+    try 
+    {
+        // do some work inside of the critical section here
+    }
+    finally
+    {
+        lock.release();
+    }
+}
+</code></pre>
+
+<h4 id="toc_3">Leader Election</h4>
+
+<pre><code class="language-java">LeaderSelectorListener listener = new LeaderSelectorListenerAdapter()
+{
+    public void takeLeadership(CuratorFramework client) throws Exception
+    {
+        // this callback will get called when you are the leader
+        // do whatever leader work you need to and only exit
+        // this method when you want to relinquish leadership
+    }
+}
+
+LeaderSelector selector = new LeaderSelector(client, path, listener);
+selector.autoRequeue();  // not required, but this is behavior that you will probably expect
+selector.start();
+</code></pre>
+
+<h2 id="toc_4">参考</h2>
 
 <ul>
-<li>  1）  如果 leader 以 T1 和 T2 的顺序广播，那么所有的 Server 必须先执行 T1，再执行 T2。</li>
-<li>  2）  如果任意一个 Server 以 T1、T2 的顺序 commit 执行，其他所有的 Server 也必须以 T1、T2 的顺序执行。</li>
-</ul>
-
-<p>“两段提交协议” 最大的问题是如果 Leader 发送了 PROPOSAL 消息后 crash 或暂时失去连接，会导致整个集群处在一种不确定的状态（follower 不知道该放弃这次提交还是执行提交）。Zookeeper 这时会选出新的 leader，请求处理也会移到新的 leader 上，不同的 leader 由不同的 epoch 标识。切换 Leader 时，需要解决下面两个问题：</p>
-
-<p>1. Never forget delivered messages</p>
-
-<p>Leader 在 COMMIT 投递到任何一台 follower 之前 crash，只有它自己 commit 了。新 Leader 必须保证这个事务也必须 commit。</p>
-
-<p>2. Let go of messages that are skipped</p>
-
-<p>Leader 产生某个 proposal，但是在 crash 之前，没有 follower 看到这个 proposal。该 server 恢复时，必须丢弃这个 proposal。</p>
-
-<p>Zookeeper 会尽量保证不会同时有 2 个活动的 Leader，因为 2 个不同的 Leader 会导致集群处在一种不一致的状态，所以 Zab 协议同时保证：</p>
-
-<ul>
-<li>  1）  在新的 leader 广播 Transaction 之前，先前 Leader commit 的 Transaction 都会先执行。</li>
-<li>  2）  在任意时刻，都不会有 2 个 Server 同时有法定人数（quorum）的支持者。</li>
-</ul>
-
-<p>这里的 quorum 是一半以上的 Server 数目，确切的说是有投票权力的 Server（不包括 Observer）。</p>
-
-<p>总结：简单介绍了 Zookeeper 的基本原理，数据模型，Session，Watch 机制，一致性保证，Leader Election，Leader 和 Follower 的工作流程和 Zab 协议。</p>
-
-<p>参考：</p>
-
-<ul>
-<li>《ZooKeeper—Distributed Process Coordination》 by FlavioJunqueira and Benjamin Reed</li>
-<li><a href="http://zookeeper.apache.org/doc/current/zookeeperOver.html">http://zookeeper.apache.org/doc/current/zookeeperOver.html</a></li>
-<li><a href="http://www.ibm.com/developerworks/cn/opensource/os-cn-zookeeper/index.html">http://www.ibm.com/developerworks/cn/opensource/os-cn-zookeeper/index.html</a></li>
-<li><a href="https://my.oschina.net/pingpangkuangmo/blog/778927">《ZooKeeper 的一致性算法赏析》</a></li>
+<li><a href="http://zookeeper.apache.org/doc/trunk/recipes.html">http://zookeeper.apache.org/doc/trunk/recipes.html</a></li>
+<li><a href="http://curator.apache.org/curator-recipes/index.html">http://curator.apache.org/curator-recipes/index.html</a></li>
 </ul>
 
                         
@@ -441,6 +1224,12 @@
 	      
 		      
 			      <li class="post">
+			        <a href="15359384213292.html">Securing Spring Boot with JWTs</a>
+			      </li>
+		     
+		  
+		      
+			      <li class="post">
 			        <a href="15358820607055.html">Java 8 Concurrency Tutorial: Atomic Variables and ConcurrentMap</a>
 			      </li>
 		     
@@ -460,12 +1249,6 @@
 		      
 			      <li class="post">
 			        <a href="15358756631902.html">Java 8 Stream Tutorial</a>
-			      </li>
-		     
-		  
-		      
-			      <li class="post">
-			        <a href="15358753472382.html">Migrate Maven Projects to Java 11</a>
 			      </li>
 		     
 		  

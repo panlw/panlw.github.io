@@ -105,525 +105,178 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15327632423477.html">
+                <a class="clearlink" href="15329286072253.html">
                 
-                  <h1>A Guide to Java 9 Modularity</h1>
+                  <h1>Streams：一个新的 Redis 通用数据结构</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="http://www.baeldung.com/java-9-modularity">http://www.baeldung.com/java-9-modularity</a></p>
+<p><a href="https://linux.cn/article-9879-1.html">https://linux.cn/article-9879-1.html</a><br/>
+via: <a href="http://antirez.com/news/114">http://antirez.com/news/114</a><br/>
+作者：<a href="http://antirez.com/">antirez</a> 译者：<a href="https://github.com/qhwdw">qhwdw</a> 校对：<a href="https://github.com/wxy">wxy</a>, <a href="https://github.com/pityonline">pityonline</a></p>
 </blockquote>
 
-<h2 id="toc_0"><strong>1. Overview</strong></h2>
+<p>直到几个月以前，对于我来说，在消息传递的环境中，<ruby>流 <rt>streams</rt></ruby> 只是一个有趣且相对简单的概念。这个概念在 Kafka 流行之后，我主要研究它们在 Disque 案例中的应用，Disque 是一个消息队列，它将在 Redis 4.2 中被转换为 Redis 的一个模块。后来我决定让 Disque 都用 AP 消息（LCTT 译注：参见 <a href="https://zh.wikipedia.org/wiki/CAP%E5%AE%9A%E7%90%86">CAP 定理</a>），也就是说，它将在不需要客户端过多参与的情况下实现容错和可用性，这样一来，我更加确定地认为流的概念在那种情况下并不适用。</p>
 
-<p>Java 9 introduces a new level of abstraction above packages, formally known as the Java Platform Module System (JPMS), or “Modules” for short.</p>
+<p>然而在那时 Redis 有个问题，那就是缺省情况下导出数据结构并不轻松。它在 Redis <ruby>列表 <rt>list</rt></ruby>、<ruby>有序集 <rt>sorted list</rt></ruby>、<ruby>发布 / 订阅 <rt>Pub/Sub</rt></ruby> 功能之间有某些缺陷。你可以权衡使用这些工具对一系列消息或事件建模。</p>
 
-<p>In this tutorial, we’ll go through the new system and discuss its various aspects.</p>
+<p>有序集是内存消耗大户，那自然就不能对投递的相同消息进行一次又一次的建模，客户端不能阻塞新消息。因为有序集并不是一个序列化的数据结构，它是一个元素可以根据它们量的变化而移动的集合：所以它不像时序性的数据那样。</p>
 
-<p>We’ll also build a simple project to demonstrate all concepts we’ll be learning in this guide.</p>
+<p>列表有另外的问题，它在某些特定的用例中会产生类似的适用性问题：你无法浏览列表中间的内容，因为在那种情况下，访问时间是线性的。此外，没有任何指定输出的功能，列表上的阻塞操作仅为单个客户端提供单个元素。列表中没有固定的元素标识，也就是说，不能指定从哪个元素开始给我提供内容。</p>
 
-<h2 id="toc_1"><strong>2. What’s a Module?</strong></h2>
+<p>对于一对多的工作任务，有发布 / 订阅机制，它在大多数情况下是非常好的，但是，对于某些不想 <ruby>“即发即弃”<rt>fire-and-forget</rt></ruby> 的东西：保留一个历史是很重要的，不只是因为是断开之后会重新获得消息，也因为某些如时序性的消息列表，用范围查询浏览是非常重要的：比如在这 10 秒范围内温度读数是多少？</p>
 
-<p>First of all, we need to understand what a module is before we can understand how to use them.</p>
+<p>我试图解决上述问题，我想规划一个通用的有序集合，并列入一个独特的、更灵活的数据结构，然而，我的设计尝试最终以生成一个比当前的数据结构更加矫揉造作的结果而告终。Redis 有个好处，它的数据结构导出更像自然的计算机科学的数据结构，而不是 “Salvatore 发明的 API”。因此，我最终停止了我的尝试，并且说，“ok，这是我们目前能提供的”，或许我会为发布 / 订阅增加一些历史信息，或者为列表访问增加一些更灵活的方式。然而，每次在会议上有用户对我说 “你如何在 Redis 中模拟时间系列” 或者类似的问题时，我的脸就绿了。</p>
 
-<p><strong>A Module is a group of closely related packages and resources along with a new module descriptor file.</strong></p>
+<p><a id="3_3022" class="target-fix ext" rel="external nofollow" target="_blank"></a></p>
 
-<p>In other words, it’s a “package of Java Packages” abstraction that allows us to make our code even more reusable.</p>
+<h3 id="toc_0">起源</h3>
 
-<h3 id="toc_2"><strong>2.1. Packages</strong></h3>
+<p>在 Redis 4.0 中引入模块之后，用户开始考虑他们自己怎么去修复这些问题。其中一个用户 Timothy Downs 通过 IRC 和我说道：</p>
 
-<p>The packages inside a module are identical to the Java packages we’ve been using since the inception of Java.</p>
-
-<p>When we create a module, <strong>we organize the code internally in packages just like we previously did with any other project.</strong></p>
-
-<p>Aside from organizing our code, packages are used to determine what code is publicly accessible outside of the module. We’ll spend more time talking about this later in the article.</p>
-
-<h3 id="toc_3"><strong>2.2. Resources</strong></h3>
-
-<p><strong>Each module is responsible for its resources, like media or configuration files.</strong></p>
-
-<p>Previously we’d put all resources into the root level of our project and manually manage which resources belonged to different parts of the application.</p>
-
-<p>With modules, we can ship required images and XML files with the module that needs it, making our projects much easier to manage.</p>
-
-<h3 id="toc_4"><strong>2.3. Module Descriptor</strong></h3>
-
-<p>When we create a module, we include a descriptor file that defines several aspects of our new module:</p>
-
-<ul>
-<li>  <strong>Name</strong> – the name of our module</li>
-<li>  <strong>Dependencies</strong> – a list of other modules that this module depends on</li>
-<li>  <strong>Public Packages</strong> – a list of all packages we want accessible from outside the module</li>
-<li>  <strong>Services Offered</strong> – we can provide service implementations that can be consumed by other modules</li>
-<li>  <strong>Services Consumed</strong> – allows the current module to be a consumer of a service</li>
-<li>  <strong>Reflection Permissions</strong> – explicitly allows other classes to use reflection to access the private members of a package</li>
-</ul>
-
-<p>The module naming rules are similar to how we name packages (dots are allowed, dashes are not). It’s very common to do either project-style (my.module) or Reverse-DNS (_com.baeldung.mymodule_) style names. We’ll use project-style in this guide.</p>
-
-<p><strong>We need to list all packages we want to be public because by default all packages are module private.</strong></p>
-
-<p>The same is true for reflection. By default, we cannot use reflection on classes we import from another module.</p>
-
-<p>Later in the article, we’ll look at examples of how to use the module descriptor file.</p>
-
-<h3 id="toc_5"><strong>2.4. Module Types</strong></h3>
-
-<p>There are four types of modules in the new module system:</p>
-
-<ul>
-<li>  <strong>System Modules</strong>– These are the modules listed when we run the _list-modules_ command above. They include the Java SE and JDK modules.</li>
-<li>  <strong>Application Modules</strong> – These modules are what we usually want to build when we decide to use Modules. They are named and defined in the compiled _module-info.class_ file included in the assembled JAR.</li>
-<li>  <strong>Automatic Modules</strong> – We can include unofficial modules by adding existing JAR files to the module path. The name of the module will be derived from the name of the JAR. Automatic modules will have full read access to every other module loaded by the path.</li>
-<li>  <strong>Unnamed Module</strong> – When a class or JAR is loaded onto the classpath, but not the module path, it’s automatically added to the unnamed module. It’s a catch-all module to maintain backward compatibility with previously-written Java code.</li>
-</ul>
-
-<h3 id="toc_6"><strong>2.5. Distribution</strong></h3>
-
-<p>Modules can be distributed one of two ways: as a JAR file or as an “exploded” compiled project. This, of course, is the same as any other Java project so it should come as no surprise.</p>
-
-<p>We can create multi-module projects comprised of a “main application” and several library modules.</p>
-
-<p><strong>We have to be careful though because we can only have one module per JAR file.</strong></p>
-
-<p>When we set up our build file, we need to make sure to bundle each module in our project as a separate jar.</p>
-
-<h2 id="toc_7"><strong>3. Default Modules</strong></h2>
-
-<p>When we install Java 9, we can see that the JDK now has a new structure.</p>
-
-<p>They have taken all the original packages and moved them into the new module system.</p>
-
-<p>We can see what these modules are by typing into the command line:</p>
-
-<pre><code class="language-sh">java --list-modules
+<pre><code>&lt;forkfork&gt; 我计划给这个模块增加一个事务日志式的数据类型 —— 这意味着大量的订阅者可以在不导致 redis 内存激增的情况下做一些像发布/订阅那样的事情
+&lt;forkfork&gt; 订阅者持有他们在消息队列中的位置，而不是让 Redis 必须维护每个消费者的位置和为每个订阅者复制消息
 </code></pre>
 
-<p>These modules are split into four major groups: _java, javafx, jdk, _and _Oracle_.</p>
+<p>他的思路启发了我。我想了几天，并且意识到这可能是我们马上同时解决上面所有问题的契机。我需要去重新构思 “日志” 的概念是什么。日志是个基本的编程元素，每个人都使用过它，因为它只是简单地以追加模式打开一个文件，并以一定的格式写入数据。然而 Redis 数据结构必须是抽象的。它们在内存中，并且我们使用内存并不是因为我们懒，而是因为使用一些指针，我们可以概念化数据结构并把它们抽象，以使它们摆脱明确的限制。例如，一般来说日志有几个问题：偏移不是逻辑化的，而是真实的字节偏移，如果你想要与条目插入的时间相关的逻辑偏移应该怎么办？我们有范围查询可用。同样，日志通常很难进行垃圾回收：在一个只能进行追加操作的数据结构中怎么去删除旧的元素？好吧，在我们理想的日志中，我们只需要说，我想要数字最大的那个条目，而旧的元素一个也不要，等等。</p>
 
-<p><u>java</u> modules are the implementation classes for the core SE Language Specification.</p>
+<p>当我从 Timothy 的想法中受到启发，去尝试着写一个规范的时候，我使用了 Redis 集群中的 radix 树去实现，优化了它内部的某些部分。这为实现一个有效利用空间的日志提供了基础，而且仍然有可能在<ruby>对数时间 <rt>logarithmic time</rt></ruby> 内访问范围。同时，我开始去读关于 Kafka 的流相关的内容以获得另外的灵感，它也非常适合我的设计，最后借鉴了 Kafka <ruby>消费组 <rt>consumer groups</rt></ruby> 的概念，并且再次针对 Redis 进行优化，以适用于 Redis 在内存中使用的情况。然而，该规范仅停留在纸面上，在一段时间后我几乎把它从头到尾重写了一遍，以便将我与别人讨论的所得到的许多建议一起增加到 Redis 升级中。我希望 Redis 流能成为对于时间序列有用的特性，而不仅是一个常见的事件和消息类的应用程序。</p>
 
-<p><u>javafx</u> modules are the FX UI libraries.</p>
+<h3 id="toc_1">让我们写一些代码吧</h3>
 
-<p><strong>Anything needed by the JDK itself is kept in the _jdk_ modules.</strong></p>
+<p>从 Redis 大会回来后，整个夏天我都在实现一个叫 listpack 的库。这个库是 <code>ziplist.c</code> 的继任者，那是一个表示在单个分配中的字符串元素列表的数据结构。它是一个非常特殊的序列化格式，其特点在于也能够以逆序（从右到左）解析：以便在各种用例中替代 ziplists。</p>
 
-<p>And finally, <strong>anything that is Oracle-specific is in the _oracle_ modules.</strong></p>
+<p>结合 radix 树和 listpacks 的特性，它可以很容易地去构建一个空间高效的日志，并且还是可索引的，这意味着允许通过 ID 和时间进行随机访问。自从这些就绪后，我开始去写一些代码以实现流数据结构。我还在完成这个实现，不管怎样，现在在 Github 上的 Redis 的 streams 分支里它已经可以跑起来了。我并没有声称那个 API 是 100% 的最终版本，但是，这有两个有意思的事实：一，在那时只有消费群组是缺失的，加上一些不太重要的操作流的命令，但是，所有的大的方面都已经实现了。二，一旦各个方面比较稳定了之后，我决定大概用两个月的时间将所有的流的特性<ruby>向后移植 <rt>backport</rt></ruby> 到 4.0 分支。这意味着 Redis 用户想要使用流，不用等待 Redis 4.2 发布，它们在生产环境马上就可用了。这是可能的，因为作为一个新的数据结构，几乎所有的代码改变都出现在新的代码里面。除了阻塞列表操作之外：该代码被重构了，我们对于流和列表阻塞操作共享了相同的代码，而极大地简化了 Redis 内部实现。</p>
 
-<h2 id="toc_8"><strong>4. Module Declarations</strong></h2>
+<h3 id="toc_2">教程：欢迎使用 Redis 的 streams</h3>
 
-<p><strong>To set up a module, we need to put a special file at the root of our packages named _module-info.java_.</strong></p>
+<p>在某些方面，你可以认为流是 Redis 列表的一个增强版本。流元素不再是一个单一的字符串，而是一个<ruby>字段 <rt>field</rt></ruby> 和<ruby>值 <rt>value</rt></ruby> 组成的对象。范围查询更适用而且更快。在流中，每个条目都有一个 ID，它是一个逻辑偏移量。不同的客户端可以<ruby>阻塞等待 <rt>blocking-wait</rt></ruby> 比指定的 ID 更大的元素。Redis 流的一个基本的命令是 <code>XADD</code>。是的，所有的 Redis 流命令都是以一个 <code>X</code> 为前缀的。</p>
 
-<p>This file is known as the module descriptor and contains all of the data needed to build and use our new module.</p>
-
-<p>We construct the module with a declaration whose body is either empty or made up of module directives:</p>
-
-<pre><code class="language-java">module myModuleName {
-    // all directives are optional
-}
+<pre><code>&gt; XADD mystream * sensor-id 1234 temperature 10.5
+1506871964177.0
 </code></pre>
 
-<p>We start the module declaration with the <u>module</u> keyword, and we follow that with the name of the module.</p>
+<p>这个 <code>XADD</code> 命令将追加指定的条目作为一个指定的流 —— “mystream” 的新元素。上面示例中的这个条目有两个字段：<code>sensor-id</code> 和 <code>temperature</code>，每个条目在同一个流中可以有不同的字段。使用相同的字段名可以更好地利用内存。有意思的是，字段的排序是可以保证顺序的。<code>XADD</code> 仅返回插入的条目的 ID，因为在第三个参数中是星号（<code>*</code>），表示由命令自动生成 ID。通常这样做就够了，但是也可以去强制指定一个 ID，这种情况用于复制这个命令到<ruby>从服务器 <rt>slave server</rt></ruby> 和 <ruby>AOF<rt>append-only file</rt></ruby> 文件。</p>
 
-<p>The module will work with this declaration, but we’ll commonly need more information.</p>
+<p>这个 ID 是由两部分组成的：一个毫秒时间和一个序列号。<code>1506871964177</code> 是毫秒时间，它只是一个毫秒级的 UNIX 时间戳。圆点（<code>.</code>）后面的数字 <code>0</code> 是一个序号，它是为了区分相同毫秒数的条目增加上去的。这两个数字都是 64 位的无符号整数。这意味着，我们可以在流中增加所有想要的条目，即使是在同一毫秒中。ID 的毫秒部分使用 Redis 服务器的当前本地时间生成的 ID 和流中的最后一个条目 ID 两者间的最大的一个。因此，举例来说，即使是计算机时间回跳，这个 ID 仍然是增加的。在某些情况下，你可以认为流条目的 ID 是完整的 128 位数字。然而，事实上它们与被添加到的实例的本地时间有关，这意味着我们可以在毫秒级的精度的范围随意查询。</p>
 
-<p>That is where the module directives come in.</p>
+<p>正如你想的那样，快速添加两个条目后，结果是仅一个序号递增了。我们可以用一个 <code>MULTI</code>/<code>EXEC</code> 块来简单模拟 “快速插入”：</p>
 
-<h3 id="toc_9"><strong>4.1. Requires</strong></h3>
-
-<p>Our first directive is _requires_. This module directive allows us to declare module dependencies:</p>
-
-<pre><code class="language-java">module my.module {
-    requires module.name;
-}
+<pre><code>&gt; MULTI
+OK
+&gt; XADD mystream * foo 10
+QUEUED
+&gt; XADD mystream * bar 20
+QUEUED
+&gt; EXEC
+1) 1506872463535.0
+2) 1506872463535.1
 </code></pre>
 
-<p>Now, _my.module_ has <strong>both a runtime and a compile-time dependency</strong> on <u>module.name</u>.</p>
+<p>在上面的示例中，也展示了无需指定任何初始<ruby>模式 <rt>schema</rt></ruby> 的情况下，对不同的条目使用不同的字段。会发生什么呢？就像前面提到的一样，只有每个块（它通常包含 50-150 个消息内容）的第一个消息被使用。并且，相同字段的连续条目都使用了一个标志进行了压缩，这个标志表示与 “它们与这个块中的第一个条目的字段相同”。因此，使用相同字段的连续消息可以节省许多内存，即使是字段集随着时间发生缓慢变化的情况下也很节省内存。</p>
 
-<p>And all public types exported from a dependency are accessible by our module when we use this directive.</p>
+<p>为了从流中检索数据，这里有两种方法：范围查询，它是通过 <code>XRANGE</code> 命令实现的；<ruby>流播 <rt>streaming</rt></ruby>，它是通过 <code>XREAD</code> 命令实现的。<code>XRANGE</code> 命令仅取得包括从开始到停止范围内的全部条目。因此，举例来说，如果我知道它的 ID，我可以使用如下的命名取得单个条目：</p>
 
-<h3 id="toc_10"><strong>4.2. Requires Static</strong></h3>
-
-<p>Sometimes we write code that references another module, but that users of our library will never want to use.</p>
-
-<p>For instance, we might write a utility function that pretty-prints our internal state when another logging module is present. But, not every consumer of our library will want this functionality, and they don’t want to include an extra logging library.</p>
-
-<p>In these cases, we want to use an optional dependency. By using the _requires static_ directive, we create a compile-time-only dependency:</p>
-
-<pre><code class="language-java">module my.module {
-    requires static module.name;
-}
+<pre><code>&gt; XRANGE mystream 1506871964177.0 1506871964177.0
+1) 1) 1506871964177.0
+   2) 1) &quot;sensor-id&quot;
+      2) &quot;1234&quot;
+      3) &quot;temperature&quot;
+      4) &quot;10.5&quot;
 </code></pre>
 
-<h3 id="toc_11"><strong>4.3. Requires Transitive</strong></h3>
+<p>不管怎样，你都可以使用指定的开始符号 <code>-</code> 和停止符号 <code>+</code> 表示最小和最大的 ID。为了限制返回条目的数量，也可以使用 <code>COUNT</code> 选项。下面是一个更复杂的 <code>XRANGE</code> 示例：</p>
 
-<p>We commonly work with libraries to make our lives easier.</p>
-
-<p>But, we need to make sure that any module that brings in our code will also bring in these extra ‘transitive’ dependencies or they won’t work.</p>
-
-<p>Luckily, we can use the _requires transitive_ directive to force any downstream consumers also to read our required dependencies:</p>
-
-<pre><code class="language-java">module my.module {
-    requires transitive module.name;
-}
+<pre><code>&gt; XRANGE mystream - + COUNT 2
+1) 1) 1506871964177.0
+   2) 1) &quot;sensor-id&quot;
+      2) &quot;1234&quot;
+      3) &quot;temperature&quot;
+      4) &quot;10.5&quot;
+2) 1) 1506872463535.0
+   2) 1) &quot;foo&quot;
+      2) &quot;10&quot;
 </code></pre>
 
-<p>Now, when a developer <u>requires my.module</u>, they won’t also have also to say _requires module.name_ for our module to still work.</p>
+<p>这里我们讲的是 ID 的范围，然后，为了取得在一个给定时间范围内的特定范围的元素，你可以使用 <code>XRANGE</code>，因为 ID 的 “序号” 部分可以省略。因此，你可以只指定“毫秒” 时间即可，下面的命令的意思是：“从 UNIX 时间 1506872463 开始给我 10 个条目”：</p>
 
-<h3 id="toc_12"><strong>4.4. Exports</strong></h3>
-
-<p><strong>By default, a module doesn’t expose any of its API to other modules.</strong> This _strong encapsulation_ was one of the key motivators for creating the module system in the first place.</p>
-
-<p>Our code is significantly more secure, but now we need to explicitly open our API up to the world if we want it to be usable.</p>
-
-<p><strong>We use the _exports_ directive to expose all public members of the named package:</strong></p>
-
-<pre><code class="language-java">module my.module {
-    exports com.my.package.name;
-}
+<pre><code>127.0.0.1:6379&gt; XRANGE mystream 1506872463000 + COUNT 10
+1) 1) 1506872463535.0
+   2) 1) &quot;foo&quot;
+      2) &quot;10&quot;
+2) 1) 1506872463535.1
+   2) 1) &quot;bar&quot;
+      2) &quot;20&quot;
 </code></pre>
 
-<p>Now, when someone does _requires my.module_, they will have access to the public types in our _com.my.package.name_ package, but not any other package.</p>
+<p>关于 <code>XRANGE</code> 需要注意的最重要的事情是，假设我们在回复中收到 ID，随后连续的 ID 只是增加了序号部分，所以可以使用 <code>XRANGE</code> 遍历整个流，接收每个调用的指定个数的元素。Redis 中的<code>*SCAN</code> 系列命令允许迭代 Redis 数据结构，尽管事实上它们不是为迭代设计的，但这样可以避免再犯相同的错误。</p>
 
-<h3 id="toc_13"><strong>4.5. Exports … To</strong></h3>
+<h3 id="toc_3">使用 XREAD 处理流播：阻塞新的数据</h3>
 
-<p><strong>We can use _exports…to_ to open up our public classes to the world.</strong></p>
+<p>当我们想通过 ID 或时间去访问流中的一个范围或者是通过 ID 去获取单个元素时，使用 <code>XRANGE</code> 是非常完美的。然而，在使用流的案例中，当数据到达时，它必须由不同的客户端来消费时，这就不是一个很好的解决方案，这需要某种形式的<ruby>汇聚池 <rt>pooling</rt></ruby>。（对于 <u>某些</u> 应用程序来说，这可能是个好主意，因为它们仅是偶尔连接查询的）</p>
 
-<p>But, what if we don’t want the entire world to access our API?</p>
+<p><code>XREAD</code> 命令是为读取设计的，在同一个时间，从多个流中仅指定我们从该流中得到的最后条目的 ID。此外，如果没有数据可用，我们可以要求阻塞，当数据到达时，就解除阻塞。类似于阻塞列表操作产生的效果，但是这里并没有消费从流中得到的数据，并且多个客户端可以同时访问同一份数据。</p>
 
-<p><strong>We can restrict which modules have access to our APIs using the _exports…to_ directive.</strong></p>
+<p>这里有一个典型的 <code>XREAD</code> 调用示例：</p>
 
-<p>Similar to the _exports_ directive, we declare a package as exported. But, we also list which modules we are allowing to import this package as a <u>requires</u>. Let’s see what this looks like:</p>
-
-<pre><code class="language-java">module my.module {
-    export com.my.package.name to com.specific.package;
-}
+<pre><code>&gt; XREAD BLOCK 5000 STREAMS mystream otherstream $ $
 </code></pre>
 
-<h3 id="toc_14"><strong>4.6. Uses</strong></h3>
+<p>它的意思是：从 <code>mystream</code> 和 <code>otherstream</code> 取得数据。如果没有数据可用，阻塞客户端 5000 毫秒。在 <code>STREAMS</code> 选项之后指定我们想要监听的关键字，最后的是指定想要监听的 ID，指定的 ID 为 <code>$</code> 的意思是：假设我现在需要流中的所有元素，因此，只需要从下一个到达的元素开始给我。</p>
 
-<p>A _service_ is an implementation of a specific interface or abstract class that can be _consumed_ by other classes.</p>
+<p>如果我从另一个客户端发送这样的命令：</p>
 
-<p><strong>We designate the services our module consumes with the _uses_ directive.</strong></p>
-
-<p>Note that <strong>the class name we _use_ is either the interface or abstract class of the service, not the implementation class</strong>:</p>
-
-<pre><code class="language-java">module my.module {
-    uses class.name;
-}
+<pre><code>&gt; XADD otherstream * message “Hi There”
 </code></pre>
 
-<p>We should note here that there’s a difference between a _requires_ directive and the _uses_ directive.</p>
+<p>在 <code>XREAD</code> 侧会出现什么情况呢？</p>
 
-<p>We might <u>require</u> a module that provides a service we want to consume, but that service implements an interface from one of its transitive dependencies.</p>
-
-<p>Instead of forcing our module to require _all_ transitive dependencies just in case, we use the _uses_ directive to add the required interface to the module path.</p>
-
-<h3 id="toc_15"><strong>4.7. Provides … With</strong></h3>
-
-<p><strong>A module can also be a _service provider_ that other modules can consume.</strong></p>
-
-<p>The first part of the directive is the _provides_ keyword. Here is where we put the interface or abstract class name.</p>
-
-<p>Next, we have the _with_ directive where we provide the implementation class name that either <u>implements</u> the interface or _extends_ the abstract class.</p>
-
-<p>Here’s what it looks like put together:</p>
-
-<pre><code class="language-java">module my.module {
-    provides MyInterface with MyInterfaceImpl;
-}
+<pre><code>1) 1) &quot;otherstream&quot;
+   2) 1) 1) 1506935385635.0
+         2) 1) &quot;message&quot;
+            2) &quot;Hi There&quot;
 </code></pre>
 
-<h3 id="toc_16"><strong>4.8. Open</strong></h3>
+<p>与收到的数据一起，我们也得到了数据的关键字。在下次调用中，我们将使用接收到的最新消息的 ID：</p>
 
-<p>We mentioned earlier that encapsulation was a driving motivator for the design of this module system.</p>
-
-<p>Before Java 9, it was possible to use reflection to examine every type and member in a package, even the _private_ ones. Nothing was truly encapsulated, which can open up all kinds of problems for developers of the libraries.</p>
-
-<p>Because Java 9 enforces _strong encapsulation_, <strong>we now have to explicitly grant permission for other modules to reflect on our classes.</strong></p>
-
-<p>If we want to continue to allow full reflection as older versions of Java did, we can simply _open_ the entire module up:</p>
-
-<pre><code class="language-java">open module my.module {
-}
+<pre><code>&gt; XREAD BLOCK 5000 STREAMS mystream otherstream $ 1506935385635.0
 </code></pre>
 
-<h3 id="toc_17"><strong>4.9. Opens</strong></h3>
+<p>依次类推。然而需要注意的是使用方式，客户端有可能在一个非常大的延迟之后再次连接（因为它处理消息需要时间，或者其它什么原因）。在这种情况下，期间会有很多消息堆积，为了确保客户端不被消息淹没，以及服务器不会因为给单个客户端提供大量消息而浪费太多的时间，使用 <code>XREAD</code> 的 <code>COUNT</code> 选项是非常明智的。</p>
 
-<p>If we need to allow reflection of private types, but we don’t want all of our code exposed, <strong>we can use the _opens_ directive to expose specific packages.</strong></p>
+<h3 id="toc_4">流封顶</h3>
 
-<p>But remember, this will open the package up to the entire world, so make sure that is what you want:</p>
+<p>目前看起来还不错…… 然而，有些时候，流需要删除一些旧的消息。幸运的是，这可以使用 <code>XADD</code> 命令的 <code>MAXLEN</code> 选项去做：</p>
 
-<pre><code class="language-java">module my.module {
-  opens com.my.package;
-}
+<pre><code>&gt; XADD mystream MAXLEN 1000000 * field1 value1 field2 value2
 </code></pre>
 
-<h3 id="toc_18"><strong>4.10. Opens … To</strong></h3>
+<p>它是基本意思是，如果在流中添加新元素后发现消息数量超过了 <code>1000000</code> 个，那么就删除旧的消息，以便于元素总量重新回到 <code>1000000</code> 以内。它很像是在列表中使用的 <code>RPUSH</code> + <code>LTRIM</code>，但是，这次我们是使用了一个内置机制去完成的。然而，需要注意的是，上面的意思是每次我们增加一个新的消息时，我们还需要另外的工作去从流中删除旧的消息。这将消耗一些 CPU 资源，所以在计算 <code>MAXLEN</code> 之前，尽可能使用 <code>~</code> 符号，以表明我们不要求非常 <u>精确</u> 的 1000000 个消息，就是稍微多一些也不是大问题：</p>
 
-<p>Okay, so reflection is great sometimes, but we still want as much security as we can get from _encapsulation_. <strong>We can selectively open our packages to a pre-approved list of modules, in this case, using the _opens…to_ directive</strong>:</p>
-
-<pre><code class="language-java">module my.module {
-    opens com.my.package to moduleOne, moduleTwo, etc.;
-}
+<pre><code>&gt; XADD mystream MAXLEN ~ 1000000 * foo bar
 </code></pre>
 
-<h2 id="toc_19"><strong>5. Command Line Options</strong></h2>
+<p>这种方式的 XADD 仅当它可以删除整个节点的时候才会删除消息。相比普通的 <code>XADD</code>，这种方式几乎可以自由地对流进行封顶。</p>
 
-<p>By now, support for Java 9 modules has been added to Maven and Gradle, so you won’t need to do a lot of manual building of your projects. However, it’s still valuable to know _how_ to use the module system from the command line.</p>
+<h3 id="toc_5">消费组（开发中）</h3>
 
-<p>We’ll be using the command line for our full example down below to help solidify how the entire system works in our minds.</p>
+<p>这是第一个 Redis 中尚未实现而在开发中的特性。灵感也是来自 Kafka，尽管在这里是以不同的方式实现的。重点是使用了 <code>XREAD</code>，客户端也可以增加一个 <code>GROUP &lt;name&gt;</code> 选项。相同组的所有客户端将自动得到 <u>不同的</u> 消息。当然，同一个流可以被多个组读取。在这种情况下，所有的组将收到流中到达的消息的相同副本。但是，在每个组内，消息是不会重复的。</p>
 
-<ul>
-<li>  <u><strong>module-path</strong></u> <strong>–</strong>We use the _–module-path_ option to specify the module path. This is a list of one or more directories that contain your modules.</li>
-<li>  <u><strong>add-reads</strong></u> – Instead of relying on the module declaration file, we can use the command line equivalent of the _requires_ directive; _–add-reads_.</li>
-<li>  <u><strong>add-exports</strong></u> <strong>–</strong>Command line replacement for the <u>exports</u> directive.</li>
-<li>  <u><strong>add-opens</strong></u> <u>–</u>Replace the _open_ clause in the module declaration file.</li>
-<li>  <u><strong>add-modules</strong></u> <u>–</u>Adds the list of modules into the default set of modules</li>
-<li>  <u><strong>list-modules</strong></u> <u>–</u>Prints a list of all modules and their version strings</li>
-<li>  <u><strong>patch-module</strong></u> – Add or override classes in a modules</li>
-<li>  <u><strong>illegal-access=permit|warn|deny</strong></u> – Either relax strong encapsulation by showing a single global warning, shows every warning, or fails with errors. The default is _permit_.</li>
-</ul>
+<p>当指定组时，能够指定一个 <code>RETRY &lt;milliseconds&gt;</code> 选项去扩展组：在这种情况下，如果消息没有通过 <code>XACK</code> 进行确认，它将在指定的毫秒数后进行再次投递。这将为消息投递提供更佳的可靠性，这种情况下，客户端没有私有的方法将消息标记为已处理。这一部分也正在开发中。</p>
 
-<h2 id="toc_20"><strong>6. Visibility</strong></h2>
+<h3 id="toc_6">内存使用和节省加载时间</h3>
 
-<p>We should spend a little time talking about the visibility of our code.</p>
+<p>因为用来建模 Redis 流的设计，内存使用率是非常低的。这取决于它们的字段、值的数量和长度，对于简单的消息，每使用 100MB 内存可以有几百万条消息。此外，该格式设想为需要极少的序列化：listpack 块以 radix 树节点方式存储，在磁盘上和内存中都以相同方式表示的，因此它们可以很轻松地存储和读取。例如，Redis 可以在 0.3 秒内从 RDB 文件中读取 500 万个条目。这使流的复制和持久存储非常高效。</p>
 
-<p><strong>A lot of libraries depend on reflection to work their magic</strong> (JUnit and Spring come to mind).</p>
+<p>我还计划允许从条目中间进行部分删除。现在仅实现了一部分，策略是在条目在标记中标识条目为已删除，并且，当已删除条目占全部条目的比例达到指定值时，这个块将被回收重写，如果需要，它将被连到相邻的另一个块上，以避免碎片化。</p>
 
-<p>By default in Java 9, we will _only_ have access to public classes, methods, and fields in our exported packages. Even if we use reflection to get access to non-public members and call _setAccessible(true), _we won’t be able to access these members.</p>
+<h3 id="toc_7">关于最终发布时间的结论</h3>
 
-<p>We can use the _open_, _opens_, and _opens…to_ options to grant runtime-only access for reflection. Note, <strong>this is runtime-only!</strong></p>
+<p>Redis 的流特性将包含在年底前（LCTT 译注：本文原文发布于 2017 年 10 月）推出的 Redis 4.0 系列的稳定版中。我认为这个通用的数据结构将为 Redis 提供一个巨大的补丁，以用于解决很多现在很难以解决的情况：那意味着你（之前）需要创造性地 “滥用” 当前提供的数据结构去解决那些问题。一个非常重要的使用场景是时间序列，但是，我觉得对于其它场景来说，通过 <code>TREAD</code> 来流播消息将是非常有趣的，因为对于那些需要更高可靠性的应用程序，可以使用发布 / 订阅模式来替换 “即用即弃”，还有其它全新的使用场景。现在，如果你想在有问题环境中评估这个新数据结构，可以更新 GitHub 上的 streams 分支开始试用。欢迎向我们报告所有的 bug。:-)</p>
 
-<p>We won’t be able to compile against private types, and we should never need to anyway.</p>
-
-<p>If we must have access to a module for reflection, and we’re not the owner of that module (i.e., we can’t use the _opens…to_ directive), then it’s possible to use the command line _–add-opens_ option to allow own modules reflection access to the locked down module at runtime.</p>
-
-<p>The only caveat here’s that you need to have access to the command line arguments that are used to run a module for this to work.</p>
-
-<h2 id="toc_21"><strong>7. Putting It All Together</strong></h2>
-
-<p>Now that we know what a module is and how to use them let’s go ahead and build a simple project to demonstrate all the concepts we just learned.</p>
-
-<p>To keep things simple, we won’t be using Maven or Gradle. Instead, we’ll rely on the command line tools to build our modules.</p>
-
-<h3 id="toc_22"><strong>7.1. Setting Up Our Project</strong></h3>
-
-<p>First, we need to set up our project structure. We’ll create several directories to organize our files.</p>
-
-<p>Start by creating the project folder:</p>
-
-<pre><code class="language-sh">mkdir module-project
-cd module-project
-</code></pre>
-
-<p>This is the base of our whole project, so add files in here such as Maven or Gradle build files, other source directories, and resources.</p>
-
-<p>We also put a directory to hold all our project specific modules.</p>
-
-<p>Next, we create a module directory:</p>
-
-<pre><code class="language-sh">mkdir simple-modules
-</code></pre>
-
-<p>Here’s what our project structure will look like:</p>
-
-<pre><code class="language-txt">module-project
-|- // src if we use the default package
-|- // build files also go at this level
-|- simple-modules
-  |- hello.modules
-    |- com
-      |- baeldung
-        |- modules
-          |- hello
-  |- main.app
-    |- com
-      |- baeldung
-        |- modules
-          |- main
-</code></pre>
-
-<h3 id="toc_23"><strong>7.2. Our First Module</strong></h3>
-
-<p>Now that we have the basic structure in place, let’s add our first module.</p>
-
-<p>Under the _simple-modules _directory, create a new directory called _hello.modules_.</p>
-
-<p><strong>We can name this anything we want but follow package naming rules</strong> (i.e., periods to separate words, etc.). We can even use the name of our main package as the module name if we want, but usually, we want to stick to the same name we would use to create a JAR of this module.</p>
-
-<p>Under our new module, we can create the packages we want. In our case, we are going to create one package structure:</p>
-
-<pre><code>com.baeldung.modules.hello
-</code></pre>
-
-<p>Next, create a new class called _HelloModules.java_ in this package. We will keep the code simple:</p>
-
-<pre><code class="language-java">package com.baeldung.modules.hello;
- 
-public class HelloModules {
-    public static void doSomething() {
-        System.out.println(&quot;Hello, Modules!&quot;);
-    }
-}
-</code></pre>
-
-<p>And finally, in the _hello.modules_ root directory, add in our module descriptor; _module-info.java_:</p>
-
-<pre><code class="language-java">module hello.modules {
-    exports com.baeldung.modules.hello;
-}
-</code></pre>
-
-<p>To keep this example simple, all we are doing is exporting all public members of the _com.baeldung.modules.hello _package.</p>
-
-<h3 id="toc_24"><strong>7.3. Our Second Module</strong></h3>
-
-<p>Our first module is great, but it doesn’t do anything.</p>
-
-<p>We can create a second module that uses it now.</p>
-
-<p>Under our _simple-modules_ directory, create another module directory called _main.app_. We are going to start with the module descriptor this time:</p>
-
-<pre><code class="language-java">module main.app {
-    requires hello.modules;
-}
-</code></pre>
-
-<p>We don’t need to expose anything to the outside world. Instead, all we need to do is depend on our first module, so we have access to the public classes it exports.</p>
-
-<p>Now we can create an application that uses it.</p>
-
-<p>Create a new package structure: _com.baeldung.modules.main_.</p>
-
-<p>Now, create a new class file called _MainApp.java._</p>
-
-<pre><code class="language-java">package com.baeldung.modules.main;
- 
-import com.baeldung.modules.hello.HelloModules;
- 
-public class MainApp {
-    public static void main(String[] args) {
-        HelloModules.doSomething();
-    }
-}
-</code></pre>
-
-<p>And that is all the code we need to demonstrate modules. Our next step is to build and run this code from the command line.</p>
-
-<h3 id="toc_25"><strong>7.4. Building Our Modules</strong></h3>
-
-<p>To build our project, we can create a simple bash script and place it at the root of our project.</p>
-
-<p>Create a file called _compile-simple-modules.sh_:</p>
-
-<pre><code class="language-sh">#!/usr/bin/env bash
-javac -d outDir --module-source-path simple-modules $(find simple-modules -name &quot;*.java&quot;)
-</code></pre>
-
-<p>There are two parts to this command, the _javac_ and _find_ commands.</p>
-
-<p>The _find_ command is simply outputting a list of all ._java_ files under our simple-modules directory. We can then feed that list directly into the Java compiler.</p>
-
-<p>The only thing we have to do differently than the older versions of Java is to provide a _module-source-path_ parameter to inform the compiler that it’s building modules.</p>
-
-<p>Once we run this command, we will have an _outDir_ folder with two compiled modules inside.</p>
-
-<h3 id="toc_26"><strong>7.5. Running Our Code</strong></h3>
-
-<p>And now we can finally run our code to verify modules are working correctly.</p>
-
-<p>Create another file in the root of the project: _run-simple-module-app.sh_.</p>
-
-<pre><code class="language-sh">#!/usr/bin/env bash
-java --module-path outDir -m main.app/com.baeldung.modules.main.MainApp
-</code></pre>
-
-<p>To run a module, we must provide at least the _module-path_ and the main class. If all works, you should see:</p>
-
-<pre><code class="language-sh">$ ./run-simple-module-app.sh 
-Hello, Modules!
-</code></pre>
-
-<h3 id="toc_27"><strong>7.6. Adding a Service</strong></h3>
-
-<p>Now that we have a basic understanding of how to build a module, let’s make it a little more complicated.</p>
-
-<p>We’re going to see how to use the _provides…with_ and _uses_ directives.</p>
-
-<p>Start by defining a new file in the _hello.modules_ module named _HelloInterface__.java_:</p>
-
-<pre><code class="language-java">public interface HelloInterface {
-    void sayHello();
-}
-</code></pre>
-
-<p>To make things easy, we’re going to implement this interface with our existing _HelloModules.java_ class:</p>
-
-<pre><code class="language-java">public class HelloModules implements HelloInterface {
-    public static void doSomething() {
-        System.out.println(&quot;Hello, Modules!&quot;);
-    }
- 
-    public void sayHello() {
-        System.out.println(&quot;Hello!&quot;);
-    }
-}
-</code></pre>
-
-<p>That is all we need to do to create a _service_.</p>
-
-<p>Now, we need to tell the world that our module provides this service.</p>
-
-<p>Add the following to our _module-info.java_:</p>
-
-<pre><code>provides com.baeldung.modules.hello.HelloInterface with com.baeldung.modules.hello.HelloModules;
-</code></pre>
-
-<p>As we can see, we declare the interface and which class implements it.</p>
-
-<p>Next, we need to consume this _service_. In our _main.app_ module, let’s add the following to our _module-info.java_:</p>
-
-<pre><code class="language-java">uses com.baeldung.modules.hello.HelloInterface;
-</code></pre>
-
-<p>Finally, in our main method we can use this service like this:</p>
-
-<pre><code class="language-java">HelloModules module = new HelloModules();
-module.sayHello();
-</code></pre>
-
-<p>Compile and run:</p>
-
-<pre><code class="language-sh">$ ./run-simple-module-app.sh 
-Hello, Modules!
-Hello!
-</code></pre>
-
-<p>We use these directives to be much more explicit about how our code is to be used.</p>
-
-<p>We could put the interface into a private package while exposing the implementation in a public package.</p>
-
-<p>This makes our code much more secure with very little extra overhead.</p>
-
-<p>Go ahead and try out some of the other directives to learn more about modules and how they work.</p>
-
-<h2 id="toc_28"><strong>8. Conclusion</strong></h2>
-
-<p>In this extensive guide, we focused on and covered the basics of the new Java 9 Module system.</p>
-
-<p>We started by talking about what a module is.</p>
-
-<p>Next, we talked about how to discover which modules are included in the JDK.</p>
-
-<p>We also covered the module declaration file in detail.</p>
-
-<p>We rounded out the theory by talking about the various command line arguments we’ll need to build our modules.</p>
-
-<p>Finally, we put all our previous knowledge into practice and created a simple application built on top of the module system.</p>
-
-<p>To see this code and more, be sure to <a href="https://github.com/eugenp/tutorials/tree/master/core-java-9">check it out over on Github</a>.</p>
+<p>如果你喜欢观看视频的方式，这里有一个现场演示：<a href="https://www.youtube.com/watch?v=ELDzy9lCFHQ">https://www.youtube.com/watch?v=ELDzy9lCFHQ</a></p>
 
                         
                       </div>
@@ -632,10 +285,10 @@ Hello!
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/7/28</span>
+                    <span class="date">2018/7/30</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Java.html'>Java</a></span>
+          					    <span class="posted-in"><a href='Cache.html'>Cache</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -725,6 +378,12 @@ Hello!
 	      
 		      
 			      <li class="post">
+			        <a href="15359384213292.html">Securing Spring Boot with JWTs</a>
+			      </li>
+		     
+		  
+		      
+			      <li class="post">
 			        <a href="15358820607055.html">Java 8 Concurrency Tutorial: Atomic Variables and ConcurrentMap</a>
 			      </li>
 		     
@@ -744,12 +403,6 @@ Hello!
 		      
 			      <li class="post">
 			        <a href="15358756631902.html">Java 8 Stream Tutorial</a>
-			      </li>
-		     
-		  
-		      
-			      <li class="post">
-			        <a href="15358753472382.html">Migrate Maven Projects to Java 11</a>
 			      </li>
 		     
 		  
