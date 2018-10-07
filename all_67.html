@@ -80,9 +80,9 @@
         
             <li><a href="Coding.html">Coding</a></li>
         
-            <li><a href="Solution.html">Solution</a></li>
+            <li><a href="Modeling.html">Modeling</a></li>
         
-            <li><a href="Archtect.html">Archtect</a></li>
+            <li><a href="Archtecting.html">Archtecting</a></li>
          
 
       </ul>
@@ -105,126 +105,88 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15299316548658.html">
+                <a class="clearlink" href="15319631527349.html">
                 
-                  <h1>hbase 的架构及设计</h1>
+                  <h1>高可用Redis服务架构分析与搭建</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://blog.csdn.net/liweisnake/article/details/78086262">https://blog.csdn.net/liweisnake/article/details/78086262</a></p>
+<p><a href="https://www.cnblogs.com/xuning/p/8464625.html">https://www.cnblogs.com/xuning/p/8464625.html</a></p>
 </blockquote>
 
-<p>hbase 是强一致性的海量数据库，无论是读写性能，或是数据容量，还是一致性方面，hbase 都有非常优秀的表现。</p>
+<p>基于内存的 Redis 应该是目前各种 web 开发业务中最为常用的 key-value 数据库了，我们经常在业务中用其存储用户登陆态（Session 存储），加速一些热数据的查询（相比较 mysql 而言，速度有数量级的提升），做简单的消息队列（LPUSH 和 BRPOP）、订阅发布（PUB/SUB）系统等等。规模比较大的互联网公司，一般都会有专门的团队，将 Redis 存储以基础服务的形式提供给各个业务调用。</p>
 
-<p>本文从架构方面探讨 hbase 的主要设计，从而在需要 hbase 的场合能够更好的设计和判断。</p>
+<p>不过任何一个基础服务的提供方，都会被调用方问起的一个问题是：你的服务是否具有高可用性？最好不要因为你的服务经常出问题，导致我这边的业务跟着遭殃。最近我所在的项目中也自己搭了一套小型的 “高可用”Redis 服务，在此做一下自己的总结和思考。</p>
 
-<p>首先，先来看看 <strong>hbase 的整体架构</strong>。除了 DFS 组件，hbase 的基本组件图实际上就是 Zookeeper，HMaster，RegionServer。</p>
+<p>首先我们要定义一下对于 Redis 服务来说怎样才算是高可用，即在各种出现异常的情况下，依然可以正常提供服务。或者宽松一些，出现异常的情况下，只经过很短暂的时间即可恢复正常服务。所谓异常，应该至少包含了以下几种可能性：</p>
 
-<p><img src="https://img-blog.csdn.net/20171007104837576?watermark/2/text/aHR0cDovL2Jsb2cuY3Nkbi5uZXQvbGl3ZWlzbmFrZQ==/font/5a6L5L2T/fontsize/400/fill/I0JBQkFCMA==/dissolve/70/gravity/Center" alt=""/></p>
+<p>【异常 1】某个节点服务器的某个进程突然 down 掉（例如某开发手残，把一台服务器的 redis-server 进程 kill 了）</p>
 
-<p>其中，<strong>RegionServer</strong> 作为数据的实际存取服务器，主要负责数据的最终存取，一般情况都是多台；</p>
+<p>【异常 2】某台节点服务器 down 掉，相当于这个节点上所有进程都停了（例如某运维手残，把一个服务器的电源拔了；例如一些老旧机器出现硬件故障）</p>
 
-<p>RegionServer 根据不同的 row key 划分为许多 region，每个 region 按顺序存放从 startKey 到 endKey 的数据。每个 RegionServer 有下面这些组件：</p>
+<p>【异常 3】任意两个节点服务器之间的通信中断了（例如某临时工手残，把用于两个机房通信的光缆挖断了）</p>
 
-<p><img src="https://img-blog.csdn.net/20171015092617159?watermark/2/text/aHR0cDovL2Jsb2cuY3Nkbi5uZXQvbGl3ZWlzbmFrZQ==/font/5a6L5L2T/fontsize/400/fill/I0JBQkFCMA==/dissolve/70/gravity/Center" alt=""/><img src="https://img-blog.csdn.net/20171007212610301?watermark/2/text/aHR0cDovL2Jsb2cuY3Nkbi5uZXQvbGl3ZWlzbmFrZQ==/font/5a6L5L2T/fontsize/400/fill/I0JBQkFCMA==/dissolve/70/gravity/Center" alt=""/></p>
+<p>其实以上任意一种异常都是小概率事件，而做到高可用性的基本指导思想就是：多个小概率事件同时发生的概率可以忽略不计。只要我们设计的系统可以容忍短时间内的单点故障，即可实现高可用性。</p>
 
-<p><strong>一个 WAL</strong>: write ahead log. 听名知其意，该文件是落库前先写的日志文件，它最主要的作用是恢复数据用，类似于 mysql 的 binlog。保存在 HDFS 中</p>
+<p>对于搭建高可用 Redis 服务，网上已有了很多方案，例如 Keepalived，Codis，Twemproxy，Redis Sentinel。其中 Codis 和 Twemproxy 主要是用于大规模的 Redis 集群中，也是在 Redis 官方发布 Redis Sentinel 之前 twitter 和豌豆荚提供的开源解决方案。我的业务中数据量并不大，所以搞集群服务反而是浪费机器了。最终在 Keepalived 和 Redis Sentinel 之间做了个选择，选择了官方的解决方案 Redis Sentinel。</p>
 
-<p><strong>一个 BlockCache</strong>: regionServer 的读缓存。保存使用最频繁的数据，使用 LRU 算法换出不需要的数据。</p>
+<p>Redis Sentinel 可以理解为一个监控 Redis Server 服务是否正常的进程，并且一旦检测到不正常，可以自动地将备份（slave）Redis Server 启用，使得外部用户对 Redis 服务内部出现的异常无感知。我们按照由简至繁的步骤，搭建一个最小型的高可用的 Redis 服务。</p>
 
-<p><strong>多个 Region</strong>: 每个 region 包含多个 store，每个 CF 拥有一个 store</p>
+<p><strong>方案 1：单机版 Redis Server，无 Sentinel</strong></p>
 
-<p><strong>store</strong>: 每个 store 包含多个 storeFile 和一个 memstore</p>
+<p><img src="https://images2018.cnblogs.com/blog/566097/201802/566097-20180224104757825-317365999.png" alt=""/></p>
 
-<p><strong>Memstore</strong>: region 的写缓存。保存还未写入 HFile 的数据，写入数据前会先做排序，每个 region 每个 CF 都会拥有一个 Memstore，这就是为什么 CF 不能建太多的原因。</p>
+<p>一般情况下，我们搭的个人网站，或者平时做开发时，会起一个单实例的 Redis Server。调用方直接连接 Redis 服务即可，甚至 Client 和 Redis 本身就处于同一台服务器上。这种搭配仅适合个人学习娱乐，毕竟这种配置总会有单点故障的问题无法解决。一旦 Redis 服务进程挂了，或者服务器 1 停机了，那么服务就不可用了。并且如果没有配置 Redis 数据持久化的话，Redis 内部已经存储的数据也会丢失。</p>
 
-<p><strong>storeFile</strong>: 真正存储 keyvalue 数据的文件，其保存的文件是排序过的。一个 storeFile 对应一个 HFile。保存在 HDFS 中</p>
+<p><strong>方案 2：主从同步 Redis Server，单实例 Sentinel</strong></p>
 
-<p>HFile 分为数据块，索引块，bloom 过滤器以及 trailer。</p>
+<p><img src="https://images2018.cnblogs.com/blog/566097/201802/566097-20180224104938975-2014456086.png" alt=""/></p>
 
-<p><img src="https://img-blog.csdn.net/20171015100418759?watermark/2/text/aHR0cDovL2Jsb2cuY3Nkbi5uZXQvbGl3ZWlzbmFrZQ==/font/5a6L5L2T/fontsize/400/fill/I0JBQkFCMA==/dissolve/70/gravity/Center" alt=""/></p>
+<p>为了实现高可用，解决方案 1 中所述的单点故障问题，我们必须增加一个备份服务，即在两台服务器上分别各启动一个 Redis Server 进程，一般情况下由 master 提供服务，slave 只负责同步和备份。与此同时，在额外启动一个 Sentinel 进程，监控两个 Redis Server 实例的可用性，以便在 master 挂掉的时候，及时把 slave 提升到 master 的角色继续提供服务，这样就实现了 Redis Server 的高可用。这基于一个高可用服务设计的依据，即单点故障本身就是个小概率事件，而多个单点同时故障（即 master 和 slave 同时挂掉），可以认为是（基本）不可能发生的事件。</p>
 
-<p><strong>Trailer</strong> 主要记录了 HFile 的基本信息，各个部分的偏移和地址信息。</p>
+<p>对于 Redis 服务的调用方来说，现在要连接的是 Redis Sentinel 服务，而不是 Redis Server 了。常见的调用过程是，client 先连接 Redis Sentinel 并询问目前 Redis Server 中哪个服务是 master，哪些是 slave，然后再去连接相应的 Redis Server 进行操作。当然目前的第三方库一般都已经实现了这一调用过程，不再需要我们手动去实现（例如 Nodejs 的 ioredis，PHP 的 predis，Golang 的 go-redis/redis，JAVA 的 jedis 等）。</p>
 
-<p><strong>Data block</strong> 主要存储用户的 key-value 数据</p>
+<p>然而，我们实现了 Redis Server 服务的主从切换之后，又引入了一个新的问题，即 Redis Sentinel 本身也是个单点服务，一旦 Sentinel 进程挂了，那么客户端就没办法链接 Sentinel 了。所以说，方案 2 的配置并无法实现高可用性。</p>
 
-<p><strong>Bloom filter</strong> 主要用来快速定位文件是否不在数据块。</p>
+<p><strong>方案 3：主从同步 Redis Server，双实例 Sentinel</strong></p>
 
-<p><img src="https://img-blog.csdn.net/20171015103532031?watermark/2/text/aHR0cDovL2Jsb2cuY3Nkbi5uZXQvbGl3ZWlzbmFrZQ==/font/5a6L5L2T/fontsize/400/fill/I0JBQkFCMA==/dissolve/70/gravity/Center" alt=""/></p>
+<p><img src="https://images2018.cnblogs.com/blog/566097/201802/566097-20180224105121774-2039349597.png" alt=""/></p>
 
-<p><img src="https://img-blog.csdn.net/20171015103549504?watermark/2/text/aHR0cDovL2Jsb2cuY3Nkbi5uZXQvbGl3ZWlzbmFrZQ==/font/5a6L5L2T/fontsize/400/fill/I0JBQkFCMA==/dissolve/70/gravity/Center" alt=""/></p>
+<p>为了解决方案 2 的问题，我们把 Redis Sentinel 进程也额外启动一份，两个 Sentinel 进程同时为客户端提供服务发现的功能。对于客户端来说，它可以连接任何一个 Redis Sentinel 服务，来获取当前 Redis Server 实例的基本信息。通常情况下，我们会在 Client 端配置多个 Redis Sentinel 的链接地址，Client 一旦发现某个地址连接不上，会去试图连接其他的 Sentinel 实例，这当然也不需要我们手动实现，各个开发语言中比较热门的 redis 连接库都帮我们实现了这个功能。我们预期是：即使其中一个 Redis Sentinel 挂掉了，还有另外一个 Sentinel 可以提供服务。</p>
 
-<p>比较容易混淆的是 <strong>zookeeper 和 hmaster</strong>。</p>
+<p>然而，愿景是美好的，现实却是很残酷的。如此架构下，依然无法实现 Redis 服务的高可用。方案 3 示意图中，红线部分是两台服务器之间的通信，而我们所设想的异常场景（【异常 2】）是，某台服务器整体 down 机，不妨假设服务器 1 停机，此时，只剩下服务器 2 上面的 Redis Sentinel 和 slave Redis Server 进程。这时，Sentinel 其实是不会将仅剩的 slave 切换成 master 继续服务的，也就导致 Redis 服务不可用，因为 Redis 的设定是只有当超过 50% 的 Sentinel 进程可以连通并投票选取新的 master 时，才会真正发生主从切换。本例中两个 Sentinel 只有一个可以连通，等于 50% 并不在可以主从切换的场景中。</p>
 
-<p><strong>Zookeeper</strong> 负责保持多台 Hmaster 中只有一台是活跃的；存储 Hbase 的 schema，table，CF 等元信息；存储所有的 region 入口；监控 regionServer 的状态，并将该信息通知 hmaster。可以看出来，zookeeper 几乎是负责整个集群的关键信息存取以及关键状态监控。<strong>如果 zookeeper 挂了，那么整个 hbase 集群几乎就是不可用的状态</strong>。</p>
+<p>你可能会问，为什么 Redis 要有这个 50% 的设定？假设我们允许小于等于 50% 的 Sentinel 连通的场景下也可以进行主从切换。试想一下【异常 3】，即服务器 1 和服务器 2 之间的网络中断，但是服务器本身是可以运行的。如下图所示：</p>
 
-<p><img src="https://img-blog.csdn.net/20171007233209495?watermark/2/text/aHR0cDovL2Jsb2cuY3Nkbi5uZXQvbGl3ZWlzbmFrZQ==/font/5a6L5L2T/fontsize/400/fill/I0JBQkFCMA==/dissolve/70/gravity/Center" alt=""/></p>
+<p><img src="https://images2018.cnblogs.com/blog/566097/201802/566097-20180224105223591-314651630.png" alt=""/></p>
 
-<p><strong>Hmaster</strong> 则是负责对 table 元数据的管理；对 HRegion 的负载均衡，调整 HRegion 的布局，比如分裂和合并；包括恢复数据的迁移等。Hmaster 相当于对 RegionServer 的后台管理，对于一些定制的管理行为，zookeeper 不可能帮你完成，于是乎才有了 hmaster。<strong>如果 hmaster 挂了，除了不能对 table 进行管理配置，不能扩展 region，并不会影响整体服务的可用性</strong>。</p>
+<p>实际上对于服务器 2 来说，服务器 1 直接 down 掉和服务器 1 网络连不通是一样的效果，反正都是突然就无法进行任何通信了。假设网络中断时我们允许服务器 2 的 Sentinel 把 slave 切换为 master，结果就是你现在拥有了两个可以对外提供服务的 Redis Server。Client 做任何的增删改操作，有可能落在服务器 1 的 Redis 上，也有可能落在服务器 2 的 Redis 上（取决于 Client 到底连通的是哪个 Sentinel），造成数据混乱。即使后面服务器 1 和服务器 2 之间的网络又恢复了，那我们也无法把数据统一了（两份不一样的数据，到底该信任谁呢？），数据一致性完全被破坏。</p>
 
-<p>接下来我们来关注一些关键流程。</p>
+<p><strong>方案 4：主从同步 Redis Server，三实例 Sentinel</strong></p>
 
-<p><strong>客户端首次读写的流程</strong>：</p>
+<p><img src="https://images2018.cnblogs.com/blog/566097/201802/566097-20180224105313568-148145342.png" alt=""/></p>
 
-<p>1. 客户端首先从 zookeeper 中得到 META table 的位置，根据 META table 的存储位置得到具体的 RegionServer 是哪台</p>
+<p>鉴于方案 3 并没有办法做到高可用，我们最终的版本就是上图所示的方案 4 了。实际上这就是我们最终搭建的架构。我们引入了服务器 3，并且在 3 上面又搭建起一个 Redis Sentinel 进程，现在由三个 Sentinel 进程来管理两个 Redis Server 实例。这种场景下，不管是单一进程故障、还是单个机器故障、还是某两个机器网络通信故障，都可以继续对外提供 Redis 服务。</p>
 
-<p>2. 询问具体的 RegionServer</p>
+<p>实际上，如果你的机器比较空闲，当然也可以把服务器 3 上面也开启一个 Redis Server，形成 1 master + 2 slave 的架构，每个数据都有两个备份，可用性会提升一些。当然也并不是 slave 越多越好，毕竟主从同步也是需要时间成本的。</p>
 
-<p><strong>写流程</strong>：</p>
+<p>在方案 4 中，一旦服务器 1 和其他服务器的通信完全中断，那么服务器 2 和 3 会将 slave 切换为 master。对于客户端来说，在这么一瞬间会有 2 个 master 提供服务，并且一旦网络恢复了，那么所有在中断期间落在服务器 1 上的新数据都会丢失。如果想要部分解决这个问题，可以配置 Redis Server 进程，让其在检测到自己网络有问题的时候，立即停止服务，避免在网络故障期间还有新数据进来（可以参考 Redis 的 min-slaves-to-write 和 min-slaves-max-lag 这两个配置项）。</p>
 
-<p>1. 首先写入 WAL 日志，以防 crash。</p>
+<p>至此，我们就用 3 台机器搭建了一个高可用的 Redis 服务。其实网上还有更加节省机器的办法，就是把一个 Sentinel 进程放在 Client 机器上，而不是服务提供方的机器上。只不过在公司里面，一般服务的提供方和调用方并不来自同一个团队。两个团队共同操作同一个机器，很容易因为沟通问题导致一些误操作，所以出于这种人为因素的考虑，我们还是采用了方案 4 的架构。并且由于服务器 3 上面只跑了一个 Sentinel 进程，对服务器资源消耗并不多，还可以用服务器 3 来跑一些其他的服务。</p>
 
-<p>2. 紧接着写入 Memstore，即写缓存。由于是内存写入，速度较快。</p>
+<p><strong>易用性：像使用单机版 Redis 一样使用 Redis Sentinel</strong></p>
 
-<p>3. 立马返回客户端表示写入完毕。</p>
+<p>作为服务的提供方，我们总是会讲到用户体验问题。在上述方案当中始终有一个让 Client 端用的不是那么舒服的地方。对于单机版 Redis，Client 端直接连接 Redis Server，我们只需要给一个 ip 和 port，Client 就可以使用我们的服务了。而改造成 Sentinel 模式之后，Client 不得不采用一些支持 Sentinel 模式的外部依赖包，并且还要修改自己的 Redis 连接配置，这对于 “矫情” 的用户来讲显然是不能接收的。有没有办法还是像在使用单机版的 Redis 那样，只给 Client 一个固定的 ip 和 port 就可以提供服务呢？</p>
 
-<p>4. 当 Memstore 满时，从 Memstore 刷新到 HFile，磁盘的顺序写速度非常快，并记录下最后一次最高的 sequence 号。这样系统能知道哪些记录已经持久化，哪些没有。</p>
+<p><img src="https://images2018.cnblogs.com/blog/566097/201802/566097-20180224105513939-1484357459.png" alt=""/></p>
 
-<p><strong>读流程</strong>：</p>
+<p>答案当然是肯定的。这可能就要引入虚拟 IP（Virtual IP，VIP），如上图所示。我们可以把虚拟 IP 指向 Redis Server master 所在的服务器，在发生 Redis 主从切换的时候，会触发一个回调脚本，回调脚本中将 VIP 切换至 slave 所在的服务器。这样对于 Client 端来说，他仿佛在使用的依然是一个单机版的高可用 Redis 服务。</p>
 
-<p>1. 首先到读缓存 BlockCache 中查找可能被缓存的数据</p>
+<p><strong>结语</strong></p>
 
-<p>2. 如果未找到，到写缓存查找已提交但是未落 HFile 的数据</p>
-
-<p>3. 如果还未找到， 到 HFile 中继续查找数据</p>
-
-<p><img src="https://img-blog.csdn.net/20171008110233034?watermark/2/text/aHR0cDovL2Jsb2cuY3Nkbi5uZXQvbGl3ZWlzbmFrZQ==/font/5a6L5L2T/fontsize/400/fill/I0JBQkFCMA==/dissolve/70/gravity/Center" alt=""/></p>
-
-<p><strong>数据紧凑</strong>：</p>
-
-<p>数据从 memStore 刷新到 HFile 时，为了保持简单，都是每个 memStore 放一个 HFile，这会带来大量小 HFile 文件，使得查询时效率相对较低，于是，采用数据紧凑的方式将多个小文件压缩为几个大文件。其中，minor compaction 是自动将相关的小文件做一些适当的紧凑，但不彻底；而 major compaction 则是放在午夜跑的定时任务，将文件做最大化的紧凑。</p>
-
-<p><img src="https://img-blog.csdn.net/20171008114505743?watermark/2/text/aHR0cDovL2Jsb2cuY3Nkbi5uZXQvbGl3ZWlzbmFrZQ==/font/5a6L5L2T/fontsize/400/fill/I0JBQkFCMA==/dissolve/70/gravity/Center" alt=""/></p>
-
-<p><img src="https://img-blog.csdn.net/20171008114703447?watermark/2/text/aHR0cDovL2Jsb2cuY3Nkbi5uZXQvbGl3ZWlzbmFrZQ==/font/5a6L5L2T/fontsize/400/fill/I0JBQkFCMA==/dissolve/70/gravity/Center" alt=""/></p>
-
-<p><strong>数据恢复流程</strong>：</p>
-
-<p>当 RegionServer 挂了，zookeeper 很快就能检测到，于是将其下的 region 状态设置为不可用。Hmaster 随即开始恢复的流程。</p>
-
-<p>1. HFile 本身有 2 个备份，而且有专门的 HDFS 来管理其下的文件。因此对 HFile 来说并不需要恢复。</p>
-
-<p>2. Hmaster 重置 region 到新的 regionServer</p>
-
-<p>3. 之前在 MemStore 中丢失的数据，通过 WAL 分裂先将 WAL 按照 region 切分。切分的原因是 WAL 并不区分 region，而是所有 region 的 log 都写入同一个 WAL。</p>
-
-<p>4. 根据 WAL 回放并恢复数据。回放的过程实际上先进 MemStore，再 flush 到 HFile</p>
-
-<p><img src="https://img-blog.csdn.net/20171008154723461?watermark/2/text/aHR0cDovL2Jsb2cuY3Nkbi5uZXQvbGl3ZWlzbmFrZQ==/font/5a6L5L2T/fontsize/400/fill/I0JBQkFCMA==/dissolve/70/gravity/Center" alt=""/></p>
-
-<p><img src="https://img-blog.csdn.net/20171008154745990?watermark/2/text/aHR0cDovL2Jsb2cuY3Nkbi5uZXQvbGl3ZWlzbmFrZQ==/font/5a6L5L2T/fontsize/400/fill/I0JBQkFCMA==/dissolve/70/gravity/Center" alt=""/></p>
-
-<h2 id="toc_0">参考资料</h2>
-
-<ul>
-<li><a href="https://yq.aliyun.com/articles/54410">我们为什么选择 hbase</a></li>
-<li><a href="https://mapr.com/blog/in-depth-look-hbase-architecture/">hbase 架构</a></li>
-<li><a href="http://hbasefly.com/2016/10/29/hbase-regionserver-recovering/">HBase 原理－RegionServer 宕机数据恢复</a></li>
-<li><a href="http://hbasefly.com/2016/03/25/hbase-hfile/">HBase – 存储文件 HFile 结构解析</a></li>
-<li><a href="http://blog.cloudera.com/blog/2012/06/hbase-io-hfile-input-output/">Apache HBase I/O – HFile</a></li>
-</ul>
+<p>搭建任何一个服务，做到 “能用” 其实是非常简单的，就像我们运行一个单机版的 Redis。不过一旦要做到“高可用”，事情就会变得复杂起来。业务中使用了额外的两台服务器，3 个 Sentinel 进程 + 1 个 Slave 进程，只是为了保证在那小概率的事故中依然做到服务可用。在实际业务中我们还启用了 supervisor 做进程监控，一旦进程意外退出，会自动尝试重新启动。</p>
 
                         
                       </div>
@@ -233,10 +195,10 @@
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/6/25</span>
+                    <span class="date">2018/7/19</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Persistence.html'>Persistence</a></span>
+          					    <span class="posted-in"><a href='Cache.html'>Cache</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -307,9 +269,9 @@
         
             <a href="Coding.html"><strong>Coding</strong></a>
         
-            <a href="Solution.html"><strong>Solution</strong></a>
+            <a href="Modeling.html"><strong>Modeling</strong></a>
         
-            <a href="Archtect.html"><strong>Archtect</strong></a>
+            <a href="Archtecting.html"><strong>Archtecting</strong></a>
          
         </p>
 
@@ -326,31 +288,31 @@
 	      
 		      
 			      <li class="post">
-			        <a href="15359384213292.html">Securing Spring Boot with JWTs</a>
+			        <a href="15389311738065.html">重构到更深层的模型</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15358820607055.html">Java 8 Concurrency Tutorial: Atomic Variables and ConcurrentMap</a>
+			        <a href="15389278377243.html">IAM of Google Cloud</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15358774987730.html">Java 8 Concurrency Tutorial: Synchronization and Locks</a>
+			        <a href="15389224951575.html">RSocket, a New Application Network Protocol for Reactive Applications, Announced at SpringOne</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15358757119900.html">Java 8 Concurrency Tutorial: Threads and Executors</a>
+			        <a href="15389220103546.html">如何形象地描述RxJava中的背压和流控机制？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15358756631902.html">Java 8 Stream Tutorial</a>
+			        <a href="15389214670417.html">Modeling Uncertainty with Reactive DDD</a>
 			      </li>
 		     
 		  

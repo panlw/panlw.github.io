@@ -80,9 +80,9 @@
         
             <li><a href="Coding.html">Coding</a></li>
         
-            <li><a href="Solution.html">Solution</a></li>
+            <li><a href="Modeling.html">Modeling</a></li>
         
-            <li><a href="Archtect.html">Archtect</a></li>
+            <li><a href="Archtecting.html">Archtecting</a></li>
          
 
       </ul>
@@ -105,129 +105,277 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15309734549526.html">
+                <a class="clearlink" href="15309739332194.html">
                 
-                  <h1>Stream Improvements in Java 9</h1>
+                  <h1>Spring WebFlux and rxjava2-jdbc</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="http://iteratrlearning.com/java9/2016/08/06/java9-streams.html">http://iteratrlearning.com/java9/2016/08/06/java9-streams.html</a></p>
+<p><a href="https://medium.com/netifi/spring-webflux-and-rxjava2-jdbc-83a94e71ba04">https://medium.com/netifi/spring-webflux-and-rxjava2-jdbc-83a94e71ba04</a></p>
 </blockquote>
 
-<p><u>Written on August 06, 2016</u></p>
+<p>Spring <a href="https://docs.spring.io/spring/docs/current/spring-framework-reference/web-reactive.html#spring-webflux">WebFlux</a> is a great way to create a non-blocking REST application. One issue that you run into when start working with WebFlux is JDBC. JDBC is blocking. New school databases like <a href="http://cassandra.apache.org/">Cassandra</a> or <a href="https://www.couchbase.com/">Couchbase</a> have non-blocking drivers. In Couchbase’s case its driver uses <a href="https://github.com/ReactiveX/RxJava">RXJava</a>. NoSQL databases are great, but you can’t always use one for various reasons. There is some effort going into creating asynchronous drivers for databases, as well as Oracle’s effort to create <a href="https://blogs.oracle.com/java/jdbc-next:-a-new-asynchronous-api-for-connecting-to-a-database">ADBA</a>. Unfortunately, these are early days, and if you want to talk to a SQL database on the JVM you’re stuck with a blocking driver. This is a problem when you’re building a non-blocking application with Spring WebFlux . Luckily reactor-core and rxjava2 both implement <a href="http://www.reactive-streams.org/">ReactiveStreams</a>.</p>
 
-<p>We’ve found, while teaching developers about lambdas and Streams in Java 8, that many developers really appreciate the code that comes out at the other end. It tends to read a lot more like the problem that developers are trying to solve than traditional for loops and, as a side effect, is often shorter to boot. That doesn’t mean that the Streams API is perfect or even complete. In this article we will be looking at a few small improvements that are scheduled for Java 9 that make it even better.</p>
+<p>This means that you can use David Moten’s <a href="https://github.com/davidmoten/rxjava2-jdbc">rxjava2-jdbc</a> library. It takes a normal JDBC driver and allows you to interact with it in a way that won’t block your application. It does this by scheduling potentially blocking work on different threads. Additionally, it has DSL that lets you model your SQL statements and results into streams. This makes integrating into your reactive application a snap.</p>
 
-<h2 id="toc_0">ofNullable</h2>
+<p>Rxjava2-jdbc also provides non-blocking connection pooling. Normally in a blocking application threads are blocked until a connection is available to make a query. This is a problem for a non-blocking application as you will quickly exhaust all database connection threads and turn your wonderful non-blocking application into a clunky blocking application. In rxjava2-jdbc its connection pool returns a <a href="http://reactivex.io/RxJava/javadoc/io/reactivex/Single.html">Single</a> that is controlled by the connection pool. This means that instead of assigning threads to each query, queries subscribe to the connection pool and receive a connection when one is available — no blocked threads!</p>
 
-<p>The <code>Stream</code> interface has a couple of factory methods called of() that allow you to create Streams from pre-specified values - one is an overload for a single value and the other takes a varargs parameter. These are incredibly useful both when you’re trying to test out Streams code and also when you want to just instantiate a Stream with a few values. Java 9 adds an <code>ofNullable()</code> factory - let’s see how you might use it and what it’s for.</p>
+<p>Nothing is better than an example, so I created one that uses Spring WebFlux, rxjava2-jdbc, and H2. The example is a simple REST application that uses an embedded H2 database. It can be found <a href="https://github.com/netifi/webflux-rxjava2-jdbc-example">here</a>. The example has two objects. The first is an Employee object which contains information about the employee including: first name, last name, and department id. The second object is the Department object, which contains information about different departments. The application has restful endpoints for basic create, read, delete and list operations for the Employee and list operations for Department.</p>
 
-<p>Let’s suppose we’re trying to find a location to put some configuration files in a Java application. We want to look at a couple of different properties - e.g. “app.config” and “app.home”. Let’s write this code in Java 8:</p>
+<h4 id="toc_0">Running the Example</h4>
 
-<pre><code class="language-java">final String configurationDirectory =
-   Stream.of(&quot;app.config&quot;, &quot;app.home&quot;, &quot;user.home&quot;)
-         .flatMap(key -&gt; {
-             final String property = System.getProperty(key);
-             if (property == null)
-             {
-                 return Stream.empty();
-             }
-             else
-             {
-                 return Stream.of(property);
-             }
-         })
-         .findFirst()
-         .orElseThrow(IllegalStateException::new);
+<p>Running the example is simple and can be done with following command:</p>
+
+<pre><code class="language-sh">./gradlew clean run
 </code></pre>
 
-<p>Hmm, that’s a little bit ugly right - What’s going on here? Well we’re looking up each property in our Stream and using the flatMap operation. We use flatMap here because it allows us to map an element to 0 or 1 elements in the Stream. If we can lookup the system property then we return a Stream containing only it, but if we can’t look it up then we return an empty Stream in its place. This results in no element being added into the stream.</p>
+<p>This command will configure the database and start the WebFlux application using Spring Boot. The example doesn’t need a servlet container to run, and instead uses <a href="http://netty.io">Netty</a> to serve traffic. If you want to test and see if the example is up and running you can run the following curl command:</p>
 
-<p>Unfortunately what we’ve ended up with is a fairly large statement style lambda expression with a null check in the middle of the code. One alternative would be to use a ternary operator</p>
-
-<pre><code class="language-java">final String configurationDirectory =
-   Stream.of(&quot;app.config&quot;, &quot;app.home&quot;, &quot;user.home&quot;)
-         .flatMap(key -&gt; {
-              final String property = System.getProperty(key);
-              return property == null ? Stream.empty() : Stream.of(property);
-         })
-         .findFirst()
-         .orElseThrow(IllegalStateException::new);
+<pre><code class="language-sh">curl localhost:8080/employees
 </code></pre>
 
-<p>Even after this refactor, however, the code reads slightly inelegantly. Java 9’s <code>ofNullable</code> would allow us to write the same pattern much more succinctly and more readably.</p>
+<p>You should see a JSON employee list if it’s running properly.</p>
 
-<pre><code class="language-java">final String configurationDirectory =
-   Stream.of(&quot;app.config&quot;, &quot;app.home&quot;, &quot;user.home&quot;)
-         .flatMap(key -&gt; Stream.ofNullable(System.getProperty(key)))
-         .findFirst()
-         .orElseThrow(IllegalStateException::new);
+<h4 id="toc_1">Routing Requests</h4>
+
+<p>Let’s take look inside the application and see what it’s doing. The first thing to take a look at is the <u>EmployeeRouter</u> class. This class routes incoming HTTP requests to the appropriate handler based on URL and HTTP method.</p>
+
+<p><a href="https://gist.github.com/robertroeser/e7ce97c4fc7d69de449925e7a3f2b7e1#file-employeerouter-java">EmployeeRouter.java hosted with ❤ by GitHub</a></p>
+
+<pre><code class="language-java">@Configuration
+public class EmployeeRouter {
+  @Bean
+  public RouterFunction&lt;ServerResponse&gt; route(EmployeeHandler handler) {
+    return RouterFunctions.route(
+            GET(&quot;/employees&quot;).and(RequestPredicates.accept(MediaType.APPLICATION_JSON)),
+            handler::getAllEmployees)
+        .andRoute(
+            GET(&quot;/employee/fn/{fn}/ln/{ln}&quot;)
+                .and(RequestPredicates.accept(MediaType.APPLICATION_JSON)),
+            handler::getEmployee)
+        .andRoute(
+            PUT(&quot;/employee&quot;).and(RequestPredicates.accept(MediaType.APPLICATION_JSON)),
+            handler::createNewEmployee)
+        .andRoute(
+            DELETE(&quot;/employee/id/{id}&quot;).and(RequestPredicates.accept(MediaType.APPLICATION_JSON)),
+            handler::deleteEmployee)
+        .andRoute(
+            GET(&quot;/departments&quot;).and(RequestPredicates.accept(MediaType.APPLICATION_JSON)),
+            handler::getAllDepartments);
+  }
+}
 </code></pre>
 
-<p>It’s worth noting for the sake of completeness that this isn’t the only way to solve this problem in code, we could also have mapped over the System.getProperty() function and then filtered out the null values. That is perhaps a more natural way of writing this code for some people, but has the downside of resulting in null values getting into our Stream - something we try to steer clear of.</p>
+<p>In Spring WebFlux because it’s non-blocking these handlers must return a Mono<T>.</p>
 
-<h2 id="toc_1">takeWhile and dropWhile</h2>
+<h4 id="toc_2">Handling Requests</h4>
 
-<p>We have an application that is processing payments being made on an ecommerce website and we’re maintaining a list of all payments in the current day that are sorted from the most expensive down to the cheapest. We have a business requirement to produce a report on every payment that is £500 or greater in value at the end of the day. A natural way of writing this code using Java 8 Streams might be:</p>
+<p>The next class to take a look at is the class that is handling the requests, <u>EmployeeHandler</u>.</p>
 
-<pre><code class="language-java">final List&lt;Payment&gt; expensivePayments = paymentsByValue
-   .stream()
-   .filter(transaction -&gt; transaction.getValue() &gt;= 500)
-   .collect(Collectors.toList());
+<p><a href="https://gist.github.com/robertroeser/5d4ab5386e5b2e7301c33551ead8ada8#file-employeehandler-java">EmployeeHandler.java hosted with ❤ by GitHub</a></p>
+
+<pre><code class="language-java">@Component
+public class EmployeeHandler {
+  private final EmployeeRepository repository;
+
+  public EmployeeHandler(EmployeeRepository repository) {
+    this.repository = repository;
+  }
+
+  public Mono&lt;ServerResponse&gt; getAllEmployees(ServerRequest request) {
+    Flux&lt;Employee&gt; employees = repository.getAllEmployees();
+    return ServerResponse.ok()
+        .contentType(MediaType.APPLICATION_JSON)
+        .body(employees, Employee.class);
+  }
+
+  public Mono&lt;ServerResponse&gt; getEmployee(ServerRequest request) {
+    String firstName = request.pathVariable(&quot;fn&quot;);
+    String lastName = request.pathVariable(&quot;ln&quot;);
+    Mono&lt;Employee&gt; employee = repository.getEmployee(firstName, lastName);
+
+    return ServerResponse.ok()
+        .contentType(MediaType.APPLICATION_JSON)
+        .body(employee, Employee.class);
+  }
+
+  public Mono&lt;ServerResponse&gt; createNewEmployee(ServerRequest request) {
+    Mono&lt;Employee&gt; employeeMono = request.bodyToMono(Employee.class);
+    Mono&lt;Employee&gt; employee = repository.createNewEmployee(employeeMono);
+
+    return ServerResponse.ok()
+        .contentType(MediaType.APPLICATION_JSON)
+        .body(employee, Employee.class);
+  }
+
+  public Mono&lt;ServerResponse&gt; deleteEmployee(ServerRequest request) {
+    String id = request.pathVariable(&quot;id&quot;);
+    Mono&lt;Void&gt; employee = repository.deleteEmployee(id);
+
+    return ServerResponse.ok().contentType(MediaType.APPLICATION_JSON).build(employee);
+  }
+
+  public Mono&lt;ServerResponse&gt; getAllDepartments(ServerRequest request) {
+    Flux&lt;Department&gt; allDepartments = repository.getAllDepartments();
+    return ServerResponse.ok()
+        .contentType(MediaType.APPLICATION_JSON)
+        .body(allDepartments, Department.class);
+  }
+}
 </code></pre>
 
-<p>Unfortunately the downside of this approach is that if you start processing lots and lots of transactions in a day the <code>filter</code> operation gets applied to every transaction in your input list. You know that your input list is sorted by descending value of the transaction, so once you have found a transaction that fails your predicate every transaction after that point can be filtered out. Thankfully Java 9 solves this problem with the addition of a takeWhile operation.</p>
+<p>This is the class that is responsible for handling incoming requests. Each handle method returns a <u>Mono<ServerResponse></u>. The ServerResponse object has a builder that is used to create the response, and has methods that take Fluxes and Monos for responses. The <u>ServerResponse</u> object will also automatically serialize your results to JSON. Additionally, if you return a stream of responses, WebFlux will automatically turn the response into a JSON list. You can can see this in the <u>getAllEmployees</u> and <u>getAllDepoartment</u> methods. A method to look closer at is the <u>deleteEmployee</u> method. The <u>deleteEmployee</u> method is a little different then the other methods. You’ll notice that most methods use the <u>body</u> method to create a response. The <u>deleteEmployee</u> doesn’t have a body so it uses the <u>build</u> method instead which takes a Mono<Void>.</p>
 
-<pre><code class="language-java">final List&lt;Payment&gt; expensivePayments = paymentsByValue
-   .stream()
-   .takeWhile(transaction -&gt; transaction.getValue() &gt;= 500)
-   .collect(Collectors.toList());
+<h4 id="toc_3">Interacting with the Database</h4>
+
+<p>To create our responses we need to get the information from our database. The object that takes care of that is the the <u>EmployeeRepository</u> which is being injected into the handler. This is normally where things start to fall apart because you’re accessing a blocking database. In our case though we’re using rxjava2-jdbc and it’s no longer an issue. While this does turn a JDBC driver into a non-blocking driver and deals with the difficulties of scheduling potentially blocking work off the event loop, this isn’t as efficient as a purely non-blocking approach. However, it is sufficient for all but the highest throughput applications. Lets take a look at the <u>EmployeeRepository</u> class:</p>
+
+<p><a href="https://gist.github.com/robertroeser/580116df0045187e4850bd4016704ce1#file-employeerepository-java">EmployeeRepository.java hosted with ❤ by GitHub</a></p>
+
+<pre><code class="language-java">@Component
+public class EmployeeRepository {
+  private Database db;
+
+  public EmployeeRepository() throws Exception {
+    Connection connection = DriverManager.getConnection(&quot;jdbc:h2:./build/mydatabase&quot;, &quot;sa&quot;, &quot;sa&quot;);
+    NonBlockingConnectionPool pool =
+        Pools.nonBlocking()
+            .maxPoolSize(Runtime.getRuntime().availableProcessors() * 5)
+            .connectionProvider(ConnectionProvider.from(connection))
+            .build();
+
+    this.db = Database.from(pool);
+  }
+
+  Flux&lt;Employee&gt; getAllEmployees() {
+    String sql = &quot;SELECT * FROM employee e JOIN department d ON e.department_id = d.department_id&quot;;
+
+    Flowable&lt;Employee&gt; employeeFlowable =
+        db.select(sql)
+            .get(
+                rs -&gt; {
+                  Employee employee = new Employee();
+                  employee.setId(rs.getInt(&quot;employee_id&quot;));
+                  employee.setFirstName(rs.getString(&quot;employee_firstname&quot;));
+                  employee.setLastName(rs.getString(&quot;employee_lastname&quot;));
+                  employee.setDepartment(rs.getString(&quot;department_name&quot;));
+
+                  return employee;
+                });
+
+    return Flux.from(employeeFlowable);
+  }
+
+  Mono&lt;Employee&gt; getEmployee(String firstName, String lastName) {
+    String sql =
+        &quot;SELECT employee_id, employee_firstname, employee_lastname, department_name FROM employee e &quot;
+            + &quot;JOIN department d ON e.department_id = d.department_id &quot;
+            + &quot;WHERE employee_firstname = ? AND &quot;
+            + &quot;employee_lastname = ?&quot;;
+
+    Flowable&lt;Employee&gt; employeeFlowable =
+        db.select(sql)
+            .parameters(firstName, lastName)
+            .get(
+                rs -&gt; {
+                  Employee employee = new Employee();
+                  employee.setId(rs.getInt(&quot;employee_id&quot;));
+                  employee.setFirstName(rs.getString(&quot;employee_firstname&quot;));
+                  employee.setLastName(rs.getString(&quot;employee_lastname&quot;));
+                  employee.setDepartment(rs.getString(&quot;department_name&quot;));
+
+                  return employee;
+                });
+
+    return Mono.from(employeeFlowable);
+  }
+
+  Mono&lt;Employee&gt; createNewEmployee(Mono&lt;Employee&gt; employeeMono) {
+
+    String createSql =
+        &quot;INSERT INTO employee (employee_firstname, employee_lastname, department_id) VALUES (?, ?, ?)&quot;;
+    String selectDepartmentId = &quot;SELECT department_id from department where department_name = ?&quot;;
+    String selectSql =
+        &quot;SELECT employee_id, employee_firstname, employee_lastname, department_name FROM employee e &quot;
+            + &quot;JOIN department d ON e.department_id = d.department_id &quot;
+            + &quot;WHERE employee_id = ?&quot;;
+
+    return employeeMono.flatMap(
+        newEmployee -&gt; {
+          Flowable&lt;Integer&gt; employeeIds =
+              db.select(selectDepartmentId)
+                  .parameters(newEmployee.getDepartment())
+                  .getAs(Integer.class)
+                  .flatMap(
+                      departmentId -&gt;
+                          db.update(createSql)
+                              .parameters(
+                                  newEmployee.getFirstName(),
+                                  newEmployee.getLastName(),
+                                  departmentId)
+                              .returnGeneratedKeys()
+                              .getAs(Integer.class));
+
+          Flowable&lt;Employee&gt; employeeFlowable =
+              db.select(selectSql)
+                  .parameterStream(employeeIds)
+                  .get(
+                      rs -&gt; {
+                        Employee employee = new Employee();
+                        employee.setId(rs.getInt(&quot;employee_id&quot;));
+                        employee.setFirstName(rs.getString(&quot;employee_firstname&quot;));
+                        employee.setLastName(rs.getString(&quot;employee_lastname&quot;));
+                        employee.setDepartment(rs.getString(&quot;department_name&quot;));
+
+                        return employee;
+                      });
+
+          return Mono.from(employeeFlowable);
+        });
+  }
+
+  Mono&lt;Void&gt; deleteEmployee(String id) {
+    String sql = &quot;DELETE FROM employee WHERE employee_id = ?&quot;;
+    Flowable&lt;Integer&gt; counts = db.update(sql).parameter(id).counts();
+    return Flux.from(counts).then();
+  }
+
+  Flux&lt;Department&gt; getAllDepartments() {
+    return Flux.from(db.select(Department.class).get());
+  }
+}
 </code></pre>
 
-<p>While <code>filter</code> retains all elements in the Stream that match its predicate, <code>takeWhile</code> stops once it has found an element that fails to match. The <code>dropWhile</code> operation does the inverse: throws away the elements at the start where the predicate is false.</p>
+<p>The first thing to look at here is the constructor. The main class in rxjava2-jdbc is the Database class. This is what you use to interact with the database and run queries. Before you can do that you need to create a connection to the database. For our example, we’re creating a connection to an H2 database. Many databases allow you to pass in user credentials and other information in there connection string. If they do then you can use just create a database like so:</p>
 
-<p>One subtlety that affects <code>takeWhile()</code> and <code>dropWhile()</code> relates to infinite streams. If you have an infinite stream and apply a <code>takeWhile</code> operation that eventually returns false on an element in the stream then it gets truncated at that point. When applying the <code>dropWhile</code> operation to an infinite stream, the result can still be an infinite stream. If the the predicate always returns true then the Stream will continue to drop elements. Consider:</p>
-
-<pre><code class="language-java">IntStream.iterate(0, i -&gt; i)
-         .dropWhile(i -&gt; true)
-         .forEach(System.out::println);
+<pre><code class="language-java">Database db = Database.from(“&lt;connection_string”&gt;, &lt;pool_size&gt;);
 </code></pre>
 
-<p>If you run this, the program will look like it’s hanging and not terminate. This is because the <code>dropWhile</code> results in an infinite stream with no elements. If we re-wrote it as the following program, then it would terminate:</p>
+<p>However, H2 doesn’t allow you to do this, so you need to create a Connection object in order to pass in credentials. You then have to use the Pools builder to create a pool. Once you’ve created the your pool you can create the database object.</p>
 
-<pre><code class="language-java">IntStream.iterate(0, i -&gt; i)
-         .takeWhile(i -&gt; false)
-         .forEach(System.out::println);
-</code></pre>
+<p>The great thing about rxjava2-jdbc is that any JDBC driver can used. You can switch any standard JDBC database like Oracle, SQL Server, DB2, etc.</p>
 
-<p>Now so far we’ve talked about streams that have a defined order: an encounter order. The order of streams can be defined at its source, for example if we’re streaming from a list of values then the order in the list is the encounter order. It is also possible to have stream operations that introduce an encounter order into their pipeline, for example <code>sorted()</code>. Most, but not all, of the practical use cases of <code>takeWhile()</code> and <code>dropWhile()</code> rely upon their input streams having a defined encounter order.</p>
+<p>I’m not going to go into too much detail about how rxjava2-jdbc works here because David Moten’s github page has great <a href="https://github.com/davidmoten/rxjava2-jdbc/blob/master/README.adoc">documentation</a>.</p>
 
-<p>One usecase for wanting to apply <code>takeWhile()</code> on an unordered stream if you want to be able to stop the Stream operation. For example perhaps you have a Stream operation that may operate on an infinite stream, processing all the data in it, but you want to be able to stop the Stream when you application shuts down or if a user needs to cancel the stream pipeline. You can do this with a takeWhile() operation that reads from a piece of external state, such as a volatile boolean flag. When you want to stop the stream pipeline, you simply set it to be false.</p>
+<p>I will point out a few things though about using Spring WebFlux and rxjava2-jdbc together. The good news is they both implement <a href="http://www.reactive-streams.org/">ReactiveStreams</a> so it’s transparent for them to interoperate. The way to do this with reactor-core is to use the <u>Flux.from</u> or <u>Mono.from</u> methods. These can take any publisher. It is important to note that in the Mono version it can only emit one item or it will throw an exception. Another thing to take a look at is the <u>deleteEmployee</u> method. This method returns a Mono<Void> which is a special convention in reactor-core. This roughly equivalent to a Completable in rxjava2. To mimic this behavior in reactor-core, call the <u>then</u> method on a Flux or a Mono. This will ignore all elements that are emitted from the stream, and either complete or emit an exception.</p>
 
-<h2 id="toc_2">iterate</h2>
+<h4 id="toc_4">Write some Code</h4>
 
-<p>A related update is the introduction of an alternative <code>iterate()</code> method for creating streams. The vintage <code>iterate</code> method from Java 8 takes an initial value and a function that provides the next value in the Stream. Take a look at the following code example.</p>
+<p>To really get a feel for how this works, the next step is to write some code. One idea I would suggest are to port the sample app to the database of your choice. Another idea is to create endpoints for creating a new department and deleting one. You can use the <u>createNewEmployee</u> and <u>deleteEmployee</u> methods as references.</p>
 
-<pre><code class="language-java">IntStream.iterate(3, x -&gt; x + 3)
-         .filter(x -&gt; x &lt; 100)
-         .forEach(System.out::println);
-</code></pre>
+<h4 id="toc_5">Conclusion</h4>
 
-<p>This code prints out all the numbers that are divisible by 3 and less than 100. We start with 3, which is divisible by 3 and add 3 every time we iterate. We then filter to ensure that the numbers are less than 100 and use a method reference to print out the resulting numbers. Looks simple, but if you run it you’ll find that there’s a pretty big problem. Go on try it!</p>
+<p>The reality is that many applications today use SQL databases, and reactive application developers did not have an easy way to access them without turning their non-blocking application into a blocking application. Hopefully in the future there will be great solutions around truly non-blocking JDBC drivers. Until that time, I hope you can see with this blog post, that while not perfect, there is an effective solution.</p>
 
-<p>That’s right. The program never terminates, it keeps on adding 3 in a loop indefinitely. That’s because there’s no way to know in the filter that the numbers continue to increase. We can solve that problem with the new version of <code>iterate</code> in Java 9 which also takes a predicate as its second argument that tells us when to continue iterating up until. So we rewrite our code as follows.</p>
-
-<pre><code class="language-java">IntStream.iterate(3, x -&gt; x &lt; 100, x -&gt; x + 3)
-         .forEach(System.out::println);
-</code></pre>
-
-<p>Hey presto, it now stops running after it has printed out the number 99. Our sample code here used the <code>IntStream</code> interface since we were operating on primitive int values, but the <code>iterate()</code> methods appear on both the primitive and regular Stream interfaces.</p>
-
-<h2 id="toc_3">Conclusion</h2>
-
-<p>In this article we’ve gone through four new additions to the Streams API that appear in Java 9 and help fill in some small gaps in its functionality. In our next article we will talking about the upcoming improvements to the Collectors API in Java 9. Hopefully you will join us for that, or on one of our in-house <a href="http://iteratrlearning.com">training courses</a>.</p>
+<ul>
+<li>  <a href="https://medium.com/tag/java?source=post">Java</a></li>
+<li>  <a href="https://medium.com/tag/rxjava?source=post">Rxjava</a></li>
+<li>  <a href="https://medium.com/tag/spring?source=post">Spring</a></li>
+<li>  <a href="https://medium.com/tag/reactive?source=post">Reactive</a></li>
+<li>  <a href="https://medium.com/tag/rest?source=post">Rest</a></li>
+</ul>
 
                         
                       </div>
@@ -310,9 +458,9 @@
         
             <a href="Coding.html"><strong>Coding</strong></a>
         
-            <a href="Solution.html"><strong>Solution</strong></a>
+            <a href="Modeling.html"><strong>Modeling</strong></a>
         
-            <a href="Archtect.html"><strong>Archtect</strong></a>
+            <a href="Archtecting.html"><strong>Archtecting</strong></a>
          
         </p>
 
@@ -329,31 +477,31 @@
 	      
 		      
 			      <li class="post">
-			        <a href="15359384213292.html">Securing Spring Boot with JWTs</a>
+			        <a href="15389311738065.html">重构到更深层的模型</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15358820607055.html">Java 8 Concurrency Tutorial: Atomic Variables and ConcurrentMap</a>
+			        <a href="15389278377243.html">IAM of Google Cloud</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15358774987730.html">Java 8 Concurrency Tutorial: Synchronization and Locks</a>
+			        <a href="15389224951575.html">RSocket, a New Application Network Protocol for Reactive Applications, Announced at SpringOne</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15358757119900.html">Java 8 Concurrency Tutorial: Threads and Executors</a>
+			        <a href="15389220103546.html">如何形象地描述RxJava中的背压和流控机制？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15358756631902.html">Java 8 Stream Tutorial</a>
+			        <a href="15389214670417.html">Modeling Uncertainty with Reactive DDD</a>
 			      </li>
 		     
 		  

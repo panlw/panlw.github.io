@@ -80,9 +80,9 @@
         
             <li><a href="Coding.html">Coding</a></li>
         
-            <li><a href="Solution.html">Solution</a></li>
+            <li><a href="Modeling.html">Modeling</a></li>
         
-            <li><a href="Archtect.html">Archtect</a></li>
+            <li><a href="Archtecting.html">Archtecting</a></li>
          
 
       </ul>
@@ -105,296 +105,218 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15274389377310.html">
+                <a class="clearlink" href="15281970486767.html">
                 
-                  <h1>Kubernetes API 使用文档</h1>
+                  <h1>最小权限的容器编排</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.10/">原文地址</a></p>
+<p>作者：Diogo Mónica[3] 译者：qhwdw 校对：wxy<br/>
+本文由 LCTT 原创编译，Linux 中国 荣誉推出 <a href="https://linux.cn/article-9712-1.html">https://linux.cn/article-9712-1.html</a><br/>
+via: <a href="https://blog.docker.com/2017/10/least-privilege-container-orchestration/">https://blog.docker.com/2017/10/least-privilege-container-orchestration/</a></p>
 </blockquote>
 
-<h2 id="toc_0">API 概述</h2>
+<p>Docker 平台和容器已经成为打包、部署、和管理应用程序的标准。为了在一个集群内协调跨节点的容器，必须有一个关键的能力：一个容器编排器。</p>
 
-<h4 id="toc_1">※ 资源分类</h4>
+<p><img src="https://dn-linuxcn.qbox.me/data/attachment/album/201806/03/215736pd1dhdoumu8ilhdi.jpg" alt=""/></p>
 
-<p>这是对 Kubernetes API 及其主要功能提供的基本资源类型的高级概述。</p>
+<p><u>container orchestrator</u></p>
 
-<ul>
-<li>  <strong>Workloads</strong>： 用于在集群中管理和运行容器；</li>
-<li>  <strong>Discovery &amp; LB</strong>：用于将 Workloads “缝合” 到一个可从外部访问的负载均衡的服务中；</li>
-<li>  <strong>Config &amp; Storage</strong>：用于将初始化数据注入到应用程序中，并保留容器外部的数据；</li>
-<li>  <strong>Cluster</strong>：用于定义如何配置集群，这些通常仅由集群运营商使用；</li>
-<li>  <strong>Metadata</strong>：用于配置群集内其他资源的行为，例如用于扩展 Workloads 的 HorizontalPodAutoscaler</li>
-</ul>
-
-<h4 id="toc_2">※ 资源对象</h4>
-
-<p>资源对象通常包含 3 个组件：</p>
+<p>对于关键的集群化以及计划的任务，编排器是起重大作用的，比如：</p>
 
 <ul>
-<li>  <strong>ResourceSpec</strong>：这由用户定义并描述系统所期望的状态，在创建或更新对象时填写；</li>
-<li>  <strong>ResourceStatus</strong>：这由服务器填写并报告系统的当前状态，只有 Kubernetes 组件才能填写此内容；</li>
-<li>  <strong>Resource ObjectMeta</strong>：这是关于资源的元数据，例如 name / type / api version / annotations / labels，包含可能由后端用户和系统更新的字段（如 annotations）</li>
+<li>  管理容器计划和资源分配。</li>
+<li>  支持服务发现和无缝的应用程序部署。</li>
+<li>  分配应用程序运行必需的资源。</li>
 </ul>
 
-<h4 id="toc_3">※ 资源操作</h4>
+<p>不幸的是，在这种环境下，编排器的分布式特性和资源的短暂性使得确保编排器的安全是一个极具挑战性的任务。在这篇文章中，我们将讨论容器编排器安全模型中没有考虑到的、但是很重要的这方面的详细情况，以及 Docker 企业版中如何使用内置的编排性能、Swarm 模式，去克服这些问题。</p>
 
-<p>大部分资源提供如下操作：</p>
+<p><a id="3_1089" class="target-fix ext" rel="external nofollow" target="_blank"></a></p>
 
-<p><strong>▶ Create</strong></p>
+<h3 id="toc_0">诱因和威胁模型</h3>
 
-<p>Create 操作会在存储后端创建资源。资源创建后，系统将应用所期望的状态。</p>
+<p>使用 swarm 模式的 Docker 企业版的其中一个主要目标是提供一个内置安全特性的编排器。为达到这个目标，我们部署了第一个在我们心目中认为的以最小权限原则设计的容器编排器。</p>
 
-<p><strong>▶ Update</strong></p>
+<p>在计算机科学中，一个分布式系统所要求的最小权限原则是，系统中的每个参与者仅仅能访问它正当目的所需要的信息和资源。不是更多，也不是更少。</p>
 
-<p>更新有 2 种形式：<strong>Replace</strong> 和 <strong>Patch</strong></p>
+<blockquote>
+<p>“一个进程必须仅仅能去访问它的正当目的所需要的信息和资源”</p>
+</blockquote>
 
-<p><strong>Replace</strong>：替换资源对象将通过提供的 spec 替换现有的 spec 来更新资源。对于读写操作，这是安全的，因为如果资源在读和写之间被修改，则会发生乐观锁定失败。注意：ResourceStatus 将被系统忽略，并且不会被更新，要更新状态，必须调用特定的状态更新操作。</p>
+<p><a id="4_1721" class="target-fix ext" rel="external nofollow" target="_blank"></a></p>
 
-<p>注意：替换资源对象可能不会立即传播到下游对象。例如，替换 ConfigMap 或 Secret 资源不会导致所有 Pod 看到更改，除非 Pod 在带外重新启动。</p>
+<h4 id="toc_1">最小权限原则</h4>
 
-<p><strong>Patch</strong>：Patch 会更改特定字段，如何合并更改是每个字段定义的。列表可以被替换或合并，合并列表不会保留排序。</p>
+<p>在一个 Docker 企业版集群中的每个节点分配的角色：既不是管理者（manager），也不是工人（worker）。这些角色为节点定义了一个很粗粒度的权限级别：分别进行管理和任务执行。尽管如此，不用理会它的角色，通过使用加密的方式，来保证一个节点仅仅有执行它的任务所需要的信息和资源。结果是，确保集群安全变得更容易了，甚至可以防止大多数的有经验的攻击者模式：攻击者控制了底层通讯网络，或者甚至攻陷了集群节点。</p>
 
-<p><strong>Patch 操作永远不会导致乐观锁定失败，并且最后一次写入会获胜。</strong>如果在更新之前未读取完整状态，或者乐观锁定失败不可取，则建议使用 patch 操作。修补复杂 types、arrays 和 maps 时，如何应用修补程序是以每个字段为基础定义的，并可以替换字段的当前值，也可以将内容合并到当前值中。</p>
+<p><a id="3_2340" class="target-fix ext" rel="external nofollow" target="_blank"></a></p>
 
-<p><strong>▶ Read</strong></p>
+<h3 id="toc_2">内核缺省安全</h3>
 
-<p>读取有 3 种方式：<strong>Get</strong> 、 <strong>List</strong> 和 <strong>Watch</strong></p>
+<p>这是一个很老的安全最大化状态：如果它不是缺省的，就没人用它。Docker Swarm 模式将缺省安全这一概念融入了核心，并且使用这一机制去解决编排器生命周期中三个很难并且很重要的部分：</p>
 
-<p><strong>Get</strong>： 按名称检索特定的资源对象；</p>
+<ol>
+<li> 可信引导和节点引入。</li>
+<li> 节点身份发布和管理。</li>
+<li> 认证、授权和加密的信息存储和传播。</li>
+</ol>
 
-<p><strong>List</strong>：检索命名空间内特定类型的所有资源对象，并且结果可以限制为与选择器查询结果匹配的资源；</p>
+<p>我们来分别看一下这三个部分：</p>
 
-<p><strong>List All Namespaces</strong>：像 List 一样，但是跨所有命名空间检索资源；</p>
+<p><a id="4_2847" class="target-fix ext" rel="external nofollow" target="_blank"></a></p>
 
-<p><strong>Watch</strong>：Watch 将在对象更新时汇出结果，类似于回调，watch 用于响应资源的更改。</p>
+<h4 id="toc_3">可信引导和节点引入</h4>
 
-<p><strong>▶ Delete</strong></p>
+<p>确保集群安全的第一步，没有别的，就是严格控制成员和身份。管理员不能依赖它们节点的身份，并且在节点之间强制实行绝对的负载隔离。这意味着，未授权的节点不能允许加入到集群中，并且，已经是集群一部分的节点不能改变身份，突然去伪装成另一个节点。</p>
 
-<p>Delete 将删除资源。根据特定的资源，子对象可能会或可能不会被服务器当做垃圾收集，详情请参阅特定资源对象的注释。</p>
+<p>为解决这种情况，通过 Docker 企业版 Swarm 模式管理的节点，维护了健壮的、不可改变的身份。期望的特性是，通过使用两种关键的构建块去保证加密：</p>
 
-<p><strong>▶ 额外操作</strong></p>
+<ol>
+<li> 为集群成员使用<ruby>安全加入令牌 <rt>Secure join token</rt></ruby>。</li>
+<li> 从一个集中化的认证机构发行的内嵌唯一身份的证书。</li>
+</ol>
 
-<p>资源可以定义特定于该资源类型的附加操作。</p>
+<p><a id="5_3651" class="target-fix ext" rel="external nofollow" target="_blank"></a></p>
 
-<p><strong>Rollback</strong>：将 PodTemplate 回滚到以前的版本，仅适用于某些资源类型；</p>
+<h5 id="toc_4">加入 Swarm</h5>
 
-<p><strong>Read / Write Scale</strong>：读取或更新给定资源的副本数量，仅适用于某些资源类型；</p>
+<p>要加入 Swarm，节点需要一份<ruby>安全加入令牌 <rt>Secure join token</rt></ruby> 的副本。在集群内的每个操作角色的令牌都是独一无二的 —— 现在有两种类型的节点：工人（workers）和管理者（managers）。由于这种区分，拥有一个工人令牌的节点将不允许以管理者角色加入到集群。唯一得到这个特殊令牌的方式是通过 swarm 的管理 API 去向集群管理者请求一个。</p>
 
-<p><strong>Read / Write Status</strong>：读取或更新资源对象的状态，状态只能通过这些更新操作进行更改。</p>
+<p>令牌是安全的并且是随机生成的，它还有一个使得令牌泄露更容易被检测到的特殊语法：一个可以在你的日志和仓库中很容易监视的特殊前缀。幸运的是，即便发现一个泄露，令牌也可以很容易去更新，并且，推荐你经常去更新它们 —— 特别是，在一段时间中你的集群不进行扩大的情况下。</p>
 
-<h2 id="toc_4">WORKLOADS</h2>
+<p><img src="https://dn-linuxcn.qbox.me/data/attachment/album/201806/03/215739qv7uv8sbyv87hfvx.jpg" alt=""/></p>
 
-<p>Workloads 资源负责管理和运行集群上的容器。容器（Containers）由控制器（Controllers）通过 Pod 创建，Pods 运行容器并提供环境依赖，如注入到容器中的共享或永久存储卷、配置或加密数据。</p>
+<p><u>Docker Swarm</u></p>
 
-<p>最常见的控制器是：</p>
+<p><a id="5_4684" class="target-fix ext" rel="external nofollow" target="_blank"></a></p>
+
+<h5 id="toc_5">引导信任</h5>
+
+<p>作为它的身份标识创建的一部分，一个新的节点将向任意一个网络管理者请求发布一个新的身份。但是，在我们下面的威胁模型中，所有的通讯可以被一个第三方拦截。这种请求存在的问题是：一个节点怎么知道与它进行对话的对方是合法的管理者？</p>
+
+<p><img src="https://dn-linuxcn.qbox.me/data/attachment/album/201806/03/215739sbxzyy3i5yi7yv41.jpg" alt=""/></p>
+
+<p><u>Docker Security</u></p>
+
+<p>幸运的是，Docker 有一个内置机制可以避免这种情况。这个加入令牌被主机用于加入 Swarm，包含了一个根 CA 证书的哈希串。所以，主机可以使用单向 TLS，并且使用这个哈希串去验证它加入的 Swarm 是否正确：如果管理者持有的证书没有被正确的 CA 哈希串签名，节点就知道它不可信任。</p>
+
+<p><a id="4_5558" class="target-fix ext" rel="external nofollow" target="_blank"></a></p>
+
+<h4 id="toc_6">节点身份发布和管理</h4>
+
+<p>在一个 Swarm 中，身份标识是内嵌在每个节点都单独持有的一个 x509 证书中。在一个最小权限原则的表现形式中，证书的私钥被绝对限制在主机的原始位置。尤其是，管理者不能访问除了它自己的私钥以外的任何一个私钥。</p>
+
+<p><a id="5_5908" class="target-fix ext" rel="external nofollow" target="_blank"></a></p>
+
+<h5 id="toc_7">身份发布</h5>
+
+<p>要接收它们的证书而无需共享它们的私钥，新的主机通过发布一个证书签名请求（CSR）来开始，管理者收到证书签名请求之后，转换成一个证书。这个证书成为这个新的主机的身份标识，使这个节点成为 Swarm 的一个完全合格成员！</p>
+
+<p><img src="https://dn-linuxcn.qbox.me/data/attachment/album/201806/03/215742n1acrwxccxngwici.jpg" alt=""/></p>
+
+<p>当和安全引导机制一起使用时，发行身份标识的这个机制来加入节点是缺省安全的：所有的通讯部分都是经过认证的、授权的，并且非敏感信息从来都不会以明文方式进行交换。</p>
+
+<p><a id="5_6601" class="target-fix ext" rel="external nofollow" target="_blank"></a></p>
+
+<h5 id="toc_8">身份标识延期</h5>
+
+<p>尽管如此，给一个 Swarm 中安全地加入节点，仅仅是 “故事” 的一部分。为降低证书的泄露或者失窃造成的影响，并且移除管理 CRL 列表的复杂性，Swarm 模式为身份标识使用了较短存活周期的证书。这些证书缺省情况下三个月后将过期，但是，也可以配置为一个小时后即刻过期！</p>
+
+<p><img src="https://dn-linuxcn.qbox.me/data/attachment/album/201806/03/215742hud947n983d3s7a8.jpg" alt=""/></p>
+
+<p><u>Docker secrets</u></p>
+
+<p>较短的证书过期时间意味着不能手动去处理证书更新，所以，通常会使用一个 PKI 系统。对于 Swarm，所有的证书是以一种不中断的方式进行自动更新的。这个过程很简单：使用一个相互认证的 TLS 连接去证明一个特定身份标识的所有者，一个 Swarm 节点定期生成一个新的公钥 / 私钥密钥对，并且用相关的 CSR 去签名发送，创建一个维持相同身份标识的完整的新证书。</p>
+
+<p><a id="4_7631" class="target-fix ext" rel="external nofollow" target="_blank"></a></p>
+
+<h4 id="toc_9">经过认证、授权、和加密的信息存储和传播。</h4>
+
+<p>在一个正常的 Swarm 的操作中，关于任务的信息被发送给去运行的工人（worker）节点。这里不仅仅包含将被一个节点运行的容器的信息；也包含那个容器运行所必需的资源的所有信息，包括敏感的机密信息，比如，私钥、密码和 API 令牌。</p>
+
+<p><a id="5_8035" class="target-fix ext" rel="external nofollow" target="_blank"></a></p>
+
+<h5 id="toc_10">传输安全</h5>
+
+<p>事实上，参与 Swarm 的每个节点都拥有一个独一无二的 X509 格式的证书，因此，节点之间的通讯安全是没有问题的：节点使用它们各自的证书，与另一个连接方进行相互认证、继承机密、真实性、和 TLS 的完整性。</p>
+
+<p><img src="https://dn-linuxcn.qbox.me/data/attachment/album/201806/03/215744kv6j5j6118rrrlrl.jpg" alt=""/></p>
+
+<p><u>Swarm Mode</u></p>
+
+<p>关于 Swarm 模式的一个有趣的细节是，本质上它是使用了一个推送模式：仅管理者被允许去发送信息到工人们（workers）—— 显著降低了暴露在低权限的工人节点面前的管理者节点的攻击面。</p>
+
+<p><a id="5_8737" class="target-fix ext" rel="external nofollow" target="_blank"></a></p>
+
+<h5 id="toc_11">将负载严格隔离进安全区域</h5>
+
+<p>管理者节点的其中一个责任是，去决定发送到每个工人（worker）节点的任务是什么。管理者节点使用多种策略去做这个决定；根据每个节点和每个负载的特性，去跨 Swarm 去安排负载。</p>
+
+<p>在使用 Swarm 模式的 Docker 企业版中，管理者节点通过使用附加到每个单个节点标识上的安全标签，去影响这些安排决定。这些标签允许管理者将节点组与不同的安全区域连接到一起，以限制敏感负载暴露，以及使相关机密信息更安全。</p>
+
+<p><img src="https://dn-linuxcn.qbox.me/data/attachment/album/201806/03/215744hfd4zgcgzfrmthde.jpg" alt=""/></p>
+
+<p><u>Docker Swarm Security</u></p>
+
+<p><a id="5_9488" class="target-fix ext" rel="external nofollow" target="_blank"></a></p>
+
+<h5 id="toc_12">安全分发机密</h5>
+
+<p>除了加快身份标识发布过程之外，管理者节点还有存储和分发工人节点所需要的任何资源的任务。机密信息像任何其它类型的资源一样处理，并且基于安全的 mTLS 连接，从管理者推送到工人节点。</p>
+
+<p><img src="https://dn-linuxcn.qbox.me/data/attachment/album/201806/03/215745uoodd3k3e43kivvv.jpg" alt=""/></p>
+
+<p><u>Docker Secrets</u></p>
+
+<p>在主机上，Docker 企业版能确保机密仅提供给它们指定的容器。在同一个主机上的其它容器并不能访问它们。Docker 以一个临时文件系统的方式显露机密给一个容器，确保机密总是保存在内存中，并且从不写入到磁盘。这种方式比其它竞争的替代者更加安全，比如，<a href="https://diogomonica.com/2017/03/27/why-you-shouldnt-use-env-variables-for-secret-data/">在环境变量中存储它们</a>。一旦这个任务完成，这个机密将永远消失。</p>
+
+<p><a id="5_10460" class="target-fix ext" rel="external nofollow" target="_blank"></a></p>
+
+<h5 id="toc_13">存储机密</h5>
+
+<p>在管理者主机上的机密总是保持加密的。缺省情况下，加密这些机密的密钥（被称为数据加密密钥，DEK）是以明文的方式存储在硬盘上的。这使得那些对安全性要求较低的人可以轻松地去使用 Docker Swarm 模式。</p>
+
+<p>但是，如果你运行一个生产集群，我们推荐你启用自动锁定模式。当自动锁定模式启用后，一个重新更新过的 DEK 被一个独立的加密密钥的密钥（KEK）所加密。这个密钥从不被存储在集群中；管理者有责任将它存储在一个安全可靠的地方，并且当集群启动的时候可以提供它。这就是所谓的 “解锁” Swarm。</p>
+
+<p>根据 Raft 故障容错一致性算法，Swarm 模式支持多个管理者。在这个场景中，无缝扩展了机密存储的安全性。每个管理者主机除了共享密钥之外，还有一个唯一的磁盘加密密钥。幸运的是，Raft 日志在磁盘上也是加密的，并且，在自动锁定模式下，没有 KEK 同样是不可访问的。</p>
+
+<p><a id="4_11568" class="target-fix ext" rel="external nofollow" target="_blank"></a></p>
+
+<h4 id="toc_14">当一个节点被攻陷后发生了什么？</h4>
+
+<p><img src="https://dn-linuxcn.qbox.me/data/attachment/album/201806/03/215746h7dbkd33obobtk66.jpg" alt=""/></p>
+
+<p><u>Docker Secrets</u></p>
+
+<p>在传统的编排器中，挽回一台被攻陷的主机是一个缓慢而复杂的过程。使用 Swarm 模式，恢复它就像运行一个 Docker 节点的 <code>rm</code> 命令一样容易。这是从集群中删除一个受影响的节点，而 Docker 将去处理剩下的事情，即，重新均衡负载，并且确保其它的主机已经知道，而不会去与受影响的节点通讯。</p>
+
+<p>正如我们看到的那样，感谢最小权限的编排器，甚至是，如果攻击者在主机上持续活动，它们将被从剩余的网络上切断。主机的证书 —— 它的身份标识 —— 被列入黑名单，因此，管理者也不能有效访问它。</p>
+
+<p><a id="3_12461" class="target-fix ext" rel="external nofollow" target="_blank"></a></p>
+
+<h3 id="toc_15">结论</h3>
+
+<p>使用 Swarm 模式的 Docker 企业版，在缺省情况下确保了编排器的所有关键区域的安全：</p>
 
 <ul>
-<li>  Deployments 无状态持久应用（如 http servers）</li>
-<li>  StatefulSets 有状态持久应用（如 database）</li>
-<li>  Jobs 运行至完成的应用 （如 batch jobs）</li>
+<li>  加入集群。阻止恶意节点加入到集群。</li>
+<li>  把主机分组为安全区域。阻止攻击者的横向移动。</li>
+<li>  安排任务。任务将仅被委派到允许的节点。</li>
+<li>  分配资源。恶意节点不能 “盗取” 其它的负载或者资源。</li>
+<li>  存储机密。从不明文保存并且从不写入到工人节点的磁盘上。</li>
+<li>  与工人节点的通讯。使用相互认证的 TLS 加密。</li>
 </ul>
 
-<h2 id="toc_5">DISCOVERY &amp; LOAD BALANCING</h2>
+<p>因为 Swarm 模式的持续改进，Docker 团队正在努力将最小权限原则进一步推进。我们正在处理的一个任务是：如果一个管理者被攻陷了，怎么去保证剩下的节点的安全？路线图已经有了，其中一些功能已经可以使用，比如，白名单功能，仅允许特定的 Docker 镜像，阻止管理者随意运行负载。这是通过 Docker 可信内容来实现的。</p>
 
-<p>Discovery and Load Balancing 负责将 Workloads “缝合” 到一个可从外部访问的负载均衡的服务中。默认情况下，Workloads 只能在群集内访问，它们必须通过 LoadBalancer 或 NodePort Service 暴露到外部。对于开发，可以使用 <code>kubectl proxy</code>命令通过代理 api 主机访问内部可访问的 Workloads 。</p>
+<hr/>
 
-<p>常用的资源类型：</p>
+<p>via: <a href="https://blog.docker.com/2017/10/least-privilege-container-orchestration/">https://blog.docker.com/2017/10/least-privilege-container-orchestration/</a></p>
 
-<ul>
-<li>  Services 提供跨多个 Workload 副本的负载均衡的单个 IP 端点。</li>
-<li>  Ingress 提供路由到一个或多个服务的 https(s) 端点</li>
-</ul>
-
-<h2 id="toc_6">CONFIG &amp; STORAGE</h2>
-
-<p>Config and Storage 资源负责将数据注入到应用程序中，并保留容器外部的数据。</p>
-
-<p>常用的资源类型：</p>
-
-<ul>
-<li>  ConfigMaps 通过环境变量、命令行参数或文件提供注入应用的 K-V 键值对</li>
-<li>  Secrets 通过文件提供注入应用的二进制数据</li>
-<li>  Volumes 提供容器外部的文件系统。 可能在同一个 Pod 中跨 Container 容器共享，并且其寿命持续超出 Container 或 Pod。</li>
-</ul>
-
-<h2 id="toc_7">METADATA</h2>
-
-<p>Metadata resources 负责集群内其他资源的行为。</p>
-
-<p>常用的资源类型：</p>
-
-<ul>
-<li>  HorizontalPodAutoscaler 自动缩放 workloads 的副本数量以响应加载</li>
-<li>  PodDisruptionBudget 在执行维护时，可以配置给定 workloads 中的多少副本可能同时不可用</li>
-<li>  ThirdPartyResource 使用自己的类型扩展 Kubernetes API</li>
-<li>  Event 群集中资源生命周期事件的通知</li>
-</ul>
-
-<h2 id="toc_8">API 调用方式</h2>
-
-<p><strong>▶ kubectl</strong></p>
-
-<p>示例：创建 Deployment</p>
-
-<pre><code>1.  `$ echo &#39;apiVersion: apps/v1`
-
-2.  `kind: Deployment`
-
-3.  `metadata:`
-
-4.  `name: deployment-example`
-
-5.  `spec:`
-
-6.  `replicas: 3`
-
-7.  `revisionHistoryLimit: 10`
-
-8.  `template:`
-
-9.  `metadata:`
-
-10.  `labels:`
-
-11.  `app: nginx`
-
-12.  `spec:`
-
-13.  `containers:`
-
-14.  `- name: nginx`
-
-15.  `image: nginx:1.10`
-
-16.  `ports:`
-
-17.  `- containerPort: 80`
-
-18.  `&#39; | kubectl create -f -`
-
-</code></pre>
-
-<p>yaml 文件编写的规则拆解如下图：</p>
-
-<p><img src="https://mmbiz.qpic.cn/mmbiz_png/wbiax4xEAl5xuUnZt7eHIfEe51sP9P3DjdKKVzb6BmPcZAQzsLM5ZM6SsD46djF4siaLHADeaQnrT6qOJDGSCkibw/640?wx_fmt=png" alt=""/></p>
-
-<p><img src="https://mmbiz.qpic.cn/mmbiz_png/wbiax4xEAl5xuUnZt7eHIfEe51sP9P3DjrdW9EOgJy7BickNuoCKaX7R5t1TZHqDF8RN8qSCRzse8nRDO23IA66w/640?wx_fmt=png" alt=""/></p>
-
-<p><img src="https://mmbiz.qpic.cn/mmbiz_png/wbiax4xEAl5xuUnZt7eHIfEe51sP9P3DjEr3QHuRt71DVQHpNZHibDhFnDibRvT6ghUdMvCOLqSuUIZYO7YXWZyLg/640?wx_fmt=png" alt=""/></p>
-
-<p><img src="https://mmbiz.qpic.cn/mmbiz_png/wbiax4xEAl5xuUnZt7eHIfEe51sP9P3Djl2MJd16ycvpxFCy7ibcQmaqMVo0ndFic3xlVqvyzwFtl4VTw6y3WuRdg/640?wx_fmt=png" alt=""/></p>
-
-<p>其他资源的创建或其他操作，都可以按照这种方式来操作。</p>
-
-<p><strong>▶ curl</strong></p>
-
-<p>需要使用 <code>kubectl proxy</code></p>
-
-<pre data-initialized="true" data-gclp-id="6" style="box-sizing: border-box;margin-top: 0px;margin-bottom: 0px;padding: 8px 0px 6px;background-color: rgb(241, 239, 238);border-radius: 0px;overflow-y: auto;color: rgb(80, 97, 109);font-size: 10px;line-height: 12px;">
-
-1.  `$ kubectl proxy`
-
-2.  `$ curl -X POST -H 'Content-Type: application/yaml' --data '`
-
-3.  `apiVersion: apps/v1beta1`
-
-4.  `kind: Deployment`
-
-5.  `metadata:`
-
-6.  `name: deployment-example`
-
-7.  `spec:`
-
-8.  `replicas: 3`
-
-9.  `revisionHistoryLimit: 10`
-
-10.  `template:`
-
-11.  `metadata:`
-
-12.  `labels:`
-
-13.  `app: nginx`
-
-14.  `spec:`
-
-15.  `containers:`
-
-16.  `- name: nginx`
-
-17.  `image: nginx:1.10`
-
-18.  `ports:`
-
-19.  `- containerPort: 80`
-
-20.  `' http://127.0.0.1:8001/apis/apps/v1/namespaces/default/deployments` 
-
-</pre>
-
-<p><section class="" powered-by="xiumi.us" style="white-space: normal;box-sizing: border-box;"></p>
-
-<p><section class="" style="box-sizing: border-box;"></p>
-
-<p><section class="" style="font-size: 14px;box-sizing: border-box;"></p>
-
-<p>推荐：<a href="http://mp.weixin.qq.com/s?__biz=MzU0MDEwMjgwNA==&amp;mid=2247484509&amp;idx=1&amp;sn=e8b7f12fb3660d15379e2087c2e0e5c6&amp;chksm=fb3f1da6cc4894b0421d62ebecd16c9de11a3abf919d2c506643d3b864d0357ffc4eec1bfd29&amp;scene=21#wechat_redirect">译：基于注解的控制器：Spring Web/WebFlux 和 测试</a></p>
-
-<p>上一篇：<a href="http://mp.weixin.qq.com/s?__biz=MzU0MDEwMjgwNA==&amp;mid=2247484512&amp;idx=1&amp;sn=4130871a4e6360b4f1b8c1b4dac4b101&amp;chksm=fb3f1d9bcc48948d5430ce9e1cef224c40421241d3a925a891bb1cf2c1753d90db040529848a&amp;scene=21#wechat_redirect">Spring-5-webflux 和阻塞与非阻塞 JDBC</a></p>
-
-<p></section></p>
-
-<p></section></p>
-
-<p></section></p>
-
-<p><section class="" powered-by="xiumi.us" style="white-space: normal;box-sizing: border-box;"></p>
-
-<p><section class="" style="box-sizing: border-box;"></p>
-
-<p><section class="" style="display: inline-block;vertical-align: top;width: 279px;box-sizing: border-box;"></p>
-
-<p><section class="" powered-by="xiumi.us" style="box-sizing: border-box;"></p>
-
-<p><section class="" style="box-sizing: border-box;"></p>
-
-<p><section class="" style="text-align: center;color: rgb(160, 160, 160);font-size: 14px;box-sizing: border-box;"></p>
-
-<p>最好的赞赏</p>
-
-<p>就是你的关注</p>
-
-<p></section></p>
-
-<p></section></p>
-
-<p></section></p>
-
-<p></section></p>
-
-<p><section class="" style="display: inline-block;vertical-align: top;width: 279px;box-sizing: border-box;"></p>
-
-<p><section class="" powered-by="xiumi.us" style="box-sizing: border-box;"></p>
-
-<p><section class="" style="margin-top: 10px;margin-bottom: 10px;text-align: center;box-sizing: border-box;"></p>
-
-<p><section class="" style="max-width: 100%;vertical-align: middle;display: inline-block;box-sizing: border-box;overflow: hidden !important;"><img src="https://mmbiz.qpic.cn/mmbiz_jpg/wbiax4xEAl5zQkzvFqgk7DUAem1u05eybPdhEythAoe3O0FxUHy0tmzgytKI7tJaiaDsEWib43ZFSYmEROK4MNNAQ/640?wx_fmt=jpeg" alt=""/></section></p>
-
-<p></section></p>
-
-<p></section></p>
-
-<p></section></p>
-
-<p></section></p>
-
-<p></section></p>
+<p>作者：<a href="https://blog.docker.com/author/diogo/">Diogo Mónica</a> 译者：<a href="https://github.com/qhwdw">qhwdw</a> 校对：<a href="https://github.com/wxy">wxy</a></p>
 
                         
                       </div>
@@ -403,7 +325,7 @@
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/5/28</span>
+                    <span class="date">2018/6/5</span>
                     <span>posted in&nbsp;</span> 
           				  
           					    <span class="posted-in"><a href='Container.html'>Container</a></span>
@@ -477,9 +399,9 @@
         
             <a href="Coding.html"><strong>Coding</strong></a>
         
-            <a href="Solution.html"><strong>Solution</strong></a>
+            <a href="Modeling.html"><strong>Modeling</strong></a>
         
-            <a href="Archtect.html"><strong>Archtect</strong></a>
+            <a href="Archtecting.html"><strong>Archtecting</strong></a>
          
         </p>
 
@@ -496,31 +418,31 @@
 	      
 		      
 			      <li class="post">
-			        <a href="15359384213292.html">Securing Spring Boot with JWTs</a>
+			        <a href="15389311738065.html">重构到更深层的模型</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15358820607055.html">Java 8 Concurrency Tutorial: Atomic Variables and ConcurrentMap</a>
+			        <a href="15389278377243.html">IAM of Google Cloud</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15358774987730.html">Java 8 Concurrency Tutorial: Synchronization and Locks</a>
+			        <a href="15389224951575.html">RSocket, a New Application Network Protocol for Reactive Applications, Announced at SpringOne</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15358757119900.html">Java 8 Concurrency Tutorial: Threads and Executors</a>
+			        <a href="15389220103546.html">如何形象地描述RxJava中的背压和流控机制？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15358756631902.html">Java 8 Stream Tutorial</a>
+			        <a href="15389214670417.html">Modeling Uncertainty with Reactive DDD</a>
 			      </li>
 		     
 		  

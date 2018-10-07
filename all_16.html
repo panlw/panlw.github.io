@@ -80,9 +80,9 @@
         
             <li><a href="Coding.html">Coding</a></li>
         
-            <li><a href="Solution.html">Solution</a></li>
+            <li><a href="Modeling.html">Modeling</a></li>
         
-            <li><a href="Archtect.html">Archtect</a></li>
+            <li><a href="Archtecting.html">Archtecting</a></li>
          
 
       </ul>
@@ -105,142 +105,325 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15342609315238.html">
+                <a class="clearlink" href="15376909096951.html">
                 
-                  <h1>来自Netflix的系统高可用建议</h1>
+                  <h1>Caffeine Cache 进程缓存之王</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="http://www.infoq.com/cn/articles/tips-for-high-availability">http://www.infoq.com/cn/articles/tips-for-high-availability</a></p>
+<p><a href="https://mp.weixin.qq.com/s/Tv6Vv_bILX74OtRRYM06Mg">https://mp.weixin.qq.com/s/Tv6Vv_bILX74OtRRYM06Mg</a></p>
 </blockquote>
 
-<p>在过去四年中，Netflix 已从不到 5000 万用户增加到 1.25 亿用户。这种增长给我们带来了伸缩性方面的挑战，但实际上，我们已经设法在这段时间内提高了服务的整体可用性。在这个过程中，我们学到了很多东西，我们也更加明白该如何提升系统的可用性。但天下没有免费的午餐，这些经验来之不易：在出现问题时我们忙成一团，有时候还要处理用户事件。尽管我们还没有完全扫清所有的问题，我们的系统仍然还有很多可以改进的地方，但我们分享的这些经验都是从实战中总结出来的。希望你们能够从中收获点什么，以免在凌晨三点钟收到要你起床处理用户事件的电话。</p>
+<h3 id="toc_0">前言</h3>
 
-<p>在 Netflix，我们使用 Spinnaker 作为持续集成和交付的平台。这里讨论的很多最佳实践都已纳入到 Spinnaker 中，这些技巧和最佳实践具有通用性，将帮到任何想要提升系统可用性的人。</p>
+<p>互联网软件神速发展，用户的体验度是判断一个软件好坏的重要原因，所以缓存就是必不可少的一个神器。在多线程高并发场景中往往是离不开 cache 的，需要根据不同的应用场景来需要选择不同的 cache，比如分布式缓存如 redis、memcached，还有本地（进程内）缓存如 ehcache、GuavaCache、Caffeine。</p>
 
-<h2 id="toc_0">优先考虑区域部署而不是全球部署</h2>
+<p>说起 Guava Cache，很多人都不会陌生，它是 Google Guava 工具包中的一个非常方便易用的本地化缓存实现，基于 LRU 算法实现，支持多种缓存过期策略。由于 Guava 的大量使用，Guava Cache 也得到了大量的应用。但是，Guava Cache 的性能一定是最好的吗？也许，曾经，它的性能是非常不错的。但所谓长江后浪推前浪，总会有更加优秀的技术出现。今天，我就来介绍一个比 Guava Cache 性能更高的缓存框架：Caffeine。</p>
 
-<p>我们的目标是尽可能提供最佳的客户体验。因此，我们要限制系统变更的影响范围，对变更进行验证，然后将变更推给客户。更具体地说，我们一次只部署一个 AWS 区域，这为我们的生产部署提供了额外的安全保障。我们能够快速地转移受影响的客户流量，这也是我们最重要的四大补救手段之一。</p>
+<h3 id="toc_1">比较</h3>
 
-<p>我们还建议在每个区域部署之间对应用程序功能进行验证，并避免在目标区域的高峰时段进行部署。</p>
+<p>Google Guava 工具包中的一个非常方便易用的本地化缓存实现，基于 LRU 算法实现，支持多种缓存过期策略。</p>
 
-<p>在 Spinnaker 中，指定部署的目标区域非常简单。</p>
+<p>EhCache 是一个纯 Java 的进程内缓存框架，具有快速、精干等特点，是 Hibernate 中默认的 CacheProvider。</p>
 
-<p>﻿<a href="https://s3.amazonaws.com/infoq.content.live.0/articles/tips-for-high-availability/zh/resources/12111-1533721785047.png"><img src="https://res.infoq.com/articles/tips-for-high-availability/zh/resources/12111-1533721785047.png" alt=""/></a>﻿</p>
+<p>Caffeine 是使用 Java8 对 Guava 缓存的重写版本，在 Spring Boot 2.0 中将取代，基于 LRU 算法实现，支持多种缓存过期策略。</p>
 
-<h2 id="toc_1">使用红黑部署策略进行生产部署</h2>
+<h4 id="toc_2">官方性能比较</h4>
 
-<p>在红黑（也称为蓝绿）部署中，新版本的应用程序（红色）在通过健康检查之后立即开始接收流量。在确定红色版本的健康状态之后，之前的（黑色）版本将被禁用，并且不会收到任何流量。如果要回滚，只需要启用以前的版本即可，非常简单。这种模型加快了我们的部署流程，并可以在出现问题时回滚到之前的状态。</p>
+<p>场景 1：8 个线程读，100% 的读操作</p>
 
-<p>要使用 Spinnaker 完成红黑部署，只需要在管道中指定策略（并可选择性地在策略中设置参数），Spinnaker 将负责完成部署。</p>
+<p><img src="https://mmbiz.qpic.cn/mmbiz_jpg/7XicP8RicaB3zAgjnsVcHgfVPZdwianHm1TD7gIjo4AX5MyKPTlkMz5y7mZBfZlNH9ic9RKickZic9weiceOGIZrwK1cw/640?wx_fmt=jpeg" alt=""/></p>
 
-<p>﻿<a href="https://s3.amazonaws.com/infoq.content.live.0/articles/tips-for-high-availability/zh/resources/12612-1533721785745.png"><img src="https://res.infoq.com/articles/tips-for-high-availability/zh/resources/12612-1533721785745.png" alt=""/></a>﻿</p>
+<p>场景二：6 个线程读，2 个线程写，也就是 75% 的读操作，25% 的写操作</p>
 
-<h2 id="toc_2">使用部署窗口</h2>
+<p><img src="https://mmbiz.qpic.cn/mmbiz_jpg/7XicP8RicaB3zAgjnsVcHgfVPZdwianHm1TvibAnicLNEdiay37aXrRlgRibq1pk1MTxWetV0O2AfzJ0B2apWg17OcUIA/640?wx_fmt=jpeg" alt=""/></p>
 
-<p>每当你在部署新版本应用时，都要记住以下两点：首先，你（或你的同事）是否有监控部署，并在必要时进行补救？第二，如果出现了问题，你是否能够尽可能减小影响范围？</p>
+<p>场景三：8 个线程写，100% 的写操作</p>
 
-<p>我们的流媒体流量遵循相对可预测的模式，大多数人会在晚上打开视频流。因此，我们建议选择工作时段和非高峰时段的部署窗口。</p>
+<p><img src="https://mmbiz.qpic.cn/mmbiz_jpg/7XicP8RicaB3zAgjnsVcHgfVPZdwianHm1Teb0NvHsZEHuBrWLte8sgMNLoUZrPia3jx8MzGOco5U68k24dfHxbx2w/640?wx_fmt=jpeg" alt=""/></p>
 
-<p>Spinnaker 为此提供了一个界面，让我们可以轻松地指定运行部署管道的日期和时间。</p>
+<p>可以清楚的看到 Caffeine 效率明显的高于其他缓存。</p>
 
-<p>﻿<a href="https://s3.amazonaws.com/infoq.content.live.0/articles/tips-for-high-availability/zh/resources/413-1533721787411.jpeg"><img src="https://res.infoq.com/articles/tips-for-high-availability/zh/resources/413-1533721787411.jpeg" alt=""/></a>﻿</p>
+<h3 id="toc_3">如何使用</h3>
 
-<h2 id="toc_3">确保不要在非工作时段或周末自动触发部署</h2>
+<pre><code class="language-java">public static void main(String[] args) {
+    LoadingCache&lt;String, String&gt; build = CacheBuilder.newBuilder().initialCapacity().maximumSize().expireAfterWrite(, TimeUnit.DAYS)
+            .build(new CacheLoader&lt;String, String&gt;() {
+                //默认的数据加载实现，当调用get取值的时候，如果key没有对应的值，就调用这个方法进行加载
+                @Override
+                public String load(String key)  {
+                    return &quot;&quot;;
+                }
+            });
+    }
+}
+</code></pre>
 
-<p>部署窗口也适用于自动触发的事件。在 Spinnaker 中，可以使用 cron 表达式作为管道触发器，这也可能是一个冒险的策略：有些 cron 表达式可能会在非工作时段或周末执行管道，但这不是我们所期望的。无论你使用哪一种自动化机制，都要确保任何自动触发的管道都可以在无人值守的模式下运行。</p>
+<h4 id="toc_4">参数方法</h4>
 
-<p>﻿<a href="https://s3.amazonaws.com/infoq.content.live.0/articles/tips-for-high-availability/zh/resources/8914-1533721784600.png"><img src="https://res.infoq.com/articles/tips-for-high-availability/zh/resources/8914-1533721784600.png" alt=""/></a>﻿</p>
+<ul>
+<li>  initialCapacity(1) 初始缓存长度为 1</li>
+<li>  maximumSize(100) 最大长度为 100</li>
+<li>  expireAfterWrite(1, TimeUnit.DAYS) 设置缓存策略在 1 天未写入过期缓存（后面讲缓存策略）</li>
+</ul>
 
-<h2 id="toc_4">启用 Chaos Monkey</h2>
+<h3 id="toc_5">过期策略</h3>
 
-<p>Chaos Monkey 由 Netflix 创建并开源，是我们混沌工程工具套件的一部分。Chaos Monkey 以不可预测的方式随机终止生产环境中的实例，以此来增强服务，让服务具备应对单实例故障的弹性能力。如果某些服务不具备弹性能力，Chaos Monkey 将会暴露出它们的漏洞，服务所有者就可以在这些漏洞演变成影响用户的事故之前修复它们。在 Netflix，生产环境中的所有服务都应该启用 Chaos Monkey，在 Chaos Monkey 终止应用程序实例时，服务所有者不应该检测到任何问题。</p>
+<p>在 Caffeine 中分为两种缓存，一个是有界缓存，一个是无界缓存，无界缓存不需要过期并且没有界限。在有界缓存中提供了三个过期 API:<br/>
+expireAfterWrite：代表着写了之后多久过期。（上面列子就是这种方式）<br/>
+expireAfterAccess: 代表着最后一次访问了之后多久过期。<br/>
+expireAfter: 在 expireAfter 中需要自己实现 Expiry 接口，这个接口支持 create,update, 以及 access 了之后多久过期。注意这个 API 和前面两个 API 是互斥的。这里和前面两个 API 不同的是，需要你告诉缓存框架，他应该在具体的某个时间过期，也就是通过前面的重写 create,update, 以及 access 的方法，获取具体的过期时间。</p>
 
-<p>﻿﻿<a href="https://s3.amazonaws.com/infoq.content.live.0/articles/tips-for-high-availability/zh/resources/7415-1533721786316.png"><img src="https://res.infoq.com/articles/tips-for-high-availability/zh/resources/7415-1533721786316.png" alt=""/></a></p>
+<h3 id="toc_6">更新策略</h3>
 
-<h2 id="toc_5">在将代码推送到生产环境之前使用各种测试和金丝雀分析来验证代码</h2>
+<p>何为更新策略？就是在设定多长时间后会自动刷新缓存。<br/>
+Caffeine 提供了 refreshAfterWrite() 方法来让我们进行写后多久更新策略:</p>
 
-<p>实现快速部署的关键是在部署之前自动验证新版本的软件。理想情况下，所有必要的测试套件都应该在没有人工干预的情况下运行。</p>
+<pre><code class="language-java">    LoadingCache&lt;String, String&gt; build = CacheBuilder.newBuilder().refreshAfterWrite(1, TimeUnit.DAYS)
+            .build(new CacheLoader&lt;String, String&gt;() {
+                @Override
+                public String load(String key)  {
+                    return &quot;&quot;;
+                }
+            });
+</code></pre>
 
-<p>﻿<a href="https://s3.amazonaws.com/infoq.content.live.0/articles/tips-for-high-availability/zh/resources/5616-1533721787677.png"><img src="https://res.infoq.com/articles/tips-for-high-availability/zh/resources/5616-1533721787677.png" alt=""/></a>﻿</p>
+<p>上面的代码我们需要建立一个 CacheLodaer 来进行刷新, 这里是同步进行的，可以通过 buildAsync 方法进行异步构建。在实际业务中这里可以把我们代码中的 mapper 传入进去，进行数据源的刷新。</p>
 
-<p>此外，我们建议使用金丝雀分析。金丝雀分析是一种通过实时流量来验证服务变更的有效方法。最近我们开源了内部工具 Kayenta，它可以轻松集成到 Spinnaker 中，并结合人工判断，成为放开所有生产流量之前的最后一道门槛。</p>
+<p>但是实际使用中，你设置了一天刷新，但是一天后你发现缓存并没有刷新。这是因为必有在 1 天后这个缓存再次访问才能刷新，如果没人访问，那么永远也不会刷新。你明白了吗？</p>
 
-<p>﻿<a href="https://s3.amazonaws.com/infoq.content.live.0/articles/tips-for-high-availability/zh/resources/5217-1533721786866.png"><img src="https://res.infoq.com/articles/tips-for-high-availability/zh/resources/5217-1533721786866.png" alt=""/></a>﻿</p>
+<p>我们来看看自动刷新他是怎么做的呢？自动刷新只存在读操作之后，也就是我们 afterRead() 这个方法，其中有个方法叫 refreshIfNeeded，他会根据你是同步还是异步然后进行刷新处理。</p>
 
-<h2 id="toc_6">必要的人工干预</h2>
+<h3 id="toc_7">填充策略（Population）</h3>
 
-<p>尽可能使用自动化，但在必要的时候也需要人工干预。例如，在将新版本推向生产环境之前需要检查金丝雀运行的结果。</p>
+<p>Caffeine 为我们提供了三种填充策略：手动、同步和异步</p>
 
-<p>﻿<a href="https://s3.amazonaws.com/infoq.content.live.0/articles/tips-for-high-availability/zh/resources/4618-1533721785369.png"><img src="https://res.infoq.com/articles/tips-for-high-availability/zh/resources/4618-1533721785369.png" alt=""/></a>﻿</p>
+<h4 id="toc_8">手动加载（Manual）</h4>
 
-<h2 id="toc_7">在部署时尽可能只用已经测试过的东西</h2>
+<pre><code class="language-java">Cache&lt;String, Object&gt; manualCache = Caffeine.newBuilder()
+        .expireAfterWrite(, TimeUnit.MINUTES)
+        .maximumSize(_)
+        .build();
 
-<p>既然你已经对新版本进行了大量的测试和验证，我们强烈建议你在进行生产环境部署时只用测试过的东西。对于我们来说，我们更倾向于从测试环境中复制经过验证的镜像，而不是重新构建新的镜像。</p>
+String key = &quot;name&quot;;
+// 根据key查询一个缓存，如果没有返回NULL
+graph = manualCache.getIfPresent(key);
+// 根据Key查询一个缓存，如果没有调用createExpensiveGraph方法，并将返回值保存到缓存。
+// 如果该方法返回Null则manualCache.get返回null，如果该方法抛出异常则manualCache.get抛出异常
+graph = manualCache.get(key, k -&gt; createExpensiveGraph(k));
+// 将一个值放入缓存，如果以前有值就覆盖以前的值
+manualCache.put(key, graph);
+// 删除一个缓存
+manualCache.invalidate(key);
 
-<h2 id="toc_8">定期检查联系人设置</h2>
+ConcurrentMap&lt;String, Object&gt; map = manualCache.asMap();
+cache.invalidate(key);
+</code></pre>
 
-<p>有时候，为了确保应用程序的可用性，你所要做的其实很简单。如果你的应用程序会出问题，并且很可能会在某个时间点出问题，那么此时最重要的是找到能解决问题的人。因此，请定期检查你的联系人设置，这样可以确保在发生事故时能够迅速找到解决问题的人。</p>
+<p>Cache 接口允许显式的去控制缓存的检索，更新和删除。我们可以通过 cache.getIfPresent(key) 方法来获取一个 key 的值，通过 cache.put(key, value) 方法显示的将数控放入缓存，但是这样子会覆盖缓原来 key 的数据。更加建议使用 cache.get(key，k - &gt; value) 的方式，get 方法将一个参数为 key 的 Function (createExpensiveGraph) 作为参数传入。如果缓存中不存在该键，则调用这个 Function 函数，并将返回值作为该缓存的值插入缓存中。get 方法是以阻塞方式执行调用，即使多个线程同时请求该值也只会调用一次 Function 方法。这样可以避免与其他线程的写入竞争，这也是为什么使用 get 优于 getIfPresent 的原因。</p>
 
-<p>﻿<a href="https://s3.amazonaws.com/infoq.content.live.0/articles/tips-for-high-availability/zh/resources/3819-1533721783682.png"><img src="https://res.infoq.com/articles/tips-for-high-availability/zh/resources/3819-1533721783682.png" alt=""/></a>﻿</p>
+<p>注意：如果调用该方法返回 NULL（如上面的 createExpensiveGraph 方法），则 cache.get 返回 null，如果调用该方法抛出异常，则 get 方法也会抛出异常。</p>
 
-<p>Spinnaker 提供了一个 “Page application owner” 按钮，请确保这里配置的信息是最新的，这样就不会在发生问题时找错人。</p>
+<p>可以使用 Cache.asMap() 方法获取 ConcurrentMap 进而对缓存进行一些更改。</p>
 
-<h2 id="toc_9">知道如何快速回滚部署</h2>
+<h4 id="toc_9">同步加载（Loading）</h4>
 
-<p>即使有可靠的测试、金丝雀和其他验证过程，将某些东西部署到生产环境中仍然会出现问题。也许这是一种由竞态条件导致的罕见错误，只会在达到一定规模时才发生。但无论是何种情况，最重要的是你要知道在必要时如何快速恢复到之前正常的状态。</p>
+<pre><code class="language-java">LoadingCache&lt;String, Object&gt; loadingCache = Caffeine.newBuilder()
+        .maximumSize(_)
+        .expireAfterWrite(, TimeUnit.MINUTES)
+        .build(key -&gt; createExpensiveGraph(key));
 
-<p>在 Spinnaker 中，如果应用程序的新版本出现问题，可以通过 “Server Group” 下的 “Rollback” 选项进行回滚。回滚将启用你选择的 ASG（通常是之前的），并禁用发生故障的 ASG。Spinnaker 还支持创建可在发生管道故障时执行或通过手动触发的回滚管道。</p>
+String key = &quot;name&quot;;
+// 采用同步方式去获取一个缓存和上面的手动方式是一个原理。在build Cache的时候会提供一个createExpensiveGraph函数。
+// 查询并在缺失的情况下使用同步的方式来构建一个缓存
+Object graph = loadingCache.get(key);
 
-<p>﻿<a href="https://s3.amazonaws.com/infoq.content.live.0/articles/tips-for-high-availability/zh/resources/320-1533721786579.jpeg"><img src="https://res.infoq.com/articles/tips-for-high-availability/zh/resources/320-1533721786579.jpeg" alt=""/></a>﻿</p>
+// 获取组key的值返回一个Map
+List&lt;String&gt; keys = new ArrayList&lt;&gt;();
+keys.add(key);
+Map&lt;String, Object&gt; graphs = loadingCache.getAll(keys);
+</code></pre>
 
-<h2 id="toc_10">如果实例运行不正常，将部署视为失败</h2>
+<p>LoadingCache 是使用 CacheLoader 来构建的缓存的值。批量查找可以使用 getAll 方法。默认情况下，getAll 将会对缓存中没有值的 key 分别调用 CacheLoader.load 方法来构建缓存的值。我们可以重写 CacheLoader.loadAll 方法来提高 getAll 的效率。</p>
 
-<p>多年来，有几次我们在部署成功后感觉状态不对，实例起来了，但不能正常处理流量。“成功” 的部署给我们造成了一种假象，当一个关键的服务运行不正常时，请求很快会堆积起来，有时会导致重试雪崩，造成各种各样的破坏。因此，当实例运行不正常时，要将部署视为失败。</p>
+<p>注意：您可以编写一个 CacheLoader.loadAll 来实现为特别请求的 key 加载值。例如，如果计算某个组中的任何键的值将为该组中的所有键提供值，则 loadAll 可能会同时加载该组的其余部分。</p>
 
-<p>Spinnaker 提供了一种灵活的方法用于关联实例的健康状况。当一个实例不健康时，Spinnaker 会将其标注出来，更重要的是，不健康的实例将收不到流量。如果 ASG 中的所有实例都不健康，Spinnaker 会将部署视为失败。Spinnaker 还用不同的颜色来标记实例的状态，如启动中、等待发现、不健康和健康，如下所示。</p>
+<h4 id="toc_10">异步加载（Asynchronously Loading）</h4>
 
-<p>﻿<a href="https://s3.amazonaws.com/infoq.content.live.0/articles/tips-for-high-availability/zh/resources/8221-1533721786054.png"><img src="https://res.infoq.com/articles/tips-for-high-availability/zh/resources/8221-1533721786054.png" alt=""/></a>﻿</p>
+<pre><code class="language-java">AsyncLoadingCache&lt;String, Object&gt; asyncLoadingCache = Caffeine.newBuilder()
+            .maximumSize(_)
+            .expireAfterWrite(, TimeUnit.MINUTES)
+            // Either: Build with a synchronous computation that is wrapped as asynchronous
+            .buildAsync(key -&gt; createExpensiveGraph(key));
+            // Or: Build with a asynchronous computation that returns a future
+            // .buildAsync((key, executor) -&gt; createExpensiveGraphAsync(key, executor));
 
-<h2 id="toc_11">在进行自动部署时，需要通知团队有关部署的情况</h2>
+ String key = &quot;name&quot;;
 
-<p>让人们知道部署已成功进入生产环境，这对成功的运维来说至关重要。在出现问题时，需要知道发生了哪些变更以及这些变更是在什么时候发生的。因此，在进行自动部署时，需要通知团队，让他们密切关注服务的健康状况。在 Netflix，我们使用 Slack 发送通知。在 Spinnaker 中，管道可以在部署完成时通知相应的 Slack 频道。</p>
+// 查询并在缺失的情况下使用异步的方式来构建缓存
+CompletableFuture&lt;Object&gt; graph = asyncLoadingCache.get(key);
+// 查询一组缓存并在缺失的情况下使用异步的方式来构建缓存
+List&lt;String&gt; keys = new ArrayList&lt;&gt;();
+keys.add(key);
+CompletableFuture&lt;Map&lt;String, Object&gt;&gt; graphs = asyncLoadingCache.getAll(keys);
+// 异步转同步
+loadingCache = asyncLoadingCache.synchronous();
+</code></pre>
 
-<p>﻿<a href="https://s3.amazonaws.com/infoq.content.live.0/articles/tips-for-high-availability/zh/resources/6422-1533721787145.png"><img src="https://res.infoq.com/articles/tips-for-high-availability/zh/resources/6422-1533721787145.png" alt=""/></a>﻿</p>
+<p>AsyncLoadingCache 是继承自 LoadingCache 类的，异步加载使用 Executor 去调用方法并返回一个 CompletableFuture。异步加载缓存使用了响应式编程模型。</p>
 
-<h2 id="toc_12">自动化非典型部署，而不是进行一次性手动部署</h2>
+<p>如果要以同步方式调用时，应提供 CacheLoader。要以异步表示时，应该提供一个 AsyncCacheLoader，并返回一个 CompletableFuture。</p>
 
-<p>每个工程师都为非典型情况编写过一次性脚本。而当这类 “一次性” 情况再次发生时，团队的其他成员并不知道写脚本的那个工程师在脚本里都干了什么，因为脚本本来是打算运行一次就丢掉的！很多人都遇到过这种情况。</p>
+<p>synchronous() 这个方法返回了一个 LoadingCacheView 视图，LoadingCacheView 也继承自 LoadingCache。调用该方法后就相当于你将一个异步加载的缓存 AsyncLoadingCache 转换成了一个同步加载的缓存 LoadingCache。</p>
 
-<p>管道是自动执行一系列步骤的有效手段，即使有些步骤并不会每天都执行。例如，一个用于紧急推送的管道，它使用参数作为控制执行的条件（比如跳过部署窗口）。</p>
+<p>默认使用 ForkJoinPool.commonPool() 来执行异步线程，但是我们可以通过 Caffeine.executor(Executor) 方法来替换线程池。</p>
 
-<p>不要忘记定期测试非关键场景的非典型（和典型）部署管道！</p>
+<h3 id="toc_11">驱逐策略（eviction）</h3>
 
-<h2 id="toc_13">使用先决条件验证预期状态</h2>
+<p>Caffeine 提供三类驱逐策略：基于大小（size-based），基于时间（time-based）和基于引用（reference-based）。</p>
 
-<p>现如今，系统经常发生变化是常态。在 Netflix，我们的数百个微服务在不断发生变化。做出无根据的假设（比如假设其他系统的状态）是很危险的。我们现在使用先决条件来确保在部署新代码或进行其他变更时假设仍然有效。这对于长时间执行的管道（可能是因为人工判断或部署窗口造成延迟）来说尤为重要。我们可以在发生潜在的破坏性操作之前使用先决条件来验证预期的状态。</p>
+<h4 id="toc_12">基于大小（size-based）</h4>
 
-<h2 id="toc_14">结论</h2>
+<p>基于大小驱逐，有两种方式：一种是基于缓存大小，一种是基于权重。</p>
 
-<p>这篇文章总结了我们多年来在 Netflix 积累的各种技巧和最佳实践。我们的方法是尽可能围绕这些最佳实践构建工具。我们始终把提高服务可用性作为目标。在真正需要人工干预时，我们才会介入，否则就不插手。工程师的时间用在了那些可以提高可用性的任务上，而在不需要他们参与的情况下，他们可以专注其他事情。</p>
+<pre><code class="language-java">// Evict based on the number of entries in the cache
+// 根据缓存的计数进行驱逐
+LoadingCache&lt;Key, Graph&gt; graphs = Caffeine.newBuilder()
+    .maximumSize(_)
+    .build(key -&gt; createExpensiveGraph(key));
 
-<p>英文原文：<a href="https://medium.com/@NetflixTechBlog/tips-for-high-availability-be0472f2599c">https://medium.com/@NetflixTechBlog/tips-for-high-availability-be0472f2599c</a></p>
+// Evict based on the number of vertices in the cache
+// 根据缓存的权重来进行驱逐（权重只是用于确定缓存大小，不会用于决定该缓存是否被驱逐）
+LoadingCache&lt;Key, Graph&gt; graphs = Caffeine.newBuilder()
+    .maximumWeight(_)
+    .weigher((Key key, Graph graph) -&gt; graph.vertices().size())
+    .build(key -&gt; createExpensiveGraph(key));
+</code></pre>
 
-<p><input type="hidden"></p>
+<p>我们可以使用 Caffeine.maximumSize(long) 方法来指定缓存的最大容量。当缓存超出这个容量的时候，会使用 Window TinyLfu 策略来删除缓存。我们也可以使用权重的策略来进行驱逐，可以使用 Caffeine.weigher(Weigher) 函数来指定权重，使用 Caffeine.maximumWeight(long) 函数来指定缓存最大权重值。</p>
 
-<p>相关内容</p>
+<p>注意：maximumWeight 与 maximumSize 不可以同时使用。</p>
 
-<h3 id="toc_15"><a href="http://www.infoq.com/cn/articles/how-netflix-does-failovers-7-minutes-flat?utm_source=infoq&amp;utm_medium=related_content_link&amp;utm_campaign=relatedContent_undefined_clk">Netflix 如何在 7 分钟内完成失效备援</a></h3>
+<h4 id="toc_13">基于时间（Time-based）</h4>
 
-<h3 id="toc_16"><a href="http://www.infoq.com/cn/articles/mysql-high-availability-at-github?utm_source=infoq&amp;utm_medium=related_content_link&amp;utm_campaign=relatedContent_undefined_clk">GitHub 的 MySQL 高可用性实践</a></h3>
+<pre><code class="language-java">// Evict based on a fixed expiration policy
+// 基于固定的到期策略进行退出
+LoadingCache&lt;Key, Graph&gt; graphs = Caffeine.newBuilder()
+    .expireAfterAccess(, TimeUnit.MINUTES)
+    .build(key -&gt; createExpensiveGraph(key));
+LoadingCache&lt;Key, Graph&gt; graphs = Caffeine.newBuilder()
+    .expireAfterWrite(, TimeUnit.MINUTES)
+    .build(key -&gt; createExpensiveGraph(key));
 
-<h3 id="toc_17"><a href="http://www.infoq.com/cn/articles/netflix-what-happens-when-you-press-play?utm_source=infoq&amp;utm_medium=related_content_link&amp;utm_campaign=relatedContent_undefined_clk">Netflix: 当你按下 “播放” 的时候发生了什么？</a></h3>
+// Evict based on a varying expiration policy
+// 基于不同的到期策略进行退出
+LoadingCache&lt;Key, Graph&gt; graphs = Caffeine.newBuilder()
+    .expireAfter(new Expiry&lt;Key, Graph&gt;() {
+      @Override
+      public long expireAfterCreate(Key key, Graph graph, long currentTime) {
+        // Use wall clock time, rather than nanotime, if from an external resource
+        long seconds = graph.creationDate().plusHours()
+            .minus(System.currentTimeMillis(), MILLIS)
+            .toEpochSecond();
+        return TimeUnit.SECONDS.toNanos(seconds);
+      }
 
-<h3 id="toc_18"><a href="http://www.infoq.com/cn/news/2018/05/netflix-zuul2?utm_source=infoq&amp;utm_medium=related_content_link&amp;utm_campaign=relatedContent_undefined_clk">Netflix 正式开源其 API 网关 Zuul 2</a></h3>
+      @Override
+      public long expireAfterUpdate(Key key, Graph graph, 
+          long currentTime, long currentDuration) {
+        return currentDuration;
+      }
 
-<h3 id="toc_19"><a href="http://www.infoq.com/cn/presentations/the-practice-of-open-source-distributed-monitoring-cat-system?utm_source=infoq&amp;utm_medium=related_content_link&amp;utm_campaign=relatedContent_undefined_clk">开源分布式监控 CAT 系统的高可用实践</a></h3>
+      @Override
+      public long expireAfterRead(Key key, Graph graph,
+          long currentTime, long currentDuration) {
+        return currentDuration;
+      }
+    })
+    .build(key -&gt; createExpensiveGraph(key));
+</code></pre>
+
+<h4 id="toc_14">基于引用（reference-based）</h4>
+
+<p>强引用，软引用，弱引用概念说明请点击连接，这里说一下各各引用的区别：</p>
+
+<p>Java4 种引用的级别由高到低依次为：强引用 &gt; 软引用 &gt; 弱引用 &gt; 虚引用</p>
+
+<p><img src="media/15376909096951/15376914545482.jpg" alt=""/></p>
+
+<pre><code class="language-java">// Evict when neither the key nor value are strongly reachable
+// 当key和value都没有引用时驱逐缓存
+LoadingCache&lt;Key, Graph&gt; graphs = Caffeine.newBuilder()
+    .weakKeys()
+    .weakValues()
+    .build(key -&gt; createExpensiveGraph(key));
+
+// Evict when the garbage collector needs to free memory
+// 当垃圾收集器需要释放内存时驱逐
+LoadingCache&lt;Key, Graph&gt; graphs = Caffeine.newBuilder()
+    .softValues()
+    .build(key -&gt; createExpensiveGraph(key));
+</code></pre>
+
+<p>我们可以将缓存的驱逐配置成基于垃圾回收器。为此，我们可以将 key 和 value 配置为弱引用或只将值配置成软引用。</p>
+
+<p>注意：AsyncLoadingCache 不支持弱引用和软引用。</p>
+
+<h3 id="toc_15">移除监听器（Removal）</h3>
+
+<h4 id="toc_16">概念：</h4>
+
+<p>驱逐（eviction）：由于满足了某种驱逐策略，后台自动进行的删除操作<br/>
+无效（invalidation）：表示由调用方手动删除缓存<br/>
+移除（removal）：监听驱逐或无效操作的监听器<br/>
+手动删除缓存：</p>
+
+<p>在任何时候，您都可能明确地使缓存无效，而不用等待缓存被驱逐。</p>
+
+<pre><code class="language-java">// individual key
+cache.invalidate(key)
+// bulk keys
+cache.invalidateAll(keys)
+// all keys
+cache.invalidateAll()
+</code></pre>
+
+<h4 id="toc_17">Removal 监听器：</h4>
+
+<pre><code class="language-java">Cache&lt;Key, Graph&gt; graphs = Caffeine.newBuilder()
+    .removalListener((Key key, Graph graph, RemovalCause cause) -&gt;
+        System.out.printf(&quot;Key %s was removed (%s)%n&quot;, key, cause))
+    .build();
+</code></pre>
+
+<p>您可以通过 Caffeine.removalListener(RemovalListener) 为缓存指定一个删除侦听器，以便在删除数据时执行某些操作。 RemovalListener 可以获取到 key、value 和 RemovalCause（删除的原因）。</p>
+
+<p>删除侦听器的里面的操作是使用 Executor 来异步执行的。默认执行程序是 ForkJoinPool.commonPool()，可以通过 Caffeine.executor(Executor) 覆盖。当操作必须与删除同步执行时，请改为使用 CacheWrite，CacheWrite 将在下面说明。</p>
+
+<p>注意：由 RemovalListener 抛出的任何异常都会被记录（使用 Logger）并不会抛出。</p>
+
+<h3 id="toc_18">统计（Statistics）</h3>
+
+<pre><code class="language-java">Cache&lt;Key, Graph&gt; graphs = Caffeine.newBuilder()
+    .maximumSize(_)
+    .recordStats()
+    .build();
+</code></pre>
+
+<p>使用 Caffeine.recordStats()，您可以打开统计信息收集。Cache.stats() 方法返回提供统计信息的 CacheStats，如：</p>
+
+<ul>
+<li>  hitRate()：返回命中与请求的比率</li>
+<li>  hitCount(): 返回命中缓存的总数</li>
+<li>  evictionCount()：缓存逐出的数量</li>
+<li>  averageLoadPenalty()：加载新值所花费的平均时间</li>
+</ul>
+
+<h3 id="toc_19">总结</h3>
+
+<p>Caffeine 的调整不只有算法上面的调整，内存方面的优化也有很大进步，Caffeine 的 API 的操作功能和 Guava 是基本保持一致的，并且 Caffeine 为了兼容之前是 Guava 的用户，所以使用或者重写缓存到 Caffeine 应该没什么问题，但是也要看项目情况，不要盲目使用。 </p>
 
                         
                       </div>
@@ -249,10 +432,10 @@
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/8/14</span>
+                    <span class="date">2018/9/23</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='HA.html'>HA</a></span>
+          					    <span class="posted-in"><a href='Java.html'>Java</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -323,9 +506,9 @@
         
             <a href="Coding.html"><strong>Coding</strong></a>
         
-            <a href="Solution.html"><strong>Solution</strong></a>
+            <a href="Modeling.html"><strong>Modeling</strong></a>
         
-            <a href="Archtect.html"><strong>Archtect</strong></a>
+            <a href="Archtecting.html"><strong>Archtecting</strong></a>
          
         </p>
 
@@ -342,31 +525,31 @@
 	      
 		      
 			      <li class="post">
-			        <a href="15359384213292.html">Securing Spring Boot with JWTs</a>
+			        <a href="15389311738065.html">重构到更深层的模型</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15358820607055.html">Java 8 Concurrency Tutorial: Atomic Variables and ConcurrentMap</a>
+			        <a href="15389278377243.html">IAM of Google Cloud</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15358774987730.html">Java 8 Concurrency Tutorial: Synchronization and Locks</a>
+			        <a href="15389224951575.html">RSocket, a New Application Network Protocol for Reactive Applications, Announced at SpringOne</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15358757119900.html">Java 8 Concurrency Tutorial: Threads and Executors</a>
+			        <a href="15389220103546.html">如何形象地描述RxJava中的背压和流控机制？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15358756631902.html">Java 8 Stream Tutorial</a>
+			        <a href="15389214670417.html">Modeling Uncertainty with Reactive DDD</a>
 			      </li>
 		     
 		  

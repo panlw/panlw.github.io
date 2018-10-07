@@ -80,9 +80,9 @@
         
             <li><a href="Coding.html">Coding</a></li>
         
-            <li><a href="Solution.html">Solution</a></li>
+            <li><a href="Modeling.html">Modeling</a></li>
         
-            <li><a href="Archtect.html">Archtect</a></li>
+            <li><a href="Archtecting.html">Archtecting</a></li>
          
 
       </ul>
@@ -105,88 +105,230 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15340923334107.html">
+                <a class="clearlink" href="15358753472382.html">
                 
-                  <h1>Java 性能优化指南，及唯品会的实战</h1>
+                  <h1>Migrate Maven Projects to Java 11</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p>原文出处： <a href="http://calvin1978.blogcn.com/articles/javatuning.html">江南白衣</a></p>
+<p><a href="https://winterbe.com/posts/2018/08/29/migrate-maven-projects-to-java-11-jigsaw/">https://winterbe.com/posts/2018/08/29/migrate-maven-projects-to-java-11-jigsaw/</a></p>
 </blockquote>
 
-<p>来了唯品会一年多，不少时间花在与服务化框架、业务应用的性能的缠斗上。</p>
+<p>So you want to migrate to Java 11 but your Maven project is still sitting on Java 8? You don&#39;t care much about the new <a href="https://www.oracle.com/corporate/features/understanding-java-9-modules.html">module system</a> (Jigsaw) introduced in Java 9, you just want your application to run on the latest JDK version? Then this guide is for you. It includes everything I&#39;ve learned while migrating our product to Java 11.</p>
 
-<p>前几天正好趁着中生代社区的<a href="http://www.hdb.com/party/bajzu.html">十月十城技术沙龙</a>，把脑海中<strong>关于性能优化的记忆</strong>全部理了一遍…. 讲完回家，又本着认真严谨的态度再理了一遍，终于成为现在这份 <strong>66 页的 PPT</strong>。</p>
+<blockquote>
+<p>As of 2019 Oracle Java 8 will no longer receive free security updates. So now is the time to migrate to <a href="http://jdk.java.net/11/">JDK 11</a>.</p>
+</blockquote>
 
-<p>各位客官，1.4 版的内容略有增减，超链接也已修好: <a href="http://files.blogcn.com/wp06/M00/00/ED/CpCCFVgRySAAAAAAAC42ozG7w4w912.pdf">《Java 性能优化指南 V1.4.pdf》</a></p>
+<h3 id="toc_0">Clean up your <code>pom.xml</code> files<a href="#clean-up-your-pom-xml-files" title="Permalink to this section">#</a></h3>
 
-<p><a href="http://files.blogcn.com/wp04/M00/08/02/CoFCGVgHnLkAAAAAAAETKzIbY-c369.jpg" title="幻灯片01"><img src="http://files.blogcn.com/wp04/M00/08/02/CoFCGVgHnLkAAAAAAAETKzIbY-c369.jpg" alt=""/></a></p>
+<p>The first thing you should do before even thinking about upgrading the Java version is to clean up your <code>pom.xml</code> files. If your project is a multi-module Maven project then it helps to establish a parent POM and maintain <code>dependencyManagement</code> und <code>pluginManagement</code> in this file. That way all your plugins and dependencies are defined in a single file and are not spread across multiple POM files what makes managing versions easier.</p>
 
-<h3 id="toc_0">范围</h3>
+<p>In order to migrate your project to the latest Java version 11 it&#39;s highly recommended to update as much plugins and dependencies to the latest stable version as possible. Many plugins such as the compiler plugin, surefire or failsafe are not compatible with Java 9 if you use older versions. Also a lot of libraries are incompatible without migrating to the latest version.</p>
 
-<p>应用性能，受操作系统参数，三方类库选择，数据库查询，甚至压测工具如 JMeter 本身调优的影响。</p>
+<p>Make sure you have the versions plugin configured in your master POM:</p>
 
-<p>本次分享只着重在三方面：</p>
+<pre><code>&lt;plugin&gt;
+    &lt;groupId&gt;org.codehaus.mojo&lt;/groupId&gt;
+    &lt;artifactId&gt;versions-maven-plugin&lt;/artifactId&gt;
+    &lt;version&gt;2.5&lt;/version&gt;
+    &lt;configuration&gt;
+        &lt;generateBackupPoms&gt;false&lt;/generateBackupPoms&gt;
+    &lt;/configuration&gt;
+&lt;/plugin&gt;
+
+</code></pre>
+
+<p>This plugin helps finding the latest plugin or dependency versions for your modules. Open up the terminal and execute this command to find the plugin versions you have to update:</p>
+
+<pre><code>mvn versions:display-plugin-updates
+
+</code></pre>
+
+<p>You will see a list of plugins used in your project with newer versions available. Update all of those plugins to the lastest stable version. After you&#39;ve updated your plugin versions make sure that your project still compiles and runs properly.</p>
+
+<blockquote>
+<p>You can use <code>mvn -N ...</code> from your projects root directory to just check your parent POM in case of multi-module projects.</p>
+</blockquote>
+
+<h3 id="toc_1">Configure plugins for Java 11<a href="#configure-plugins-for-java-11" title="Permalink to this section">#</a></h3>
+
+<p>The most important plugins for Java 11 are the compiler plugin, surefire (for unit-tests) and failsafe (for integration-tests).</p>
+
+<p>In order to compile your project for Java 11 add the <code>release</code> configuration to the compiler plugin, a new compiler parameter to replace the <code>source</code> and <code>target</code> version parameters:</p>
+
+<pre><code>&lt;plugin&gt;
+    &lt;groupId&gt;org.apache.maven.plugins&lt;/groupId&gt;
+    &lt;artifactId&gt;maven-compiler-plugin&lt;/artifactId&gt;
+    &lt;version&gt;3.8.0&lt;/version&gt;
+    &lt;configuration&gt;
+        &lt;release&gt;11&lt;/release&gt;
+    &lt;/configuration&gt;
+&lt;/plugin&gt;
+
+</code></pre>
+
+<blockquote>
+<p>Also don&#39;t forget to set your IDEs project SDK to same JDK version. In Intellij IDEA go to Module Settings -&gt; Project -&gt; SDK.</p>
+</blockquote>
+
+<p>For surefire and failsafe plugins we add an additional argument <code>--illegal-access=permit</code> to allow all reflection access for third party libraries:</p>
+
+<pre><code>&lt;plugin&gt;
+    &lt;groupId&gt;org.apache.maven.plugins&lt;/groupId&gt;
+    &lt;artifactId&gt;maven-surefire-plugin&lt;/artifactId&gt;
+    &lt;version&gt;2.22.0&lt;/version&gt;
+    &lt;configuration&gt;
+        &lt;argLine&gt;
+            --illegal-access=permit
+        &lt;/argLine&gt;
+    &lt;/configuration&gt;
+&lt;/plugin&gt;
+&lt;plugin&gt;
+    &lt;groupId&gt;org.apache.maven.plugins&lt;/groupId&gt;
+    &lt;artifactId&gt;maven-failsafe-plugin&lt;/artifactId&gt;
+    &lt;version&gt;2.22.0&lt;/version&gt;
+    &lt;configuration&gt;
+        &lt;argLine&gt;
+            --illegal-access=permit
+        &lt;/argLine&gt;
+    &lt;/configuration&gt;
+&lt;/plugin&gt;
+
+</code></pre>
+
+<p>This is only needed if your dependencies make heavy use of reflection. If you&#39;re unsure whether you need this you can add the <code>argLine</code> later if your tests run into trouble.</p>
+
+<p>You&#39;ll see warnings like this when a library tries to illegally access classes via <code>setAccessible(true)</code>:</p>
+
+<pre><code>WARNING: Please consider reporting this to the maintainers of org.codehaus.groovy.reflection.CachedClass
+WARNING: Use --illegal-access=warn to enable warnings of further illegal reflective access operations
+WARNING: All illegal access operations will be denied in a future release
+
+</code></pre>
+
+<blockquote>
+<p>Keep in mind that later you probably also have to pass the <code>--illegal-access=permit</code> parameter when starting your application.</p>
+</blockquote>
+
+<h3 id="toc_2">Update dependencies<a href="#update-dependencies" title="Permalink to this section">#</a></h3>
+
+<p>As mentioned before the best thing you can do is to migrate all your dependencies to the latest stable versions to make sure everything works fine with Java 11. While many older dependencies might work just fine there&#39;s a couple of dependencies where version updates are mandatory, e.g. all those various bytecode enhancement libaries such as <code>javassist</code>, <code>cglib</code>, <code>asm</code> or <code>byte-buddy</code>. Those libraries often come as transitive dependencies so make sure at least those libaries are up-to-date.</p>
+
+<pre><code>&lt;dependency&gt;
+    &lt;groupId&gt;org.javassist&lt;/groupId&gt;
+    &lt;artifactId&gt;javassist&lt;/artifactId&gt;
+    &lt;version&gt;3.23.1-GA&lt;/version&gt;
+&lt;/dependency&gt;
+&lt;dependency&gt;
+    &lt;groupId&gt;cglib&lt;/groupId&gt;
+    &lt;artifactId&gt;cglib-nodep&lt;/artifactId&gt;
+    &lt;version&gt;3.2.7&lt;/version&gt;
+&lt;/dependency&gt;
+
+</code></pre>
+
+<p>This command helps to find outdated dependency versions from your modules:</p>
+
+<pre><code>mvn versions:display-dependency-updates
+
+</code></pre>
+
+<p>Update as much libaries as possible to the latest stable version. If there&#39;s some dependency that you can&#39;t update due to compatibility issues in your project than leave it as is. Chances are that it just runs fine with Java 11.</p>
+
+<p>Now is a good time to compile your project with JDK 11 for the first time:</p>
+
+<pre><code>mvn clean test-compile compile
+
+</code></pre>
+
+<blockquote>
+<p>Hint: You can speed up multi-module Maven projects by using parallel builds, e.g. <code>mvn -T 4 compile</code> compiles all modules in parallel on 4 CPU cores.</p>
+</blockquote>
+
+<p>You will eventually face different compiler errors such as <code>ClassNotFoundException</code>. Every project is different so I cannot provide solutions for every problem you will face. The rest of this article describes solutions to various problems we had to solve in order to run our application with JDK 11.</p>
+
+<h3 id="toc_3">Add missing modules<a href="#add-missing-modules" title="Permalink to this section">#</a></h3>
+
+<p>With the introduction of the Java module system (Jigsaw) in Java 9 the Java standard libary has been divided into separate modules. While most classes are still available without any changes, some are not. You have to explicitely define which additional modules your application needs access to or you can just add those modules from the Maven central repository.</p>
+
+<blockquote>
+<p>The command <code>java --list-modules</code> lists all available modules.</p>
+</blockquote>
+
+<p>When migrating our web project to Java 11 we had to add <code>jaxb</code> and <code>javax.annotations</code> to prevent <code>ClassNotFoundException</code>. We&#39;ve added the following libaries as additional Maven dependencies to our POMs:</p>
+
+<pre><code>&lt;dependency&gt;
+    &lt;groupId&gt;javax.annotation&lt;/groupId&gt;
+    &lt;artifactId&gt;javax.annotation-api&lt;/artifactId&gt;
+    &lt;version&gt;1.3.2&lt;/version&gt;
+&lt;/dependency&gt;
+&lt;dependency&gt;
+    &lt;groupId&gt;javax.xml.bind&lt;/groupId&gt;
+    &lt;artifactId&gt;jaxb-api&lt;/artifactId&gt;
+    &lt;version&gt;2.4.0-b180725.0427&lt;/version&gt;
+&lt;/dependency&gt;
+&lt;dependency&gt;
+    &lt;groupId&gt;org.glassfish.jaxb&lt;/groupId&gt;
+    &lt;artifactId&gt;jaxb-runtime&lt;/artifactId&gt;
+    &lt;version&gt;2.4.0-b180725.0644&lt;/version&gt;
+&lt;/dependency&gt;
+
+</code></pre>
+
+<blockquote>
+<p>Instead of adding those libaries via Maven we could utilize the <code>–add-modules</code> Java parameter to add additional JDK modules to the project.</p>
+</blockquote>
+
+<h3 id="toc_4">Fixing <code>sun.*</code> and <code>com.sun.*</code> imports<a href="#fixing-sun-and-com-sun-imports" title="Permalink to this section">#</a></h3>
+
+<p>While some classes have been moved to additional Java modules other classes can no longer been used in user code, namely classes from <code>sun.*</code> packages and also some classes from <code>com.sun.*</code>. If you get compiler errors because your code links to classes from those packages you have to remove those imports from your code.</p>
+
+<p>Here&#39;s a few things we had to fix in our project:</p>
 
 <ul>
-<li>  JVM 的调优</li>
-<li>  代码的调优</li>
-<li>  定位性能问题的工具</li>
+<li>  <code>sun.misc.BASE64Encoder</code>: This can simply be replaced by <code>java.util.Base64.getEncoder()</code> which is available since Java 8.</li>
+<li>  <code>sun.reflect.generics.reflectiveObjects.ParameterizedTypeImpl</code>: This class has accidentally been used in our code base and can simply be replaced by the interface type <code>java.lang.reflect.ParameterizedType</code>.</li>
+<li>  <code>sun.reflect.annotation.AnnotationParser</code>: We use this class to programmatically create annotation instances. The class is no longer accessible but can be replaced by <code>AnnotationFactory</code> from Hibernate Validator.</li>
+<li>  <code>com.sun.org.apache.xml.internal.utils.DefaultErrorHandler</code>: We&#39;ve replaced this class with a custom implementation of the interface.</li>
 </ul>
 
-<p><a href="http://files.blogcn.com/wp06/M00/00/ED/CpCCFVgHnPMAAAAAAADXW3vnM8I951.jpg" title="幻灯片03"><img src="http://files.blogcn.com/wp06/M00/00/ED/CpCCFVgHnPMAAAAAAADXW3vnM8I951.jpg" alt=""/></a></p>
+<h3 id="toc_5">Currency formats<a href="#currency-formats" title="Permalink to this section">#</a></h3>
 
-<p><a href="http://files.blogcn.com/wp02/M00/08/EF/CpAZrVgHnSkAAAAAAACnv2fHcK0833.jpg" title="幻灯片04"><img src="http://files.blogcn.com/wp02/M00/08/EF/CpAZrVgHnSkAAAAAAACnv2fHcK0833.jpg" alt=""/></a></p>
+<p>We&#39;ve encountered a curious case with number formats for locales such as <code>Locale.GERMANY</code> which let a bunch of our tests fail with a rather strange assertion error:</p>
 
-<h3 id="toc_1">基本原则</h3>
+<pre><code>java.lang.AssertionError:
+Expected: is &quot;9,80 €&quot;
+     but: was &quot;9,80 €&quot;
 
-<p>网上如此多新旧不一的资料，这么多肆意传播亦真亦错的观点，怎么办呢？</p>
+</code></pre>
 
-<ol>
-<li> 多看一些靠谱的资料，问一些靠谱的人。</li>
-<li> 怀疑一切，微基准测试一切，诚意推荐 JMH。</li>
-<li> 看 JDK 代码，看一切代码。</li>
-</ol>
+<p>The underlying code uses <code>NumberFormat.getCurrencyInstance(Locale.GERMANY)</code> to format numbers into the german currency format. So what the heck is happening here?</p>
 
-<p><a href="http://files.blogcn.com/wp04/M00/00/D1/CpCCFVgHnewAAAAAAAC4WC08BEA045.jpg" title="幻灯片06"><img src="http://files.blogcn.com/wp04/M00/00/D1/CpCCFVgHnewAAAAAAAC4WC08BEA045.jpg" alt=""/></a></p>
+<p>Javas number formats have been modified to use <a href="https://en.wikipedia.org/wiki/Non-breaking_space">non-breaking spaces</a> instead of normal spaces between the number and the currency symbol. This change makes perfectly sense because it prevents line-breaks between the number and the currency symbol in various presentation formats. Changing the strings in our tests to use non-breaking spaces (use OPTION SPACE on Mac OSX keyboards) fixed this issue.</p>
 
-<p><a href="http://files.blogcn.com/wp06/M00/04/D0/CoFCGVgHnjEAAAAAAADZwUFf8O8583.jpg" title="幻灯片07"><img src="http://files.blogcn.com/wp06/M00/04/D0/CoFCGVgHnjEAAAAAAADZwUFf8O8583.jpg" alt=""/></a></p>
+<h3 id="toc_6">Servlet Container<a href="#servlet-container" title="Permalink to this section">#</a></h3>
 
-<p><a href="http://files.blogcn.com/wp02/M00/08/EF/CpAZrVgHnokAAAAAAACCHhzO17w957.jpg" title="幻灯片08"><img src="http://files.blogcn.com/wp02/M00/08/EF/CpAZrVgHnokAAAAAAACCHhzO17w957.jpg" alt=""/></a></p>
+<p>When running web applications with Apache Tomcat you need at least Apache Tomcat 7.0.85 or later. Otherwise Tomcat will not start on Java 9 and above and you would see the following error:</p>
 
-<p><a href="http://files.blogcn.com/wp04/M00/08/02/CoFCGVgHn6YAAAAAAADGggFLBi0755.jpg" title="幻灯片09"><img src="http://files.blogcn.com/wp04/M00/08/02/CoFCGVgHn6YAAAAAAADGggFLBi0755.jpg" alt=""/></a></p>
+<pre><code>/path/to/apache-tomcat-7.0.64/bin/catalina.sh run
+-Djava.endorsed.dirs=/path/to/apache-tomcat-7.0.64/endorsed is not supported. Endorsed standards and standalone APIs
+Error: Could not create the Java Virtual Machine.
+Error: A fatal exception has occurred. Program will exit.
+in modular form will be supported via the concept of upgradeable modules.
+Disconnected from server
 
-<h3 id="toc_2">JVM 优化</h3>
+</code></pre>
 
-<p>首先，JIT 入门知识；然后，JVM 参数的简介；再然后，最头痛的 GC 问题的处理。</p>
+<p>Also don&#39;t forget to eventually add the additional startup parameter <code>--illegal-access=permit</code> to your servlet container.</p>
 
-<p><a href="http://files.blogcn.com/wp06/M00/00/ED/CpCCFVgHoB4AAAAAAACR8THhKLc792.jpg" title="幻灯片21"><img src="http://files.blogcn.com/wp06/M00/00/ED/CpCCFVgHoB4AAAAAAACR8THhKLc792.jpg" alt=""/></a></p>
+<h3 id="toc_7">That&#39;s all<a href="#thats-all" title="Permalink to this section">#</a></h3>
 
-<p><a href="http://files.blogcn.com/wp06/M00/00/ED/CpCCFVgHqVoAAAAAAADQAgCkMkE356.jpg" title="幻灯片30"><img src="http://files.blogcn.com/wp06/M00/00/ED/CpCCFVgHqVoAAAAAAADQAgCkMkE356.jpg" alt=""/></a></p>
+<p>I hope these tips are somewhat useful to you and helps you migrating your application from Java 8 to 11. If you like this guide please consider sharing the link with your followers. Also <a href="https://twitter.com/winterbe_">let me know on Twitter</a> if your migration was successful.</p>
 
-<h3 id="toc_3">代码优化</h3>
-
-<p>代码优化，两大方向一是面向 GC 的编程，二是并发与锁，然后再来聊聊其他。</p>
-
-<p><a href="http://files.blogcn.com/wp02/M00/08/EF/CpAZrVgHoGwAAAAAAADk5iKpsPw033.jpg" title="幻灯片34"><img src="http://files.blogcn.com/wp02/M00/08/EF/CpAZrVgHoGwAAAAAAADk5iKpsPw033.jpg" alt=""/></a></p>
-
-<h3 id="toc_4">问题定位工具集</h3>
-
-<p>黑盒调优是最不可靠的，推荐线下用 JMC，线上用 Btrace 定位问题。</p>
-
-<p><a href="http://files.blogcn.com/wp04/M00/00/D1/CpCCFVgHoZMAAAAAAAC3Llc-Yyw623.jpg" title="幻灯片51"><img src="http://files.blogcn.com/wp04/M00/00/D1/CpCCFVgHoZMAAAAAAAC3Llc-Yyw623.jpg" alt=""/></a></p>
-
-<h3 id="toc_5">特别鸣谢</h3>
-
-<p>感谢 R 大 ， 日常三更半夜跨洋热心解答各种 JVM 问题。</p>
-
-<p>感谢 Chembo(国钦)，对 PPT 的美化。</p>
-
-<h3 id="toc_6">完整 PPT 下载</h3>
-
-<p><a href="http://files.blogcn.com/wp06/M00/00/ED/CpCCFVgRySAAAAAAAC42ozG7w4w912.pdf">《Java 性能优化指南 V1.4.pdf》</a>, by 江南白衣, 超链接修正版。</p>
+<p>Good luck!</p>
 
                         
                       </div>
@@ -195,7 +337,7 @@
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/8/13</span>
+                    <span class="date">2018/9/2</span>
                     <span>posted in&nbsp;</span> 
           				  
           					    <span class="posted-in"><a href='Java.html'>Java</a></span>
@@ -269,9 +411,9 @@
         
             <a href="Coding.html"><strong>Coding</strong></a>
         
-            <a href="Solution.html"><strong>Solution</strong></a>
+            <a href="Modeling.html"><strong>Modeling</strong></a>
         
-            <a href="Archtect.html"><strong>Archtect</strong></a>
+            <a href="Archtecting.html"><strong>Archtecting</strong></a>
          
         </p>
 
@@ -288,31 +430,31 @@
 	      
 		      
 			      <li class="post">
-			        <a href="15359384213292.html">Securing Spring Boot with JWTs</a>
+			        <a href="15389311738065.html">重构到更深层的模型</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15358820607055.html">Java 8 Concurrency Tutorial: Atomic Variables and ConcurrentMap</a>
+			        <a href="15389278377243.html">IAM of Google Cloud</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15358774987730.html">Java 8 Concurrency Tutorial: Synchronization and Locks</a>
+			        <a href="15389224951575.html">RSocket, a New Application Network Protocol for Reactive Applications, Announced at SpringOne</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15358757119900.html">Java 8 Concurrency Tutorial: Threads and Executors</a>
+			        <a href="15389220103546.html">如何形象地描述RxJava中的背压和流控机制？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15358756631902.html">Java 8 Stream Tutorial</a>
+			        <a href="15389214670417.html">Modeling Uncertainty with Reactive DDD</a>
 			      </li>
 		     
 		  

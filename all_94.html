@@ -80,9 +80,9 @@
         
             <li><a href="Coding.html">Coding</a></li>
         
-            <li><a href="Solution.html">Solution</a></li>
+            <li><a href="Modeling.html">Modeling</a></li>
         
-            <li><a href="Archtect.html">Archtect</a></li>
+            <li><a href="Archtecting.html">Archtecting</a></li>
          
 
       </ul>
@@ -105,349 +105,354 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15282782041132.html">
+                <a class="clearlink" href="15293277939094.html">
                 
-                  <h1>Enabling Centralized Logging</h1>
+                  <h1>Java 并发编程：阻塞队列</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://dzone.com/articles/centralized-logging">https://dzone.com/articles/centralized-logging</a></p>
+<p>作者：海子<br/>
+原文：<a href="http://www.cnblogs.com/dolphin0520/p/3932906.html">http://www.cnblogs.com/dolphin0520/p/3932906.html</a></p>
 </blockquote>
 
-<p>An essential requirement for microservices architecture is the ability to look through the request propagation between multiple microservices. If you have only few microservices, you might be able to ssh to all the servers and tail the logs. However, if you happen to have multiple servers per service, this is not something that is easy to do. The solution is to build a centralized logging system that could gather all our application logs into a single service. The logging system should meet the following requirements:</p>
+<p>使用非阻塞队列的时候有一个很大问题就是：它不会对当前线程产生阻塞，那么在面对类似消费者 - 生产者的模型时，就必须额外地实现同步策略以及线程间唤醒策略，这个实现起来就非常麻烦。但是有了阻塞队列就不一样了，它会对当前线程产生阻塞，比如一个线程从一个空的阻塞队列中取元素，此时线程会被阻塞直到阻塞队列中有了元素。当队列中有元素后，被阻塞的线程会自动被唤醒（不需要我们编写代码去唤醒）。这样提供了极大的方便性。</p>
 
-<ol>
-<li> It should work in real-time.</li>
-<li> It should be easy to search.</li>
-<li> It should help developers correlate requests between microservices.</li>
-<li> It should be application agnostic.</li>
-<li> It should place very little overhead on the application.</li>
-</ol>
+<p>本文先讲述一下 java.util.concurrent 包下提供主要的几种阻塞队列，然后分析了阻塞队列和非阻塞队列的中的各个方法，接着分析了阻塞队列的实现原理，最后给出了一个实际例子和几个使用场景。</p>
 
-<p>There are some helpful tools which can be used for building the logging system.</p>
+<p>　　一. 几种主要的阻塞队列</p>
+
+<p>　　二. 阻塞队列中的方法 VS 非阻塞队列中的方法</p>
+
+<p>　　三. 阻塞队列的实现原理</p>
+
+<p>　　四. 示例和使用场景</p>
+
+<p>若有不正之处请多多谅解，并欢迎批评指正。</p>
+
+<h2 id="toc_0">一. 几种主要的阻塞队列</h2>
+
+<p>自从 Java 1.5 之后，在 java.util.concurrent 包下提供了若干个阻塞队列，主要有以下几个：</p>
 
 <ul>
-<li>  <strong>Spring Cloud Sleuth -</strong> Library from Spring cloud project that provides automatic instrumentation of communication channels. It lets you track the progress of subsequent microservices by adding the appropriate headers to the HTTP requests.</li>
-<li>  <strong>Zipkin</strong> - Zipkin is a distributed tracing system. It helps gather timing data needed to troubleshoot latency problems in microservice architectures. It manages both the collection and lookup of this data. Zipkin’s design is based on the Google Dapper paper.</li>
-<li>  <strong>Splunk -</strong> Splunk is centralized logs analysis tool for machine generated data, unstructured/structured and complex multi-line data which provides the following features such as Easy Search/Navigate, Real-Time Visibility, Historical Analytics, Reports, Alerts, Dashboards and Visualization.</li>
-<li>  <strong>ELK -</strong> Elasticsearch, Logstash, Kibana: three different tools usually used together. They are used for searching, analyzing, and visualizing log data in a real time.</li>
+<li><p>ArrayBlockingQueue：基于数组实现的一个阻塞队列，在创建 ArrayBlockingQueue 对象时必须制定容量大小。并且可以指定公平性与非公平性，默认情况下为非公平的，即不保证等待时间最长的队列最优先能够访问队列。</p></li>
+<li><p>LinkedBlockingQueue：基于链表实现的一个阻塞队列，在创建 LinkedBlockingQueue 对象时如果不指定容量大小，则默认大小为 Integer.MAX_VALUE。</p></li>
+<li><p>PriorityBlockingQueue：以上 2 种队列都是先进先出队列，而 PriorityBlockingQueue 却不是，它会按照元素的优先级对元素进行排序，按照优先级顺序出队，每次出队的元素都是优先级最高的元素。注意，此阻塞队列为无界阻塞队列，即容量没有上限（通过源码就可以知道，它没有容器满的信号标志），前面 2 种都是有界队列。</p></li>
+<li><p>DelayQueue：基于 PriorityQueue，一种延时阻塞队列，DelayQueue 中的元素只有当其指定的延迟时间到了，才能够从队列中获取到该元素。DelayQueue 也是一个无界队列，因此往队列中插入数据的操作（生产者）永远不会被阻塞，而只有获取数据的操作（消费者）才会被阻塞。</p></li>
 </ul>
 
-<h2 id="toc_0">Architecture</h2>
+<h2 id="toc_1">二. 阻塞队列中的方法 VS 非阻塞队列中的方法</h2>
 
-<p><img src="https://dzone.com/storage/temp/6480958-image001v1.png" alt=""/></p>
+<p><strong>1. 非阻塞队列中的几个主要方法：</strong></p>
 
-<h2 id="toc_1">Instrument Your Application</h2>
+<ul>
+<li><p><strong>add(E e)：</strong>将元素 e 插入到队列末尾，如果插入成功，则返回 true；如果插入失败（即队列已满），则会抛出异常；</p></li>
+<li><p><strong>remove()：</strong>移除队首元素，若移除成功，则返回 true；如果移除失败（队列为空），则会抛出异常；</p></li>
+<li><p><strong>offer(E e)：</strong>将元素 e 插入到队列末尾，如果插入成功，则返回 true；如果插入失败（即队列已满），则返回 false；</p></li>
+<li><p><strong>poll()：</strong>移除并获取队首元素，若成功，则返回队首元素；否则返回 null；</p></li>
+<li><p><strong>peek()：</strong>获取队首元素，若成功，则返回队首元素；否则返回 null</p></li>
+</ul>
 
-<p>The first step is to instrument your application so that each log statement includes traceId and spanId that will help in tracing a call as it propagates through different microservices. In the following sections, instructions are provided for instrumenting Spring Boot, NodeJS and Python applications.</p>
+<p>对于非阻塞队列，一般情况下建议使用 offer、poll 和 peek 三个方法，不建议使用 add 和 remove 方法。因为使用 offer、poll 和 peek 三个方法可以通过返回值判断操作成功与否，而使用 add 和 remove 方法却不能达到这样的效果。注意，非阻塞队列中的方法都没有进行同步措施。</p>
 
-<h2 id="toc_2">Enabling Tracing for SpringBoot Applications With the Sleuth Library</h2>
+<p><strong>2. 阻塞队列中的几个主要方法：</strong></p>
 
-<p>1. Update the POM file to include the Sleuth Spring Boot starter library:</p>
+<p>阻塞队列包括了非阻塞队列中的大部分方法，上面列举的 5 个方法在阻塞队列中都存在，但是要注意这 5 个方法在阻塞队列中都进行了同步措施。</p>
 
-<p><strong>pom.xml</strong></p>
+<p>除此之外，阻塞队列提供了另外 4 个非常有用的方法：</p>
 
-<pre><code class="language-xml">&lt;dependencyManagement&gt;
-    &lt;dependencies&gt;
-        &lt;dependency&gt;
-            &lt;groupId&gt;org.springframework.cloud&lt;/groupId&gt;
-            &lt;artifactId&gt;spring-cloud-sleuth&lt;/artifactId&gt;
-            &lt;version&gt;1.2.2.RELEASE&lt;/version&gt;
-            &lt;type&gt;pom&lt;/type&gt;
-            &lt;scope&gt;import&lt;/scope&gt;
-        &lt;/dependency&gt;
-    &lt;/dependencies&gt;
-&lt;/dependencyManagement&gt;
-&lt;dependency&gt;
-&lt;groupId&gt;org.springframework.cloud&lt;/groupId&gt;
-    &lt;artifactId&gt;spring-cloud-starter-sleuth&lt;/artifactId&gt;
-&lt;/dependency&gt;
-</code></pre>
+<p>　　put(E e)</p>
 
-<p>2. Update application.properties to include spring.application.name and logging.file.</p>
+<p>　　take()</p>
 
-<p><strong>application.properties</strong></p>
+<p>　　offer(E e,long timeout, TimeUnit unit)</p>
 
-<pre><code class="language-properties">spring.application.name=&quot;Spring Boot 1&quot;
-logging.file=/var/log/logs/springboot1.log
-</code></pre>
+<p>　　poll(long timeout, TimeUnit unit)</p>
 
-<p>3. Use SLF4J for logging.</p>
+<p>这四个方法的理解：</p>
 
-<p><strong>Application.java</strong></p>
+<p>　　put 方法用来向队尾存入元素，如果队列满，则等待；</p>
 
-<pre><code class="language-java">import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-private static final Logger logger = LoggerFactory.getLogger(Application.class);
-logger.info(quote.toString());
-</code></pre>
+<p>　　take 方法用来从队首取元素，如果队列为空，则等待；</p>
 
-<p>4. Use a RestTemplate object that is autowired by Spring. This is necessary because Spring Cloud Sleuth adds the trace id and span id via headers in the request.</p>
+<p>　　offer 方法用来向队尾存入元素，如果队列满，则等待一定的时间，当时间期限达到时，如果还没有插入成功，则返回 false；否则返回 true；</p>
 
-<p><strong>Application.java</strong></p>
+<p>　　poll 方法用来从队首取元素，如果队列空，则等待一定的时间，当时间期限达到时，如果取到，则返回 null；否则返回取得的元素；</p>
 
-<pre><code class="language-java">import org.springframework.web.client.RestTemplate;
-@Bean
-RestTemplate restTemplate() {
-return new RestTemplate();
+<h2 id="toc_2">三. 阻塞队列的实现原理</h2>
+
+<p>前面谈到了非阻塞队列和阻塞队列中常用的方法，下面来探讨阻塞队列的实现原理，本文以 ArrayBlockingQueue 为例，其他阻塞队列实现原理可能和 ArrayBlockingQueue 有一些差别，但是大体思路应该类似，有兴趣的朋友可自行查看其他阻塞队列的实现源码。</p>
+
+<p>首先看一下 ArrayBlockingQueue 类中的几个成员变量：</p>
+
+<pre><code class="language-java">public class ArrayBlockingQueue&lt;E&gt; extends AbstractQueue&lt;E&gt;
+implements BlockingQueue&lt;E&gt;, java.io.Serializable {
+
+private static final long serialVersionUID = -817911632652898426L;
+
+/** The queued items  */
+private final E[] items;
+/** items index for next take, poll or remove */
+private int takeIndex;
+/** items index for next put, offer, or add. */
+private int putIndex;
+/** Number of items in the queue */
+private int count;
+
+/*
+* Concurrency control uses the classic two-condition algorithm
+* found in any textbook.
+*/
+
+/** Main lock guarding all access */
+private final ReentrantLock lock;
+/** Condition for waiting takes */
+private final Condition notEmpty;
+/** Condition for waiting puts */
+private final Condition notFull;
 }
-@Autowired
-RestTemplate restTemplate;
-    Quote quote = restTemplate.getForObject(&quot;http://localhost:8082/quote&quot;, Quote.class);
 </code></pre>
 
-<p>As an example, let&#39;s say we have a case like the following:</p>
+<p>可以看出，ArrayBlockingQueue 中用来存储元素的实际上是一个数组，takeIndex 和 putIndex 分别表示队首元素和队尾元素的下标，count 表示队列中元素的个数。</p>
 
-<p><img src="https://dzone.com/storage/temp/6461026-image002.png" alt=""/></p>
+<p>lock 是一个可重入锁，notEmpty 和 notFull 是等待条件。</p>
 
-<p>Now, if you run the microservices and hit the endpoint, you should see your logging statement printed in the in the log file of Microservice 1:</p>
+<p>下面看一下 ArrayBlockingQueue 的构造器，构造器有三个重载版本：</p>
 
-<pre><code class="language-log">2017-08-21 06:09:41.925  INFO [&quot;Spring Boot 1&quot;,945690e8fc53b5b5,945690e8fc53b5b5,false] 25841 --- [http-nio-8080-exec-10] c.b.l.controller.LoggingController       : Quote{type=&#39;success&#39;, value=Value{id=10, quote=&#39;Really loving Spring Boot, makes stand alone Spring apps easy.&#39;}}
-2017-08-21 06:29:44.244  INFO [&quot;Spring Boot 1&quot;,b9184768fa226280,b9184768fa226280,false] 25841 --- [http-nio-8080-exec-2] c.b.l.controller.LoggingController       : Quote{type=&#39;success&#39;, value=Value{id=11, quote=&#39;I have two hours today to build an app from scratch. @springboot to the rescue!&#39;}}
-2017-08-21 06:36:13.698  INFO [&quot;Spring Boot 1&quot;,f21c03b4f86f31a8,f21c03b4f86f31a8,false] 25841 --- [http-nio-8080-exec-4] c.b.l.controller.LoggingController       : Quote{type=&#39;success&#39;, value=Value{id=4, quote=&#39;Previous to Spring Boot, I remember XML hell, confusing set up, and many hours of frustration.&#39;}}
+<pre><code class="language-java">public ArrayBlockingQueue(int capacity) {
+}
+public ArrayBlockingQueue(int capacity, boolean fair) {
+
+}
+public ArrayBlockingQueue(int capacity, boolean fair,
+                  Collection&lt;? extends E&gt; c) {
+}
 </code></pre>
 
-<p>and Microservice 2:</p>
+<p>第一个构造器只有一个参数用来指定容量，第二个构造器可以指定容量和公平性，第三个构造器可以指定容量、公平性以及用另外一个集合进行初始化。</p>
 
-<pre><code class="language-log">2017-08-21 06:29:44.238  INFO [&quot;Spring Boot 2&quot;,b9184768fa226280,7a80e050a5c4aa2c,false] 25867 --- [http-nio-8082-exec-5] c.b.l.controller.LoggingController       : Quote{type=&#39;success&#39;, value=Value{id=11, quote=&#39;I have two hours today to build an app from scratch. @springboot to the rescue!&#39;}}
-2017-08-21 06:36:13.693  INFO [&quot;Spring Boot 2&quot;,f21c03b4f86f31a8,cbeb473567ccd74a,false] 25867 --- [http-nio-8082-exec-6] c.b.l.controller.LoggingController       : Quote{type=&#39;success&#39;, value=Value{id=4, quote=&#39;Previous to Spring Boot, I remember XML hell, confusing set up, and many hours of frustration.&#39;}}
+<p>然后看它的两个关键方法的实现：put() 和 take()：</p>
+
+<pre><code class="language-java">public void put(E e) throws InterruptedException {
+   if (e == null) throw new NullPointerException();
+   final E[] items = this.items;
+   final ReentrantLock lock = this.lock;
+   lock.lockInterruptibly();
+   try {
+       try {
+           while (count == items.length)
+               notFull.await();
+       } catch (InterruptedException ie) {
+           notFull.signal(); // propagate to non-interrupted thread
+           throw ie;
+       }
+       insert(e);
+   } finally {
+       lock.unlock();
+   }
+}
 </code></pre>
 
-<p>The portion of the log statement that Sleuth adds is [&quot;Spring Boot 1&quot;, 945690e8fc53b5b5, 945690e8fc53b5b5, false]. The first part is the application name (whatever you set spring.application.name to in application.properties). The second value is the trace id. The third value is the span id. Finally, the last value indicates whether the span should be exported to Zipkin. The trace ids are the same but the span ids are different. The trace ids are what is going to allow you to trace a request as it travels from one service to the next. The span ids are different because we have two different “units of work” occurring, one for each request.</p>
+<p>从 put 方法的实现可以看出，它先获取了锁，并且获取的是可中断锁，然后判断当前元素个数是否等于数组的长度，如果相等，则调用 notFull.await() 进行等待，如果捕获到中断异常，则唤醒线程并抛出异常。</p>
 
-<h2 id="toc_3">Enabling Tracing for NodeJS Applications</h2>
+<p>当被其他线程唤醒时，通过 insert(e) 方法插入元素，最后解锁。</p>
 
-<p>The instrumentation to include traceId and spanId in logs for NodeJS and JavaScript is manual unlike in case of Spring Boot applications where these are added to each log by Spring Cloud Sleuth.</p>
+<p>我们看一下 insert 方法的实现：</p>
 
-<p>1. Instrument the NodeJS application following the steps listed here - <a href="https://github.com/openzipkin/zipkin-js-example">https://github.com/openzipkin/zipkin-js-example</a>. This project shows an example of how to use Zipkin in JavaScript.</p>
-
-<p>2. Add a logger to include traceId and spanId in the logs.</p>
-
-<p><strong>logger.js</strong></p>
-
-<pre><code class="language-js">const winston = require(&#39;winston&#39;),
-  moment = require(&#39;moment&#39;);
-var logger = new winston.Logger({
-  transports: [
-    new winston.transports.Console({
-      formatter: (options) =&gt; {
-        const traceId = options.meta.TraceId;
-        const spanId = options.meta.SpanId;
-        const service = options.meta.serviceName;
-        const logLevel = options.level.toUpperCase();
-        const time = moment();
-        const message = options.message || &#39;&#39;;
-        return JSON.stringify({
-          timestamp: time.toISOString(),
-          logLevel,
-          message,
-          traceId,
-          spanId,
-          service
-        });
-      }
-    }),
-    new winston.transports.File({
-      filename: &#39;frontend.log&#39;,
-      formatter: (options) =&gt; {
-        const traceId = options.meta.TraceId;
-        const spanId = options.meta.SpanId;
-        const service = options.meta.serviceName;
-        const logLevel = options.level.toUpperCase();
-        const time = moment();
-        const message = options.message || &#39;&#39;;
-        return JSON.stringify({
-          timestamp: time.toISOString(),
-          logLevel,
-          message,
-          traceId,
-          spanId,
-          service
-        });
-      }
-    })
-  ]
-}); 
-module.exports.logger = logger;
+<pre><code class="language-java">private void insert(E x) {
+   items[putIndex] = x;
+   putIndex = inc(putIndex);
+   ++count;
+   notEmpty.signal();
+}
 </code></pre>
 
-<p>3. Use the logger to log.</p>
+<p>它是一个 private 方法，插入成功后，通过 notEmpty 唤醒正在等待取元素的线程。</p>
 
-<p><strong>frontend.js</strong></p>
+<p>下面是 take() 方法的实现：</p>
 
-<pre><code class="language-js">const {logger} = require(&#39;./logger&#39;);
-app.get(&#39;/&#39;, (req, res) =&gt; {
-  zipkinRest(&#39;http://localhost:9000/api&#39;)
-    .then(response =&gt; {
-      logger.log(&#39;info&#39;, &#39;Hello distributed log files!&#39;, 
-        { &#39;serviceName&#39;:&#39;frontend&#39;, &#39;TraceId&#39;: req.header(&#39;X-B3-TraceId&#39;), &#39;SpanId&#39;: req.header(&#39;X-B3-SpanId&#39;) });
-      res.send(response.entity);
-    })
-    .catch(err =&gt; logger.error(&#39;Error&#39;, err.stack));
-});
+<pre><code class="language-java">public E take() throws InterruptedException {
+   final ReentrantLock lock = this.lock;
+   lock.lockInterruptibly();
+   try {
+       try {
+           while (count == 0)
+               notEmpty.await();
+       } catch (InterruptedException ie) {
+           notEmpty.signal(); 
+           // propagate to non-interrupted thread
+           throw ie;
+       }
+       E x = extract();
+       return x;
+   } finally {
+       lock.unlock();
+   }
+}
 </code></pre>
 
-<p><strong>backend.js</strong></p>
+<p>跟 put 方法实现很类似，只不过 put 方法等待的是 notFull 信号，而 take 方法等待的是 notEmpty 信号。</p>
 
-<pre><code class="language-js">const {logger} = require(&#39;./logger&#39;);
-app.get(&#39;/api&#39;, (req, res) =&gt; {
-  logger.log(&#39;info&#39;, &#39;Hello distributed log files!&#39;, 
-    { &#39;serviceName&#39;:&#39;backend&#39;, &#39;TraceId&#39;: req.header(&#39;X-B3-TraceId&#39;), &#39;SpanId&#39;: req.header(&#39;X-B3-SpanId&#39;) });
-  res.send(new Date().toString())
-});
+<p>在 take 方法中，如果可以取元素，则通过 extract 方法取得元素，下面是 extract 方法的实现：</p>
+
+<pre><code class="language-java">private E extract() {
+   final E[] items = this.items;
+   E x = items[takeIndex];
+   items[takeIndex] = null;
+   takeIndex = inc(takeIndex);
+   --count;
+   notFull.signal();
+   return x;
+}
 </code></pre>
 
-<p>The logfile will have traceId and spanId with the log message.</p>
+<p>跟 insert 方法也很类似。</p>
 
-<p><strong>frontend.log</strong></p>
+<p>其实从这里大家应该明白了阻塞队列的实现原理，事实它和我们用 Object.wait()、Object.notify() 和非阻塞队列实现生产者 - 消费者的思路类似，只不过它把这些工作一起集成到了阻塞队列中实现。</p>
 
-<pre><code class="language-log">{&quot;level&quot;:&quot;info&quot;,&quot;message&quot;:&quot;Frontend listening on port 8085!&quot;,&quot;timestamp&quot;:&quot;2017-08-24T06:26:58.536Z&quot;}
-{&quot;serviceName&quot;:&quot;frontend&quot;,&quot;TraceId&quot;:&quot;2c97a4bac4820ef8&quot;,&quot;SpanId&quot;:&quot;2c97a4bac4820ef8&quot;,&quot;level&quot;:&quot;info&quot;,&quot;message&quot;:&quot;Hello distributed log files!&quot;,&quot;timestamp&quot;:&quot;2017-08-24T06:27:02.990Z&quot;}
-{&quot;serviceName&quot;:&quot;backend&quot;,&quot;TraceId&quot;:&quot;2c97a4bac4820ef8&quot;,&quot;SpanId&quot;:&quot;7a0eff44fc42fde9&quot;,&quot;level&quot;:&quot;info&quot;,&quot;message&quot;:&quot;Hello distributed log files!&quot;,&quot;timestamp&quot;:&quot;2017-08-24T06:27:02.977Z&quot;}
+<h2 id="toc_3">四. 示例和使用场景</h2>
+
+<p>下面先使用 Object.wait() 和 Object.notify()、非阻塞队列实现生产者 - 消费者模式：</p>
+
+<pre><code class="language-java">public class Test {
+   private int queueSize = 10;
+   private PriorityQueue&lt;Integer&gt; queue = new PriorityQueue&lt;Integer&gt;(queueSize);
+
+   public static void main(String[] args)  {
+       Test test = new Test();
+       Producer producer = test.new Producer();
+       Consumer consumer = test.new Consumer();
+
+       producer.start();
+       consumer.start();
+   }
+
+   class Consumer extends Thread{
+
+       @Override
+       public void run() {
+           consume();
+       }
+
+       private void consume() {
+           while(true){
+               synchronized (queue) {
+                   while(queue.size() == 0){
+                       try {
+                           System.out.println(&quot;队列空，等待数据&quot;);
+                           queue.wait();
+                       } catch (InterruptedException e) {
+                           e.printStackTrace();
+                           queue.notify();
+                       }
+                   }
+                   queue.poll();          //每次移走队首元素
+                   queue.notify();
+                   System.out.println(&quot;从队列取走一个元素，队列剩余&quot;+
+                   queue.size()+&quot;个元素&quot;);
+               }
+           }
+       }
+   }
+
+   class Producer extends Thread{
+
+       @Override
+       public void run() {
+           produce();
+       }
+
+       private void produce() {
+           while(true){
+               synchronized (queue) {
+                   while(queue.size() == queueSize){
+                       try {
+                           System.out.println(&quot;队列满，等待有空余空间&quot;);
+                           queue.wait();
+                       } catch (InterruptedException e) {
+                           e.printStackTrace();
+                           queue.notify();
+                       }
+                   }
+                   queue.offer(1);        //每次插入一个元素
+                   queue.notify();
+                   System.out.println(&quot;向队列取中插入一个元素，队列剩余空间：&quot;+
+                   (queueSize-queue.size()));
+               }
+           }
+       }
+   }
+}
 </code></pre>
 
-<p>Notice that the traceId is the same across two microservices.</p>
+<p>这个是经典的生产者 - 消费者模式，通过阻塞队列和 Object.wait() 和 Object.notify() 实现，wait() 和 notify() 主要用来实现线程间通信。</p>
 
-<h2 id="toc_4">Enabling Tracing for Python Applications</h2>
+<p>具体的线程间通信方式（wait 和 notify 的使用）在后续问章中会讲述到。</p>
 
-<p>We&#39;ll be using the py_zipkin python package to instrument our Python applications. Here again, the instrumentation is manual.</p>
+<p>下面是使用阻塞队列实现的生产者 - 消费者模式：</p>
 
-<p>1. Install py_zipkin and use the examples from <a href="https://github.com/Yelp/py_zipkin">https://github.com/Yelp/py_zipkin</a> to instrument your Python application.</p>
+<pre><code class="language-java">public class Test {
+   private int queueSize = 10;
+   private ArrayBlockingQueue&lt;Integer&gt; queue = 
+   new ArrayBlockingQueue&lt;Integer&gt;(queueSize);
 
-<p>2. Add service_name, span_id and trace_id in your logging configuration.</p>
+   public static void main(String[] args)  {
+       Test test = new Test();
+       Producer producer = test.new Producer();
+       Consumer consumer = test.new Consumer();
 
-<p><strong>logging.conf</strong></p>
+       producer.start();
+       consumer.start();
+   }
 
-<pre><code class="language-conf">[formatter_myFormatter]
-format=%(asctime)s - %(name)s - %(levelname)s - %(service_name)s - %(trace_id)s - %(span_id)s - %(message)s
+   class Consumer extends Thread{
+
+       @Override
+       public void run() {
+           consume();
+       }
+
+       private void consume() {
+           while(true){
+               try {
+                   queue.take();
+                   System.out.println(&quot;从队列取走一个元素，队列剩余&quot;+
+                   queue.size()+&quot;个元素&quot;);
+               } catch (InterruptedException e) {
+                   e.printStackTrace();
+               }
+           }
+       }
+   }
+
+   class Producer extends Thread{
+
+       @Override
+       public void run() {
+           produce();
+       }
+
+       private void produce() {
+           while(true){
+               try {
+                   queue.put(1);
+                   System.out.println(&quot;向队列取中插入一个元素，队列剩余空间：&quot;+
+                   (queueSize-queue.size()));
+               } catch (InterruptedException e) {
+                   e.printStackTrace();
+               }
+           }
+       }
+   }
+}
 </code></pre>
 
-<p>3. Trace a service call.</p>
+<p>有没有发现，使用阻塞队列代码要简单得多，不需要再单独考虑同步和线程间通信的问题。</p>
 
-<p><strong>demo.py</strong></p>
+<p>在并发编程中，一般推荐使用阻塞队列，这样实现可以尽量地避免程序出现意外的错误。</p>
 
-<pre><code class="language-py">from py_zipkin.zipkin import zipkin_span, create_http_headers_for_new_span
-@zipkin_span(service_name=&#39;webapp&#39;, span_name=&#39;do_stuff&#39;)
-def do_stuff():
-    headers = create_http_headers_for_new_span()
-    app.logger.info(&#39;From demo app&#39;, extra={&#39;service_name&#39;:&#39;demo&#39;, &#39;trace_id&#39;:headers[&#39;X-B3-TraceId&#39;], &#39;span_id&#39;:headers[&#39;X-B3-SpanId&#39;]})
-    requests.get(&#39;http://localhost:6000/service1/&#39;, headers=headers)
-return &#39;OK&#39;
-</code></pre>
-
-<p><strong>service1.py</strong></p>
-
-<pre><code class="language-py">@app.route(&#39;/service1/&#39;)
-def index():
-    with zipkin_span(
-        service_name=&#39;service1&#39;,
-        zipkin_attrs=ZipkinAttrs(
-            trace_id=request.headers[&#39;X-B3-TraceID&#39;],
-            span_id=request.headers[&#39;X-B3-SpanID&#39;],
-            parent_span_id=request.headers[&#39;X-B3-ParentSpanID&#39;],
-            flags=request.headers[&#39;X-B3-Flags&#39;],
-            is_sampled=request.headers[&#39;X-B3-Sampled&#39;],
-        ),
-        span_name=&#39;index_service1&#39;,
-        transport_handler=http_transport,
-        port=6000,
-        sample_rate=100, #0.05, # Value between 0.0 and 100.0
-    ) as zipkin_context:
-        headers = create_http_headers_for_new_span()
-        app.logger.info(&#39;From service1 app&#39;, extra={&#39;service_name&#39;:&#39;service1&#39;, &#39;trace_id&#39;:headers[&#39;X-B3-TraceId&#39;], &#39;span_id&#39;:headers[&#39;X-B3-SpanId&#39;]})
-        do_stuff()
-    return &#39;OK&#39;, 200
-</code></pre>
-
-<p>4. The log file will have traceId and spanId from the calls.</p>
-
-<p><strong>demo.log</strong></p>
-
-<pre><code class="language-log">2017-08-29 08:29:36,065 - __main__ - INFO - demo - 884f9f20a9172104 - 2352d7d1fadd521c - From demo app
-2017-08-29 08:29:36,069 - __main__ - INFO - service1 - 884f9f20a9172104 - d7867b21585a9ba1 - From service1 app
-</code></pre>
-
-<p>Note that the traceId is the same across the two services.</p>
-
-<h2 id="toc_5">Aggregate Logs</h2>
-
-<p>Once you have instrumented your application to automatically include tracing information in the logs, now let us look at Splunk and ELK for aggregating logs at a central place and correlating requests as it propagates through various services.</p>
-
-<h2 id="toc_6">Enabling Centralized Logging Using Splunk</h2>
-
-<p>Splunk works on the client-server model. Splunk Forwarder is used to collect the machine-generated data from the client side and forward it to the Splunk server. We tested with the Splunk free license for a low volume of logs; it provides a maximum 500 MB of indexing per day.</p>
-
-<p><img src="https://dzone.com/storage/temp/6461050-image003.jpg" alt=""/></p>
-
-<p>1. Download and install Splunk server.</p>
-
-<pre><code class="language-sh">wget -O splunk-6.6.2-4b804538c686-Linux-x86_64.tgz &#39;https://www.splunk.com/bin/splunk/DownloadActivityServlet?architecture=x86_64&amp;platform=linux&amp;version=6.6.2&amp;product=splunk&amp;filename=splunk-6.6.2-4b804538c686-Linux-x86_64.tgz&amp;wget=true&#39;
-sudo cp splunk-6.6.2-4b804538c686-Linux-x86_64.tgz /opt
-cd /opt
-sudo tar xvzf splunk-6.6.2-4b804538c686-Linux-x86_64.tgz
-cd splunk
-cd bin
-sudo ./splunk start --accept-license
-</code></pre>
-
-<p>Splunk will be available at: http://<ip>:8000 (admin/admin)</p>
-
-<p>2. Enable the receiving port to get logs from Splunk Forwarder. We can do this from GUI and CLI as well. Port 9997 is the default and it can be changed.</p>
-
-<p>3. Download and install Splunk Forwarder.</p>
-
-<pre><code class="language-sh">wget -O splunkforwarder-6.6.2-4b804538c686-Linux-x86_64.tgz &#39;https://www.splunk.com/bin/splunk/DownloadActivityServlet?architecture=x86_64&amp;platform=linux&amp;version=6.6.2&amp;product=universalforwarder&amp;filename=splunkforwarder-6.6.2-4b804538c686-Linux-x86_64.tgz&amp;wget=true&#39;
-sudo cp splunkforwarder-6.6.2-4b804538c686-Linux-x86_64.tgz /opt
-cd /opt
-sudo tar xvzf splunkforwarder-6.6.2-4b804538c686-Linux-x86_64.tgz
-cd splunkforwarder
-cd bin
-sudo ./splunk enable boot-start --accept-license
-sudo ./splunk add forward-server &lt;ip&gt;:9997
-sudo ./splunk list forward-server
-sudo ./splunk add monitor /var/log
-sudo ./splunk restart
-</code></pre>
-
-<p>Now login into Splunk web console and search for configured logs.<br/>
-<img src="https://dzone.com/storage/temp/6461051-image004.jpg" alt=""/></p>
-
-<h2 id="toc_7">Enabling Centralized Logging Using ELK</h2>
-
-<p>There are three options that you have if you want Elasticsearch on AWS:</p>
-
-<ul>
-<li>  Get an EC2, install on your own, Elastic.co has written a simple and comprehensive article on this.</li>
-<li>  Get a third party managed Elastic search as a service, again Elastic.co is pretty good for that.</li>
-<li>  Get the AWS Elasticsearch as a service.</li>
-</ul>
-
-<p>We have installed ELK on our AWS. Learn how to access Kibana <a href="https://www.elastic.co/guide/en/kibana/current/access.html">here</a>.</p>
-
-<p>1. To send application logs to the central Elasticsearch, follow <a href="https://www.elastic.co/guide/en/beats/filebeat/5.3/filebeat-getting-started.html">these steps</a> on each server. </p>
-
-<p><strong>/etc/filebeat/filebeat.yml</strong></p>
-
-<pre><code class="language-yml">filebeat.prospectors:
-- input_type: log
-  # Paths that should be crawled and fetched. Glob based paths.
-  paths:
-    - /var/log/logs/*.log
-    #- c:\programdata\elasticsearch\logs\*
-output.logstash:
-  # The Logstash hosts
-  hosts: [&quot;&lt;ip&gt;:5044&quot;]
-</code></pre>
-
-<p>2. FileBeat sends the logs to logstash, which has been configured to send the logs to Elasticsearch. Kibana has been configured to query indices in Elasticsearch.</p>
-
-<p><img src="https://dzone.com/storage/temp/6461053-image005.png" alt=""/></p>
-
-<p>3. By default, Kibana does not require login credentials. Hit the url http://<ip>:5601 in the browser, and search for logs.</p>
-
-<p><img src="https://dzone.com/storage/temp/6461055-image006.jpg" alt=""/></p>
+<p>阻塞队列使用最经典的场景就是 socket 客户端数据的读取和解析，读取数据的线程不断将数据放入队列，然后解析线程不断从队列取数据解析。还有其他类似的场景，只要符合生产者 - 消费者模型的都可以使用阻塞队列。</p>
 
                         
                       </div>
@@ -456,10 +461,10 @@ output.logstash:
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/6/6</span>
+                    <span class="date">2018/6/18</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Logging.html'>Logging</a></span>
+          					    <span class="posted-in"><a href='Cocurrency.html'>Cocurrency</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -530,9 +535,9 @@ output.logstash:
         
             <a href="Coding.html"><strong>Coding</strong></a>
         
-            <a href="Solution.html"><strong>Solution</strong></a>
+            <a href="Modeling.html"><strong>Modeling</strong></a>
         
-            <a href="Archtect.html"><strong>Archtect</strong></a>
+            <a href="Archtecting.html"><strong>Archtecting</strong></a>
          
         </p>
 
@@ -549,31 +554,31 @@ output.logstash:
 	      
 		      
 			      <li class="post">
-			        <a href="15359384213292.html">Securing Spring Boot with JWTs</a>
+			        <a href="15389311738065.html">重构到更深层的模型</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15358820607055.html">Java 8 Concurrency Tutorial: Atomic Variables and ConcurrentMap</a>
+			        <a href="15389278377243.html">IAM of Google Cloud</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15358774987730.html">Java 8 Concurrency Tutorial: Synchronization and Locks</a>
+			        <a href="15389224951575.html">RSocket, a New Application Network Protocol for Reactive Applications, Announced at SpringOne</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15358757119900.html">Java 8 Concurrency Tutorial: Threads and Executors</a>
+			        <a href="15389220103546.html">如何形象地描述RxJava中的背压和流控机制？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15358756631902.html">Java 8 Stream Tutorial</a>
+			        <a href="15389214670417.html">Modeling Uncertainty with Reactive DDD</a>
 			      </li>
 		     
 		  

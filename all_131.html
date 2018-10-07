@@ -80,9 +80,9 @@
         
             <li><a href="Coding.html">Coding</a></li>
         
-            <li><a href="Solution.html">Solution</a></li>
+            <li><a href="Modeling.html">Modeling</a></li>
         
-            <li><a href="Archtect.html">Archtect</a></li>
+            <li><a href="Archtecting.html">Archtecting</a></li>
          
 
       </ul>
@@ -105,490 +105,323 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15262258657164.html">
+                <a class="clearlink" href="15277850962764.html">
                 
-                  <h1>飞哥教你使用异步编程提升服务性能</h1>
+                  <h1>Leaf——美团点评分布式ID生成系统</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://mp.weixin.qq.com/s/kchPiySDDu1FMF3tuEggiw">https://mp.weixin.qq.com/s/kchPiySDDu1FMF3tuEggiw</a></p>
+<p><a href="https://tech.meituan.com/MT_Leaf.html">原文地址</a></p>
 </blockquote>
 
-<p>作者：肖飞，2011 年加入京东，目前在交易平台，主导交易平台核心系统的架构优化和技术攻关，以及公共技术组件和平台的建设。</p>
+<h1 id="toc_0">背景</h1>
 
-<p>庞大复杂的系统通常会采用服务化组件来实现。系统越复杂，组件之间的依赖和调用关系也会越复杂。对于处于底层的基础服务，直接和间接的调用所带来的流量压力非常大。处于中间层的聚合型服务，面对的挑战则是依赖的服务太多，后端个别服务的性能延迟就会影响其吞吐量。性能优化是我们系统稳定性中的重要一环，这其中，调用所依赖的 RPC 服务或后端数据是重点之一。</p>
+<p>在复杂分布式系统中，往往需要对大量的数据和消息进行唯一标识。如在美团点评的金融、支付、餐饮、酒店、猫眼电影等产品的系统中，数据日渐增长，对数据分库分表后需要有一个唯一ID来标识一条数据或消息，数据库的自增ID显然不能满足需求；特别一点的如订单、骑手、优惠券也都需要有唯一ID做标识。此时一个能够生成全局唯一ID的系统是非常必要的。概括下来，那业务系统对ID号的要求有哪些呢？</p>
 
-<p>目前，除了传统 JDBC 这样从 API 到主流驱动实现就是阻塞式的类库之外，其他常用的 RPC/HTTP 服务、MQ、Redis、Mongodb、Kafka 等系统都提供了成熟的基于 NIO 的客户端库，也有相应的异步 API。</p>
+<ol>
+<li> 全局唯一性：不能出现重复的ID号，既然是唯一标识，这是最基本的要求。</li>
+<li> 趋势递增：在MySQL InnoDB引擎中使用的是聚集索引，由于多数RDBMS使用B-tree的数据结构来存储索引数据，在主键的选择上面我们应该尽量使用有序的主键保证写入性能。</li>
+<li> 单调递增：保证下一个ID一定大于上一个ID，例如事务版本号、IM增量消息、排序等特殊需求。</li>
+<li> 信息安全：如果ID是连续的，恶意用户的扒取工作就非常容易做了，直接按照顺序下载指定URL即可；如果是订单号就更危险了，竞对可以直接知道我们一天的单量。所以在一些应用场景下，会需要ID无规则、不规则。</li>
+</ol>
 
-<p>但是目前交易平台的大多数中台服务系统，还在习惯性使用着这些库的同步 API，并不能充分的利用 CPU，这也给我们带来了一定的优化空间。从 16 年开始我们在一些核心的但是服务逻辑相对简单的系统中使用异步方式来实现，虽然暂时还做不到完全的异步化，但是也取得了比较好的效果。这篇文章虽然更多是一个简介性质，但是也涵盖了我们在异步编程中需要关注的要点。希望大家能够习惯和拥抱异步编程。</p>
+<p>上述123对应三类不同的场景，3和4需求还是互斥的，无法使用同一个方案满足。</p>
 
-<h2 id="toc_0"><strong>一、相关概念介绍</strong></h2>
+<p>同时除了对ID号码自身的要求，业务还对ID号生成系统的可用性要求极高，想象一下，如果ID生成系统瘫痪，整个美团点评支付、优惠券发券、骑手派单等关键动作都无法执行，这就会带来一场灾难。</p>
 
-<p>同步 (Synchronous)/ 异步 (Asynchronous)，通常是指函数调用中的消息通信的两种不同模式。</p>
+<p>由此总结下一个ID生成系统应该做到如下几点：</p>
 
-<h3 id="toc_1"><strong>1、异步和同步的区别</strong></h3>
+<ol>
+<li> 平均延迟和TP999延迟都要尽可能低；</li>
+<li> 可用性5个9；</li>
+<li> 高QPS。</li>
+</ol>
 
-<p>函数调用发生时，消息 (参数) 从 caller 传递到 callee，控制权 (指令执行) 从 caller 转移到 callee。调用返回时，控制权从 callee 转移到 caller。两者的区别在于，callee 是否需要等待执行完成才将控制权转移给 caller。</p>
+<h1 id="toc_1">常见方法介绍</h1>
 
-<p>在 RPC 这种更复杂的场景下，本质上并没有不同。</p>
+<h3 id="toc_2">UUID</h3>
 
-<p>◆ 同步</p>
+<p>UUID(Universally Unique Identifier)的标准型式包含32个16进制数字，以连字号分为五段，形式为8-4-4-4-12的36个字符，示例：<code>550e8400-e29b-41d4-a716-446655440000</code>，到目前为止业界一共有5种方式生成UUID，详情见IETF发布的UUID规范 <a href="http://www.ietf.org/rfc/rfc4122.txt">A Universally Unique IDentifier (UUID) URN Namespace</a>。</p>
 
-<p><img src="https://mmbiz.qpic.cn/mmbiz_png/MrFJyDNenF8OUIRCOltzbKCk6yXqAJP3BYu3bYrc81Uak1E6HfspC1tnU2KGnthJwVLAOaqr2OzlfVQhO1LqEg/640?wx_fmt=png" alt=""/></p>
+<p>优点：</p>
 
-<p>1.callee 执行完成才返回<br/>
-2. 返回值即结果</p>
+<ul>
+<li>  性能非常高：本地生成，没有网络消耗。</li>
+</ul>
 
-<p>◆ 异步</p>
+<p>缺点：</p>
 
-<p><img src="https://mmbiz.qpic.cn/mmbiz_png/MrFJyDNenF8OUIRCOltzbKCk6yXqAJP3ENZ7lSUyf8z1icwTJr6rwVLiaNGLWfrrFHOa8kSfLQNVd8ch5dZiaoRsw/640?wx_fmt=png" alt=""/></p>
+<ul>
+<li>  不易于存储：UUID太长，16字节128位，通常以36长度的字符串表示，很多场景不适用。</li>
+<li>  信息不安全：基于MAC地址生成UUID的算法可能会造成MAC地址泄露，这个漏洞曾被用于寻找梅丽莎病毒的制作者位置。</li>
+<li><p>ID作为主键时在特定的环境会存在一些问题，比如做DB主键的场景下，UUID就非常不适用：</p>
 
-<p>1.callee 不需要执行完成就可返回<br/>
-2.caller 要获取结果，需要通过轮询、回调等机制</p>
-
-<h4 id="toc_2">◆ 同步 RPC</h4>
-
-<p><img src="https://mmbiz.qpic.cn/mmbiz_png/MrFJyDNenF8OUIRCOltzbKCk6yXqAJP3jPWsYVcxUuMPzdeJ6sichCQjFM9iceIqvic0yHHKg1Oibexuwn7USoA3oA/640?wx_fmt=png" alt=""/></p>
-
-<h4 id="toc_3">◆ 异步 RPC</h4>
-
-<p><img src="https://mmbiz.qpic.cn/mmbiz_png/MrFJyDNenF8OUIRCOltzbKCk6yXqAJP33QaY0TSkO7pMFQwLRglBPiadzQBF2SpJxa8RDrGSKfRWCkuyUWXCGMg/640?wx_fmt=png" alt=""/></p>
-
-<p>可以看到，在异步 RPC 的场景下，客户端和服务端用于处理 IO 的 CPU 能得到充分利用，通常只需要远低于 caller 请求数量的线程就可以了，这就是多路复用。</p>
-
-<h3 id="toc_4"><strong>2、callee 执行机制</strong></h3>
-
-<p>上图中 callee 的 background execute 通常是采用池化线程来完成的，比如 ThreadPoolExecutor 或 EventLoop1。</p>
-
-<h3 id="toc_5"><strong>3、caller 获取执行结果</strong></h3>
-
-<p>caller 调用 callee 时，如果需要获取执行结果（消息双向传递），或者获知执行是否完成（消息单向传递无返回值），在异步模式下，主要依靠下面两种机制。</p>
-
-<h4 id="toc_6">◆ 轮询 (Polling)</h4>
-
-<p>比如 Java 的 Future 就提供了 isDone() 这种询问机制。</p>
-
-<pre><code class="language-java">//Caller.java
-void call() {
-     Future&lt;Void&gt; f = callee.asyncCall(param);
-     // do some other things
-     while (true) {
-          if (f.isDone()) break;
-        //do some other things or sleep or timeout
-    }
-}
-</code></pre>
-
-<p>或阻塞版本</p>
-
-<pre><code class="language-java">//Caller.java
-void call() {
-    Future&lt;Void&gt; f = callee.asyncCall(param);
-    // do some other things
-    f.get(timeout, TimeUnit.SECONDS);
-}
-</code></pre>
-
-<p>轮询的控制逻辑在 caller 端。</p>
-
-<h4 id="toc_7">◆ 回调 (Callback)</h4>
-
-<p>caller 设置一个回调函数，供 callee 执行完成后调用这个函数。回调的控制是反转的，通常由 callee 端控制。</p>
-
-<pre><code class="language-java">//Caller.java
-void call() {
-    callee.asyncCall(param, new AsyncHandler&lt;Response&lt;Message&gt;&gt;() {
-        @Override public void handleResponse(Response&lt;Message&gt; response) {
-            msg = response.get();
-            // process the msg...
-        }
-    });
-    // do some other things
-}
-</code></pre>
-
-<h3 id="toc_8"><strong>4、异步模式的场景</strong></h3>
-
-<h4 id="toc_9">◆ 阻塞</h4>
-
-<p>阻塞 (Blocking)/ 非阻塞(Non-Blocking) 是用来描述，在等待调用结果时 caller 线程的状态。阻塞，通常意味着 caller 线程不再使用 CPU 时间，处于可被 OS 调度的状态(注意与 Java 线程状态 2 的区别)。 磁盘 IO 和网络 IO 是常见的会引起线程阻塞的场景 3。受制于底层 OS 的同步阻塞式 IO 系统函数，调用 Java OIO(Old blocking IO) API 无疑是会阻塞的。对于 DiskIO，Java NIO2 提供了异步 API。对于 SocketIO，Java NIO2 以及 NIO 框架 Netty，都提供了异步 API。</p>
+<p>① MySQL官方有明确的建议主键要尽量越短越好[4]，36个字符长度的UUID不符合要求。</p>
 
 <blockquote>
-<p>◆ Linux 提供了异步 IO 系统函数，只能用于 DiskIO，还有一些限制 4，Java NIO2 AsynchronousFileChannel 内部仍然使用线程池 + 阻塞式 API 的实现。</p>
-
-<p>◆ Linux 为 SocketIO 准备就绪阶段提供了非阻塞式 API(select/poll/epoll)，但是 IO 执行阶段仍然是同步阻塞的，因此主流的 Java NIO 框架的 Reactor 模式内部实现使用了线程池。</p>
+<p>All indexes other than the clustered index are known as secondary indexes. In InnoDB, each record in a secondary index contains the primary key columns for the row, as well as the columns specified for the secondary index. InnoDB uses this primary key value to search for the row in the clustered index. <strong>_If the primary key is long, the secondary indexes use more space, so it is advantageous to have a short primary key_</strong>.</p>
 </blockquote>
 
-<h4 id="toc_10">◆ 并行</h4>
+<p>② 对MySQL索引不利：如果作为数据库主键，在InnoDB引擎下，UUID的无序性可能会引起数据位置频繁变动，严重影响性能。</p></li>
+</ul>
 
-<p>比如需要调用多个没有依赖关系的服务，或者访问分散在多个存储分片中的数据，如果服务接口或数据访问接口实现了异步 API，那么就很方便实现并行调用，减少总体调用耗时。</p>
+<h3 id="toc_3">类snowflake方案</h3>
 
-<h4 id="toc_11">◆ 速度不匹配</h4>
+<p>这种方案大致来说是一种以划分命名空间（UUID也算，由于比较常见，所以单独分析）来生成ID的一种算法，这种方案把64-bit分别划分成多段，分开来标示机器、时间等，比如在snowflake中的64-bit分别表示如下图（图片来自网络）所示：</p>
 
-<p>使用中间队列解偶 caller 和 callee 的速度不匹配问题，削峰填谷。</p>
+<p><img src="media/15277850962764/15277851805055.png" alt=""/></p>
 
-<h4 id="toc_12">◆ 批量</h4>
+<p>41-bit的时间可以表示（1L&lt;&lt;41）/(1000L<em>3600</em>24*365)=69年的时间，10-bit机器可以分别表示1024台机器。如果我们对IDC划分有需求，还可以将10-bit分5-bit给IDC，分5-bit给工作机器。这样就可以表示32个IDC，每个IDC下可以有32台机器，可以根据自身需求定义。12个自增序列号可以表示2<sup>12个ID，理论上snowflake方案的QPS约为409.6w/s，这种分配方式可以保证在任何一个IDC的任何一台机器在任意毫秒内生成的ID都是不同的。</sup></p>
 
-<p>使用中间队列解偶 caller 和 callee 的速度不匹配问题，削峰填谷。</p>
+<p>这种方式的优缺点是：</p>
 
-<h2 id="toc_13"><strong>二、异步 API 的几种风格</strong></h2>
+<p>优点：</p>
 
-<h3 id="toc_14"><strong>1、Callback</strong></h3>
+<ul>
+<li>  毫秒数在高位，自增序列在低位，整个ID都是趋势递增的。</li>
+<li>  不依赖数据库等第三方系统，以服务的方式部署，稳定性更高，生成ID的性能也是非常高的。</li>
+<li>  可以根据自身业务特性分配bit位，非常灵活。</li>
+</ul>
 
-<p>这个比较传统，比如 zookeeper 客户端提供的基于回调的异步 API:</p>
+<p>缺点：</p>
 
-<pre><code class="language-java">try {
-    zookeeper.create(path, data, acl, createMode, new StringCallback() {
-        public void processResult(int rc, String path, Object ctx, String name) {
-            if (rc != KeeperException.Code.OK.intValue()) {
-                // error handle
-            } else {
-                // success process
-                // 如果需要在成功后再发起基于回调的异步调用，会形成callback hell
-            }
-        }
-    }, ctx);
-} catch( Throwable e) {
-    // error handle
-}
+<ul>
+<li>  强依赖机器时钟，如果机器上时钟回拨，会导致发号重复或者服务会处于不可用状态。</li>
+</ul>
+
+<h4 id="toc_4">应用举例Mongdb objectID</h4>
+
+<p><a href="https://docs.mongodb.com/manual/reference/method/ObjectId/#description">MongoDB官方文档 ObjectID</a>可以算作是和snowflake类似方法，通过“时间+机器码+pid+inc”共12个字节，通过4+3+2+3的方式最终标识成一个24长度的十六进制字符。</p>
+
+<h3 id="toc_5">数据库生成</h3>
+
+<p>以MySQL举例，利用给字段设置<code>auto_increment_increment</code>和<code>auto_increment_offset</code>来保证ID自增，每次业务使用下列SQL读写MySQL得到ID号。</p>
+
+<pre><code>begin;
+REPLACE INTO Tickets64 (stub) VALUES (&#39;a&#39;);
+SELECT LAST_INSERT_ID();
+commit;
+
 </code></pre>
+
+<p><img src="media/15277850962764/15277851990427.png" alt=""/></p>
+
+<p>这种方案的优缺点如下：</p>
+
+<p>优点：</p>
+
+<ul>
+<li>  非常简单，利用现有数据库系统的功能实现，成本小，有DBA专业维护。</li>
+<li>  ID号单调自增，可以实现一些对ID有特殊要求的业务。</li>
+</ul>
+
+<p>缺点：</p>
+
+<ul>
+<li>  强依赖DB，当DB异常时整个系统不可用，属于致命问题。配置主从复制可以尽可能的增加可用性，但是数据一致性在特殊情况下难以保证。主从切换时的不一致可能会导致重复发号。</li>
+<li>  ID发号性能瓶颈限制在单台MySQL的读写性能。</li>
+</ul>
+
+<p>对于MySQL性能问题，可用如下方案解决：在分布式系统中我们可以多部署几台机器，每台机器设置不同的初始值，且步长和机器数相等。比如有两台机器。设置步长step为2，TicketServer1的初始值为1（1，3，5，7，9，11...）、TicketServer2的初始值为2（2，4，6，8，10...）。这是Flickr团队在2010年撰文介绍的一种主键生成策略（<a href="http://code.flickr.net/2010/02/08/ticket-servers-distributed-unique-primary-keys-on-the-cheap/">Ticket Servers: Distributed Unique Primary Keys on the Cheap</a> ）。如下所示，为了实现上述方案分别设置两台机器对应的参数，TicketServer1从1开始发号，TicketServer2从2开始发号，两台机器每次发号之后都递增2。</p>
+
+<pre><code>TicketServer1:
+auto-increment-increment = 2
+auto-increment-offset = 1
+
+TicketServer2:
+auto-increment-increment = 2
+auto-increment-offset = 2
+
+</code></pre>
+
+<p>假设我们要部署N台机器，步长需设置为N，每台的初始值依次为0,1,2...N-1那么整个架构就变成了如下图所示：</p>
+
+<p><img src="media/15277850962764/15277852102924.png" alt=""/></p>
+
+<p>这种架构貌似能够满足性能的需求，但有以下几个缺点：</p>
+
+<ul>
+<li>  系统水平扩展比较困难，比如定义好了步长和机器台数之后，如果要添加机器该怎么做？假设现在只有一台机器发号是1,2,3,4,5（步长是1），这个时候需要扩容机器一台。可以这样做：把第二台机器的初始值设置得比第一台超过很多，比如14（假设在扩容时间之内第一台不可能发到14），同时设置步长为2，那么这台机器下发的号码都是14以后的偶数。然后摘掉第一台，把ID值保留为奇数，比如7，然后修改第一台的步长为2。让它符合我们定义的号段标准，对于这个例子来说就是让第一台以后只能产生奇数。扩容方案看起来复杂吗？貌似还好，现在想象一下如果我们线上有100台机器，这个时候要扩容该怎么做？简直是噩梦。所以系统水平扩展方案复杂难以实现。</li>
+<li>  ID没有了单调递增的特性，只能趋势递增，这个缺点对于一般业务需求不是很重要，可以容忍。</li>
+<li>  数据库压力还是很大，每次获取ID都得读写一次数据库，只能靠堆机器来提高性能。</li>
+</ul>
+
+<h1 id="toc_6">Leaf方案实现</h1>
+
+<p>Leaf这个名字是来自德国哲学家、数学家莱布尼茨的一句话：</p>
 
 <blockquote>
-<p>◆ Callback 通常是无状态的 </p>
+<p>There are no two identical leaves in the world</p>
 
-<p>◆ 要获取 Callback 的计算结果，通常需要 closure </p>
-
-<p>◆ 异常处理比较分散 </p>
-
-<p>◆ 在有多个异步调用链的时候，容易造成 Callback hell</p>
+<p>&quot;世界上没有两片相同的树叶&quot;</p>
 </blockquote>
 
-<h3 id="toc_15"><strong>2、Future/Promise</strong></h3>
+<p>综合对比上述几种方案，每种方案都不完全符合我们的要求。所以Leaf分别在上述第二种和第三种方案上做了相应的优化，实现了Leaf-segment和Leaf-snowflake方案。</p>
 
-<p>Promise 是 callee 给 caller 的凭证，代表未完成但承诺完成（成功或失败）的结果。Promise 本身是有状态的，通常由 callee 端维护。其状态转移如下（术语参考 Promise/A + 和 ES6）：</p>
+<h3 id="toc_7">Leaf-segment数据库方案</h3>
 
-<p><img src="https://mmbiz.qpic.cn/mmbiz_png/MrFJyDNenF8OUIRCOltzbKCk6yXqAJP3dnnIwboxWueXlrTo9wSvNYa6AfRIfwibZobCqckibNSvwyEzLd3GyO9Q/640?wx_fmt=png" alt=""/></p>
+<p>第一种Leaf-segment方案，在使用数据库的方案上，做了如下改变：</p>
 
-<blockquote>
-<p>Promise 的状态只能转移一次，因此如果有 callback，那么. then(callback) 或. catch(callback) 也只被执行一次。</p>
-</blockquote>
+<ul>
+<li>  原方案每次获取ID都得读写一次数据库，造成数据库压力大。改为利用proxy server批量获取，每次获取一个segment(step决定大小)号段的值。用完之后再去数据库获取新的号段，可以大大的减轻数据库的压力。</li>
+<li>  各个业务不同的发号需求用biz_tag字段来区分，每个biz-tag的ID获取相互隔离，互不影响。如果以后有性能需求需要对数据库扩容，不需要上述描述的复杂的扩容操作，只需要对biz_tag分库分表就行。</li>
+</ul>
 
-<p>JDK5 的 Future 只能用轮询或者阻塞的方式获取结果，caller 端处理比较繁琐。Guava 的 ListenableFuture，特别是 JDK8 的 CompletableFuture，则是完整实现了 Promise 风格的异步 API。 个人认为 Promise 是更好的 Callback，ListenableFuture 接口只是比 Future 多了一个 void addListener(Runnable, Executor) 方法。 Promise 提供了比 Callback 更易用更清晰的编程模式，尤其是涉及多个异步 API 的串行调用（chaining 或 pipelining )、组合调用（并行、合并）、异常处理等方面有很大的优势。</p>
+<p>数据库表设计如下：</p>
 
-<blockquote>
-<p><strong>引申阅读</strong> </p>
+<pre><code>+-------------+--------------+------+-----+-------------------+-----------------------------+
+| Field       | Type         | Null | Key | Default           | Extra                       |
++-------------+--------------+------+-----+-------------------+-----------------------------+
+| biz_tag     | varchar(128) | NO   | PRI |                   |                             |
+| max_id      | bigint(20)   | NO   |     | 1                 |                             |
+| step        | int(11)      | NO   |     | NULL              |                             |
+| desc        | varchar(256) | YES  |     | NULL              |                             |
+| update_time | timestamp    | NO   |     | CURRENT_TIMESTAMP | on update CURRENT_TIMESTAMP |
++-------------+--------------+------+-----+-------------------+-----------------------------+
 
-<p>◆ 这篇文章谈到了 Future 和 Promise 的细微区别、相关历史和技术。 </p>
-
-<p>◆ 这里有一些讨论：Aren’t promises just callbacks?,Is there really a fundamental difference between callbacks and Promises?。 </p>
-
-<p>◆ Promise 借鉴了函数式中的一些概念: 从函数式编程到 Promise。 </p>
-
-<p>◆ 这篇文章简要对比了几种语言中的 Promise 框架。</p>
-</blockquote>
-
-<h3 id="toc_16"><strong>3、ReactiveX</strong></h3>
-
-<p>其官方网站的介绍</p>
-
-<blockquote>
-<p>An API for asynchronous programming with observable streams</p>
-</blockquote>
-
-<p>其关键的概念 Observable 比较 Promise 来说：</p>
-
-<p>◆ Promise 代表一个异步计算值，而 Observable 代表着一系列值 (stream)。 </p>
-
-<p>◆ Promise 的值只能产生一次，而 Observable 的事件可以不断产生。因此 Rx 首先流行在前端 UI 场景：事件来源多，数据变化影响多个 UI 组件的变更。</p>
-
-<p>Rx 的学习曲线比 Promise 要高得多，而且目前 Promise 风格的异步编程能够满足我们大部分的服务端开发场景，因此我们这里主要关注 Promise。</p>
-
-<h2 id="toc_17"><strong>三、Promise 在服务端的应用</strong></h2>
-
-<p>下面穿插着以 JDK8 的 CompletableFuture 和 Guava 的 ListenableFuture（适用 JDK6）为例介绍 Promise 的用法。</p>
-
-<h3 id="toc_18"><strong>1、符合 Promise 风格的方法签名</strong></h3>
-
-<p>Promise 风格的方法签名，有个不成文的规则是不抛出异常，因为异常是 Promise 对象本身就能携带的两种状态之一。比如我们想把一个 Callback 风格的异步 API 包装成 Promise 风格的（通常在使用一个较老的类库时需要这样的包装），可以这样：</p>
-
-<pre><code class="language-java">//caller.java
-CompletableFuture&lt;String&gt; asyncCall(final String msg) {
-    CompletableFuture&lt;String&gt; promise = new CompletableFuture&lt;&gt;();
-    try {
-        callee.asyncCall(msg, new Callback&lt;String&gt;() {
-            public void onSuccess(String r) { promise.complete(r); }
-            public void onFail(Throwable t) { promise.completeExceptionally(t); }
-        });
-    } catch (Throwable e) {
-        promise.completeExceptionally(t);
-    }
-    return promise;
-}
 </code></pre>
 
-<p>下面是使用 ListenableFuture 的实现异步发送消息的 API。</p>
+<p>重要字段说明：biz_tag用来区分业务，max_id表示该biz_tag目前所被分配的ID号段的最大值，step表示每次分配的号段长度。原来获取ID每次都需要写数据库，现在只需要把step设置得足够大，比如1000。那么只有当1000个号被消耗完了之后才会去重新读写一次数据库。读写数据库的频率从1减小到了1/step，大致架构如下图所示：</p>
 
-<pre><code class="language-java">//LocalMessageEngine.java
-static class WriteTask {
-    // SettableFuture是Guava中一种可设置状态的Promise类型。
-    final SettableFuture&lt;Boolean&gt; promise = SettableFuture.create();
-    final byte[] message;
-    WriteTask(byte[] message) {
-        this.message = message;
-    }
-}
-public Producer createProducer() {
-    return new Producer() {
-        public ListenableFuture&lt;Boolean&gt; asyncProduce(byte[] message) {
-            if (!Engine.this.started) {
-                // 返回前已完成
-                return Futures.immediateFailedFuture(new IllegalStateException(&quot;Message engine was stopped or not started&quot;));
-            }
+<p><img src="media/15277850962764/15277852227891.png" alt=""/></p>
 
-            WriteTask task = new WriteTask(message);
-            boolean queued = writeTaskQueue.offer(task);
-            if (!queued) {
-                task.promise.set(Boolean.FALSE);
-            }
-            return task.promise;
-        }
-    };
-}
+<p>test_tag在第一台Leaf机器上是1~1000的号段，当这个号段用完时，会去加载另一个长度为step=1000的号段，假设另外两台号段都没有更新，这个时候第一台机器新加载的号段就应该是3001~4000。同时数据库对应的biz_tag这条数据的max_id会从3000被更新成4000，更新号段的SQL语句如下：</p>
+
+<pre><code class="language-sql">Begin
+UPDATE table SET max_id=max_id+step WHERE biz_tag=xxx
+SELECT tag, max_id, step FROM table WHERE biz_tag=xxx
+COMMIT
 </code></pre>
 
-<p>上面两个例子，描述了如何创建一个 Promise 对象返回给 caller，以及如何在 callee 端 fulfill 或 reject 这个 Promise。你可能会发现，返回给 caller 之前 Promise 是可以处于完成状态的。在继续下面的使用介绍前，先简单的看下 ListenableFuture 和 CompletableFuture 的几个主要 API。</p>
+<p>这种模式有以下优缺点：</p>
 
-<p><img src="https://mmbiz.qpic.cn/mmbiz_png/MrFJyDNenF8OUIRCOltzbKCk6yXqAJP3ibyDlfaV7ZWzC5wCKpCF3S5ia5bicPE3gnEUibA9xWOafp3uOnPiaxrLLhQ/640?wx_fmt=png" alt=""/></p>
+<p>优点：</p>
 
-<p><strong>2、串行调用</strong></p>
+<ul>
+<li>  Leaf服务可以很方便的线性扩展，性能完全能够支撑大多数业务场景。</li>
+<li>  ID号码是趋势递增的8byte的64位数字，满足上述数据库存储的主键要求。</li>
+<li>  容灾性高：Leaf服务内部有号段缓存，即使DB宕机，短时间内Leaf仍能正常对外提供服务。</li>
+<li>  可以自定义max_id的大小，非常方便业务从原有的ID方式上迁移过来。</li>
+</ul>
 
-<p>ListenableFuture 没有提供 then 方法，而是通过 Futures 的一系列静态方法来实现 Promise 风格的 API。由于两者有大部分的 API 是可以相互转化的，限于篇幅下面就不全部演示了。Promse 的 callback 就是其 then 或 catch 方法的函数型参数，当 Promise 被 resolve 时执行这个 callback 函数。这个 callback 函数的输入，就是 Promise 的 resolved 值。根据 callback 函数的输出的不同，需要采取不同的 then 方法。</p>
+<p>缺点：</p>
 
-<h4 id="toc_19">◆ callback 无输出</h4>
+<ul>
+<li>  ID号码不够随机，能够泄露发号数量的信息，不太安全。</li>
+<li>  TP999数据波动大，当号段使用完之后还是会hang在更新数据库的I/O上，tg999数据会出现偶尔的尖刺。</li>
+<li>  DB宕机会造成整个系统不可用。</li>
+</ul>
 
-<p>Futures.addCallback 和 CompletableFuture.thenAccept 接受无输出的 callback。</p>
+<h3 id="toc_8">双buffer优化</h3>
 
-<pre><code class="language-java">// Guava
-ListenableFuture&lt;QueryResult&gt; promise1 = ...;
-Futures.addCallback(promise1, new FutureCallback&lt;QueryResult&gt;() {
-    public void onSuccess(QueryResult result) {
-        storeInLocalCache(result);
-    }
-    public void onFailure(Throwable t) {
-        reportError(t);
-    }
-});
+<p>对于第二个缺点，Leaf-segment做了一些优化，简单的说就是：</p>
+
+<p>Leaf 取号段的时机是在号段消耗完的时候进行的，也就意味着号段临界点的ID下发时间取决于下一次从DB取回号段的时间，并且在这期间进来的请求也会因为DB号段没有取回来，导致线程阻塞。如果请求DB的网络和DB的性能稳定，这种情况对系统的影响是不大的，但是假如取DB的时候网络发生抖动，或者DB发生慢查询就会导致整个系统的响应时间变慢。</p>
+
+<p>为此，我们希望DB取号段的过程能够做到无阻塞，不需要在DB取号段的时候阻塞请求线程，即当号段消费到某个点时就异步的把下一个号段加载到内存中。而不需要等到号段用尽的时候才去更新号段。这样做就可以很大程度上的降低系统的TP999指标。详细实现如下图所示：</p>
+
+<p><img src="media/15277850962764/15277852373915.png" alt=""/></p>
+
+<p>采用双buffer的方式，Leaf服务内部有两个号段缓存区segment。当前号段已下发10%时，如果下一个号段未更新，则另启一个更新线程去更新下一个号段。当前号段全部下发完后，如果下个号段准备好了则切换到下个号段为当前segment接着下发，循环往复。</p>
+
+<ul>
+<li><p>每个biz-tag都有消费速度监控，通常推荐segment长度设置为服务高峰期发号QPS的600倍（10分钟），这样即使DB宕机，Leaf仍能持续发号10-20分钟不受影响。</p></li>
+<li><p>每次请求来临时都会判断下个号段的状态，从而更新此号段，所以偶尔的网络抖动不会影响下个号段的更新。</p></li>
+</ul>
+
+<h3 id="toc_9">Leaf高可用容灾</h3>
+
+<p>对于第三点“DB可用性”问题，我们目前采用一主两从的方式，同时分机房部署，Master和Slave之间采用<strong>半同步方式[5]</strong>同步数据。同时使用公司Atlas数据库中间件(已开源，改名为<a href="http://tech.meituan.com/dbproxy-introduction.html">DBProxy</a>)做主从切换。当然这种方案在一些情况会退化成异步模式，甚至在<strong>非常极端</strong>情况下仍然会造成数据不一致的情况，但是出现的概率非常小。如果你的系统要保证100%的数据强一致，可以选择使用“类Paxos算法”实现的强一致MySQL方案，如MySQL 5.7前段时间刚刚GA的<a href="https://dev.mysql.com/doc/refman/5.7/en/group-replication.html">MySQL Group Replication</a>。但是运维成本和精力都会相应的增加，根据实际情况选型即可。</p>
+
+<p><img src="media/15277850962764/15277852467563.png" alt=""/></p>
+
+<p>同时Leaf服务分IDC部署，内部的服务化框架是“MTthrift RPC”。服务调用的时候，根据负载均衡算法会优先调用同机房的Leaf服务。在该IDC内Leaf服务不可用的时候才会选择其他机房的Leaf服务。同时服务治理平台OCTO还提供了针对服务的过载保护、一键截流、动态流量分配等对服务的保护措施。</p>
+
+<h1 id="toc_10">Leaf-snowflake方案</h1>
+
+<p>Leaf-segment方案可以生成趋势递增的ID，同时ID号是可计算的，不适用于订单ID生成场景，比如竞对在两天中午12点分别下单，通过订单id号相减就能大致计算出公司一天的订单量，这个是不能忍受的。面对这一问题，我们提供了 Leaf-snowflake方案。</p>
+
+<p><img src="media/15277850962764/15277852551504.png" alt=""/></p>
+
+<p>Leaf-snowflake方案完全沿用snowflake方案的bit位设计，即是“1+41+10+12”的方式组装ID号。对于workerID的分配，当服务集群数量较小的情况下，完全可以手动配置。Leaf服务规模较大，动手配置成本太高。所以使用Zookeeper持久顺序节点的特性自动对snowflake节点配置wokerID。Leaf-snowflake是按照下面几个步骤启动的：</p>
+
+<ol>
+<li> 启动Leaf-snowflake服务，连接Zookeeper，在leaf_forever父节点下检查自己是否已经注册过（是否有该顺序子节点）。</li>
+<li> 如果有注册过直接取回自己的workerID（zk顺序节点生成的int类型ID号），启动服务。</li>
+<li> 如果没有注册过，就在该父节点下面创建一个持久顺序节点，创建成功后取回顺序号当做自己的workerID号，启动服务。</li>
+</ol>
+
+<p><img src="media/15277850962764/15277852658209.png" alt=""/></p>
+
+<h3 id="toc_11">弱依赖ZooKeeper</h3>
+
+<p>除了每次会去ZK拿数据以外，也会在本机文件系统上缓存一个workerID文件。当ZooKeeper出现问题，恰好机器出现问题需要重启时，能保证服务能够正常启动。这样做到了对三方组件的弱依赖。一定程度上提高了SLA</p>
+
+<h3 id="toc_12">解决时钟问题</h3>
+
+<p>因为这种方案依赖时间，如果机器的时钟发生了回拨，那么就会有可能生成重复的ID号，需要解决时钟回退的问题。</p>
+
+<p><img src="media/15277850962764/15277852832400.png" alt=""/></p>
+
+<p>参见上图整个启动流程图，服务启动时首先检查自己是否写过ZooKeeper leaf_forever节点：</p>
+
+<ol>
+<li> 若写过，则用自身系统时间与leaf_forever/${self}节点记录时间做比较，若小于leaf_forever/${self}时间则认为机器时间发生了大步长回拨，服务启动失败并报警。</li>
+<li> 若未写过，证明是新服务节点，直接创建持久节点leaf_forever/${self}并写入自身系统时间，接下来综合对比其余Leaf节点的系统时间来判断自身系统时间是否准确，具体做法是取leaf_temporary下的所有临时节点(所有运行中的Leaf-snowflake节点)的服务IP：Port，然后通过RPC请求得到所有节点的系统时间，计算sum(time)/nodeSize。</li>
+<li> 若abs( 系统时间-sum(time)/nodeSize ) &lt; 阈值，认为当前系统时间准确，正常启动服务，同时写临时节点leaf_temporary/${self} 维持租约。</li>
+<li> 否则认为本机系统时间发生大步长偏移，启动失败并报警。</li>
+<li> 每隔一段时间(3s)上报自身系统时间写入leaf_forever/${self}。</li>
+</ol>
+
+<p>由于强依赖时钟，对时间的要求比较敏感，在机器工作时NTP同步也会造成秒级别的回退，建议可以直接关闭NTP同步。要么在时钟回拨的时候直接不提供服务直接返回ERROR_CODE，等时钟追上即可。<strong>或者做一层重试，然后上报报警系统，更或者是发现有时钟回拨之后自动摘除本身节点并报警</strong>，如下：</p>
+
+<pre><code class="language-java"> //发生了回拨，此刻时间小于上次发号时间
+ if (timestamp &lt; lastTimestamp) {
+
+            long offset = lastTimestamp - timestamp;
+            if (offset &lt;= 5) {
+                try {
+                    //时间偏差大小小于5ms，则等待两倍时间
+                    wait(offset &lt;&lt; 1);//wait
+                    timestamp = timeGen();
+                    if (timestamp &lt; lastTimestamp) {
+                       //还是小于，抛异常并上报
+                        throwClockBackwardsEx(timestamp);
+                      }    
+                } catch (InterruptedException e) {  
+                   throw  e;
+                }
+            } else {
+                //throw
+                throwClockBackwardsEx(timestamp);
+            }
+        }
+ //分配ID
 </code></pre>
 
-<pre><code class="language-java">// CompletableFuture
-CompletableFuture&lt;QueryResult&gt; promise1 = ...;
-CompletableFuture&lt;Void&gt; promise2 = promise1.thenAccept(result -&gt; storeInLocalCache(result));
-return promise2;
-//return promise1.thenAccept(result -&gt; storeInLocalCache(result));//thenAccept返回另一个Promise实例
-</code></pre>
+<p><strong>从上线情况来看，在2017年闰秒出现那一次出现过部分机器回拨，由于Leaf-snowflake的策略保证，成功避免了对业务造成的影响。</strong></p>
 
-<p>先忽略异常处理。对比下这种场景下的 ListenableFuture 和 CompletableFuture：前者采取了更传统的 callback 风格，后者则返回一个新的 Promise 实例，callback 计算完毕则 promise2 被 fulfilled，很容易通过 promise2 来获取 callback 执行完毕与否，不需要 closure。</p>
+<h1 id="toc_13">Leaf现状</h1>
 
-<h4 id="toc_20">◆ callback 输出一个普通计算值</h4>
+<p>Leaf在美团点评公司内部服务包含金融、支付交易、餐饮、外卖、酒店旅游、猫眼电影等众多业务线。目前Leaf的性能在4C8G的机器上QPS能压测到近5w/s，TP999 1ms，已经能够满足大部分的业务的需求。每天提供亿数量级的调用量，作为公司内部公共的基础技术设施，必须保证高SLA和高性能的服务，我们目前还仅仅达到了及格线，还有很多提高的空间。</p>
 
-<p>这种情况下 callback 就是一个转换函数，输入是前一个 Promise 的 fulfilled 值，输出则作为新 Promise 的 fulfilled 值。Futures.transform 和 CompletableFuture.thenApply 接收这样的 callback 函数。</p>
+<h1 id="toc_14">作者简介</h1>
 
-<pre><code class="language-java">// CompletableFuture
-CompletableFuture&lt;QueryResult&gt; queryFuture = ...;
-CompletableFuture&lt;List&lt;Row&gt;&gt; rowsFuture = queryFuture.thenApply(result -&gt; result.getRows());
-return rowsFuture;
-</code></pre>
+<p>照东，美团点评基础架构团队成员，主要参与<a href="http://tech.meituan.com/mt-mtrace.html">美团大型分布式链路跟踪系统Mtrace</a>和美团点评分布式ID生成系统Leaf的开发工作。曾就职于阿里巴巴，2016年7月加入美团。</p>
 
-<h4 id="toc_21">◆ callback 输出一个异步计算值，即一个 Promise</h4>
+<p>最后做一个招聘广告：如果你对大规模分布式环境下的服务治理、分布式会话链追踪等系统感兴趣，诚挚欢迎投递简历至：zhangjinlu#meituan.com。</p>
 
-<p>乍一看，这种情况下的输出跟上一种好像没什么区别。但实际上，输出一个 Promise 值和输出一个普通的值有根本的区别。还记得吧，Promise 代表着一个未完成的并且承诺完成的值。通常这种情况下，意味着 callback 里调用了另外一个 Promise 风格的异步 API。比如下面的例子中 indexService.lookUp 和 dataService.read 方法，由于涉及到 IO，都设计为异步 API。</p>
+<h1 id="toc_15">参考资料</h1>
 
-<pre><code class="language-java">//Guava
-ListenableFuture&lt;RowKey&gt; rowKeyFuture = indexService.lookUp(query);
-AsyncFunction&lt;RowKey, QueryResult&gt; queryFunction = new AsyncFunction&lt;RowKey, QueryResult&gt;() {
-    public ListenableFuture&lt;QueryResult&gt; apply(RowKey rowKey) {
-        return dataService.read(rowKey);
-    }
-};
-ListenableFuture&lt;QueryResult&gt; queryFuture = Futures.transformAsync(rowKeyFuture, queryFunction);
-return queryFuture;
-</code></pre>
-
-<p>Futures.transformAsync 和 CompletableFuture.thenCompose 接收这样的 callback 函数。</p>
-
-<p>设想一下，如果某个逻辑中需要调用的多个 Promise 风格的异步方法（比如多个 RPC 调用），并且有先后依赖关系，即上一个方法的执行结果作为下一个方法的输入。就可以用 thenCompose 把他们串起来。</p>
-
-<pre><code class="language-java">//CompletableFuture
-CompletableFuture&lt;RPC4Result&gt; promise4 = rpc1.call(input) //promise1
-    .thenCompose(rpc1Result -&gt; rpc2.call(rpc1Result)) //promise2
-    .thenCompose(rpc2Result -&gt; rpc3.call(rpc2Result)) //promise3
-    .thenCompose(rpc3Result -&gt; rpc4.call(rpc3Result)) //promise4
-return promise4;
-</code></pre>
-
-<p>不要被链式调用给忽悠了，你还是可以正常使用普通的风格。</p>
-
-<p>单纯看来，上述的串行调用场景下使用 Promise 风格的 API 好像只是消除了 Callback hell。那么采用同步 API 就既没有 Callback hell 的问题，又符合数据依赖关系。可是，你会发现，上面的举例中结尾都返回了 Promise，就是说，包含这段代码的方法被设计为异步 API。而使用同步 API，则会强制这个方法的调用者只能使用同步方式调用。</p>
-
-<h3 id="toc_22"><strong>3、并行调用</strong></h3>
-
-<p>异步 API 很适合并行调用。caller 在调用多个没有依赖关系的异步 API 时，可以先依次发起调用而不用等待每个调用真正执行完成，从 callee 的角度来讲，执行是并行的。caller 可以对调用结果进行合并处理，关键是，合并也是异步风格的。</p>
-
-<pre><code class="language-java">//Guava
-List&lt;ListenableFuture&lt;QueryResult&gt;&gt; partialPromises = new ArrayList&lt;ListenableFuture&lt;QueryResult&gt;&gt;(nodes.size());
-for (Node node : nodes) {
-    partialPromises.add(lookupHandler(node).query());
-}
-ListenableFuture&lt;List&lt;Row&gt;&gt; mergedPromise = Futures.transform(Futures.allAsList(partialPromises), new Function&lt;List&lt;List&lt;Row&gt;&gt;, List&lt;Row&gt;&gt;() {
-    @Override public Long apply(List&lt;List&lt;Row&gt;&gt; input) {
-        return merge(input);
-    }
-})
-return mergedPromise;
-</code></pre>
-
-<p>Futures.allAsList 是并行执行所有的 promises，若有一个 promise 异常完成则尝试 reject 尚未 resolved 的 promise。也可以使用 Futures.successfulAsList，区别在于后者并不会 reject 尚未 resolved 的 promise。CompletableFuture 的对应物是 allOf 和 anyOf。</p>
-
-<h3 id="toc_23"><strong>4、调用编排</strong></h3>
-
-<p>合并结果设计为异步风格的好处在于，很方便做合并、串行混合调用编排，比如某个逻辑中需要调用四个个 RPC 服务 A、B、C、D，其中：A 的输出作为 B、C 的输入，B、C 可并行，B、C 的输出合并后作为 D 的输入。</p>
-
-<pre><code class="language-java">//CompletableFuture
-CompletableFuture&lt;AResult&gt; promiseA = rpcA.call(input);
-CompletableFuture&lt;DResult&gt; promiseD = promiseA.thenCompose(aResult -&gt; {
-    CompletableFuture&lt;BResult&gt; promiseB = rpcB.call(aResult);
-    CompletableFuture&lt;CResult&gt; promiseC = rpcC.call(aResult);
-    CompletableFuture&lt;MergedResult&gt; mergedPromise = promiseB.thenCombine(promiseC, (bResult, cResult) -&gt; {
-        return merge(bResult, cResult)
-    });
-    return mergedPromise;
-}).thenCompose(mergedResult -&gt; rpcD.call(mergedResult));
-return promiseD;
-</code></pre>
-
-<h3 id="toc_24"><strong>5、异常处理</strong></h3>
-
-<p>上面提到过 Callback 风格的异步 API，异常处理比较分散。而 Promise 风格的异常处理则优雅得多。我们需要记住，异常是 Promise 携带的两种状态之一。那么异常可以作为 callback 函数的输入。</p>
-
-<h4 id="toc_25">◆ 通用异常处理</h4>
-
-<p>Futures.catching 和 CompletableFuture.exceptionally 接收异常值为参数的 callback 函数。</p>
-
-<pre><code class="language-java">//Guava
-ListenableFuture&lt;Integer&gt; fetchCounterPromise = ...;
-// Falling back to a zero counter in case an exception happens when
-// processing the RPC to fetch counters.
-ListenableFuture&lt;Integer&gt; faultTolerantPromise = Futures.catching(
-    fetchCounterPromise, FetchException.class,
-    new Function&lt;FetchException, Integer&gt;() {
-        public Integer apply(FetchException e) {
-            return 0;
-        }
-    });
-</code></pre>
-
-<p>我们再看一个更复杂的例子。</p>
-
-<pre><code class="language-java">//CompletableFuture
-CompletableFuture&lt;FaultTolerantResult&gt; faultTolerantPromise = rpc1.call(input) //promise1
-    .thenCompose(rpc1Result -&gt; rpc2.call(rpc1Result)) //promise2
-    .thenCompose(rpc2Result -&gt; rpc3.call(rpc2Result)) //promise3
-    .thenCompose(rpc3Result -&gt; rpc4.call(rpc3Result)) //promise4
-    .exceptionally(err -&gt; {
-        // process err
-        return faultTolerantValue;
-    });  //faultTolerantPromise
-return faultTolerantPromise;
-</code></pre>
-
-<p>再提醒一遍，不要被链式调用迷惑了。这个例子里面，rpc1/rpc2/rpc3/rpc4 都有可能发生异常，但我们只需要在最后统一处理（返回异常值或转换为一个默认正常值）。比如 rpc2 发生异常，那么 rpc3/rpc4 的逻辑（接收正常值的 callback 函数）都不会执行，但是 rpc2 的异常会传递给 promise3/promise4。</p>
-
-<h4 id="toc_26">◆ 恢复</h4>
-
-<p>假设在读取某个数据存储发生异常，我们需要某种恢复机制，比如读取另一个 backup 的数据存储（某种重试），那么可以使用 Futures.cachingAsync 和 CompletableFuture.handle。</p>
-
-<pre><code class="language-java">//CompletableFuture
-public &lt;V&gt; CompletableFuture&lt;V&gt; dispatch(final Command&lt;V&gt; command) {
-    final CompletableFuture&lt;V&gt; dispatched = loadbalance.selectHandler().dispatch(command);
-    if (maxTries &gt; 0) {
-        final AtomicInteger leftTries = new AtomicInteger(maxTries);
-        final BiFunction&lt;CompletableFuture&lt;V&gt;, Throwable, CompletableFuture&lt;V&gt;&gt; fallback = new BiFunction&lt;CompletableFuture&lt;V&gt;, Throwable, CompletableFuture&lt;V&gt;&gt;() {
-            @Override
-            public CompletableFuture&lt;V&gt; apply(CompletableFuture&lt;V&gt; input, Throwable cause) {
-                if (cause == null) return input;
-                if (cause instanceof RecoverableException &amp;&amp; leftTries.getAndDecrement() &gt; 0) {
-                    final CompletableFuture&lt;V&gt; next = loadbalance.selectHandler().dispatch(new Command&lt;V&gt;(command.type, command.args));
-                    return next.handle((v, err) -&gt; err).thenCompose(err -&gt; apply(next, err));
-                }
-                CompletableFuture&lt;V&gt; errFuture = new CompletableFuture&lt;&gt;();
-                errFuture.completeExceptionally(cause);
-                return errFuture;
-            }
-        };
-        return dispatched.handle((v, err) -&gt; err).thenCompose(err -&gt; fallback.apply(dispatched, err));
-    }
-    return dispatched;
-}
-</code></pre>
-
-<h4 id="toc_27">◆ 超时</h4>
-
-<p>Promise 是一个承诺完成（成功或失败）的结果，但是并不承诺完成时间。所以，通常需要一种超时机制，幸运的是 ListenableFuture 和 CompletableFuture 都实现了 Future 接口。</p>
-
-<pre><code class="language-java">CompletableFuture&lt;FaultTolerantResult&gt; faultTolerantPromise = ...;
-try {
-    FaultTolerantResult result = faultTolerantPromise.get(1000, TimeUnit.SECONDS);
-    // process result
-} catch (TimeoutException e) {
-    //尝试取消执行尚未开始的callback函数
-    faultTolerantPromise.cancel(false);` 
-
-}
-</code></pre>
-
-<h2 id="toc_28"><strong>四、Promise 异步编程的注意点</strong></h2>
-
-<p>异步编程比同步编程困难。异步编程通常主要解决一小部分问题，比如阻塞。Promise 借鉴了函数式编程的风格，大量的逻辑会分散在各种 callback 函数来实现。因此对于习惯了同步编程的 OO 式或命令式编程风格的开发人员，需要一定的习惯时间。</p>
-
-<p>上面谈到 callee 执行机制的时候，谈到了线程池，那么 callee 计算完成时，callback 函数的执行通常是池中 resolve Promise 的线程执行。但是，如果 caller 在设置 callback 的时候，Promise 已经完成，那么 callback 的执行线程则是 caller 线程。因此，请特别关注 callback 函数的执行线程的差别。请遵循：</p>
-
-<p>◆ callback 尽量轻量 </p>
-
-<p>◆ callback 避免阻塞 </p>
-
-<p>◆ 否则请指定执行线程</p>
-
-<p>如果 callback 执行了大量的计算，甚至执行了阻塞式操作，那么就很有可能阻塞住 Promise 的 resolve 线程，通常这类线程都是极少的，比如执行 IO 的 EventLoop 线程，有可能造成其他 Promise 得不到执行。</p>
-
-<blockquote>
-<p>摘自 ListenableFuture 的文档： </p>
-
-<p>Note: For fast, lightweight listeners that would be safe to execute in any thread, consider MoreExecutors.directExecutor. Otherwise, avoid it. Heavyweight directExecutor listeners can cause problems, and these problems can be difficult to reproduce because they depend on timing. For example: </p>
-
-<p>◆ The listener may be executed by the caller of addListener. That caller may be a UI thread or other latency-sensitive thread. This can harm UI responsiveness. </p>
-
-<p>◆ The listener may be executed by the thread that completes this Future. That thread may be an internal system thread such as an RPC network thread. Blocking that thread may stall progress of the whole system. It may even cause a deadlock. </p>
-
-<p>◆ The listener may delay other listeners, even listeners that are not themselves directExecutor listeners.</p>
-</blockquote>
-
-<p>我们也的确碰到过使用 MoreExecutors.directExecutor 时，由于编写了太过复杂的 callback 链，导致线程死锁的问题。</p>
-
-<p>CompletableFuture 和 ListenableFuture 都有指定 callback 执行线程的方法：</p>
-
-<pre><code class="language-java">//使用内置的通用ForkJoin线程池
-completableFuture.thenAcceptAsync(callback);
-//使用指定的线程执行器
-completableFuture.thenAcceptAsync(callback, executor);
-//使用指定的线程执行器
-Futures.transform(input, callback, executor);
-</code></pre>
-
-<p>正因为异步编程的复杂性，因此目前我们也尽量在业务逻辑相对简单的应用上进行异步化改造。后续，我们也会评估 Quasar 等协程框架。</p>
-
-<p>完~</p>
+<ol>
+<li> 施瓦茨. 高性能MySQL[M]. 电子工业出版社, 2010:162-171.</li>
+<li> <a href="https://zh.wikipedia.org/wiki/%E9%80%9A%E7%94%A8%E5%94%AF%E4%B8%80%E8%AF%86%E5%88%AB%E7%A0%81">维基百科：UUID</a>.</li>
+<li> <a href="https://github.com/twitter/snowflake">snowflake</a>.</li>
+<li> <a href="https://dev.mysql.com/doc/refman/5.7/en/innodb-index-types.html">MySQL: Clustered and Secondary Indexes</a>.</li>
+<li> <a href="https://dev.mysql.com/doc/refman/5.5/en/replication-semisync.html">半同步复制 Semisynchronous Replication</a>.</li>
+</ol>
 
                         
                       </div>
@@ -597,10 +430,10 @@ Futures.transform(input, callback, executor);
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/5/13</span>
+                    <span class="date">2018/6/1</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Java.html'>Java</a></span>
+          					    <span class="posted-in"><a href='Persistence.html'>Persistence</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -671,9 +504,9 @@ Futures.transform(input, callback, executor);
         
             <a href="Coding.html"><strong>Coding</strong></a>
         
-            <a href="Solution.html"><strong>Solution</strong></a>
+            <a href="Modeling.html"><strong>Modeling</strong></a>
         
-            <a href="Archtect.html"><strong>Archtect</strong></a>
+            <a href="Archtecting.html"><strong>Archtecting</strong></a>
          
         </p>
 
@@ -690,31 +523,31 @@ Futures.transform(input, callback, executor);
 	      
 		      
 			      <li class="post">
-			        <a href="15359384213292.html">Securing Spring Boot with JWTs</a>
+			        <a href="15389311738065.html">重构到更深层的模型</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15358820607055.html">Java 8 Concurrency Tutorial: Atomic Variables and ConcurrentMap</a>
+			        <a href="15389278377243.html">IAM of Google Cloud</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15358774987730.html">Java 8 Concurrency Tutorial: Synchronization and Locks</a>
+			        <a href="15389224951575.html">RSocket, a New Application Network Protocol for Reactive Applications, Announced at SpringOne</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15358757119900.html">Java 8 Concurrency Tutorial: Threads and Executors</a>
+			        <a href="15389220103546.html">如何形象地描述RxJava中的背压和流控机制？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15358756631902.html">Java 8 Stream Tutorial</a>
+			        <a href="15389214670417.html">Modeling Uncertainty with Reactive DDD</a>
 			      </li>
 		     
 		  

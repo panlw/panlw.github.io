@@ -80,9 +80,9 @@
         
             <li><a href="Coding.html">Coding</a></li>
         
-            <li><a href="Solution.html">Solution</a></li>
+            <li><a href="Modeling.html">Modeling</a></li>
         
-            <li><a href="Archtect.html">Archtect</a></li>
+            <li><a href="Archtecting.html">Archtecting</a></li>
          
 
       </ul>
@@ -105,90 +105,136 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15309354381443.html">
+                <a class="clearlink" href="15309736200535.html">
                 
-                  <h1>Intersection Types: Java Generics’ most underused feature</h1>
+                  <h1>Asynchronous timeouts with CompletableFutures in Java 8 and Java 9</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="http://iteratrlearning.com/java/generics/2016/05/12/intersection-types-java-generics.html">http://iteratrlearning.com/java/generics/2016/05/12/intersection-types-java-generics.html</a></p>
+<p>原文地址 <a href="http://iteratrlearning.com/java9/2016/09/13/java9-timeouts-completablefutures.html">http://iteratrlearning.com/java9/2016/09/13/java9-timeouts-completablefutures.html</a></p>
 </blockquote>
 
-<p><u>Written on May 12, 2016</u></p>
+<p><u>Written on September 13, 2016</u></p>
 
-<p>Generic types were added to java way back in 2004 and have had extensive usage by different libraries and application developers ever since. Not all generics features have had equal usage though. In this blog post we’re going to explore Intersection Types: which are both one of the lesser-known features that Java Generics offers.</p>
+<p>Java 8 introduced <code>CompletableFuture&lt;T&gt;</code> as an enhancement to <code>Future&lt;T&gt;</code>. It is a new class which lets you express the flow of information from different tasks using a callback driven style. A <code>CompletableFuture</code> is used for defining computations on singular events, which is a different use case than computations on streams of events (e.g. <code>Observable</code> using RxJava). In this article, you will learn about the problem with timeouts in Java 8’s CompletableFuture and the improvements that Java 9 brings.</p>
 
-<p>Intersection types are a form of generic type that look a bit like <code>&lt;T extends A &amp; B&gt;</code>, where <code>T</code> is a type parameter and <code>A</code> and <code>B</code> are two types. In order to understand intersection types we first need to talk about how the extends keyword is used in generics. If you see a generic type parameter like <code>&lt;T extends Comparable&gt;</code> then it means that you are going to require our generic type (T) to only be those classes that implement the interface <code>Comparable</code>. Remember when we say “extends” in generic types that could refer to either extending a class or also implementing an interface.</p>
+<h2 id="toc_0">Combining two services</h2>
 
-<p>Intersection types are for situations where we want to be really greedy with our requirements! We want to say only allow classes that extend both classes in the case of our intersection types. But, why on earth would we want to do this? Let’s walk through a worked example to understand intersection types properly.</p>
+<p>For the purpose of this article, let’s say you’d like to combine the result of two services over the network:</p>
 
-<h2 id="toc_0">Deserializing DataInputStream and RandomAccessFile objects</h2>
+<ol>
+<li> A best price finder for a flight route</li>
+<li> An exchange service that converts USD to GBP</li>
+</ol>
 
-<p>Let’s suppose we’ve got a <code>Person</code> class and every Person has a name and an age that are instantiated in the constructor.</p>
+<p>Both of these services will introduce a certain delay before responding back with a result. This is due to the costs of network communication with the service.</p>
 
-<p><code>public Person(String name, int age)</code></p>
+<p>You could solve this problem by making use of CompletableFuture as follows (by default a CompletableFuture uses the <a href="https://docs.oracle.com/javase/8/docs/api/java/util/concurrent/ForkJoinPool.html">common thread pool</a> but this can be parametrised with an <code>Executor</code> using an overload of <code>supplyAsync</code>):</p>
 
-<p>Our system is trying to de-serialise person instances from an input stream, like a storage file or a network connection. In order to do this we’ve got a read method that takes a DataInputStream. It reads out the name as a Unicode string and the age as an int. After the Person instance has been read out the DataInputStream gets closed.</p>
+<pre><code class="language-java">BigDecimal amount = 
+    CompletableFuture.supplyAsync(() -&gt; findBestPrice(&quot;LDN - NYC&quot;))
+                     .thenCombine(CompletableFuture.supplyAsync(() -&gt; queryExchangeRateFor(&quot;GBP&quot;)), 
+                                                 this::convert)
+                     .get();
 
-<pre><code class="language-java">private static Person read(DataInputStream source) {
-   try(DataInputStream input = source) {
-       return new Person(input.readUTF(), input.readInt());
-   }
-   catch (IOException e) {
-       e.printStackTrace();
-       return null;
-    }
+</code></pre>
+
+<p>In the code above, the method <code>convert</code> takes the two BigDecimal results from <code>findBestPrice</code> and <code>queryExchangeRateFor</code> and calculates the final amount. You can refer to the <a href="https://docs.oracle.com/javase/8/docs/api/java/util/concurrent/CompletableFuture.html">javadoc</a> for a more detailed description of the methods available using <code>CompletableFuture</code>.</p>
+
+<h2 id="toc_1">Timeout mechanism</h2>
+
+<p>However, there are a few problems associated with this code. First, <code>get()</code> is a blocking call. This means that the main thread will have to wait until the result is ready before it can progress. Ideally, you’d like the main thread to do other useful work while the result is calculated in the background. Second, the main thread could be blocking indefinitely because there isn’t a timeout specified. What if one of the service is overloaded and doesn’t respond? To add a timeout mechanism, you can use the other version of <code>get</code> inherited from Future which throws a <code>TimeoutException</code> when the overall pipeline takes longer than a certain amount of time to return the result:</p>
+
+<pre><code class="language-java">BigDecimal result = 
+    CompletableFuture.supplyAsync(() -&gt; findBestPrice(&quot;LDN - NYC&quot;), executorService)
+                     .thenCombine(CompletableFuture.supplyAsync(() -&gt; queryExchangeRateFor(&quot;GBP&quot;)), 
+                                                 this::convert)
+                     .get(1, TimeUnit.SECONDS);
+
+</code></pre>
+
+<p>Unfortunately this code is still blocking and prevents the main thread from doing useful work in the meantime! To tackle this issue, you can refactor the above code to use <code>thenAccept</code> and provide a callback which is executed when the result is finally available:</p>
+
+<pre><code class="language-java">CompletableFuture.supplyAsync(() -&gt; findBestPrice(&quot;LDN - NYC&quot;), executorService)
+                         .thenCombine(CompletableFuture.supplyAsync(() -&gt; queryExchangeRateFor(&quot;GBP&quot;)),  
+                                                 this::convert)
+                         .thenAccept(amount -&gt; System.out.println(&quot;The price is: &quot; + amount + &quot;GBP&quot;));
+
+</code></pre>
+
+<p>However, using this approach we lost the timeout functionality! Ideally we’d like to specify a timeout using a non-blocking method. Unfortunately there isn’t a built-in elegant support to solve this problem in Java 8. Solutions available include using <code>acceptEither()</code> or <code>applyToEither</code> together with the <code>CompletableFuture</code> you are waiting the result for and another <code>CompletableFuture</code> which wraps up a <code>ScheduledThreadpoolExecutor</code> that throws a <code>TimeoutException</code> after a certain time:</p>
+
+<pre><code class="language-java">CompletableFuture.supplyAsync(() -&gt; findBestPrice(&quot;LDN - NYC&quot;), executorService)
+                         .thenCombine(CompletableFuture.supplyAsync(() -&gt; queryExchangeRateFor(&quot;GBP&quot;)),  
+                                                 this::convert)
+                         .acceptEither(timeoutAfter(1, TimeUnit.SECONDS), 
+                                       amount -&gt; System.out.println(&quot;The price is: &quot; + amount + &quot;GBP&quot;));
+
+</code></pre>
+
+<p>A simple implementation of <code>timeoutAfter</code> is as follows where <code>delayer</code> is an instance of a <code>ScheduledThreadPoolExecutor</code>:</p>
+
+<pre><code>public &lt;T&gt; CompletableFuture&lt;T&gt; timeoutAfter(long timeout, TimeUnit unit) {
+    CompletableFuture&lt;T&gt; result = new CompletableFuture&lt;T&gt;();
+    delayer.schedule(() -&gt; result.completeExceptionally(new TimeoutException()), timeout, unit);
+    return result;
 }
+
 </code></pre>
 
-<p>After this code has been deployed in production for a while a new requirement appears. Software development is a job never done. The new requirement requires the code to de-serialise the data from a RandomAccessFile object. Ideally you would like to re-use the logic of the read method which accepts a source of type DataInputStream. Unfortunately, an object of type <code>RandomAccessFile</code> is not a subtype of <code>DataInputStream</code> so this won’t work.</p>
+<h2 id="toc_2">Java 9 improvements</h2>
 
-<h2 id="toc_1">Dummy interfaces</h2>
+<p>Java 9’s <code>CompletableFuture</code> introduces several new methods amongst which are <code>orTimeout</code> and <code>completeOnTimeOut</code> that provide built-in support for dealing with timeouts.</p>
 
-<p>What can you do? You can notice that both DataInputStream and RandomAccessFile implement the interfaces DataInput and Closeable. Consequently, you could refactor the method read by introducing a “dummy” interface whose only purpose is to create a type that extends both DataInput and Closeable:</p>
+<p>The method <code>orTimeout</code> has the following signature:</p>
 
-<pre><code class="language-java">interface DataInputCloseable extends DataInput, Closeable {}
+<pre><code class="language-java">public CompletableFuture&lt;T&gt; orTimeout(long timeout, TimeUnit unit)
+
 </code></pre>
 
-<p>You can now refactor the method read to use this interface as follows:</p>
+<p>It internally uses a <code>ScheduledThreadExecutor</code> and completes the CompletableFuture with a <code>TimeoutException</code> after the specified timeout has elapsed. It also returns another CompletableFuture, meaning you can further chain your computation pipeline and deal with the <code>TimeoutException</code> by providing a friendly message back. Note that <code>whenComplete</code> in the code below could report other exceptional completions that might occur before the timeout occurs.</p>
 
-<pre><code class="language-java">private static Person read(DataInputCloseable source) {
-   try(DataInputStream input = source) {
-       return new Person(input.readUTF(), input.readInt());
-   }
-   catch (IOException e) {
-       e.printStackTrace();
-       return null;
-   }
-}
+<p>For example:</p>
+
+<pre><code class="language-java">CompletableFuture.supplyAsync(() -&gt; findBestPrice(&quot;LDN - NYC&quot;), executorService)
+                         .thenCombine(CompletableFuture.supplyAsync(() -&gt; queryExchangeRateFor(&quot;GBP&quot;)),  
+                                                 this::convert)
+                         .orTimeout(1, TimeUnit.SECONDS)
+                         .whenComplete((amount, error) -&gt; {
+                                        if (error == null) {
+                                            System.out.println(&quot;The price is: &quot; + amount + &quot;GBP&quot;);
+                                        } else {
+                                            System.out.println(&quot;Sorry, we could not return you a result&quot;);
+                                        }
+                         });
+
 </code></pre>
 
-<p>Thanks to this refactoring, you have gained both code re-use and flexibility. You are now able to re-use the same implementation of the method read but pass DataInputStream objects and RandomAccessFile objects.</p>
+<p>The method <code>completeOnTimeout</code> has the following signature:</p>
 
-<h2 id="toc_2">Using intersection types</h2>
+<pre><code class="language-java">public CompletableFuture&lt;T&gt; completeOnTimeout(T value, long timeout, TimeUnit unit)
 
-<p>Nonetheless, you had to introduce a kind of “dummy” interface whose only purpose is to create a new type which extends two types (DataInput and Closeable). Not only that, but because you were depending upon classes in the core JDK libraries you couldn’t retrofit that interface to the actual implementing classes. This is a situation where intersection types can be convenient. They let you do just that without introducing an unnecessary interface or class in your code. You can refactor the method read as follows:</p>
-
-<pre><code class="language-java">private static &lt;I extends DataInput &amp; Closeable&gt; Person read(I source) {
-    try(I input = source) {
-        return new Person(input.readUTF(), input.readInt());
-    }
-    catch (IOException e) {
-       e.printStackTrace();
-       return null;
-    }
-}
 </code></pre>
 
-<p>In the code above, you introduced an intersection type <code>&lt;I extends DataInput &amp; Closeable&gt;</code> which says the type parameter <code>I</code> extends both <code>DataInput</code> and <code>Closeable</code>. You can then use this type parameter as argument to the method to indicate the input should extends both <code>DataInput</code> and <code>Closeable</code>.</p>
+<p>It also uses a <code>ScheduledThreadExecutor</code> internally but in contrast to <code>orTimeout</code>, it provides a default value in the case that the CompletableFuture pipeline times out. You can conceptually relate this method to <code>orElse()</code> using <code>java.util.Optional</code>.</p>
 
-<h2 id="toc_3">Conclusion</h2>
+<pre><code class="language-java">CompletableFuture.supplyAsync(() -&gt; findBestPrice(&quot;LDN - NYC&quot;), executorService)
+                         .thenCombine(CompletableFuture.supplyAsync(() -&gt; queryExchangeRateFor(&quot;GBP&quot;)),  
+                                                 this::convert)
+                         .completeOnTimeout(DEFAULT_PRICE, 1, TimeUnit.SECONDS)
+                         .thenAccept(amount -&gt; {
+                             System.out.println(&quot;The price is: &quot; + amount + &quot;GBP&quot;);
+                         });
 
-<p>In this blog post, we showed that intersection types can be convenient in situations where you need “to extend from” two, or more, types in an existing library but you don’t have an existing interface or class to model that. In many cases this is unnecessary. Often introducing new types via an interface or class gives us an explicit name which helps the readability of your code. If the concept and name makes sense then that’s what we would recommend doing. In this case that wasn’t possible and intersection types helped save the day.</p>
+</code></pre>
 
-<p>If you are interested in improving your Java skills, check out our <a href="http://iteratrlearning.com/javabootcamp">Java Software Development Bootcamp</a></p>
+<p>In the code above, if the services are slow to respond, a default price is provided otherwise the result of combining the two services is returned.</p>
+
+<p>If you are curious about the internal implementation details of these methods, you can view the source of <code>CompletableFuture</code> in JDK9 <a href="http://hg.openjdk.java.net/jdk9/jdk9/jdk/file/tip/src/java.base/share/classes/java/util/concurrent/CompletableFuture.java">here</a>.</p>
+
+<p>If you interested to learn more about this asynchronous style of programming check out our <a href="http://iteratrlearning.com/javareactive">intensive Asynchronous and Reactive Java in-house course</a>. For everything Java 8 related, we also teach a popular <a href="http://iteratrlearning.com/java8">two-day Modern Development using Java 8 course</a>.</p>
 
                         
                       </div>
@@ -271,9 +317,9 @@
         
             <a href="Coding.html"><strong>Coding</strong></a>
         
-            <a href="Solution.html"><strong>Solution</strong></a>
+            <a href="Modeling.html"><strong>Modeling</strong></a>
         
-            <a href="Archtect.html"><strong>Archtect</strong></a>
+            <a href="Archtecting.html"><strong>Archtecting</strong></a>
          
         </p>
 
@@ -290,31 +336,31 @@
 	      
 		      
 			      <li class="post">
-			        <a href="15359384213292.html">Securing Spring Boot with JWTs</a>
+			        <a href="15389311738065.html">重构到更深层的模型</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15358820607055.html">Java 8 Concurrency Tutorial: Atomic Variables and ConcurrentMap</a>
+			        <a href="15389278377243.html">IAM of Google Cloud</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15358774987730.html">Java 8 Concurrency Tutorial: Synchronization and Locks</a>
+			        <a href="15389224951575.html">RSocket, a New Application Network Protocol for Reactive Applications, Announced at SpringOne</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15358757119900.html">Java 8 Concurrency Tutorial: Threads and Executors</a>
+			        <a href="15389220103546.html">如何形象地描述RxJava中的背压和流控机制？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15358756631902.html">Java 8 Stream Tutorial</a>
+			        <a href="15389214670417.html">Modeling Uncertainty with Reactive DDD</a>
 			      </li>
 		     
 		  

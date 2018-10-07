@@ -80,9 +80,9 @@
         
             <li><a href="Coding.html">Coding</a></li>
         
-            <li><a href="Solution.html">Solution</a></li>
+            <li><a href="Modeling.html">Modeling</a></li>
         
-            <li><a href="Archtect.html">Archtect</a></li>
+            <li><a href="Archtecting.html">Archtecting</a></li>
          
 
       </ul>
@@ -105,163 +105,150 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15301797659390.html">
+                <a class="clearlink" href="15301813109409.html">
                 
-                  <h1>架构设计：负载均衡层设计方案（3）——Nginx 进阶</h1>
+                  <h1>架构设计：负载均衡层设计方案（8）——负载均衡层总结上篇</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://blog.csdn.net/yinwenjie/article/details/46742661">https://blog.csdn.net/yinwenjie/article/details/46742661</a></p>
+<p><a href="https://blog.csdn.net/yinwenjie/article/details/47211641">https://blog.csdn.net/yinwenjie/article/details/47211641</a></p>
 </blockquote>
 
-<p>上篇文章《架构设计：负载均衡层设计方案（2）——Nginx 安装》（<a href="http://blog.csdn.net/yinwenjie/article/details/46620711">http://blog.csdn.net/yinwenjie/article/details/46620711</a>），我们介绍了 Nginx 的核心设计思想、基本安装和使用。本来准备继续介绍 Nginx 的几个使用特性，但是奈何博文篇幅太长，只有将一篇文章拆成两篇。本文我们将承接上文，继续讲解 Nginx 的实用特性，包括 gzip 功能、rewirte 功能和一个第三方的节点监测模块。本文我们还将提到 Taobao 团队对 Nginx 的深度改造 Tengine。</p>
+<h1 id="toc_0"><a></a>1、概述</h1>
 
-<h1 id="toc_0"><a></a>1、Nginx 继续进阶</h1>
+<p>很明显通过前面的八篇文章的介绍，并不能覆盖负载均衡层的所有技术，但是可以作为一个引子，告诉各位读者一个学习和使用负载均衡技术的思路。虽然后面我们将转向 “业务层” 和“业务通信”层的介绍，但是对负载均衡层的介绍也不会停止。在后续的时间我们将穿插进行负载均衡层的新文章的发布，包括 Nginx 技术的再介绍、HaProxy、LVS 新的使用场景等等。</p>
 
-<h2 id="toc_1"><a></a>1.1、gzip</h2>
+<p>这篇文章我们对前面的知识点进行总结，并有意进行一些扩展，以便于各位读者找到新的学习思路。</p>
 
-<p>nginx 对返回给浏览器的 http response body 是可以进行压缩的。虽然需要消耗一点 cpu 和内存资源，但是想到 100KB 的数据量可以压缩到 60KB 甚至更小进行传输，是否有一定的吸引力？这里我的建议是，不要为了节约成本将业务服务和负载层服务放在一台物理服务器上，这样做既影响性能又增加了运维难度。http 返回数据进行压缩的功能在很多场景下都实用：</p>
+<h1 id="toc_1"><a></a>2、负载均衡层的核心思想</h1>
+
+<h2 id="toc_2"><a></a>2-1、一致性哈希与 Key 的选取</h2>
+
+<p><img src="https://img-blog.csdn.net/20150703172857890" alt=""/></p>
+
+<p>在<a href="http://blog.csdn.net/yinwenjie/article/details/46620711%20%E6%9E%B6%E6%9E%84%E8%AE%BE%E8%AE%A1%EF%BC%9A%E8%B4%9F%E8%BD%BD%E5%9D%87%E8%A1%A1%E5%B1%82%E8%AE%BE%E8%AE%A1%E6%96%B9%E6%A1%88%EF%BC%882%EF%BC%89%E2%80%94%E2%80%94Nginx%E5%AE%89%E8%A3%85">《架构设计：负载均衡层设计方案（2）——Nginx 安装》</a> 文章中我们详细介绍了一致性哈希算法。并且强调了一致性 Hash 算法是现代系统架构中的最关键算法之一，在分布式计算系统、分布式存储系统、数据分析等众多领域中广泛应用。针对我的博文，在负载均衡层、业务通信层、数据存储层都会有它的身影。</p>
+
+<p>一致性算法的核心是：</p>
 
 <ul>
-<li><p>如果浏览器使用的是 3G/4G 网络，那么流量对于用户来说就是 money。</p></li>
-<li><p>压缩可节约服务器机房的对外带宽，为更多用户服务。按照目前的市场价良好的机房带宽资源的一般在 200RMB/Mbps，而服务器方案的压力往往也来自于机房带宽。</p></li>
-<li><p>主要注意的是，不是 Nginx 开启了 gzip 功能，HTTP 响应的数据就一定会被压缩，除了满足 Nginx 设置的 “需要压缩的 http 格式” 以外，客户端（浏览器）也需要支持 gzip（不然它怎么解压呢），一个好消息是，目前大多数浏览器和 API 都支持 http 压缩。</p>
-
-<p>我们首先来讲解 Nginx 中的 gzip 的设置参数，然后我们讲解当开启压缩功能后，HTTP 的交互过程和过程中关键的几个属性。我们首先来看看 Nginx 中开启 gzip 的属性（gzip 的设置放置在 HTTP 主配置区域）：</p></li>
+<li>  使用对象的某一个属性（这个属性可以是服务器的 IP 地址、开放端口 还可以是用户名、某种加密串。凡是你可以想到的有散列意义的属性），算出一个整数，让其分布在 0 至 2 的 32 次方 范围内。</li>
+<li>  一台服务器的某个或者某一些属性当然也可以进行 hash 计算，并且根据计算分布在这个圆环上的某一个点，也就是图中圆环上的蓝色点。</li>
+<li>  一个处理请求到来时，根据这个请求的某一个或者某一些属性进行 hash 计算，并且根据计算记过分布在这个圆环上的某一个点上。也就是上图圆环上的黄色点。</li>
+<li>  我们约定落在某一个蓝点 A 左侧和蓝点 B 右侧的黄色点所代表的请求，都有蓝点 A 所代表的服务器进行处理，这样就完成解决了 “谁来处理” 的问题。在蓝色点稳定存在的前提下，来自于同一个 Hash 约定的请求所落在的位置都是一样的，这就保证了服务处理映射的稳定性。</li>
+<li>  当某一个蓝色点由于某种原因下线，其所影响到的黄色点也是有限的。即下一次客户端的请求将由其他的蓝色点所代表的服务器进行处理。</li>
 </ul>
 
-<pre><code class="language-conf">#开启 gzip 压缩服务，
+<h2 id="toc_3"><a></a>2-2、轮询与权</h2>
+
+<p><img src="https://img-blog.csdn.net/20150705093244323" alt=""/></p>
+
+<ul>
+<li><p>不加权轮询，就是主控节点（任务来源点）在<strong>不考虑目标节点的任何因素的情况下</strong>（例如 CPU 性能、磁盘性能、网络性能），按照目标节点的列表顺序将任务依次分配下去。这是最简单的轮询，也是对主控节点实现复杂性要求最低的轮询。我之前的博文<a href="http://blog.csdn.net/yinwenjie/article/details/46620711%20%E6%9E%B6%E6%9E%84%E8%AE%BE%E8%AE%A1%EF%BC%9A%E8%B4%9F%E8%BD%BD%E5%9D%87%E8%A1%A1%E5%B1%82%E8%AE%BE%E8%AE%A1%E6%96%B9%E6%A1%88%EF%BC%882%EF%BC%89%E2%80%94%E2%80%94Nginx%E5%AE%89%E8%A3%85">《架构设计：负载均衡层设计方案（2）——Nginx 安装》</a>、<a href="http://blog.csdn.net/yinwenjie/article/details/46845997%20%E6%9E%B6%E6%9E%84%E8%AE%BE%E8%AE%A1%EF%BC%9A%E8%B4%9F%E8%BD%BD%E5%9D%87%E8%A1%A1%E5%B1%82%E8%AE%BE%E8%AE%A1%E6%96%B9%E6%A1%88%EF%BC%884%EF%BC%89%E2%80%94%E2%80%94LVS%E5%8E%9F%E7%90%86">《架构设计：负载均衡层设计方案（4）——LVS 原理》</a> 都对这种最简轮询进行了介绍：例如 LVS 中的 “rr” 参数。</p></li>
+<li><p>加权轮询中的 “权”，您可以看成是“轮询” 依据的意思。“权”可以是很多种可能，可以是目标机器的性能量化值、可以是一个固定的数字（按照固定数字加权）、可以是目标节点的网络速度。例如 LVS 中的 “lc” 参数，就是指按照目标机器，现在已有的 “连接” 数量进行加权：连接数量越少，越有更大的几率获得这个任务的处理权。</p></li>
+</ul>
+
+<h2 id="toc_4"><a></a>2-3、租约与健康检查</h2>
+
+<p><img src="https://img-blog.csdn.net/20150830090139148" alt=""/></p>
+
+<p>租约协议主要为了保证一个事实：如果服务器对客户端的检查操作在 “最迟时间” 失败后，那么服务器端肯定会注销客户端的登录信息，同时客户端上服务器的连接信息也会消失（并且不在向下提供服务）。每一次检查成功，这个 “最迟时间” 都会向后推移。</p>
+
+<p>租约协议和我们提到的哈希算法一下一样，也是系统架构设计中最基本的设计思想，并且大量运用在各类型的系统中，它的工作原理是每一位架构师都需要掌握的。例如：zookeeper 使用这个协议保证 Flow 节点和 Leader 节点的链路是正常的；分布式存储系统用这个协议保证 datanode 和 namenode 的连接是正常的；</p>
+
+<h1 id="toc_5"><a></a>3、负载均衡层技术汇总</h1>
+
+<p>在前面的博文中，我重点介绍了 Nginx、LVS、Keepalived 技术。由于时间有限，这里我们对博文中提到的几种技术进行一个总结，然后再扩展介绍一下 DNS 技术、CDN 技术和硬件负载技术。</p>
+
+<h2 id="toc_6"><a></a>3-1、Nginx 技术</h2>
+
+<p>在负载均衡层这个大的章节中，我有三篇文章都在直接介绍 Nginx 的原理和使用。但是之后有朋友给我反映还想了解更多的 Nginx 知识，特别点名要求我再做一篇文章介绍 Nginx 的动态缓存。是的，我在后面的时间里是有计划介绍 Nginx 的动态缓存技术，还会介绍 Nginx 和多款主流的反向代理软件的性能对比。但这需要时间，特别是我不想去网上找一些已有的性能对比图，还是自己一边做这样的性能测试，一边做性能报告比较靠谱。</p>
+
+<p>下面这些技术是我在博文中已经重点介绍过得，我们再做一下总结：</p>
+
+<ul>
+<li>  <strong>Nginx 中的连接数限制问题</strong></li>
+</ul>
+
+<p>重要的配置项包括：worker_processes、worker_connections。但是光是配置这些属性是不够的，最关键的是我们要打开操作系统级别的 “最大文件数” 限制问题。使用 “ulimit -n 65535” 设置本次会话的 “最大文件数” 限制；还要使用 “vim /etc/security/limits.conf” 命令，修改内核的配置信息。主要是以下两项：</p>
+
+<pre><code>* soft nofile 65535 
+* hard nofile 65535
+</code></pre>
+
+<p>另外，还要注意和 nginx 配置项中的 “worker_rlimit_nofile” 属性共同使用：</p>
+
+<pre><code>user root root; 
+worker_processes 4; 
+worker_rlimit_nofile 65535;
+
+#error_log logs/error.log; 
+#error_log logs/error.log notice; 
+#error_log logs/error.log info;
+
+#pid logs/nginx.pid; 
+events { 
+    use epoll; 
+    worker_connections 65535; 
+}
+</code></pre>
+
+<ul>
+<li>  <strong>Nginx 中的 Gzip 技术</strong></li>
+</ul>
+
+<p>gzip 是 Nginx 进行 HTTP Body 数据压缩的技术。下面这段 Nginx 配置信息是启用 gzip 压缩的实例：</p>
+
+<pre><code>#开启gzip压缩服务， 
 gzip on;
 
-#gzip 压缩是要申请临时内存空间的，假设前提是压缩后大小是小于等于压缩前的。例如，如果原始文件大小为 10K，那么它超过了 8K，所以分配的内存是 8 * 2 = 16K; 再例如，原始文件大小为 18K，很明显 16K 也是不够的，那么按照 8 * 2 * 2 = 32K 的大小申请内存。如果没有设置，默认值是申请跟原始数据相同大小的内存空间去存储 gzip 压缩结果。
+#gzip压缩是要申请临时内存空间的，假设前提是压缩后大小是小于等于压缩前的。例如，如果原始文件大小为10K，那么它超过了8K，所以分配的内存是8 * 2 = 16K;再例如，原始文件大小为18K，很明显16K也是不够的，那么按照 8 * 2 * 2 = 32K的大小申请内存。如果没有设置，默认值是申请跟原始数据相同大小的内存空间去存储gzip压缩结果。 
 gzip_buffers 2 8k;
 
-#进行压缩的原始文件的最小大小值，也就是说如果原始文件小于 5K，那么就不会进行压缩了
+#进行压缩的原始文件的最小大小值，也就是说如果原始文件小于5K，那么就不会进行压缩了 
 gzip_min_length 5K;
 
-#gzip 压缩基于的 http 协议版本，默认就是 HTTP 1.1
+#gzip压缩基于的http协议版本，默认就是HTTP 1.1 
 gzip_http_version 1.1;
 
-# gzip 压缩级别 1-9，级别越高压缩率越大，压缩时间也就越长 CPU 越高
+# gzip压缩级别1-9，级别越高压缩率越大，压缩时间也就越长CPU越高 
 gzip_comp_level 5;
 
-#需要进行 gzip 压缩的 Content-Type 的 Header 的类型。建议 js、text、css、xml、json 都要进行压缩；图片就没必要了，gif、jpge 文件已经压缩得很好了，就算再压，效果也不好，而且还耗费 cpu。
-Igzip_types text/HTML text/plain application/x-javascript text/css application/xml;
+#需要进行gzip压缩的Content-Type的Header的类型。建议js、text、css、xml、json都要进行压缩；图片就没必要了，gif、jpge文件已经压缩得很好了，就算再压，效果也不好，而且还耗费cpu。 
+gzip_types text/HTML text/plain application/x-javascript text/css application/xml;
 </code></pre>
 
-<pre><code>设置完成后，重启 nginx，即可生效。下面我们来看看浏览器和服务器进行 gzip 压缩的请求和处理返回过程（实际上在我的《标准 Web 系统的架构分层》文章中，已经有所提及）：
-</code></pre>
+<p>http 返回数据进行压缩的功能在很多场景下都实用：</p>
 
-<p><img src="https://img-blog.csdn.net/20150709162940954" alt=""/></p>
+<p>a、 如果浏览器使用的是 3G/4G 网络，那么流量对于用户来说就是 money。</p>
+
+<p>b、 压缩可节约服务器机房的对外带宽，为更多用户服务。按照目前的市场价良好的机房带宽资源的一般在 200RMB/Mbps，而服务器方案的压力往往也来自于机房带宽。</p>
+
+<p>c、 不是 Nginx 开启了 gzip 功能，HTTP 响应的数据就一定会被压缩，除了满足 Nginx 设置的 “需要压缩的 http 格式” 以外，客户端（浏览器）也需要支持 gzip（不然它怎么解压呢），一个好消息是，目前大多数浏览器和 API 都支持 http 压缩。</p>
 
 <ul>
-<li><p>整个请求过程来看，开启 gzip 和不开启 gip 功能，其 http 的请求和返回过程是一致的，不同的是参数。这个可以看看我的另外一篇文章《标准 Web 系统的架构分层》<a href="http://blog.csdn.net/yinwenjie/article/details/46480485">http://blog.csdn.net/yinwenjie/article/details/46480485</a></p></li>
-<li><p>当开启 HTTP 的 gzip 功能时，客户端发出 http 请求时，会通过 headers 中的 Accept-Encoding 属性告诉服务器 “我支持 gzip 解压，解压格式（算法）deflate,sdch 为：”。Accept-Encoding:gzip,deflate,sdch</p></li>
-<li><p>注意，不是 request 说自己支持解压，Nginx 返回 response 数据的时候就一定会压缩。这还要看本次 Nginx 返回数据的格式是什么，如果返回数据的原始数据格式，和设置的 gzip_types 相符合，这时 Nginx 才会进行压缩。</p></li>
-<li><p>Nginx 返回 response headers 是，如果数据被压缩了，就会在 Content-Encoding 属性中标示 gzip，表示接下来返回的 response content 是经过压缩的；并且在 Content-Type 属性中表示数据的原始格式。</p></li>
-<li><p>最后返回经过压缩的 response content 给客户端，客户端再进行解压。这里注意一下，在客户端发送的 headers 里面，有一个 deflate,sdch。这是两种压缩算法，如果读者感兴趣，可以查查相关的资料（我建议查查，了解哈弗曼压缩算法对扩展自己的架构思路很有帮助）</p></li>
+<li>  <strong>Nginx 中的 rewrite（重写）技术</strong></li>
 </ul>
 
-<h2 id="toc_2"><a></a>1.2、rewrite</h2>
+<p>Nginx 的强大在于其对 URL 请求的重写（重定位）。Nginx 的 rewrite 功能依赖于 PCRE Lib，请一定在 Nginx 编译安装时，安装 Pcre lib。</p>
 
-<p>本小结内容，假定读者了解正则表达式。如果您不清楚正则表达式，请首先 Google 或者百度，正则表达式不在我们讨论的范围内。</p>
+<p>Nginx 的 rewrite 功能在我<a href="http://blog.csdn.net/yinwenjie/article/details/46742661#t2%20%E6%9E%B6%E6%9E%84%E8%AE%BE%E8%AE%A1%EF%BC%9A%E8%B4%9F%E8%BD%BD%E5%9D%87%E8%A1%A1%E5%B1%82%E8%AE%BE%E8%AE%A1%E6%96%B9%E6%A1%88%EF%BC%883%EF%BC%89%E2%80%94%E2%80%94Nginx%E8%BF%9B%E9%98%B6">《架构设计：负载均衡层设计方案（3）——Nginx 进阶》</a> 这边博客中进行了讲解。</p>
 
-<p>Nginx 的强大在于其对 URL 请求的重写（重定位）。Nginx 的 rewrite 功能依赖于 PCRE Lib，请一定在 Nginx 编译安装时，安装 Pcre lib。请参见我的上一篇文章《架构设计：负载均衡层设计方案（2）——Nginx 安装》<a href="http://blog.csdn.net/yinwenjie/article/details/46620711">http://blog.csdn.net/yinwenjie/article/details/46620711</a></p>
+<p>下面是一段 rewrite 的示例：</p>
 
-<p>我们先从讲解 rewrite 的关键语法，然后出示几个示例，由示例进行讲解。先来说一下 Nginx 中几个关键的语法：</p>
-
-<p><strong>正在表达式匹配：</strong></p>
-
-<ul>
-<li>  ~ 区分大小写进行正则表达式匹配</li>
-<li>  ~* 不区分大小写进行正则表达式匹配</li>
-<li>  !~ 区分大小写进行正则表达式不匹配</li>
-<li>  !~* 不区分大小写进行正则表达式不匹配</li>
-</ul>
-
-<p>举例说明:</p>
-
-<pre><code>示例1：location ~* \.(jpg|gif|png|ioc|jpeg)$
-
-location是Nginx中的关键字，代表当前的URL请求值。
-以上表达式表示对URL进行不区分大小写的匹配，一旦URL以jpg或gif或png或ioc或jpeg结尾时，匹配成功。
-
-示例2：$var1 ~ ^(\d+)$
-
-var1是Nginx中使用set关键字定义的变量，以上语句代表var1和一个整数进行匹配。
-
-</code></pre>
-
-<p><strong>Nginx 中的全局变量：</strong><br/>
-从上面的各个实例中，我们已经发现 Nginx 是支持变量的，Nginx 还内置了一些全局变量，这里列举一些比较重要的全局变量：</p>
-
-<ul>
-<li>  $content_length: 获取 request 中 header 部分的 “Content_Length” 值。</li>
-<li>  $content_type: 获取 request 中 header 部分的 “Content_type” 值。</li>
-<li>  $request_method: 请求方式，常用的有两种请求方式：POST、GET</li>
-<li>  $remote_addr: 发送请求的客户端 ip</li>
-<li>  $remote_port: 发送请求的客户端端口</li>
-<li>  $request_uri: 含有参数的完整的初始 URI</li>
-<li>  $server_addr: request 到达的 server 的 ip。</li>
-<li>  $server_port: 请求到达的服务器的端口号。</li>
-</ul>
-
-<p><strong>rewrite 语法</strong></p>
-
-<pre><code>rewrite regex replacement flag
-
-#regex：表示当前匹配的正则表达式。只有$url大小写相关匹配regex正则表达式，这个$url才会被rewrite进行重定向。
-
-#replacement：重定向目标规则。这个目标规则支持动态变量绑定，这个问题下文马上用示例来讲。
-
-#flag：重定向规则。
-
-</code></pre>
-
-<p><strong>rewrite 中的 Flag 关键字</strong></p>
-
-<ul>
-<li>  redirect：通知客户端重定向到 rewrtie 后面的地址。</li>
-<li>  permanent：通知客户端永久重定向到 rewrtie 后面的地址。</li>
-<li>  last：将 rewrite 后的地址重新在 server 标签执行。</li>
-<li>  break：将 rewrite 后地址重新在当前的 location 标签执行。</li>
-</ul>
-
-<p>实际上针对客户端来说，其效果是一样的，都是由客户端重新发起 http 请求，请求地址重新定位到 replacement 规则的 URL 地址；这里关键要讲解最常用的 last 和 break 两个关键字：</p>
-
-<pre><code>所有的rewrite语句都是要在server中的location中书写的，如下：
-server {
-    。。。。。。
-    。。。。。。
-    location ... {
-        if(...) {
-            rewirte regex replacement flag;
-        }
-        rewirte regex replacement flag;
-    }
-}
-
-那么，break关键字说明重写的replacement地址在当前location的区域马上执行。
-last关键字说明重写的replacement地址在当前server所有的location中重新再做匹配。
-
-</code></pre>
-
-<p>下面我们结合 rewrite 关键字和 rewrite flag 关键字给出典型的示例进行讲解：</p>
-
-<pre><code>示例1：
+<pre><code>#示例1：
 location ~* ^/(.+)/(.+)\.(jpg|gif|png|jpeg)$ {
     rewrite ^/orderinfo/(.+)\.(jpg|gif|png|jpeg)$   /img/$1.$2   break;
     root   /cephclient;
 }
 
-location在不进行大小写区分的情况下利用正则表达式对$url进行匹配。当匹配成功后进行rewrite重定位。
-rewrite进行重写url的规则是：regex表达式第一个括号中的内容对应$1，regex表达式第二个括号中的内容对应$2，以此类推。
-这样重定位的意义就很明确了：将任何目录下的文件名重定位到img目录下的对应文件名，
-并且马上在这个location中（注意是Nginx，而不是客户端）执行这个重写后的URL定位。
+#location在不进行大小写区分的情况下利用正则表达式对$url进行匹配。当匹配成功后进行rewrite重定位。
+#rewrite进行重写url的规则是：regex表达式第一个括号中的内容对应$1，regex表达式第二个括号中的内容对应$2，以此类推。
+#这样重定位的意义就很明确了：将任何目录下的文件名重定位到img目录下的对应文件名，
+#并且马上在这个location中（注意是Nginx，而不是客户端）执行这个重写后的URL定位。
 
-示例2：
+#示例2：
 server {
     。。。。
     。。。。
@@ -274,134 +261,141 @@ server {
     }
 }
 
-在server中，有两个location位置，当url需要访问orderinfo目录下的某一个图片时，rewrite将重写这个url，
-并且重新带入这个url到server执行，这样“location /”这个location就会执行了，并找到图片存储的目录。
-
+#在server中，有两个location位置，当url需要访问orderinfo目录下的某一个图片时，rewrite将重写这个url，
+#并且重新带入这个url到server执行，这样“location /”这个location就会执行了，并找到图片存储的目录。
 </code></pre>
 
-<h2 id="toc_3"><a></a>1.3、健康检查模块</h2>
+<ul>
+<li>  <strong>Nginx 的图片处理模块</strong></li>
+</ul>
 
-<p>在本小节我们介绍一个用于 Nginx 对后端 UpStream 集群节点健康状态检查的第三方模块：nginx_upstream_check_module（<a href="https://github.com/yaoweibin/nginx_upstream_check_module">https://github.com/yaoweibin/nginx_upstream_check_module</a>）。这个模块有资料介绍是 TaoBao 团队开发的，但是我在 GitHua 上试图求证时并没有找到直接证据。</p>
+<p>http_image_filter_module 是 nginx 的图片处理模块，是使用 nginx 进行静态资源和动态资源分开管理的关键引用技术。通过这个模块可以对静态资源进行缩放、旋转、验证。</p>
 
-<p>这里需要说明的是，目前有很多 Nginx 模块实现 Nginx 对后端集群节点的健康监测，不止 nginx_upstream_check_module。Nginx 官方有一个模块 healthcheck_nginx_upstreams 也可以实现对后端节点的健康监测（<a href="https://github.com/cep21/healthcheck_nginx_upstreams">https://github.com/cep21/healthcheck_nginx_upstreams</a> 有详细的安装和使用介绍）</p>
+<p>需要注意的是，http_image_filter_module 模块所处理的缩率图片是不进行保存的，完全使用节点的 CPU 性能进行计算，使用节点的内存进行临时存储。<strong>所以如果要使用 http_image_filter_module 进行图片处理，一定要根据客户端的请求规模进行 nginx 节点的调整。并且当站点的 PV 达到一定的规模时，一定要使用 CDN 技术进行访问加速、对图片的访问处理手段进行规划。</strong></p>
 
-<p>我们回到对 nginx_upstream_check_module 的讲解，<strong>要使用这个第三方模块首先您需要进行下载，然后通过 patch 命令将补丁打入您原有的 Nginx 源码中，并且重新进行编译安装</strong>。下面我们来重点讲解一下这个模块的安装和使用。</p>
+<p>由于我们在之前涉及 Nginx 的文章中，并没有详细讲解 Nginx 的图片处理模块，只是说了要进行介绍，所以这里我给出一个较为详细的安装和配置示例：</p>
 
-<p><strong>下载 nginx_upstream_check_module 模块：</strong></p>
+<p>nginx 的 http_image_filter_module 模块由 GD library 进行支持，所以要使用这个图片处理模块，就必须进行第三方依赖包的安装：</p>
 
-<pre><code>wget https://codeload.github.com/yaoweibin/nginx_upstream_check_module/zip/master
-
-您也可以直接到GitHua上进行下载，还一个在linux系统上使用git命令进行下载。
-
+<pre><code>yum install gd-devel
 </code></pre>
 
-<p><strong>解压安装，并补丁打入 Nginx 源码</strong></p>
+<p>然后，Nginx 要进行重新编译：</p>
 
-<pre><code># unzip ./nginx_upstream_check_module-master.zip
-
-注意是将补丁打入Nginx源码，不是Nginx的安装路径：
-
-# cd ./nginx-1.6.2
-
-# patch -p1 &lt; ../nginx_upstream_check_module-master/check_1.5.12+.patch
-
-如果补丁安装成功，您将看到以下的提示信息：
-patching file src/http/modules/ngx_http_upstream_ip_hash_module.c
-patching file src/http/modules/ngx_http_upstream_least_conn_module.c
-patching file src/http/ngx_http_upstream_round_robin.c
-patching file src/http/ngx_http_upstream_round_robin.h
-
-这里请注意：在nginx_upstream_check_module官网的安装说明中，有一个打补丁的注意事项：
-If you use nginx-1.2.1 or nginx-1.3.0, the nginx upstream round robin
-module changed greatly. You should use the patch named
-&#39;check_1.2.1.patch&#39;.
-If you use nginx-1.2.2+ or nginx-1.3.1+, It added the upstream
-least_conn module. You should use the patch named &#39;check_1.2.2+.patch&#39;.
-If you use nginx-1.2.6+ or nginx-1.3.9+, It adjusted the round robin
-module. You should use the patch named &#39;check_1.2.6+.patch&#39;.
-If you use nginx-1.5.12+, You should use the patch named
-&#39;check_1.5.12+.patch&#39;.
-If you use nginx-1.7.2+, You should use the patch named
-&#39;check_1.7.2+.patch&#39;.
-
-这里我们的Nginx的版本是1.6.2，那么就应该打入check_1.5.12+.patch这个补丁
-
+<pre><code>configure --with-http_image_filter_module
+make &amp;&amp; make install
 </code></pre>
 
-<p><strong>重新编译安装 Nginx：</strong></p>
+<p>使用图片处理模块的配置示例：</p>
 
-<pre><code>注意重新编译Nginx，要使用add-module参数将这个第三方模块安装进去：
+<pre><code>location ~* /(.+)_(\d+)_(\d+)\.(jpg|gif|png|ioc|jpeg)$ {
+    set $h $3;
+    set $w $2;
+    rewrite /(.+)_(\d+)_(\d+)\.(jpg|gif|png|ioc|jpeg)$ /$1.$4 break;
 
-# ./configure --prefix=/usr/nginx-1.6.2/ --add-module=../nginx_upstream_check_module-master/
-
-# make &amp;&amp; make install
-
-</code></pre>
-
-<p>通过以上的步骤，第三方的 nginx_upstream_check_module 模块就在 Nginx 中准备好了。接下来我们讲解一下如何使用这个模块。首先看一下 upstream 的配置信息：</p>
-
-<pre><code>upstream cluster {
-    # simple round-robin
-    server 192.168.0.1:80;
-    server 192.168.0.2:80;
-
-    check interval=5000 rise=1 fall=3 timeout=4000;
-
-    #check interval=3000 rise=2 fall=5 timeout=1000 type=ssl_hello;
-    #check interval=3000 rise=2 fall=5 timeout=1000 type=http;
-    #check_http_send &quot;HEAD / HTTP/1.0\r\n\r\n&quot;;
-    #check_http_expect_alive http_2xx http_3xx;
+    image_filter resize $w $h;
+    image_filter_buffer 2M;
 }
-
 </code></pre>
 
-<p>上面的代码中，check 部分就是调用 nginx_upstream_check_module 模块的语法：</p>
+<p>其中关于正则表达式的语法和已经介绍过的 rewrite 的语法就不再进行介绍了，主要看 http_image_filter_module 相关的属性设置：</p>
 
-<pre><code>check interval=milliseconds [fall=count] [rise=count]
-[timeout=milliseconds] [default_down=true|false]
-[type=tcp|http|ssl_hello|mysql|ajp|fastcgi]
+<p>image_filter test：测试图片文件合法性<br/>
+image_filter rotate：进行图片旋转，只能按照 90 | 180 | 270 进行旋转<br/>
+image_filter size：返回图片的 JSON 数据<br/>
+image_filter resize width height：按比例进行图片的等比例缩小，注意，是只能缩小，第二缩小是等比例的。<br/>
+image_filter_buffer：限制图片最大读取大小，没有设置就是 1M；根据不同的系统最好设置为 2M—3M<br/>
+image_filter_jpeg_quality：设置 jpeg 图片的压缩比例（1-99，越高越好）<br/>
+image_filter_transparency：禁用 gif 和 png 图片的透明度。</p>
 
-</code></pre>
+<ul>
+<li>  <strong>和 Nginx 类似的其他技术 / 软件</strong></li>
+</ul>
 
-<p>interval：必要参数，检查请求的间隔时间。</p>
+<p>目前行业内也有很多与 Nginx 解决同类问题的软件，他们分别是 Apache 基金会的 Apache HTTP Server、淘宝开源的 Tengine、Haproxy、包括 Windows 下运行的 IIS，也支持反向代理 。</p>
 
-<p>fall：当检查失败次数超过了 fall，这个服务节点就变成 down 状态。</p>
+<p>这里笔者再次重点提到 Tengine，建议各位读者有时间的时候可以使用一下，这个对 Nginx 进行了深度再开发的软件。</p>
 
-<p>rise：当检查成功的次数超过了 rise，这个服务节点又会变成 up 状态。</p>
+<h2 id="toc_7"><a></a>3-2、LVS 技术</h2>
 
-<p>timeout：请求超时时间，超过等待时间后，这次检查就算失败。</p>
+<p>LVS 是 Linux Virtual Server 的简写，意即 Linux 虚拟服务器，是一个虚拟的服务器集群系统。本项目在 1998 年 5 月由章文嵩博士成立。</p>
 
-<p>default_down：后端服务器的初始状态。默认情况下，检查功能在 Nginx 启动的时候将会把所有后端节点的状态置为 down，检查成功后，在置为 up。</p>
+<p>LVS 集群采用 IP 负载均衡技术和基于内容请求分发技术。调度器具有很好的吞吐率，将请求均衡地转移到不同的服务器上执行，且调度器自动屏蔽掉服务器的故障，从而将一组服务器构成一个高性能的、高可用的虚拟服务器。整个服务器集群的结构对客户是透明的，而且无需修改客户端和服务器端的程序。</p>
 
-<p>type：这是检查通信的协议类型，默认为 http。以上类型是检查功能所支持的所有协议类型。</p>
+<p>在我的系列文章中，<a href="http://blog.csdn.net/yinwenjie/article/details/46845997%20%E6%9E%B6%E6%9E%84%E8%AE%BE%E8%AE%A1%EF%BC%9A%E8%B4%9F%E8%BD%BD%E5%9D%87%E8%A1%A1%E5%B1%82%E8%AE%BE%E8%AE%A1%E6%96%B9%E6%A1%88%EF%BC%884%EF%BC%89%E2%80%94%E2%80%94LVS%E5%8E%9F%E7%90%86">《架构设计：负载均衡层设计方案（4）——LVS 原理》</a> 、<a href="http://blog.csdn.net/yinwenjie/article/details/47010569%20%E6%9E%B6%E6%9E%84%E8%AE%BE%E8%AE%A1%EF%BC%9A%E8%B4%9F%E8%BD%BD%E5%9D%87%E8%A1%A1%E5%B1%82%E8%AE%BE%E8%AE%A1%E6%96%B9%E6%A1%88%EF%BC%885%EF%BC%89%E2%80%94%E2%80%94LVS%E5%8D%95%E8%8A%82%E7%82%B9%E5%AE%89%E8%A3%85">《架构设计：负载均衡层设计方案（5）——LVS 单节点安装》</a> 、<a href="http://blog.csdn.net/yinwenjie/article/details/47211551%20%E8%B4%9F%E8%BD%BD%E5%9D%87%E8%A1%A1%E5%B1%82%E8%AE%BE%E8%AE%A1%E6%96%B9%E6%A1%88%EF%BC%887%EF%BC%89%E2%80%94%E2%80%94LVS%20+%20Keepalived%20+%20Nginx%E5%AE%89%E8%A3%85%E5%8F%8A%E9%85%8D%E7%BD%AE">《负载均衡层设计方案（7）——LVS + Keepalived + Nginx 安装及配置》</a> 都涉及到 LVS 的讲解。</p>
 
-<pre><code>check_http_send http_packet
+<p>这里我们再总结一下 LVS 中的三种工作模式：</p>
 
-http_packet的默认格式为：&quot;GET / HTTP/1.0\r\n\r\n&quot;
+<h3 id="toc_8"><a></a>3-2-1、NAT 模式</h3>
 
-</code></pre>
+<p>NAT 方式是一种由 LVS Master 服务节点收到数据报，然后转给下层的 Real Server 节点，当 Real Server 处理完成后回发给 LVS Master 节点然后又由 LVS Master 节点转发出去的工作方式。LVS 的管理程序 IPVSADMIN 负责绑定转发规则，并完成 IP 数据报文和 TCP 数据报文中属性的重写。</p>
 
-<p>check_http_send 设置，这个设置描述了检查模块在每次检查时，向后端节点发送什么样的信息</p>
+<p><img src="https://img-blog.csdn.net/20150716170216002" alt=""/></p>
 
-<pre><code>check_http_expect_alive [ http_2xx | http_3xx | http_4xx | http_5xx ]
+<p>LVS-NAT 模式的优点在于：</p>
 
-</code></pre>
+<ul>
+<li><p>配置管理简单。LVS-NAT 的工作方式是 LVS 三种工作模式中最容易理解、最容易配置、最容易管理的工作模式。</p></li>
+<li><p>节省外网 IP 资源，一般机房分配给使用者的 IP 数量是有限的，特别是您购买的机架的数量不多时。LVS-NAT 工作方式将您的系统架构封装在局域网中，只需要 LVS 有一个外网地址或外网地址映射就可以实现访问了。</p></li>
+<li><p>系统架构相对封闭。在内网环境下我们对防火墙的设置要求不会很高，也相对容易进行物理服务器的运维。您可以设置来源于外网的请求需要进行防火墙过滤，而对内网请求开放访问。</p></li>
+<li><p>另外改写后转给 Real Server 的数据报文，Real Server 并不会关心它的真实性，只要 TCP 校验和 IP 校验都能通过，Real Server 就可以进行处理。所以 LVS-NAT 工作模式下 Real Server 可以是任何操作系统，只要它支持 TCP/IP 协议即可。</p></li>
+</ul>
 
-<p>这些状态代码表示服务器的 HTTP 响应上是 OK 的，后端节点是可用的。默认情况的设置是：http_2xx | http_3xx</p>
+<h3 id="toc_9"><a></a>3-2-2、DR 模式</h3>
 
-<p>当您根据您的配置要求完成检查模块的配置后，请首先使用 nginx -t 命令监测配置文件是否可用，然后在用 nginx -s reload 重启 nginx。</p>
+<p>LVS 的 DR 工作模式，是目前生产环境中最常用的一种工作模式，网上的资料也是最多的，有的文章对 DR 工作模式的讲解还是比较透彻的：</p>
 
-<h2 id="toc_4"><a></a>1.4、不得不提的 tengine</h2>
+<p><img src="https://img-blog.csdn.net/20150716210428765" alt=""/></p>
 
-<p>Tengine 是由淘宝网发起的 Web 服务器项目。它在 Nginx 的基础上，针对大访问量网站的需求，添加了很多高级功能和特性。Tengine 的性能和稳定性已经在大型的网站如淘宝网，天猫商城等得到了很好的检验。它的最终目标是打造一个高效、稳定、安全、易用的 Web 平台（<a href="http://tengine.taobao.org/">http://tengine.taobao.org/</a>）。</p>
+<p>LVS-DR 模式的优点在于：</p>
 
-<p>您应该懂了，我建议您根据业务的实际情况，适时在生产环境引入 Tengine。但在本博客发布时，Tengine 的 2.X 版本还不稳定，所以建议实用 1.5.2 的稳定版本。<strong>请记住 Tengine 就是经过升读改造后的 Nginx</strong>。</p>
+<ul>
+<li><p>解决了 LVS-NAT 工作模式中的转发瓶颈问题，能够支撑规模更大的负载均衡场景。</p></li>
+<li><p>比较耗费网外 IP 资源，机房的外网 IP 资源都是有限的，如果在正式生产环境中确实存在这个问题，可以采用 LVS-NAT 和 LVS-DR 混合使用的方式来缓解。</p></li>
+</ul>
 
-<h1 id="toc_5"><a></a>2、后文介绍</h1>
+<p>LVS-DR 当然也有缺点：</p>
 
-<p>花了两篇文章的功夫，终于将我想给大家讲解的 nginx 的实用特性讲完了，但是 nginx 远远不止这些特性。后面有时间我们会再回到 Nginx，重点讲解针对 Nginx 的脚本开发，我们还会讲解 Nginx 和 Lua 的集成。但是为了不扰乱这个系列博文的时间安排，下篇文章我们将开始介绍 LVS 技术，争取用一篇文章的篇幅讲清楚 LVS 核心设计思想、单节点安装和使用。再下篇文章我们介绍 Keepalived 技术，以及 keepalived 和 LVS、Nginx 分别进行集成，敬请关注。</p>
+<ul>
+<li><p>配置工作较 LVS-NAT 方式稍微麻烦一点，您至少需要了解 LVS-DR 模式的基本工作方式才能更好的指导自己进行 LVS-DR 模式的配置和运行过程中问题的解决。</p></li>
+<li><p>由于 LVS-DR 模式的报文改写规则，导致 LVS 节点和 Real Server 节点必须在一个网段，因为二层交换是没法跨子网的。但是这个问题针对大多数系统架构方案来说，实际上并没有本质限制。</p></li>
+</ul>
 
-<p><link rel="stylesheet" href="https://csdnimg.cn/release/phoenix/template/css/markdown_views-ea0013b516.css"></p>
+<h3 id="toc_10"><a></a>3-2-3、TUN 模式</h3>
+
+<p>LVS-DR 模式和 LVS-TUN 模式的工作原理完全不一样，工作场景完全不一样。DR 基于数据报文重写，TUN 模式基于 IP 隧道，后者是对数据报文的重新封装：</p>
+
+<p><img src="https://img-blog.csdn.net/20150717160306570" alt=""/></p>
+
+<p>IPIP 隧道。将一个完整的 IP 报文封装成另一个新的 IP 报文的数据部分，并通过路由器传送到指定的地点。在这个过程中路由器并不在意被封装的原始协议的内容。到达目的地点后，由目的地方依靠自己的计算能力和对 IPIP 隧道协议的支持，打开封装协议，取得原始协议：</p>
+
+<p><img src="https://img-blog.csdn.net/20150717135916686" alt=""/></p>
+
+<p>可以说 LVS-TUN 方式基本上具有 LVS-DR 的优点。在此基础上又支持跨子网间穿透。</p>
+
+<h2 id="toc_11"><a></a>3-3、CDN 技术</h2>
+
+<p>CDN 技术 Content Delivery Network：内容分发网络。为什么有时我们访问互联网上的视频资源、图片资源会比较慢，甚至访问失败。其中有一个重要的原因，是资源的物理位置离客户端太远了，可能其中有 4 层 NAT 设备（相当于使用网通的线路访问电信服务器上的资源）。</p>
+
+<p>我们试想一下，如果将我们要访问的资源放到离我们客户端最近的一个服务上（例如在广州的客户端访问的资源就在广州的机房）。那么是不是就解决了这个问题（这个点称为 “边缘节点”）。这就是 CDN 网络解决的问题，如下图所示：</p>
+
+<p><img src="https://img-blog.csdn.net/20150829132418544" alt=""/></p>
+
+<p>目前 CDN 服务不需要我们进行开发，市面上有很多公司都提供免费的 / 付费的 CDN 服务（请直接在 google 或者百度上面输入：CDN，就会有很多 “推广” 信息了，在我的博文中不打广告 <sup>_<sup>）。当然如果您想自行搭建</sup></sup> CDN 网络，可以参考以下技术方案：</p>
+
+<p>Squid：Squid 是一个缓存 internet 数据的一个软件，它接收用户的下载申请，并自动处理所下载的数据。目前，国内很多 CDN 服务商的网络都是基于 Squid 搭建的</p>
+
+<p>利用 Nginx 的 proxy_cache 搭建：Nginx 中的 rewrite 技术实际上就可以实现 URL 请求重写，实现请求转发。而 Nginx 中的 proxy_cache 组件可以使得从远端请求的源数据保存在本地，从而实现一个 CDN 网络的搭建。</p>
+
+<p>自己写：CDN 网络没有特别复杂的技术门槛，如果您有特别的需求，可以自己写一个。当然上图中所介绍的 CDN 网络属于<strong>第一代 CDN 网络</strong>，将<strong>第二代 / 第三代 P2P 技术</strong>加入到 CDN 原理中，可以形成<strong>第二代 CDN 网络</strong>：如下图所示：</p>
+
+<p><img src="https://img-blog.csdn.net/20150829134043600" alt=""/></p>
+
+<p>第三代 P2P 技术又被称为混合型 P2P 技术主要是为了解决元数据服务器的处理压力，加速资源的本地化速度。关于 P2P 技术我会在讲完 “业务系统设计”、“业务通信系统设计” 后，专门做一个新的专题进行介绍。另外提一下，YouTube 的 P2P 网络就是自己做的。</p>
+
+<h1 id="toc_12"><a></a>4、后文介绍</h1>
+
+<p>要总结的内容实在太多了，我决定再开一篇文章《架构设计：负载均衡层设计方案（9）——负载均衡层总结下篇》，继续进行负载均衡层技术的总结。我们将总结 Keepalived、DNS 技术、硬件负载，并且向大家介绍更广义的负载均衡技术。</p>
 
                         
                       </div>
@@ -484,9 +478,9 @@ http_packet的默认格式为：&quot;GET / HTTP/1.0\r\n\r\n&quot;
         
             <a href="Coding.html"><strong>Coding</strong></a>
         
-            <a href="Solution.html"><strong>Solution</strong></a>
+            <a href="Modeling.html"><strong>Modeling</strong></a>
         
-            <a href="Archtect.html"><strong>Archtect</strong></a>
+            <a href="Archtecting.html"><strong>Archtecting</strong></a>
          
         </p>
 
@@ -503,31 +497,31 @@ http_packet的默认格式为：&quot;GET / HTTP/1.0\r\n\r\n&quot;
 	      
 		      
 			      <li class="post">
-			        <a href="15359384213292.html">Securing Spring Boot with JWTs</a>
+			        <a href="15389311738065.html">重构到更深层的模型</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15358820607055.html">Java 8 Concurrency Tutorial: Atomic Variables and ConcurrentMap</a>
+			        <a href="15389278377243.html">IAM of Google Cloud</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15358774987730.html">Java 8 Concurrency Tutorial: Synchronization and Locks</a>
+			        <a href="15389224951575.html">RSocket, a New Application Network Protocol for Reactive Applications, Announced at SpringOne</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15358757119900.html">Java 8 Concurrency Tutorial: Threads and Executors</a>
+			        <a href="15389220103546.html">如何形象地描述RxJava中的背压和流控机制？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15358756631902.html">Java 8 Stream Tutorial</a>
+			        <a href="15389214670417.html">Modeling Uncertainty with Reactive DDD</a>
 			      </li>
 		     
 		  

@@ -80,9 +80,9 @@
         
             <li><a href="Coding.html">Coding</a></li>
         
-            <li><a href="Solution.html">Solution</a></li>
+            <li><a href="Modeling.html">Modeling</a></li>
         
-            <li><a href="Archtect.html">Archtect</a></li>
+            <li><a href="Archtecting.html">Archtecting</a></li>
          
 
       </ul>
@@ -105,323 +105,292 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15277850962764.html">
+                <a class="clearlink" href="15288661714760.html">
                 
-                  <h1>Leaf——美团点评分布式ID生成系统</h1>
+                  <h1>Python最广为使用的并发库futures使用入门与内部原理</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://tech.meituan.com/MT_Leaf.html">原文地址</a></p>
+<p><a href="https://mp.weixin.qq.com/s?__biz=MzI0MzQyMTYzOQ==&amp;mid=2247484110&amp;idx=1&amp;sn=66d31f0a59cac900975ca724465d5527&amp;chksm=e96c1a66de1b9370468b2f1ed9b7d669f5c933ff5942550b58479df3197440e664ff7b8f4b48&amp;mpshare=1&amp;scene=23&amp;srcid=0613YZmmW3drwtB11sjqs4ZN%23rd">原文地址</a></p>
 </blockquote>
 
-<h1 id="toc_0">背景</h1>
+<p>在使用 Python 处理任务时，限于单线程处理能力有限，需要将任务并行化，分散到多个线程或者是多个进程去执行。</p>
 
-<p>在复杂分布式系统中，往往需要对大量的数据和消息进行唯一标识。如在美团点评的金融、支付、餐饮、酒店、猫眼电影等产品的系统中，数据日渐增长，对数据分库分表后需要有一个唯一ID来标识一条数据或消息，数据库的自增ID显然不能满足需求；特别一点的如订单、骑手、优惠券也都需要有唯一ID做标识。此时一个能够生成全局唯一ID的系统是非常必要的。概括下来，那业务系统对ID号的要求有哪些呢？</p>
+<p>concurrent.futures 就是这样一种库，它可以让用户可以非常方便的将任务并行化。这个名字有点长，后面我直接使用词汇 concurrent 来代替 concurrent.futures。</p>
 
-<ol>
-<li> 全局唯一性：不能出现重复的ID号，既然是唯一标识，这是最基本的要求。</li>
-<li> 趋势递增：在MySQL InnoDB引擎中使用的是聚集索引，由于多数RDBMS使用B-tree的数据结构来存储索引数据，在主键的选择上面我们应该尽量使用有序的主键保证写入性能。</li>
-<li> 单调递增：保证下一个ID一定大于上一个ID，例如事务版本号、IM增量消息、排序等特殊需求。</li>
-<li> 信息安全：如果ID是连续的，恶意用户的扒取工作就非常容易做了，直接按照顺序下载指定URL即可；如果是订单号就更危险了，竞对可以直接知道我们一天的单量。所以在一些应用场景下，会需要ID无规则、不规则。</li>
-</ol>
+<p><img src="media/15288661714760/15288662944396.jpg" alt=""/></p>
 
-<p>上述123对应三类不同的场景，3和4需求还是互斥的，无法使用同一个方案满足。</p>
+<p>concurrent 提供了两种并发模型，一个是多线程 ThreadPoolExecutor，一个是多进程 ProcessPoolExecutor。对于 IO 密集型任务宜使用多线程模型。对于计算密集型任务应该使用多进程模型。</p>
 
-<p>同时除了对ID号码自身的要求，业务还对ID号生成系统的可用性要求极高，想象一下，如果ID生成系统瘫痪，整个美团点评支付、优惠券发券、骑手派单等关键动作都无法执行，这就会带来一场灾难。</p>
+<p>为什么要这样选择呢？是因为 Python GIL 的存在让 Python 虚拟机在进行运算时无法有效利用多核心。对于纯计算任务，它永远最多只能榨干单个 CPU 核心。如果要突破这个瓶颈，就必须 fork 出多个子进程来分担计算任务。而对于 IO 密集型任务，CPU 使用率往往是极低的，使用多线程虽然会加倍 CPU 使用率，但是还远远到不了饱和 (100%) 的地步，在单核心可以应付整体计算的前提下，自然是应该选择资源占用少的模式，也就是多线程模式。</p>
 
-<p>由此总结下一个ID生成系统应该做到如下几点：</p>
+<p>接下来我们分别尝试一下两种模式来进行并行计算。</p>
 
-<ol>
-<li> 平均延迟和TP999延迟都要尽可能低；</li>
-<li> 可用性5个9；</li>
-<li> 高QPS。</li>
-</ol>
+<h2 id="toc_0">多线程</h2>
 
-<h1 id="toc_1">常见方法介绍</h1>
+<p><img src="media/15288661714760/15288663302029.jpg" alt=""/></p>
 
-<h3 id="toc_2">UUID</h3>
+<p>多线程模式适合 IO 密集型运算，这里我要使用 sleep 来模拟一下慢速的 IO 任务。同时为了方便编写命令行程序，这里使用 Google fire 开源库来简化命令行参数处理。</p>
 
-<p>UUID(Universally Unique Identifier)的标准型式包含32个16进制数字，以连字号分为五段，形式为8-4-4-4-12的36个字符，示例：<code>550e8400-e29b-41d4-a716-446655440000</code>，到目前为止业界一共有5种方式生成UUID，详情见IETF发布的UUID规范 <a href="http://www.ietf.org/rfc/rfc4122.txt">A Universally Unique IDentifier (UUID) URN Namespace</a>。</p>
+<pre><code class="language-py"># coding: utf8
+# t.py
+import time
+import fire
+import threading
+from concurrent.futures import ThreadPoolExecutor, wait
 
-<p>优点：</p>
+# 分割子任务
+def each_task(index):
+    time.sleep(1)  # 睡1s，模拟IO
+    print &quot;thread %s square %d&quot; % (threading.current_thread().ident, index)
+    return index * index  # 返回结果
 
-<ul>
-<li>  性能非常高：本地生成，没有网络消耗。</li>
-</ul>
 
-<p>缺点：</p>
+def run(thread_num, task_num):
+    # 实例化线程池，thread_num个线程
+    executor = ThreadPoolExecutor(thread_num)
+    start = time.time()
+    fs = []  # future列表
+    for i in range(task_num):
+        fs.append(executor.submit(each_task, i))  # 提交任务
+    wait(fs)  # 等待计算结束
+    end = time.time()
+    duration = end - start
+    s = sum([f.result() for f in fs])  # 求和
+    print &quot;total result=%s cost: %.2fs&quot; % (s, duration)
+    executor.shutdown()  # 销毁线程池
 
-<ul>
-<li>  不易于存储：UUID太长，16字节128位，通常以36长度的字符串表示，很多场景不适用。</li>
-<li>  信息不安全：基于MAC地址生成UUID的算法可能会造成MAC地址泄露，这个漏洞曾被用于寻找梅丽莎病毒的制作者位置。</li>
-<li><p>ID作为主键时在特定的环境会存在一些问题，比如做DB主键的场景下，UUID就非常不适用：</p>
-
-<p>① MySQL官方有明确的建议主键要尽量越短越好[4]，36个字符长度的UUID不符合要求。</p>
-
-<blockquote>
-<p>All indexes other than the clustered index are known as secondary indexes. In InnoDB, each record in a secondary index contains the primary key columns for the row, as well as the columns specified for the secondary index. InnoDB uses this primary key value to search for the row in the clustered index. <strong>_If the primary key is long, the secondary indexes use more space, so it is advantageous to have a short primary key_</strong>.</p>
-</blockquote>
-
-<p>② 对MySQL索引不利：如果作为数据库主键，在InnoDB引擎下，UUID的无序性可能会引起数据位置频繁变动，严重影响性能。</p></li>
-</ul>
-
-<h3 id="toc_3">类snowflake方案</h3>
-
-<p>这种方案大致来说是一种以划分命名空间（UUID也算，由于比较常见，所以单独分析）来生成ID的一种算法，这种方案把64-bit分别划分成多段，分开来标示机器、时间等，比如在snowflake中的64-bit分别表示如下图（图片来自网络）所示：</p>
-
-<p><img src="media/15277850962764/15277851805055.png" alt=""/></p>
-
-<p>41-bit的时间可以表示（1L&lt;&lt;41）/(1000L<em>3600</em>24*365)=69年的时间，10-bit机器可以分别表示1024台机器。如果我们对IDC划分有需求，还可以将10-bit分5-bit给IDC，分5-bit给工作机器。这样就可以表示32个IDC，每个IDC下可以有32台机器，可以根据自身需求定义。12个自增序列号可以表示2<sup>12个ID，理论上snowflake方案的QPS约为409.6w/s，这种分配方式可以保证在任何一个IDC的任何一台机器在任意毫秒内生成的ID都是不同的。</sup></p>
-
-<p>这种方式的优缺点是：</p>
-
-<p>优点：</p>
-
-<ul>
-<li>  毫秒数在高位，自增序列在低位，整个ID都是趋势递增的。</li>
-<li>  不依赖数据库等第三方系统，以服务的方式部署，稳定性更高，生成ID的性能也是非常高的。</li>
-<li>  可以根据自身业务特性分配bit位，非常灵活。</li>
-</ul>
-
-<p>缺点：</p>
-
-<ul>
-<li>  强依赖机器时钟，如果机器上时钟回拨，会导致发号重复或者服务会处于不可用状态。</li>
-</ul>
-
-<h4 id="toc_4">应用举例Mongdb objectID</h4>
-
-<p><a href="https://docs.mongodb.com/manual/reference/method/ObjectId/#description">MongoDB官方文档 ObjectID</a>可以算作是和snowflake类似方法，通过“时间+机器码+pid+inc”共12个字节，通过4+3+2+3的方式最终标识成一个24长度的十六进制字符。</p>
-
-<h3 id="toc_5">数据库生成</h3>
-
-<p>以MySQL举例，利用给字段设置<code>auto_increment_increment</code>和<code>auto_increment_offset</code>来保证ID自增，每次业务使用下列SQL读写MySQL得到ID号。</p>
-
-<pre><code>begin;
-REPLACE INTO Tickets64 (stub) VALUES (&#39;a&#39;);
-SELECT LAST_INSERT_ID();
-commit;
-
+if __name__ == &#39;__main__&#39;:
+    fire.Fire(run)
 </code></pre>
 
-<p><img src="media/15277850962764/15277851990427.png" alt=""/></p>
+<p>运行<code>python t.py 2 10</code>，也就是 2 个线程跑 10 个任务，观察输出</p>
 
-<p>这种方案的优缺点如下：</p>
-
-<p>优点：</p>
-
-<ul>
-<li>  非常简单，利用现有数据库系统的功能实现，成本小，有DBA专业维护。</li>
-<li>  ID号单调自增，可以实现一些对ID有特殊要求的业务。</li>
-</ul>
-
-<p>缺点：</p>
-
-<ul>
-<li>  强依赖DB，当DB异常时整个系统不可用，属于致命问题。配置主从复制可以尽可能的增加可用性，但是数据一致性在特殊情况下难以保证。主从切换时的不一致可能会导致重复发号。</li>
-<li>  ID发号性能瓶颈限制在单台MySQL的读写性能。</li>
-</ul>
-
-<p>对于MySQL性能问题，可用如下方案解决：在分布式系统中我们可以多部署几台机器，每台机器设置不同的初始值，且步长和机器数相等。比如有两台机器。设置步长step为2，TicketServer1的初始值为1（1，3，5，7，9，11...）、TicketServer2的初始值为2（2，4，6，8，10...）。这是Flickr团队在2010年撰文介绍的一种主键生成策略（<a href="http://code.flickr.net/2010/02/08/ticket-servers-distributed-unique-primary-keys-on-the-cheap/">Ticket Servers: Distributed Unique Primary Keys on the Cheap</a> ）。如下所示，为了实现上述方案分别设置两台机器对应的参数，TicketServer1从1开始发号，TicketServer2从2开始发号，两台机器每次发号之后都递增2。</p>
-
-<pre><code>TicketServer1:
-auto-increment-increment = 2
-auto-increment-offset = 1
-
-TicketServer2:
-auto-increment-increment = 2
-auto-increment-offset = 2
-
+<pre><code class="language-log">thread 123145422131200 square 0
+thread 123145426337792 square 1
+thread 123145426337792 square 2
+thread 123145422131200 square 3
+thread 123145426337792 square 4
+thread 123145422131200 square 5
+thread 123145426337792 square 6
+thread 123145422131200 square 7
+thread 123145426337792 square 8
+thread 123145422131200 square 9
+total result=285 cost: 5.02s
 </code></pre>
 
-<p>假设我们要部署N台机器，步长需设置为N，每台的初始值依次为0,1,2...N-1那么整个架构就变成了如下图所示：</p>
+<p>我们看到计算总共花费了大概 5s，总共 sleep 了 10s 由两个线程分担，所以是 5s。读者也许会问，为什么输出乱了，这是因为 print 操作不是原子的，它是两个连续的 write 操作合成的，第一个 write 输出内容，第二个 write 输出换行符，write 操作本身是原子的，但是在多线程环境下，这两个 write 操作会交错执行，所以输出就不整齐了。如果将代码稍作修改，将 print 改成单个 write 操作，输出就整齐了 (关于 write 是否绝对原子性还需要进一步深入讨论)</p>
 
-<p><img src="media/15277850962764/15277852102924.png" alt=""/></p>
-
-<p>这种架构貌似能够满足性能的需求，但有以下几个缺点：</p>
-
-<ul>
-<li>  系统水平扩展比较困难，比如定义好了步长和机器台数之后，如果要添加机器该怎么做？假设现在只有一台机器发号是1,2,3,4,5（步长是1），这个时候需要扩容机器一台。可以这样做：把第二台机器的初始值设置得比第一台超过很多，比如14（假设在扩容时间之内第一台不可能发到14），同时设置步长为2，那么这台机器下发的号码都是14以后的偶数。然后摘掉第一台，把ID值保留为奇数，比如7，然后修改第一台的步长为2。让它符合我们定义的号段标准，对于这个例子来说就是让第一台以后只能产生奇数。扩容方案看起来复杂吗？貌似还好，现在想象一下如果我们线上有100台机器，这个时候要扩容该怎么做？简直是噩梦。所以系统水平扩展方案复杂难以实现。</li>
-<li>  ID没有了单调递增的特性，只能趋势递增，这个缺点对于一般业务需求不是很重要，可以容忍。</li>
-<li>  数据库压力还是很大，每次获取ID都得读写一次数据库，只能靠堆机器来提高性能。</li>
-</ul>
-
-<h1 id="toc_6">Leaf方案实现</h1>
-
-<p>Leaf这个名字是来自德国哲学家、数学家莱布尼茨的一句话：</p>
-
-<blockquote>
-<p>There are no two identical leaves in the world</p>
-
-<p>&quot;世界上没有两片相同的树叶&quot;</p>
-</blockquote>
-
-<p>综合对比上述几种方案，每种方案都不完全符合我们的要求。所以Leaf分别在上述第二种和第三种方案上做了相应的优化，实现了Leaf-segment和Leaf-snowflake方案。</p>
-
-<h3 id="toc_7">Leaf-segment数据库方案</h3>
-
-<p>第一种Leaf-segment方案，在使用数据库的方案上，做了如下改变：</p>
-
-<ul>
-<li>  原方案每次获取ID都得读写一次数据库，造成数据库压力大。改为利用proxy server批量获取，每次获取一个segment(step决定大小)号段的值。用完之后再去数据库获取新的号段，可以大大的减轻数据库的压力。</li>
-<li>  各个业务不同的发号需求用biz_tag字段来区分，每个biz-tag的ID获取相互隔离，互不影响。如果以后有性能需求需要对数据库扩容，不需要上述描述的复杂的扩容操作，只需要对biz_tag分库分表就行。</li>
-</ul>
-
-<p>数据库表设计如下：</p>
-
-<pre><code>+-------------+--------------+------+-----+-------------------+-----------------------------+
-| Field       | Type         | Null | Key | Default           | Extra                       |
-+-------------+--------------+------+-----+-------------------+-----------------------------+
-| biz_tag     | varchar(128) | NO   | PRI |                   |                             |
-| max_id      | bigint(20)   | NO   |     | 1                 |                             |
-| step        | int(11)      | NO   |     | NULL              |                             |
-| desc        | varchar(256) | YES  |     | NULL              |                             |
-| update_time | timestamp    | NO   |     | CURRENT_TIMESTAMP | on update CURRENT_TIMESTAMP |
-+-------------+--------------+------+-----+-------------------+-----------------------------+
-
+<pre><code class="language-py"># 分割子任务
+def each_task(index):
+    time.sleep(1)  # 睡1s，模拟IO
+    import sys
+    sys.stdout.write(&quot;thread %s square %d\n&quot; % (threading.current_thread().ident, index))
+    return index * index  # 返回结果
 </code></pre>
 
-<p>重要字段说明：biz_tag用来区分业务，max_id表示该biz_tag目前所被分配的ID号段的最大值，step表示每次分配的号段长度。原来获取ID每次都需要写数据库，现在只需要把step设置得足够大，比如1000。那么只有当1000个号被消耗完了之后才会去重新读写一次数据库。读写数据库的频率从1减小到了1/step，大致架构如下图所示：</p>
+<p>我们再跑一下<code>python t.py 2 10</code>，观察输出</p>
 
-<p><img src="media/15277850962764/15277852227891.png" alt=""/></p>
-
-<p>test_tag在第一台Leaf机器上是1~1000的号段，当这个号段用完时，会去加载另一个长度为step=1000的号段，假设另外两台号段都没有更新，这个时候第一台机器新加载的号段就应该是3001~4000。同时数据库对应的biz_tag这条数据的max_id会从3000被更新成4000，更新号段的SQL语句如下：</p>
-
-<pre><code class="language-sql">Begin
-UPDATE table SET max_id=max_id+step WHERE biz_tag=xxx
-SELECT tag, max_id, step FROM table WHERE biz_tag=xxx
-COMMIT
+<pre><code class="language-log">thread 123145438244864 square 0
+thread 123145442451456 square 1
+thread 123145442451456 square 2
+thread 123145438244864 square 3
+thread 123145438244864 square 4
+thread 123145442451456 square 5
+thread 123145438244864 square 6
+thread 123145442451456 square 7
+thread 123145442451456 square 9
+thread 123145438244864 square 8
+total result=285 cost: 5.02s
 </code></pre>
 
-<p>这种模式有以下优缺点：</p>
+<p>接下来，我们改变参数，扩大到 10 个线程，看看所有任务总共需要多久完成</p>
 
-<p>优点：</p>
+<pre><code class="language-log">&gt; python t.py 10 10
+thread 123145327464448 square 0
+thread 123145335877632 square 2
+thread 123145331671040 square 1
+thread 123145344290816 square 4
+thread 123145340084224 square 3
+thread 123145348497408 square 5
+thread 123145352704000 square 6
+thread 123145356910592 square 7
+thread 123145365323776 square 9
+thread 123145361117184 square 8
+total result=285 cost: 1.01s
+</code></pre>
 
-<ul>
-<li>  Leaf服务可以很方便的线性扩展，性能完全能够支撑大多数业务场景。</li>
-<li>  ID号码是趋势递增的8byte的64位数字，满足上述数据库存储的主键要求。</li>
-<li>  容灾性高：Leaf服务内部有号段缓存，即使DB宕机，短时间内Leaf仍能正常对外提供服务。</li>
-<li>  可以自定义max_id的大小，非常方便业务从原有的ID方式上迁移过来。</li>
-</ul>
+<p>可以看到 1s 中就完成了所有的任务。这就是多线程的魅力，可以将多个 IO 操作并行化，减少整体处理时间。</p>
 
-<p>缺点：</p>
+<h2 id="toc_1">多进程</h2>
 
-<ul>
-<li>  ID号码不够随机，能够泄露发号数量的信息，不太安全。</li>
-<li>  TP999数据波动大，当号段使用完之后还是会hang在更新数据库的I/O上，tg999数据会出现偶尔的尖刺。</li>
-<li>  DB宕机会造成整个系统不可用。</li>
-</ul>
+<p><img src="media/15288661714760/15288664619676.jpg" alt=""/></p>
 
-<h3 id="toc_8">双buffer优化</h3>
+<p>相比多线程适合处理 IO 密集型任务，多进程适合计算密集型。接下来我们要模拟一下计算密集型任务。我的个人电脑有 2 个核心，正好可以体验多核心计算的优势。</p>
 
-<p>对于第二个缺点，Leaf-segment做了一些优化，简单的说就是：</p>
+<p>那这个密集型计算任务怎么模拟呢，我们可以使用圆周率计算公式。</p>
 
-<p>Leaf 取号段的时机是在号段消耗完的时候进行的，也就意味着号段临界点的ID下发时间取决于下一次从DB取回号段的时间，并且在这期间进来的请求也会因为DB号段没有取回来，导致线程阻塞。如果请求DB的网络和DB的性能稳定，这种情况对系统的影响是不大的，但是假如取DB的时候网络发生抖动，或者DB发生慢查询就会导致整个系统的响应时间变慢。</p>
+<p><img src="media/15288661714760/15288664769272.jpg" alt=""/></p>
 
-<p>为此，我们希望DB取号段的过程能够做到无阻塞，不需要在DB取号段的时候阻塞请求线程，即当号段消费到某个点时就异步的把下一个号段加载到内存中。而不需要等到号段用尽的时候才去更新号段。这样做就可以很大程度上的降低系统的TP999指标。详细实现如下图所示：</p>
+<p>通过扩大级数的长度 n，就可以无限逼近圆周率。当 n 特别大时，计算会比较缓慢，这时候 CPU 就会一直处于繁忙状态，这正是我们所期望的。</p>
 
-<p><img src="media/15277850962764/15277852373915.png" alt=""/></p>
+<p>好，下面开写多进程并行计算代码</p>
 
-<p>采用双buffer的方式，Leaf服务内部有两个号段缓存区segment。当前号段已下发10%时，如果下一个号段未更新，则另启一个更新线程去更新下一个号段。当前号段全部下发完后，如果下个号段准备好了则切换到下个号段为当前segment接着下发，循环往复。</p>
+<pre><code class="language-py"># coding: utf8
+# p.py
+import os
+import sys
+import math
+import time
+import fire
+from concurrent.futures import ProcessPoolExecutor, wait
 
-<ul>
-<li><p>每个biz-tag都有消费速度监控，通常推荐segment长度设置为服务高峰期发号QPS的600倍（10分钟），这样即使DB宕机，Leaf仍能持续发号10-20分钟不受影响。</p></li>
-<li><p>每次请求来临时都会判断下个号段的状态，从而更新此号段，所以偶尔的网络抖动不会影响下个号段的更新。</p></li>
-</ul>
+# 分割子任务
+def each_task(n):
+    # 按公式计算圆周率
+    s = 0.0
+    for i in range(n):
+        s += 1.0/(i+1)/(i+1)
+    pi = math.sqrt(6*s)
+    # os.getpid可以获得子进程号
+    sys.stdout.write(&quot;process %s n=%d pi=%s\n&quot; % (os.getpid(), n, pi))
+    return pi
+    
+def run(process_num, *ns):  # 输入多个n值，分成多个子任务来计算结果
+    # 实例化进程池，process_num个进程
+    executor = ProcessPoolExecutor(process_num)
+    start = time.time()
+    fs = []  # future列表
+    for n in ns:
+        fs.append(executor.submit(each_task, int(n)))  # 提交任务
+    wait(fs)  # 等待计算结束
+    end = time.time()
+    duration = end - start
+    print &quot;total cost: %.2fs&quot; % duration
+    executor.shutdown()  # 销毁进程池
 
-<h3 id="toc_9">Leaf高可用容灾</h3>
+if __name__ == &#39;__main__&#39;:
+    fire.Fire(run)
+</code></pre>
 
-<p>对于第三点“DB可用性”问题，我们目前采用一主两从的方式，同时分机房部署，Master和Slave之间采用<strong>半同步方式[5]</strong>同步数据。同时使用公司Atlas数据库中间件(已开源，改名为<a href="http://tech.meituan.com/dbproxy-introduction.html">DBProxy</a>)做主从切换。当然这种方案在一些情况会退化成异步模式，甚至在<strong>非常极端</strong>情况下仍然会造成数据不一致的情况，但是出现的概率非常小。如果你的系统要保证100%的数据强一致，可以选择使用“类Paxos算法”实现的强一致MySQL方案，如MySQL 5.7前段时间刚刚GA的<a href="https://dev.mysql.com/doc/refman/5.7/en/group-replication.html">MySQL Group Replication</a>。但是运维成本和精力都会相应的增加，根据实际情况选型即可。</p>
+<p>通过代码可以看出多进程模式在代码的编写上和多线程没有多大差异，仅仅是换了一个类名，其它都一摸一样。这也是 concurrent 库的魅力所在，将多线程和多进程模型抽象出了一样的使用接口。</p>
 
-<p><img src="media/15277850962764/15277852467563.png" alt=""/></p>
+<p>接下来我们运行一下<code>python p.py 1 5000000 5001000 5002000 5003000</code>，总共计算 4 次 pi，只用一个进程。观察输出</p>
 
-<p>同时Leaf服务分IDC部署，内部的服务化框架是“MTthrift RPC”。服务调用的时候，根据负载均衡算法会优先调用同机房的Leaf服务。在该IDC内Leaf服务不可用的时候才会选择其他机房的Leaf服务。同时服务治理平台OCTO还提供了针对服务的过载保护、一键截流、动态流量分配等对服务的保护措施。</p>
+<pre><code class="language-log">process 96354 n=5000000 pi=3.1415924626
+process 96354 n=5001000 pi=3.14159246264
+process 96354 n=5002000 pi=3.14159246268
+process 96354 n=5003000 pi=3.14159246272
+total cost: 9.45s
+</code></pre>
 
-<h1 id="toc_10">Leaf-snowflake方案</h1>
+<p>可以看出来随着 n 的增大，结果越来越逼近圆周率，因为只用了一个进程，所以任务是串行执行，总共花了大约 9.5s。</p>
 
-<p>Leaf-segment方案可以生成趋势递增的ID，同时ID号是可计算的，不适用于订单ID生成场景，比如竞对在两天中午12点分别下单，通过订单id号相减就能大致计算出公司一天的订单量，这个是不能忍受的。面对这一问题，我们提供了 Leaf-snowflake方案。</p>
+<p>接下来再增加一个进程，观察输出</p>
 
-<p><img src="media/15277850962764/15277852551504.png" alt=""/></p>
+<pre><code>&gt; python p.py 2 5000000 5001000 5002000 5003000
+process 96529 n=5001000 pi=3.14159246264
+process 96530 n=5000000 pi=3.1415924626
+process 96529 n=5002000 pi=3.14159246268
+process 96530 n=5003000 pi=3.14159246272
+total cost: 4.98s
+</code></pre>
 
-<p>Leaf-snowflake方案完全沿用snowflake方案的bit位设计，即是“1+41+10+12”的方式组装ID号。对于workerID的分配，当服务集群数量较小的情况下，完全可以手动配置。Leaf服务规模较大，动手配置成本太高。所以使用Zookeeper持久顺序节点的特性自动对snowflake节点配置wokerID。Leaf-snowflake是按照下面几个步骤启动的：</p>
+<p>从耗时上看缩短了接近 1 半，说明多进程确实起到了计算并行化的效果。此刻如果使用 top 命令观察进程的 CPU 使用率，这两个进程的 CPU 使用率都占到了接近 100%。</p>
+
+<p>如果我们再增加 2 个进程，是不是还能继续压缩计算时间呢</p>
+
+<pre><code>&gt; python p.py 4 5000000 5001000 5002000 5003000
+process 96864 n=5002000 pi=3.14159246268
+process 96862 n=5000000 pi=3.1415924626
+process 96863 n=5001000 pi=3.14159246264
+process 96865 n=5003000 pi=3.14159246272
+total cost: 4.86s
+</code></pre>
+
+<p>看来耗时不能继续节约了，因为只有 2 个计算核心，2 个进程已经足以榨干它们了，即使再多加进程也只有 2 个计算核心可用。</p>
+
+<h2 id="toc_2">深入原理</h2>
+
+<p>concurrent 用的时候非常简单，但是内部实现并不是很好理解。在深入分析内部的结构之前，我们需要先理解一下 Future 这个对象。在前面的例子中，executor 提交 (submit) 任务后都会返回一个 Future 对象，它表示一个结果的坑，在任务刚刚提交时，这个坑是空的，一旦子线程运行任务结束，就会将运行的结果塞到这个坑里，主线程就可以通过 Future 对象获得这个结果。简单一点说，Future 对象是主线程和子线程通信的媒介。</p>
+
+<p><img src="media/15288661714760/15288665896000.jpg" alt=""/></p>
+
+<p>Future 对象的内部逻辑简单一点可以使用下面的代码进行表示</p>
+
+<pre><code class="language-py">class Future(object):
+
+    def __init__(self):
+        self._condition = threading.Condition()  # 条件变量
+        self._result = None
+
+    def result(self, timeout=None):
+        self._condition.wait(timeout)
+        return self._result
+
+    def set_result(self, result):
+        self._result = result
+        self._condition.notify_all()
+</code></pre>
+
+<p>主线程将任务塞进线程池后得到了这个 Future 对象，它内部的_result 还是空的。如果主线程调用 result() 方法获取结果，就会阻塞在条件变量上。如果子线程计算任务完成了就会立即调用 set_result() 方法将结果填充进 future 对象，并唤醒阻塞在条件变量上的线程，也就是主线程。这时主线程立即醒过来并正常返回结果。</p>
+
+<h2 id="toc_3">线程池内部结构</h2>
+
+<p>主线程和子线程交互分为两部分，第一部分是主线程如何将任务传递给子线程，第二部分是子线程如何将结果传递给主线程。第二部分已经讲过了是通过 Future 对象来完成的。那第一部分是怎么做到的呢？</p>
+
+<p><img src="media/15288661714760/15288666117893.jpg" alt=""/></p>
+
+<p>如上图所示，秘密就在于这个队列，主线程是通过队列将任务传递给多个子线程的。一旦主线程将任务塞进任务队列，子线程们就会开始争抢，最终只有一个线程能抢到这个任务，并立即进行执行，执行完后将结果放进 Future 对象就完成了这个任务的完整执行过程。</p>
+
+<h2 id="toc_4">线程池的缺点</h2>
+
+<p>concurrent 的线程池有个重大的设计问题，那就是任务队列是无界的。如果队列的生产者任务生产的太快，而线程池消费太慢处理不过来，任务就会堆积。如果堆积一直持续下去，内存就会持续增长直到 OOM，任务队列里堆积的所有任务全部彻底丢失。用户使用时一定要注意这点，并做好适当的控制。</p>
+
+<h2 id="toc_5">进程池内部结构</h2>
+
+<p>进程池内部结构复杂，连 concurent 库的作者自己也觉得特别复杂，所以在代码里专门画了一张 ascii 图来讲解模型内部结构</p>
+
+<p><img src="media/15288661714760/15288666342206.jpg" alt=""/></p>
+
+<p><img src="media/15288661714760/15288666482842.jpg" alt=""/></p>
+
+<p>我觉得作者的这张图还不够好懂，所以也单独画了一张图，请读者们仔细结合上面两张图，一起来过一边完整的任务处理过程。</p>
 
 <ol>
-<li> 启动Leaf-snowflake服务，连接Zookeeper，在leaf_forever父节点下检查自己是否已经注册过（是否有该顺序子节点）。</li>
-<li> 如果有注册过直接取回自己的workerID（zk顺序节点生成的int类型ID号），启动服务。</li>
-<li> 如果没有注册过，就在该父节点下面创建一个持久顺序节点，创建成功后取回顺序号当做自己的workerID号，启动服务。</li>
+<li> 主线程将任务塞进 TaskQueue(普通内存队列)，拿到 Future 对象</li>
+<li> 唯一的管理线程从 TaskQueue 获取任务，塞进 CallQueue(分布式跨进程队列)</li>
+<li> 子进程从 CallQueue 中争抢任务进行处理</li>
+<li> 子进程将处理结果塞进 ResultQueue(分布式跨进程队列)</li>
+<li> 管理线程从 ResultQueue 中获取结果，塞进 Future 对象</li>
+<li> 主线程从 Future 对象中拿到结果</li>
 </ol>
 
-<p><img src="media/15277850962764/15277852658209.png" alt=""/></p>
+<p>这个复杂的流程中涉及到 3 个队列，还有中间附加的管理线程。那为什么作者要设计的这么复杂，这样的设计有什么好处？</p>
 
-<h3 id="toc_11">弱依赖ZooKeeper</h3>
+<p>首先，我们看这张图的左半边，它和线程池的处理流程没有太多区别，区别仅仅是管理线程只有一个，而线程池的子线程会有多个。这样设计可以使得多进程模型和多线程模型的使用方法保持一致，这就是为什么两个模型使用起来没有任何区别的原因所在——通过中间的管理线程隐藏了背后的多进程交互逻辑。</p>
 
-<p>除了每次会去ZK拿数据以外，也会在本机文件系统上缓存一个workerID文件。当ZooKeeper出现问题，恰好机器出现问题需要重启时，能保证服务能够正常启动。这样做到了对三方组件的弱依赖。一定程度上提高了SLA</p>
+<p>然后我们再看这张图的右半边，管理线程通过两个队列来和子进程们进行交互，这两个队列都是跨进程队列 (multiprocessing.Queue)。CallQueue 是单生产者多消费者，ResultQueue 是多生产者单消费者。</p>
 
-<h3 id="toc_12">解决时钟问题</h3>
+<p>CallQueue 是个有界队列，它的上限在代码里写死了为「子进程数 + 1」。如果子进程们处理不过来，CallQueue 就会变满，管理线程就会停止往里面塞数据。但是这里也遭遇了和线程池一样的问题，TaskQueue 是无界队列，它的内容可不管消费者是否在持续 (管理线程) 消费，TaskQueue 会无限制的持续生长，于是最终也会会导致 OOM。</p>
 
-<p>因为这种方案依赖时间，如果机器的时钟发生了回拨，那么就会有可能生成重复的ID号，需要解决时钟回退的问题。</p>
+<h2 id="toc_6">跨进程队列</h2>
 
-<p><img src="media/15277850962764/15277852832400.png" alt=""/></p>
+<p>进程池模型中的跨进程队列是用 multiprocessing.Queue 实现的。那这个跨进程队列内部细节是怎样的，它又是用什么高科技来实现的呢</p>
 
-<p>参见上图整个启动流程图，服务启动时首先检查自己是否写过ZooKeeper leaf_forever节点：</p>
+<p>笔者仔细阅读了 multiprocessing.Queue 的源码发现，它使用无名套接字 sockerpair 来完成的跨进程通信，socketpair 和 socket 的区别就在于 socketpair 不需要端口，不需要走网络协议栈，通过内核的套接字读写缓冲区直接进行跨进程通信。</p>
 
-<ol>
-<li> 若写过，则用自身系统时间与leaf_forever/${self}节点记录时间做比较，若小于leaf_forever/${self}时间则认为机器时间发生了大步长回拨，服务启动失败并报警。</li>
-<li> 若未写过，证明是新服务节点，直接创建持久节点leaf_forever/${self}并写入自身系统时间，接下来综合对比其余Leaf节点的系统时间来判断自身系统时间是否准确，具体做法是取leaf_temporary下的所有临时节点(所有运行中的Leaf-snowflake节点)的服务IP：Port，然后通过RPC请求得到所有节点的系统时间，计算sum(time)/nodeSize。</li>
-<li> 若abs( 系统时间-sum(time)/nodeSize ) &lt; 阈值，认为当前系统时间准确，正常启动服务，同时写临时节点leaf_temporary/${self} 维持租约。</li>
-<li> 否则认为本机系统时间发生大步长偏移，启动失败并报警。</li>
-<li> 每隔一段时间(3s)上报自身系统时间写入leaf_forever/${self}。</li>
-</ol>
+<p><img src="media/15288661714760/15288666709878.jpg" alt=""/></p>
 
-<p>由于强依赖时钟，对时间的要求比较敏感，在机器工作时NTP同步也会造成秒级别的回退，建议可以直接关闭NTP同步。要么在时钟回拨的时候直接不提供服务直接返回ERROR_CODE，等时钟追上即可。<strong>或者做一层重试，然后上报报警系统，更或者是发现有时钟回拨之后自动摘除本身节点并报警</strong>，如下：</p>
+<p>当父进程要传递任务给子进程时，先使用 pickle 将任务对象进行序列化成字节数组，然后将字节数组通过 socketpair 的写描述符写入内核的 buffer 中。子进程接下来就可以从 buffer 中读取到字节数组，然后再使用 pickle 对字节数组进行反序列化来得到任务对象，这样总算可以执行任务了。同样子进程将结果传递给父进程走的也是一样的流程，只不过这里的 socketpair 是 ResultQueue 内部创建的无名套接字。</p>
 
-<pre><code class="language-java"> //发生了回拨，此刻时间小于上次发号时间
- if (timestamp &lt; lastTimestamp) {
+<p>multiprocessing.Queue 是支持双工通信，数据流向可以是父到子，也可以是子到父，只不过在 concurrent 的进程池实现中只用到了单工通信。CallQueue 是从父到子，ResultQueue 是从子到父。</p>
 
-            long offset = lastTimestamp - timestamp;
-            if (offset &lt;= 5) {
-                try {
-                    //时间偏差大小小于5ms，则等待两倍时间
-                    wait(offset &lt;&lt; 1);//wait
-                    timestamp = timeGen();
-                    if (timestamp &lt; lastTimestamp) {
-                       //还是小于，抛异常并上报
-                        throwClockBackwardsEx(timestamp);
-                      }    
-                } catch (InterruptedException e) {  
-                   throw  e;
-                }
-            } else {
-                //throw
-                throwClockBackwardsEx(timestamp);
-            }
-        }
- //分配ID
-</code></pre>
+<h2 id="toc_7">总结</h2>
 
-<p><strong>从上线情况来看，在2017年闰秒出现那一次出现过部分机器回拨，由于Leaf-snowflake的策略保证，成功避免了对业务造成的影响。</strong></p>
-
-<h1 id="toc_13">Leaf现状</h1>
-
-<p>Leaf在美团点评公司内部服务包含金融、支付交易、餐饮、外卖、酒店旅游、猫眼电影等众多业务线。目前Leaf的性能在4C8G的机器上QPS能压测到近5w/s，TP999 1ms，已经能够满足大部分的业务的需求。每天提供亿数量级的调用量，作为公司内部公共的基础技术设施，必须保证高SLA和高性能的服务，我们目前还仅仅达到了及格线，还有很多提高的空间。</p>
-
-<h1 id="toc_14">作者简介</h1>
-
-<p>照东，美团点评基础架构团队成员，主要参与<a href="http://tech.meituan.com/mt-mtrace.html">美团大型分布式链路跟踪系统Mtrace</a>和美团点评分布式ID生成系统Leaf的开发工作。曾就职于阿里巴巴，2016年7月加入美团。</p>
-
-<p>最后做一个招聘广告：如果你对大规模分布式环境下的服务治理、分布式会话链追踪等系统感兴趣，诚挚欢迎投递简历至：zhangjinlu#meituan.com。</p>
-
-<h1 id="toc_15">参考资料</h1>
-
-<ol>
-<li> 施瓦茨. 高性能MySQL[M]. 电子工业出版社, 2010:162-171.</li>
-<li> <a href="https://zh.wikipedia.org/wiki/%E9%80%9A%E7%94%A8%E5%94%AF%E4%B8%80%E8%AF%86%E5%88%AB%E7%A0%81">维基百科：UUID</a>.</li>
-<li> <a href="https://github.com/twitter/snowflake">snowflake</a>.</li>
-<li> <a href="https://dev.mysql.com/doc/refman/5.7/en/innodb-index-types.html">MySQL: Clustered and Secondary Indexes</a>.</li>
-<li> <a href="https://dev.mysql.com/doc/refman/5.5/en/replication-semisync.html">半同步复制 Semisynchronous Replication</a>.</li>
-</ol>
+<p>concurrent.futures 框架非常好用，虽然内部实现机制异常复杂，读者也无需完全理解内部细节就可以直接使用了。但是需要特别注意的是不管是线程池还是进程池其内部的任务队列都是无界的，一定要避免消费者处理不及时内存持续攀升的情况发生。</p>
 
                         
                       </div>
@@ -430,10 +399,10 @@ COMMIT
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/6/1</span>
+                    <span class="date">2018/6/13</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Persistence.html'>Persistence</a></span>
+          					    <span class="posted-in"><a href='Cocurrency.html'>Cocurrency</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -504,9 +473,9 @@ COMMIT
         
             <a href="Coding.html"><strong>Coding</strong></a>
         
-            <a href="Solution.html"><strong>Solution</strong></a>
+            <a href="Modeling.html"><strong>Modeling</strong></a>
         
-            <a href="Archtect.html"><strong>Archtect</strong></a>
+            <a href="Archtecting.html"><strong>Archtecting</strong></a>
          
         </p>
 
@@ -523,31 +492,31 @@ COMMIT
 	      
 		      
 			      <li class="post">
-			        <a href="15359384213292.html">Securing Spring Boot with JWTs</a>
+			        <a href="15389311738065.html">重构到更深层的模型</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15358820607055.html">Java 8 Concurrency Tutorial: Atomic Variables and ConcurrentMap</a>
+			        <a href="15389278377243.html">IAM of Google Cloud</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15358774987730.html">Java 8 Concurrency Tutorial: Synchronization and Locks</a>
+			        <a href="15389224951575.html">RSocket, a New Application Network Protocol for Reactive Applications, Announced at SpringOne</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15358757119900.html">Java 8 Concurrency Tutorial: Threads and Executors</a>
+			        <a href="15389220103546.html">如何形象地描述RxJava中的背压和流控机制？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15358756631902.html">Java 8 Stream Tutorial</a>
+			        <a href="15389214670417.html">Modeling Uncertainty with Reactive DDD</a>
 			      </li>
 		     
 		  

@@ -80,9 +80,9 @@
         
             <li><a href="Coding.html">Coding</a></li>
         
-            <li><a href="Solution.html">Solution</a></li>
+            <li><a href="Modeling.html">Modeling</a></li>
         
-            <li><a href="Archtect.html">Archtect</a></li>
+            <li><a href="Archtecting.html">Archtecting</a></li>
          
 
       </ul>
@@ -105,403 +105,132 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15277861393795.html">
+                <a class="clearlink" href="15301793061134.html">
                 
-                  <h1>深入浅出Netty - EventLoop, EventLoopGroup</h1>
+                  <h1>架构设计：负载均衡层设计方案（1）——负载场景和解决方式</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p>DECEMBER 24 2016 <a href="https://caorong.github.io/2016/12/24/head-first-netty-1/">原文地址</a></p>
+<p><a href="https://blog.csdn.net/yinwenjie/article/details/46605451">https://blog.csdn.net/yinwenjie/article/details/46605451</a></p>
 </blockquote>
 
-<p>近年来netty 十分流行，至于为何那么流行，因为它性能好，能更有效的利用系统资源。</p>
+<p>在上一篇<a href="http://blog.csdn.net/yinwenjie/article/details/46480485%20%E6%A0%87%E5%87%86Web%E7%B3%BB%E7%BB%9F%E7%9A%84%E6%9E%B6%E6%9E%84%E5%88%86%E5%B1%82">《标准 Web 系统的架构分层》</a>文章中，我们概述了 WEB 系统架构中的分层架设体系，介绍了包括负载均衡层、业务层、业务通信层、数据存储层的作用和存在意义。从本片文章开始，我们将首先详细讲解负载均衡层的架构原理和选型场景。</p>
 
-<p>但是， netty 很容易上手， 但是很多时候却无法理解设计的初衷， 比如为什么会有 EventLoop 这个东东， 本文从历史阐述原因。</p>
+<h1 id="toc_0"><a></a>1、不同的负载场景</h1>
 
-<h2 id="toc_0"><a href="#%E5%90%8C%E6%AD%A5%E7%BD%91%E7%BB%9C%E6%A8%A1%E5%9E%8B" title="同步网络模型"></a>同步网络模型</h2>
+<p>我们知道负载均衡层的作用是 “将来源于外部的处理压力通过某种规律 / 手段分摊到内部各个处理节点上”，那么不同的业务场景需要的负载均衡方式又是不一样的，架构师还要考虑架构方案的成本、可扩展性、运维难易度等问题。下面我们先介绍几种典型的不同业务场景，大家也可以先想一下如果是您，会怎么架设这些场景的负载均衡层。</p>
 
-<p>首先说说同步模型， 也就是常说的 bio， bio 是基于 stream 的。 网上找到一个图如下</p>
+<p>需要注意的是，这个系统的文章，我们都将使用这几个典型的业务场景来讲解系统架构的设计递归设计。在后续几篇介绍负载层架构的文章中，我们也将通过这几个典型的业务场景讲解负载层的架构方案。</p>
 
-<p><img src="media/15277861393795/15277864485883.jpg" alt=""/></p>
+<h2 id="toc_1"><a></a>1.1、负载场景一</h2>
 
-<p>从图可知，对于bio 来说，我的程序何时处理完需要靠 看 datasource 何时发完数据。</p>
+<p>这是一个国家级物流园区的货运订单和物流管理系统。在物流园区内的货运代理商、合作司机（货运车辆）、园区管理员和客服人员都要使用这套系统。每日 RUV 在 1 万人次，日 PV 在 10 万左右。甲方总经理使用这套系统的原有是抱着 “试一下移动互联网对物流产品是否能起到提高效率的作用”。可以看出整个系统基本上没有访问压力，甲方对您设计的系统只有一个要求：能够保证系统以后的功能和性能扩展性。</p>
 
-<p>这是非常坑爹的， 举个例子， 如果我的服务是一个多线程的 bio 的服务(比如 10个线程)，然后某个黑客建10个 telnet 连上你的server， holding住 不发数据，那么你的服务就down了。</p>
+<p><img src="https://img-blog.csdn.net/20150627081654476" alt=""/></p>
 
-<p>那么如何解决这种问题？ 如果 waiting client 发的数据不阻塞 worker 线程不就行了？</p>
+<h2 id="toc_2"><a></a>1.2、负载场景二</h2>
 
-<p>于是出现了 异步网络模型</p>
+<p>效果不错！在第一版系统架设后的 6 个月，货场丢货的情况大大减少，并且由于货车在途情况的监控，按时到达率也显著提升，货车司机也反映由于整个货场货车信息都是共享的，货车的待货时间也明显缩短。在这期间物流园中越来越多的货运代理商、货车司机都开始使用这套系统了，整个系统的访问量成线性增长。</p>
 
-<h2 id="toc_1"><a href="#%E5%BC%82%E6%AD%A5%E7%BD%91%E7%BB%9C%E6%A8%A1%E5%9E%8B" title="异步网络模型"></a>异步网络模型</h2>
+<p>物流园的总经理对整个系统的作用感到满意，决定扩大系统的使用范围，并增加新的功能。经过讨论甲方最终决定把整套系统开放给货主：或者可以在系统上查看货运代理商的线路报价、线上通知代理商上门取货、监控目前自己货品的运输状态、了解第三方签收情况。初步估计系统的日 RUV 将达到 10 万，日 PV 将突破 50 万。</p>
 
-<p>异步网络模型， 也就是非阻塞IO， 在java 中由于 jdk1.4 之后才被引入所以被称之为 Nio (New IO)</p>
+<p><img src="https://img-blog.csdn.net/20150627091936459" alt=""/></p>
 
-<p>网上同样找到个图</p>
+<h2 id="toc_3"><a></a>1.3、负载场景三</h2>
 
-<p><img src="media/15277861393795/15277864586815.jpg" alt=""/></p>
+<p>一年后，赞不绝口的大宗货品运输服务质量终于传到了政府领导的耳朵里。省里分管运输的领导亲自领队到物流园区参观考察，最终决定由省政府牵头，各地方政府参与，将这套管理办法在整个省级范围进行推广使用。全省 10 家大型物流园和 50 家二级物流园中的上万货运代理商、散落省内的零散代理商、10 万个人 / 企业货主、40 万优等资质车源共同接入系统。</p>
 
-<p>由图可知， 实现异步的原理是 系统帮你给每一个连接(channel) 都维护了一个 <code>buffer</code>。<br/>
-将 client 发来的数据暂存到 <code>buffer</code> 中, 待 java 进程需要的时候一次性做一次内存拷贝，在 java 进程中使用。</p>
+<p>新的功能上，增加了费用结算和运费保障功能，从货主预付款开始到第三方确认收货的整个环节都进行费用管理。为了保证线上收货环节的顺利，新版本中还增加了代理商之间的合作收货功能。新系统的日 RUV 将超过 50 万，日 PV 将突破 250 万。</p>
 
-<p>当然， 写出也是同样的 写到 <code>buffer</code> 中，当 <code>buffer</code> 满 或者 手动调用 <code>flush</code> 写出去。</p>
+<p><img src="https://img-blog.csdn.net/20150627103725131" alt=""/></p>
 
-<p>下面有个简单的 非阻塞 echo server demo， 当读到 q 时关闭连接。</p>
+<h2 id="toc_4"><a></a>1.4、负载场景四</h2>
 
-<pre><code class="language-java">ServerSocketChannel serverSocketChannel = ServerSocketChannel.open();
-
-serverSocketChannel.socket().bind(new InetSocketAddress(9999));
-serverSocketChannel.configureBlocking(false);
-
-final List&lt;SocketChannel&gt; socketChannelList = Lists.newLinkedList();
-
-new Thread(new Runnable() {
-  @Override
-  public void run() {
-    while (true) {
-      // 处理 每个连接是否可读, 这里的逻辑是 读4个字节后切断连接
-      for (SocketChannel socketChannel : Lists.newArrayList(socketChannelList)) {
-        try {
-          ByteBuffer buf = ByteBuffer.allocate(4);
-          int readed = socketChannel.read(buf);
-          System.out.println(readed);
-          System.out.println(Arrays.toString(buf.array()));
-          if (readed &gt; 0 &amp;&amp; buf.array()[0] == &#39;q&#39;) {
-            // close
-            socketChannel.close();
-            // remove from list
-            socketChannelList.remove(socketChannel);
-          }
-        } catch (Throwable e) {
-          e.printStackTrace();
-        }
-      }
-      try {
-        Thread.sleep(100);
-      } catch (InterruptedException e) {
-      }
-    }
-  }
-}, &quot;server-handler-thread&quot;).start();
-
-// 等待新连接连进来
-while (true) {
-  SocketChannel socketChannel = serverSocketChannel.accept();
-  if (socketChannel != null) {
-    socketChannelList.add(socketChannel);
-  }
-  Thread.sleep(1000);
-}
-</code></pre>
-
-<p>简单分析下上面的代码，</p>
-
-<ol>
-<li> 由于 accept 是非阻塞的， 所以我们要一直轮询 判断是否有新连接进来。</li>
-<li> 连接进来后，由于我们不知道 client 何时能发完数据， 所以我们维护了一个列表 <code>socketChannelList</code> 定期去轮询列表，看是否有数据可读。</li>
-</ol>
-
-<p>但是后来大家发现， 每当用 nonblocking socket 的时候都要做类似的操作， 于是想把它们提出来，提取成一个通用模块， 让代码实现更容易，</p>
-
-<p>在 <a href="https://en.wikipedia.org/wiki/Berkeley_sockets">berkeley socket</a> 中这个模块被称为 select, poll, epoll. (后面2个是加强版)</p>
-
-<p>而在java中， java 在他们之上抽象成 Selector</p>
-
-<h2 id="toc_2"><a href="#Selector-select-poll-epoll" title="Selector(select, poll, epoll)"></a>Selector(select, poll, epoll)</h2>
-
-<p>既然 select 是一个使用 nonblocking io 的通用封装， 那么在 linux 中， 为什么要有 select, poll, epoll 这么多的选择呢？</p>
-
-<p>我猜测，最早其实只有 select， 然后由于linux 是一个开源， 所以， 后来别人实现了性能更好的 poll, 再之后 epoll 也是这样。</p>
-
-<p>但是, 由于它们都在 linux 2.6.12 之前就已经被实现了， 在github上 都看不到具体提交历史了。。</p>
-
-<p><a href="https://github.com/torvalds/linux/commits/a379f71a30dddbd2e7393624e455ce53c87965d1/fs/select.c?after=Y3Vyc29yOqN59xow3dvS5zk2JORVzlPIeWXRKzY5">select.c</a>,<br/>
-<a href="https://github.com/torvalds/linux/commits/5924bbecd0267d87c24110cbe2041b5075173a25/include/linux/poll.h">poll.h</a>,<br/>
-<a href="https://github.com/torvalds/linux/commits/5924bbecd0267d87c24110cbe2041b5075173a25/include/linux/eventpoll.h">eventpoll.h</a></p>
-
-<p>我们再来看看 使用了 selector 后的非阻塞 IO 的编码, 同样实现一个 echo server</p>
-
-<pre><code class="language-java">Selector selector = Selector.open();
-ServerSocketChannel servChannel = ServerSocketChannel.open();
-servChannel.configureBlocking(false);
-// 建立一个server socket，到本地端口9999， backlog 1024
-servChannel.socket().setReuseAddress(true);
-servChannel.socket().bind(new InetSocketAddress(9999), 1024);
-// selector 关心 server 上的 ACCEPT 事件
-servChannel.register(selector, SelectionKey.OP_ACCEPT); 
-
-while (start) {
-  try {
-    // 阻塞等待 直到有IO事件可读(系统IO事件队列不为空)
-    selector.select();
-    // 获取 事件 以及 事件所对应的 channel (client server 的连接)
-    Set&lt;SelectionKey&gt; selectedKeys = selector.selectedKeys();
-    Iterator&lt;SelectionKey&gt; it = selectedKeys.iterator();
-    SelectionKey key = null;
-    while (it.hasNext()) {
-      key = it.next();
-      it.remove();
-      try {
-        if (key.isValid()) {
-          // OP_ACCEPT 事件 表示有个新client 完成了三次握手。连接上了本服务器
-          if (key.isAcceptable()) {
-            // Accept the new connection
-            ServerSocketChannel ssc = (ServerSocketChannel) key.channel();
-            SocketChannel sc = ssc.accept();
-            sc.configureBlocking(false);
-            // 将该连接的可读事件 注册到 selector， 到时候他发起请求的时候，我会收到新事件
-            sc.register(selector, SelectionKey.OP_READ);
-          }
-          // OP_READ 事件 说明 client 发的数据已经发到了系统缓冲区，server 可以去读了。
-          if (key.isReadable()) {
-            SocketChannel sc = (SocketChannel) key.channel();
-            // 分配用户台空间, 将数据从内核态 拷贝到 用户态
-            ByteBuffer readBuffer = ByteBuffer.allocate(4);
-            int readBytes = sc.read(readBuffer);
-            if (readBytes &gt; 0) {
-              // 切换读写模式 详见下面的图, 表示自己目前可以读 [position, limit]
-              readBuffer.flip();
-              byte[] bytes = new byte[readBuffer.remaining()];
-              // 将buffer 数据拷贝到 bytes 数组
-              // 如果这里只收到一半的数据怎么办？
-              String body = new String(bytes, &quot;UTF-8&quot;);
-              System.out.println(body);
-              // 将 read的数据 写回去
-              ByteBuffer writeBuffer = ByteBuffer.allocate(bytes.length);
-              writeBuffer.put(bytes);
-              writeBuffer.flip();
-              sc.write(writeBuffer);
-            } else if (readBytes &lt; 0) {
-              // 对端链路关闭
-              key.cancel();
-              sc.close();
-            } else
-              ;
-          }
-        }
-      } catch (Exception e) {
-        if (key != null) {
-          key.cancel();
-          if (key.channel() != null)
-            key.channel().close();
-        }
-      }
-    }
-  } catch (Exception e) {
-    throw e;
-  }
-}
-</code></pre>
-
-<pre><code class="language-sh">~ ᐅ nc localhost 9999
-1
-1
-2
-2
-</code></pre>
-
-<p>但是， 很奇怪的是，代码更长了。。。</p>
-
-<p>因为其实真正的 selector 将所有的socket 的时间都封装进去了。</p>
-
-<p>带来的结果是， java 层的代码 只要一个线程就能处理所有了，(我之前的实现需要2个线程)。</p>
-
-<p>当然还有个问题是， 及时用了 selector， 我们依然认为代码可读性非常差， 代码容易写错。</p>
-
-<p>于是， netty 登场了， 他在 selector 之上， 又封装了一层， 让我们先看下 同样实现 netty 的代码。</p>
-
-<h2 id="toc_3"><a href="#netty-echo-server" title="netty echo server"></a>netty echo server</h2>
-
-<pre><code class="language-java">public class Netty4Demo {
-  public class EchoHandler extends SimpleChannelInboundHandler {
-    @Override
-    public void channelRead0(ChannelHandlerContext ctx, Object msg) throws Exception {
-      // 为什么 这里可以强转String？
-      String in = (String) msg;
-      System.out.print(in);
-      // 将数据写回
-      ctx.writeAndFlush(in);
-    }
-  }
-
-  public void run() throws Exception {
-    EventLoopGroup acceptGroup = new NioEventLoopGroup(1); // 指定 Acceptor 线程池大小
-    EventLoopGroup ioGroup = new NioEventLoopGroup(1); // 指定 NIO线程池大小
-    try {
-      ServerBootstrap b = new ServerBootstrap(); // 创建 ServerBootstrap 对象，他是Netty 用于启动NIO 服务端的辅助启动类，目的是降低服务端的开发复杂度。
-      b.group(acceptGroup, ioGrou).channel(
-          NioServerSocketChannel.class) // 指定使用 java 的NioServerSocketChannel
-          .childHandler(new ChannelInitializer&lt;SocketChannel&gt;() { // 创建 IOThread 的 pipeline
-            @Override
-            public void initChannel(SocketChannel ch) throws Exception {
-              ch.pipeline()
-                .addLast(new StringDecoder())
-                .addLast(new StringEncoder()); // 添加echo Handler
-                .addLast(new EchoHandler())
-            }
-          }).option(ChannelOption.SO_BACKLOG, 128)          // server socket config backlog 设置为 128
-          .childOption(ChannelOption.SO_KEEPALIVE, true); // client socket config 设置 keepalive = true
-      // 绑定端口，开始接收进来的连接
-      ChannelFuture f = b.bind(9999).sync(); // 同步等待绑定本地端口
-
-      // 等待服务器  socket 关闭 。
-      // 在这个例子中，这不会发生，但你可以优雅地关闭你的服务器。
-      f.channel().closeFuture().sync();
-    } finally {
-      // 释放两个线程池
-      acceptGroup.shutdownGracefully();
-      ioGrou.shutdownGracefully();
-    }
-  }
-
-  public static void main(String[] args) throws Exception {
-    new Netty4Demo().run();
-  }
-}
-</code></pre>
-
-<pre><code class="language-sh">~ ᐅ nc localhost 9999
-1
-1
-2
-2
-3
-3
-</code></pre>
-
-<p>代码短了一些， 关键是少了很多 if 判断， 代码可读性更好了。</p>
-
-<p>但是， 可读性提高(抽象)的同时， 又带出了了问题， EventLoop 是什么 , EventloopGroup 是什么？ 为什么要有它们？</p>
-
-<p>这里要解释以上的问题， 要先从 线程模型说起</p>
-
-<h2 id="toc_4"><a href="#%E7%BA%BF%E7%A8%8B%E6%A8%A1%E5%9E%8B" title="线程模型"></a>线程模型</h2>
-
-<p>首先是 单线程模型， 如下图</p>
-
-<p><img src="media/15277861393795/15277864778610.jpg" alt=""/></p>
-
-<p>上面直接用 selector 实现的 echo server 就是单线程模型，<br/>
-还有类似存在 GIL 问题的语言比如 python 的 tornado 也是 单线程模型。</p>
-
-<p>然后是多线程模型</p>
-
-<p><img src="media/15277861393795/15277864864829.jpg" alt=""/></p>
-
-<p>多线程模型的区别就是 让接收连接 和 对连接读写的处理 分别用不同的线程处理。 比如上面的 echo server demo 就可以被称为一个 多线程模型。<br/>
-只不过扩展性差了些。。。</p>
-
-<p>netty 的 EventloopGroup 其实就是线程池， 通过它来配置 接收连接 和 处理连接读写 的线程池大小。</p>
-
-<h2 id="toc_5"><a href="#netty-%E4%B9%8B-EventloopGroup" title="netty 之 EventloopGroup"></a>netty 之 EventloopGroup</h2>
-
-<p><img src="media/15277861393795/15277864950859.jpg" alt=""/></p>
-
-<p>上图就是 EventLoopGroup 的大致模块图。</p>
-
-<p>Boss EventloopGroup 和 worker EventloopGroup 分别 处理 接收连接， 和读写。</p>
-
-<p>而 Eventloop 里则封装了类似上面单线程的 echo server 的模块下面会详细说。</p>
-
-<p>对于开发者来说，主要关心紫色圈出部分。 其余的都已经封装完毕</p>
-
-<p>有几个关键点。</p>
-
-<ol>
-<li> Eventloopsize 建议设置为 2 的次方，dispatch 使用位移，更快。</li>
-<li> 侦听一个端口，只会绑定到 BossEventLoopGroup 中的一个 Eventloop，所以， BossEventLoopGroup 配置多个也无用。</li>
-</ol>
-
-<h2 id="toc_6"><a href="#EventLoop" title="EventLoop"></a>EventLoop</h2>
-
-<p>如果只使用 tcp 和 异步阻塞的话主要关心以下2个 EventLoop (本文也只介绍这2个)</p>
-
-<p>NioEventLoop - 基于java 原生nio</p>
-
-<pre><code>level-triggered （水平触发）
-
-</code></pre>
-
-<p>EpollEventLoop - native jni 直接调用 epoll, only work on linux</p>
-
-<pre><code>edge-triggered （边缘触发）更少的系统调用
-C代码，更少GC，更少synchronized
-暴露了更多的Socket配置参数
-
-</code></pre>
-
-<h3 id="toc_7"><a href="#%E6%B5%81%E7%A8%8B%E5%9B%BE" title="流程图"></a>流程图</h3>
-
-<p><img src="media/15277861393795/15277865072620.jpg" alt=""/></p>
-
-<p>关键点</p>
-
-<ol>
-<li> 整个loop 干的事情就是 <code>select -&gt; processIO -&gt; runAllTask</code></li>
-<li> 这是一个死循环</li>
-<li> 那么这个loop 如何自己优雅退出？ noway，只能通过外部添加 CloseTask， 比如添加到 MpscQueue</li>
-<li> deadline 为 定时任务的触发时间，避免 select 阻塞, 让 定时任务不能及时执行。</li>
-<li> 在select 这一步 解决 epollbug</li>
-</ol>
-
-<p>关于解决 epoll bug的原理是 应当 “阻塞”的 select 变得不再阻塞。<br/>
-所以只需要统计下 select 次数就行了</p>
-
-<p>部分关键代码:</p>
-
-<pre><code class="language-java">for(;;){
-    int selectedKeys = selector.select(timeoutMillis); // select with timeout
-    selectCnt ++;
-    // 我由于 select 阻塞 而等待了 timeoutMillis 毫秒， 说明， 我阻塞了，说明没有bug
-    if (time - TimeUnit.MILLISECONDS.toNanos(timeoutMillis) &gt;= currentTimeNanos) {
-        selectCnt = 1;
-    } else if (SELECTOR_AUTO_REBUILD_THRESHOLD &gt; 0 &amp;&amp;
-            selectCnt &gt;= SELECTOR_AUTO_REBUILD_THRESHOLD) {
-        // 在小于 timeoutMillis 毫秒的时间内 select 的次数超过了 阀值(512) 次
-        rebuildSelector();
-        selector = this.selector;
-
-        selector.selectNow();// Select again
-        selectCnt = 1;
-        break;
-    }
-}
-</code></pre>
-
-<h2 id="toc_8"><a href="#other" title="other"></a>other</h2>
-
-<h3 id="toc_9"><a href="#Selector-wakeup" title="Selector.wakeup()"></a>Selector.wakeup()</h3>
-
-<p>java 的 Selector 在原生的 select api 之上 增加了个 Selector.wakeup()</p>
-
-<p>她的目的是唤醒 阻塞在 <code>select()</code> 的线程, (通过写一个字节)</p>
-
-<p>为什么要唤醒？ 什么时候需要唤醒？</p>
-
-<ol>
-<li>注册了新的 channel 或者事件。</li>
-<li>channel 关闭， 取消注册。</li>
-<li>优先级更高的事件触发（如定时器事件）， 希望及时处理。</li>
-</ol>
-
-<h4 id="toc_10"><a href="#%E5%8E%9F%E7%90%86" title="原理"></a>原理</h4>
-
-<p>Linux上利用pipe调用创建一个管道，Windows上则是一个loopback的tcp连接。这是因为win32的管道无法加入select的fd set，将管道或者TCP连接加入select fd set。</p>
-
-<p>wakeup往管道或者连接写入一个字节，阻塞的select因为有I/O事件就绪，立即返回。可见，wakeup的调用开销不可忽视。</p>
-
-<p>之前看到的 coolshell 也分析过 –&gt; Java NIO类库Selector机制解析（<a href="http://blog.csdn.net/haoel/archive/2008/03/27/2224055.aspx">上</a>，<a href="http://blog.csdn.net/haoel/archive/2008/03/27/2224069.aspx">下</a>，<a href="http://blog.csdn.net/haoel/archive/2008/05/04/2379586.aspx">续</a>）</p>
-
-<h1 id="toc_11"><a href="#reference" title="reference"></a>reference</h1>
-
-<p><a href="http://www.infoq.com/cn/articles/netty-threading-model">http://www.infoq.com/cn/articles/netty-threading-model</a></p>
-
-<p><a href="http://calvin1978.blogcn.com/articles/netty-performance.html">http://calvin1978.blogcn.com/articles/netty-performance.html</a></p>
-
-<p><a href="http://calvin1978.blogcn.com/articles/netty-performance2.html">http://calvin1978.blogcn.com/articles/netty-performance2.html</a></p>
-
-<p><a href="http://tech.meituan.com/nio.html">http://tech.meituan.com/nio.html</a></p>
+<p>服务效应、经济效应、口碑效应不断发酵，经过近两年多的发展，目前这套系统已经是省内知名的物流配送平台，专门服务大宗货运物流。联合政府向全国推广服务的时机终于到来。预计全国 1000 多个物流园区，50 万左右物流代理商，500 万货运车辆、数不清的个人和企业货主都将使用该系统。预估的 RUV 和 PV 是多少呢？无法预估，如果按照全国 32 省来进行一个简单的乘法，是可以得到一个大概的值（50 万 * 32 = 1500 万 +；500 万 * 32 = 1.5 亿 +，已经超过了 JD.com 的平峰流量），但是各省的物流业规模是不一样的，从业者数量也不一样，所以这样的预估并不科学。而且再这样的系统规模下我们应该更过的考虑系统的峰值冗余。</p>
+
+<p>业务功能的情况：为了保证注册货车的有效性，您所在的公司被政府允许访问政府的车辆信息库，在车辆注册的过程中进行车辆信息有效性的验证（第三方系统接口调用，我们并不知道第三方系统是否能够接收一个较高水平的并发量，所以这个问题留给我我们的架构师，我们将在业务层讲解时进行详细的描述）。</p>
+
+<h2 id="toc_5"><a></a>1.5、沉思片刻</h2>
+
+<p>看到这里，我们已经将几个递进的业务场景进行了详细的说明（甚至在后文中我们讨论业务层、业务通信层、数据存储层时所涉及的业务场景也不会有什么大的变化了）。看客们看到这里，可以稍作休息，先想想如果是您，您会如何搭建负载层，甚至整个系统的顶层架构。</p>
+
+<blockquote>
+<p>由于整个系统的性能除了和硬件有关外，业务层的拆分规则，代码质量，缓存技术的使用方式，数据库的优化水平都可能对其产生影响。所以：</p>
+
+<p><strong>我们在讨论负载层的几篇文章中，我们要假设系统架构中各层的设计都没有对系统性能产生瓶颈</strong></p>
+</blockquote>
+
+<p>如果您已经思考好了，那么可以继续看以下的内容。</p>
+
+<h1 id="toc_6"><a></a>2、负载方案构想</h1>
+
+<h2 id="toc_7"><a></a>2.1、解决方案一：独立的 Nginx/Haproxy 方案</h2>
+
+<p>很显然，第一个业务场景下，系统并没有多大的压力就是一套简单业务系统，日访问量也完全没有 “有访问压力” 这样的说法。但是客户有一个要求值得我们关注：要保证系统以后的功能和性能扩展性。为了保证功能和性能扩展性，在系统建立之初就要有一个很好的业务拆分规划，例如我们首先会把用户信息权限子系统和订单系统进行拆分，独立的车辆信息和定位系统可能也需要拆分出来。</p>
+
+<p>这也是我们在系统建立时就要引入负载均衡层的一个重要原因。也是负载均衡层的重要作用之一。如下图所示：</p>
+
+<p><img src="https://img-blog.csdn.net/20150630091204501" alt=""/></p>
+
+<p>可以看出，这时负载均衡层只有一个作用，就是按照设定的访问规则，将访问不同系统的请求转发给对应的系统，并且在出现错误访问的情况下转发到错误提示页面。</p>
+
+<h2 id="toc_8"><a></a>2.2、解决方案二：Nginx/Haproxy + Keepalived 方案</h2>
+
+<p>此后，系统的访问压力进一步加大，系统的稳定性越来越受到我们的关注。所以在单节点处理还能满足业务要求的情况下，我们为负载层（还有各层）引入热备方案，以保证一个节点在崩溃的情况下，另一个节点能够自动接替其工作，为工程师解决问题赢得时间。如下图所示：</p>
+
+<p><img src="https://img-blog.csdn.net/20150630091331246" alt=""/></p>
+
+<h2 id="toc_9"><a></a>2.3、解决方案三：LVS（DR）+ Keepalived+ Nginx 方案</h2>
+
+<p>在第三版本架构方案中，为了保证负载层足够稳定的状态下，适应更大的访问吞吐量还要应付可能的访问洪峰，我们加入了 LVS 技术。LVS 负责第一层负载，然后再将访问请求转发到后端的若干台 Nginx 上。LVS 的 DR 工作模式，只是将请求转到后端，后端的 Nginx 服务器必须有一个外网 IP，在收到请求并处理完成后，Nginx 将直接发送结果到请求方，不会再经 LVS 回发（具体的 LVS 工作原理介绍将在后文中详细介绍）。</p>
+
+<p><img src="https://img-blog.csdn.net/20150630091527570" alt=""/></p>
+
+<p>这里要注意的是：</p>
+
+<ul>
+<li><p>有了上层的 LVS 的支撑 Nginx 就不再需要使用 Keepalived 作为热备方案。因为首先 Nginx 不再是单个节点进行负载处理，而是一个集群多台 Nginx 节点；另外 LVS 对于下后端的服务器自带基于端口的健康检查功能；</p></li>
+<li><p>LVS 是单节点处理的，虽然 LVS 是非常稳定的，但是为了保证 LVS 更稳定的工作，我们还是需要使用 Keepalived 为 LVS 做一个热备节点，以防不时之需。</p></li>
+</ul>
+
+<h2 id="toc_10"><a></a>2.4、解决方案四：DNS 轮询 + LVS（DR）+ Keepalived + Nginx 方案</h2>
+
+<p><img src="https://img-blog.csdn.net/20150627232428537" alt=""/></p>
+
+<p>场景四中，为了满足平均上亿的日 PV 访问，在对业务进行外网暴露的基础上，我们在互联网的最前端做了一个 DNS 轮询。然后将（对用户信息系统）访问压力首先分摊到两个对称 LVS 组上，再由每个组向下继续分拆访问压力。</p>
+
+<p>注意上图的负载层方案的不同：</p>
+
+<ul>
+<li><p>首先我们不在像前面的方案中，使用目录名分割业务系统了，而是直接将业务系统的访问使用不同的二级域名进行拆分。这样的变化有利于每个业务系统都拥有自己独立的负载均衡层。</p></li>
+<li><p>请注意上图中的细节，这个负载均衡层是专门为 “用户信息子系统” 提供负载均衡支撑的，而可能还存在的 “订单子系统”、“车辆信息子系统” 都会有他们独立的负载均衡层。</p></li>
+<li><p>在 LVS 下方的 Nginx 服务可以实现无限制的扩展，同样的就像场景三种所给出的解决方案一样，Nginx 本身不在需要 Keepalived 保持热备，而是全部交由上层的 LVS 进行健康情况检查。而即使有一两台 Nginx 服务器出现故障，对整个负载集群来说问题也不大。</p></li>
+</ul>
+
+<p>方案扩展到了这一步，LVS 层就没有必要再进行扩展新的节点了。为什么呢？根据您的业务选择的合适的 LVS 工作模式，两个 LVS 节点的性能足以支撑地球上的所有核心 WEB 站点。如果您对 LVS 的性能有疑惑，请自行谷歌百度。这里我们提供了一份参考资料：《LVS 性能，转发数据的理论极限》<a href="http://www.zhihu.com/question/21237968">http://www.zhihu.com/question/21237968</a></p>
+
+<h1 id="toc_11"><a></a>3、为什么没有独立的 LVS 方案</h1>
+
+<p>在下一篇文章《架构设计：负载均衡层设计方案（2）——LVS、keepalived、Nginx 安装和核心原理解析》中我们将提到这个问题。实际上通过本篇文章的架构演进分析，一些读者都可以看出端倪。如果用一句话说明其中的原因，那就是 LVS 为了保证其性能对配置性有所牺牲，单独使用的话往往无法满足业务层对负载层灵活分配请求的要求。</p>
+
+<h1 id="toc_12"><a></a>4、说明</h1>
+
+<h2 id="toc_13"><a></a>4.1、术语说明</h2>
+
+<ul>
+<li><p>TPS: 衡量业务层处理性能的重要指标（每秒钟 request / 事务的处理数量）。业务服务处理一个完整的业务过程，并向上层返回处理结果的过程就是一个 request / 事务。那么在一秒钟内整个业务系统能够完成多少个这样的过程，其衡量单位就是 TPS。TPS 不但和系统架构有很大的关系（特别是业务层和业务通信层的架构祥泰），和物理环境、代码质量的关系也非常密切。</p></li>
+<li><p>PV: 网页浏览数是评价网站流量最常用的指标之一，简称为 PV。Page Views 中的 Page 一般是指普通的 html 网页，也包含 php、jsp 等动态产生的 html 内容。注意是完整的显示一个 Page 成为一个 PV。但是一个 PV，一般需要多次 HTTP 请求，以便获取多个静态资源，这是需要注意的。</p></li>
+<li><p>UV: Unique Visitor 一个独立 IP，在一个单位时间内（例如一日 / 一小时）对系统的一个 PV 请求，成为一个 UV（重复的 PV 不在进行计数）。</p></li>
+<li><p>RUV: Repeat User Visitor 一个独立用户，在一个单位时间内（例如一日 / 一小时）对系统的一个 PV 请求，并且重复的访问要进行计数。</p></li>
+</ul>
+
+<h2 id="toc_14"><a></a>4.2、后文介绍</h2>
+
+<p>下篇文章《架构设计：负载均衡层设计方案（2）——LVS、keepalived、Nginx 安装和核心原理解析》中，我们将提到 LVS 的工作原理和 Nginx 中核心负载策略的工作原理（Hash、轮询、权重），以及独立的 LVS、Nginx、keepalived 的安装方式（虽然安装方式在网络上一个搜索就能搜出来一大把，但是很对都是抄袭，且没有经过详细的正误检查，所以我觉得还是需要重新进行一下说明）</p>
+
+<p><link rel="stylesheet" href="https://csdnimg.cn/release/phoenix/template/css/markdown_views-ea0013b516.css"></p>
 
                         
                       </div>
@@ -510,7 +239,7 @@ C代码，更少GC，更少synchronized
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/6/1</span>
+                    <span class="date">2018/6/28</span>
                     <span>posted in&nbsp;</span> 
           				  
           					    <span class="posted-in"><a href='Network.html'>Network</a></span>
@@ -584,9 +313,9 @@ C代码，更少GC，更少synchronized
         
             <a href="Coding.html"><strong>Coding</strong></a>
         
-            <a href="Solution.html"><strong>Solution</strong></a>
+            <a href="Modeling.html"><strong>Modeling</strong></a>
         
-            <a href="Archtect.html"><strong>Archtect</strong></a>
+            <a href="Archtecting.html"><strong>Archtecting</strong></a>
          
         </p>
 
@@ -603,31 +332,31 @@ C代码，更少GC，更少synchronized
 	      
 		      
 			      <li class="post">
-			        <a href="15359384213292.html">Securing Spring Boot with JWTs</a>
+			        <a href="15389311738065.html">重构到更深层的模型</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15358820607055.html">Java 8 Concurrency Tutorial: Atomic Variables and ConcurrentMap</a>
+			        <a href="15389278377243.html">IAM of Google Cloud</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15358774987730.html">Java 8 Concurrency Tutorial: Synchronization and Locks</a>
+			        <a href="15389224951575.html">RSocket, a New Application Network Protocol for Reactive Applications, Announced at SpringOne</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15358757119900.html">Java 8 Concurrency Tutorial: Threads and Executors</a>
+			        <a href="15389220103546.html">如何形象地描述RxJava中的背压和流控机制？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15358756631902.html">Java 8 Stream Tutorial</a>
+			        <a href="15389214670417.html">Modeling Uncertainty with Reactive DDD</a>
 			      </li>
 		     
 		  

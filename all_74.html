@@ -80,9 +80,9 @@
         
             <li><a href="Coding.html">Coding</a></li>
         
-            <li><a href="Solution.html">Solution</a></li>
+            <li><a href="Modeling.html">Modeling</a></li>
         
-            <li><a href="Archtect.html">Archtect</a></li>
+            <li><a href="Archtecting.html">Archtecting</a></li>
          
 
       </ul>
@@ -105,112 +105,277 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15293273764686.html">
+                <a class="clearlink" href="15309739332194.html">
                 
-                  <h1>对高并发流量控制的一点思考</h1>
+                  <h1>Spring WebFlux and rxjava2-jdbc</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="http://blog.51cto.com/zhangfengzhe">zfz_linux_boy</a> 2018-01-30<br/>
-<a href="http://blog.51cto.com/zhangfengzhe/2066683">http://blog.51cto.com/zhangfengzhe/2066683</a></p>
+<p><a href="https://medium.com/netifi/spring-webflux-and-rxjava2-jdbc-83a94e71ba04">https://medium.com/netifi/spring-webflux-and-rxjava2-jdbc-83a94e71ba04</a></p>
 </blockquote>
 
-<h2 id="toc_0">前言</h2>
+<p>Spring <a href="https://docs.spring.io/spring/docs/current/spring-framework-reference/web-reactive.html#spring-webflux">WebFlux</a> is a great way to create a non-blocking REST application. One issue that you run into when start working with WebFlux is JDBC. JDBC is blocking. New school databases like <a href="http://cassandra.apache.org/">Cassandra</a> or <a href="https://www.couchbase.com/">Couchbase</a> have non-blocking drivers. In Couchbase’s case its driver uses <a href="https://github.com/ReactiveX/RxJava">RXJava</a>. NoSQL databases are great, but you can’t always use one for various reasons. There is some effort going into creating asynchronous drivers for databases, as well as Oracle’s effort to create <a href="https://blogs.oracle.com/java/jdbc-next:-a-new-asynchronous-api-for-connecting-to-a-database">ADBA</a>. Unfortunately, these are early days, and if you want to talk to a SQL database on the JVM you’re stuck with a blocking driver. This is a problem when you’re building a non-blocking application with Spring WebFlux . Luckily reactor-core and rxjava2 both implement <a href="http://www.reactive-streams.org/">ReactiveStreams</a>.</p>
 
-<p>在实际项目中，曾经遭遇过线上 5W+QPS 的峰值，也在压测状态下经历过 10W+QPS 的大流量请求，本篇博客的话题主要就是自己对高并发流量控制的一点思考。</p>
+<p>This means that you can use David Moten’s <a href="https://github.com/davidmoten/rxjava2-jdbc">rxjava2-jdbc</a> library. It takes a normal JDBC driver and allows you to interact with it in a way that won’t block your application. It does this by scheduling potentially blocking work on different threads. Additionally, it has DSL that lets you model your SQL statements and results into streams. This makes integrating into your reactive application a snap.</p>
 
-<h2 id="toc_1">应对大流量的一些思路</h2>
+<p>Rxjava2-jdbc also provides non-blocking connection pooling. Normally in a blocking application threads are blocked until a connection is available to make a query. This is a problem for a non-blocking application as you will quickly exhaust all database connection threads and turn your wonderful non-blocking application into a clunky blocking application. In rxjava2-jdbc its connection pool returns a <a href="http://reactivex.io/RxJava/javadoc/io/reactivex/Single.html">Single</a> that is controlled by the connection pool. This means that instead of assigning threads to each query, queries subscribe to the connection pool and receive a connection when one is available — no blocked threads!</p>
 
-<blockquote>
-<p>首先，我们来说一下什么是大流量？</p>
+<p>Nothing is better than an example, so I created one that uses Spring WebFlux, rxjava2-jdbc, and H2. The example is a simple REST application that uses an embedded H2 database. It can be found <a href="https://github.com/netifi/webflux-rxjava2-jdbc-example">here</a>. The example has two objects. The first is an Employee object which contains information about the employee including: first name, last name, and department id. The second object is the Department object, which contains information about different departments. The application has restful endpoints for basic create, read, delete and list operations for the Employee and list operations for Department.</p>
 
-<p>大流量，我们很可能会冒出：TPS（每秒事务量），QPS（每秒请求量），1W+，5W+，10W+，100W+...。其实并没有一个绝对的数字，如果这个量造成了系统的压力，影响了系统的性能，那么这个量就可以称之为大流量了。</p>
+<h4 id="toc_0">Running the Example</h4>
 
-<p>其次，应对大流量的一些常见手段是什么？</p>
+<p>Running the example is simple and can be done with following command:</p>
 
-<p>缓存：说白了，就是让数据尽早进入缓存，离程序近一点，不要大量频繁的访问 DB。</p>
+<pre><code class="language-sh">./gradlew clean run
+</code></pre>
 
-<p>降级：如果不是核心链路，那么就把这个服务降级掉。打个比喻，现在的 APP 都讲究千人千面，拿到数据后，做个性化排序展示，如果在大流量下，这个排序就可以降级掉！</p>
+<p>This command will configure the database and start the WebFlux application using Spring Boot. The example doesn’t need a servlet container to run, and instead uses <a href="http://netty.io">Netty</a> to serve traffic. If you want to test and see if the example is up and running you can run the following curl command:</p>
 
-<p>限流：大家都知道，北京地铁早高峰，地铁站都会做一件事情，就是限流了！想法很直接，就是想在一定时间内把请求限制在一定范围内，保证系统不被冲垮，同时尽可能提升系统的吞吐量。</p>
+<pre><code class="language-sh">curl localhost:8080/employees
+</code></pre>
 
-<p>注意到，有些时候，缓存和降级是解决不了问题的，比如，电商的双十一，用户的购买，下单等行为，是涉及到大量写操作，而且是核心链路，无法降级的，这个时候，限流就比较重要了。</p>
+<p>You should see a JSON employee list if it’s running properly.</p>
 
-<p>那么接下来，我们重点说一下，限流。</p>
-</blockquote>
+<h4 id="toc_1">Routing Requests</h4>
 
-<h2 id="toc_2">限流的常用方式</h2>
+<p>Let’s take look inside the application and see what it’s doing. The first thing to take a look at is the <u>EmployeeRouter</u> class. This class routes incoming HTTP requests to the appropriate handler based on URL and HTTP method.</p>
 
-<blockquote>
-<p>限流的常用处理手段有：计数器、滑动窗口、漏桶、令牌。</p>
-</blockquote>
+<p><a href="https://gist.github.com/robertroeser/e7ce97c4fc7d69de449925e7a3f2b7e1#file-employeerouter-java">EmployeeRouter.java hosted with ❤ by GitHub</a></p>
 
-<p><strong>计数器</strong> </p>
+<pre><code class="language-java">@Configuration
+public class EmployeeRouter {
+  @Bean
+  public RouterFunction&lt;ServerResponse&gt; route(EmployeeHandler handler) {
+    return RouterFunctions.route(
+            GET(&quot;/employees&quot;).and(RequestPredicates.accept(MediaType.APPLICATION_JSON)),
+            handler::getAllEmployees)
+        .andRoute(
+            GET(&quot;/employee/fn/{fn}/ln/{ln}&quot;)
+                .and(RequestPredicates.accept(MediaType.APPLICATION_JSON)),
+            handler::getEmployee)
+        .andRoute(
+            PUT(&quot;/employee&quot;).and(RequestPredicates.accept(MediaType.APPLICATION_JSON)),
+            handler::createNewEmployee)
+        .andRoute(
+            DELETE(&quot;/employee/id/{id}&quot;).and(RequestPredicates.accept(MediaType.APPLICATION_JSON)),
+            handler::deleteEmployee)
+        .andRoute(
+            GET(&quot;/departments&quot;).and(RequestPredicates.accept(MediaType.APPLICATION_JSON)),
+            handler::getAllDepartments);
+  }
+}
+</code></pre>
 
-<blockquote>
-<p>计数器是一种比较简单的限流算法，用途比较广泛，在接口层面，很多地方使用这种方式限流。在一段时间内，进行计数，与阀值进行比较，到了时间临界点，将计数器清 0。</p>
-</blockquote>
+<p>In Spring WebFlux because it’s non-blocking these handlers must return a Mono<T>.</p>
 
-<p><img src="http://i2.51cto.com/images/blog/201801/30/26433210356cfa9d26407d07d0819b14.png?x-oss-process=image/watermark,size_16,text_QDUxQ1RP5Y2a5a6i,color_FFFFFF,t_100,g_se,x_10,y_10,shadow_90,type_ZmFuZ3poZW5naGVpdGk=" alt=""/></p>
+<h4 id="toc_2">Handling Requests</h4>
 
-<p><img src="http://i2.51cto.com/images/blog/201801/30/36bd0e076d23e7bcd10ac0b1ac498bb7.png?x-oss-process=image/watermark,size_16,text_QDUxQ1RP5Y2a5a6i,color_FFFFFF,t_100,g_se,x_10,y_10,shadow_90,type_ZmFuZ3poZW5naGVpdGk=" alt=""/></p>
+<p>The next class to take a look at is the class that is handling the requests, <u>EmployeeHandler</u>.</p>
 
-<blockquote>
-<p>这里需要注意的是，存在一个时间临界点的问题。举个栗子，在 12:01:00 到 12:01:58 这段时间内没有用户请求，然后在 12:01:59 这一瞬时发出 100 个请求，OK，然后在 12:02:00 这一瞬时又发出了 100 个请求。这里你应该能感受到，在这个临界点可能会承受恶意用户的大量请求，甚至超出系统预期的承受。</p>
-</blockquote>
+<p><a href="https://gist.github.com/robertroeser/5d4ab5386e5b2e7301c33551ead8ada8#file-employeehandler-java">EmployeeHandler.java hosted with ❤ by GitHub</a></p>
 
-<p><strong>滑动窗口</strong> </p>
+<pre><code class="language-java">@Component
+public class EmployeeHandler {
+  private final EmployeeRepository repository;
 
-<blockquote>
-<p>由于计数器存在临界点缺陷，后来出现了滑动窗口算法来解决。</p>
+  public EmployeeHandler(EmployeeRepository repository) {
+    this.repository = repository;
+  }
 
-<p><img src="http://i2.51cto.com/images/blog/201801/30/292f2358a31662de2846a122e25bb005.png?x-oss-process=image/watermark,size_16,text_QDUxQ1RP5Y2a5a6i,color_FFFFFF,t_100,g_se,x_10,y_10,shadow_90,type_ZmFuZ3poZW5naGVpdGk=" alt=""/></p>
+  public Mono&lt;ServerResponse&gt; getAllEmployees(ServerRequest request) {
+    Flux&lt;Employee&gt; employees = repository.getAllEmployees();
+    return ServerResponse.ok()
+        .contentType(MediaType.APPLICATION_JSON)
+        .body(employees, Employee.class);
+  }
 
-<p>滑动窗口的意思是说把固定时间片，进行划分，并且随着时间的流逝，进行移动，这样就巧妙的避开了计数器的临界点问题。也就是说这些固定数量的可以移动的格子，将会进行计数判断阀值，因此格子的数量影响着滑动窗口算法的精度。</p>
-</blockquote>
+  public Mono&lt;ServerResponse&gt; getEmployee(ServerRequest request) {
+    String firstName = request.pathVariable(&quot;fn&quot;);
+    String lastName = request.pathVariable(&quot;ln&quot;);
+    Mono&lt;Employee&gt; employee = repository.getEmployee(firstName, lastName);
 
-<p><strong>漏桶</strong> </p>
+    return ServerResponse.ok()
+        .contentType(MediaType.APPLICATION_JSON)
+        .body(employee, Employee.class);
+  }
 
-<blockquote>
-<p>虽然滑动窗口有效避免了时间临界点的问题，但是依然有时间片的概念，而漏桶算法在这方面比滑动窗口而言，更加先进。</p>
+  public Mono&lt;ServerResponse&gt; createNewEmployee(ServerRequest request) {
+    Mono&lt;Employee&gt; employeeMono = request.bodyToMono(Employee.class);
+    Mono&lt;Employee&gt; employee = repository.createNewEmployee(employeeMono);
 
-<p>有一个固定的桶，进水的速率是不确定的，但是出水的速率是恒定的，当水满的时候是会溢出的。</p>
-</blockquote>
+    return ServerResponse.ok()
+        .contentType(MediaType.APPLICATION_JSON)
+        .body(employee, Employee.class);
+  }
 
-<p><img src="http://i2.51cto.com/images/blog/201801/30/0bdc37469876669d8ff3813da367705d.png?x-oss-process=image/watermark,size_16,text_QDUxQ1RP5Y2a5a6i,color_FFFFFF,t_100,g_se,x_10,y_10,shadow_90,type_ZmFuZ3poZW5naGVpdGk=" alt=""/></p>
+  public Mono&lt;ServerResponse&gt; deleteEmployee(ServerRequest request) {
+    String id = request.pathVariable(&quot;id&quot;);
+    Mono&lt;Void&gt; employee = repository.deleteEmployee(id);
 
-<p><img src="http://i2.51cto.com/images/blog/201801/30/244ab47205fd764fd74e34f4f0da1cb8.png?x-oss-process=image/watermark,size_16,text_QDUxQ1RP5Y2a5a6i,color_FFFFFF,t_100,g_se,x_10,y_10,shadow_90,type_ZmFuZ3poZW5naGVpdGk=" alt=""/></p>
+    return ServerResponse.ok().contentType(MediaType.APPLICATION_JSON).build(employee);
+  }
 
-<p><strong>令牌桶</strong> </p>
+  public Mono&lt;ServerResponse&gt; getAllDepartments(ServerRequest request) {
+    Flux&lt;Department&gt; allDepartments = repository.getAllDepartments();
+    return ServerResponse.ok()
+        .contentType(MediaType.APPLICATION_JSON)
+        .body(allDepartments, Department.class);
+  }
+}
+</code></pre>
 
-<blockquote>
-<p>注意到，漏桶的出水速度是恒定的，那么意味着如果瞬时大流量的话，将有大部分请求被丢弃掉（也就是所谓的溢出）。为了解决这个问题，令牌桶进行了算法改进。</p>
+<p>This is the class that is responsible for handling incoming requests. Each handle method returns a <u>Mono<ServerResponse></u>. The ServerResponse object has a builder that is used to create the response, and has methods that take Fluxes and Monos for responses. The <u>ServerResponse</u> object will also automatically serialize your results to JSON. Additionally, if you return a stream of responses, WebFlux will automatically turn the response into a JSON list. You can can see this in the <u>getAllEmployees</u> and <u>getAllDepoartment</u> methods. A method to look closer at is the <u>deleteEmployee</u> method. The <u>deleteEmployee</u> method is a little different then the other methods. You’ll notice that most methods use the <u>body</u> method to create a response. The <u>deleteEmployee</u> doesn’t have a body so it uses the <u>build</u> method instead which takes a Mono<Void>.</p>
 
-<p><img src="http://i2.51cto.com/images/blog/201801/30/35a6b4a0842d6ac0e5f5b14b7c64189d.png?x-oss-process=image/watermark,size_16,text_QDUxQ1RP5Y2a5a6i,color_FFFFFF,t_100,g_se,x_10,y_10,shadow_90,type_ZmFuZ3poZW5naGVpdGk=" alt=""/></p>
+<h4 id="toc_3">Interacting with the Database</h4>
 
-<p>生成令牌的速度是恒定的，而请求去拿令牌是没有速度限制的。这意味，面对瞬时大流量，该算法可以在短时间内请求拿到大量令牌，而且拿令牌的过程并不是消耗很大的事情。（有一点生产令牌，消费令牌的意味）</p>
+<p>To create our responses we need to get the information from our database. The object that takes care of that is the the <u>EmployeeRepository</u> which is being injected into the handler. This is normally where things start to fall apart because you’re accessing a blocking database. In our case though we’re using rxjava2-jdbc and it’s no longer an issue. While this does turn a JDBC driver into a non-blocking driver and deals with the difficulties of scheduling potentially blocking work off the event loop, this isn’t as efficient as a purely non-blocking approach. However, it is sufficient for all but the highest throughput applications. Lets take a look at the <u>EmployeeRepository</u> class:</p>
 
-<p>不论是对于令牌桶拿不到令牌被拒绝，还是漏桶的水满了溢出，都是为了保证大部分流量的正常使用，而牺牲掉了少部分流量，这是合理的，如果因为极少部分流量需要保证的话，那么就可能导致系统达到极限而挂掉，得不偿失。</p>
-</blockquote>
+<p><a href="https://gist.github.com/robertroeser/580116df0045187e4850bd4016704ce1#file-employeerepository-java">EmployeeRepository.java hosted with ❤ by GitHub</a></p>
 
-<p><img src="http://i2.51cto.com/images/blog/201801/30/6b63bf4412c0d412095131091144e357.png?x-oss-process=image/watermark,size_16,text_QDUxQ1RP5Y2a5a6i,color_FFFFFF,t_100,g_se,x_10,y_10,shadow_90,type_ZmFuZ3poZW5naGVpdGk=" alt=""/></p>
+<pre><code class="language-java">@Component
+public class EmployeeRepository {
+  private Database db;
 
-<h2 id="toc_3">限流神器：Guava RateLimiter</h2>
+  public EmployeeRepository() throws Exception {
+    Connection connection = DriverManager.getConnection(&quot;jdbc:h2:./build/mydatabase&quot;, &quot;sa&quot;, &quot;sa&quot;);
+    NonBlockingConnectionPool pool =
+        Pools.nonBlocking()
+            .maxPoolSize(Runtime.getRuntime().availableProcessors() * 5)
+            .connectionProvider(ConnectionProvider.from(connection))
+            .build();
 
-<blockquote>
-<p>Guava 不仅仅在集合、缓存、异步回调等方面功能强大，而且还给我们封装好了限流的 API！</p>
+    this.db = Database.from(pool);
+  }
 
-<p>Guava RateLimiter 基于令牌桶算法，我们只需要告诉 RateLimiter 系统限制的 QPS 是多少，那么 RateLimiter 将以这个速度往桶里面放入令牌，然后请求的时候，通过 tryAcquire() 方法向 RateLimiter 获取许可（令牌）。</p>
-</blockquote>
+  Flux&lt;Employee&gt; getAllEmployees() {
+    String sql = &quot;SELECT * FROM employee e JOIN department d ON e.department_id = d.department_id&quot;;
 
-<p><img src="http://i2.51cto.com/images/blog/201801/30/57203303c36a7c5fb5a0974ba98116d7.png?x-oss-process=image/watermark,size_16,text_QDUxQ1RP5Y2a5a6i,color_FFFFFF,t_100,g_se,x_10,y_10,shadow_90,type_ZmFuZ3poZW5naGVpdGk=" alt=""/></p>
+    Flowable&lt;Employee&gt; employeeFlowable =
+        db.select(sql)
+            .get(
+                rs -&gt; {
+                  Employee employee = new Employee();
+                  employee.setId(rs.getInt(&quot;employee_id&quot;));
+                  employee.setFirstName(rs.getString(&quot;employee_firstname&quot;));
+                  employee.setLastName(rs.getString(&quot;employee_lastname&quot;));
+                  employee.setDepartment(rs.getString(&quot;department_name&quot;));
 
-<h2 id="toc_4">分布式场景下的限流</h2>
+                  return employee;
+                });
 
-<p><strong>上面所说的限流的一些方式，都是针对单机而言的，其实大部分的场景，单机的限流已经足够了。分布式下限流的手段常常需要多种技术相结合，比如 Nginx+Lua，Redis+Lua 等去做。本文主要讨论的是单机的限流，这里就不在详细介绍分布式场景下的限流了。</strong> <br/>
-<strong>一句话，让系统的流量，先到队列中排队、限流，不要让流量直接打到系统上。</strong></p>
+    return Flux.from(employeeFlowable);
+  }
+
+  Mono&lt;Employee&gt; getEmployee(String firstName, String lastName) {
+    String sql =
+        &quot;SELECT employee_id, employee_firstname, employee_lastname, department_name FROM employee e &quot;
+            + &quot;JOIN department d ON e.department_id = d.department_id &quot;
+            + &quot;WHERE employee_firstname = ? AND &quot;
+            + &quot;employee_lastname = ?&quot;;
+
+    Flowable&lt;Employee&gt; employeeFlowable =
+        db.select(sql)
+            .parameters(firstName, lastName)
+            .get(
+                rs -&gt; {
+                  Employee employee = new Employee();
+                  employee.setId(rs.getInt(&quot;employee_id&quot;));
+                  employee.setFirstName(rs.getString(&quot;employee_firstname&quot;));
+                  employee.setLastName(rs.getString(&quot;employee_lastname&quot;));
+                  employee.setDepartment(rs.getString(&quot;department_name&quot;));
+
+                  return employee;
+                });
+
+    return Mono.from(employeeFlowable);
+  }
+
+  Mono&lt;Employee&gt; createNewEmployee(Mono&lt;Employee&gt; employeeMono) {
+
+    String createSql =
+        &quot;INSERT INTO employee (employee_firstname, employee_lastname, department_id) VALUES (?, ?, ?)&quot;;
+    String selectDepartmentId = &quot;SELECT department_id from department where department_name = ?&quot;;
+    String selectSql =
+        &quot;SELECT employee_id, employee_firstname, employee_lastname, department_name FROM employee e &quot;
+            + &quot;JOIN department d ON e.department_id = d.department_id &quot;
+            + &quot;WHERE employee_id = ?&quot;;
+
+    return employeeMono.flatMap(
+        newEmployee -&gt; {
+          Flowable&lt;Integer&gt; employeeIds =
+              db.select(selectDepartmentId)
+                  .parameters(newEmployee.getDepartment())
+                  .getAs(Integer.class)
+                  .flatMap(
+                      departmentId -&gt;
+                          db.update(createSql)
+                              .parameters(
+                                  newEmployee.getFirstName(),
+                                  newEmployee.getLastName(),
+                                  departmentId)
+                              .returnGeneratedKeys()
+                              .getAs(Integer.class));
+
+          Flowable&lt;Employee&gt; employeeFlowable =
+              db.select(selectSql)
+                  .parameterStream(employeeIds)
+                  .get(
+                      rs -&gt; {
+                        Employee employee = new Employee();
+                        employee.setId(rs.getInt(&quot;employee_id&quot;));
+                        employee.setFirstName(rs.getString(&quot;employee_firstname&quot;));
+                        employee.setLastName(rs.getString(&quot;employee_lastname&quot;));
+                        employee.setDepartment(rs.getString(&quot;department_name&quot;));
+
+                        return employee;
+                      });
+
+          return Mono.from(employeeFlowable);
+        });
+  }
+
+  Mono&lt;Void&gt; deleteEmployee(String id) {
+    String sql = &quot;DELETE FROM employee WHERE employee_id = ?&quot;;
+    Flowable&lt;Integer&gt; counts = db.update(sql).parameter(id).counts();
+    return Flux.from(counts).then();
+  }
+
+  Flux&lt;Department&gt; getAllDepartments() {
+    return Flux.from(db.select(Department.class).get());
+  }
+}
+</code></pre>
+
+<p>The first thing to look at here is the constructor. The main class in rxjava2-jdbc is the Database class. This is what you use to interact with the database and run queries. Before you can do that you need to create a connection to the database. For our example, we’re creating a connection to an H2 database. Many databases allow you to pass in user credentials and other information in there connection string. If they do then you can use just create a database like so:</p>
+
+<pre><code class="language-java">Database db = Database.from(“&lt;connection_string”&gt;, &lt;pool_size&gt;);
+</code></pre>
+
+<p>However, H2 doesn’t allow you to do this, so you need to create a Connection object in order to pass in credentials. You then have to use the Pools builder to create a pool. Once you’ve created the your pool you can create the database object.</p>
+
+<p>The great thing about rxjava2-jdbc is that any JDBC driver can used. You can switch any standard JDBC database like Oracle, SQL Server, DB2, etc.</p>
+
+<p>I’m not going to go into too much detail about how rxjava2-jdbc works here because David Moten’s github page has great <a href="https://github.com/davidmoten/rxjava2-jdbc/blob/master/README.adoc">documentation</a>.</p>
+
+<p>I will point out a few things though about using Spring WebFlux and rxjava2-jdbc together. The good news is they both implement <a href="http://www.reactive-streams.org/">ReactiveStreams</a> so it’s transparent for them to interoperate. The way to do this with reactor-core is to use the <u>Flux.from</u> or <u>Mono.from</u> methods. These can take any publisher. It is important to note that in the Mono version it can only emit one item or it will throw an exception. Another thing to take a look at is the <u>deleteEmployee</u> method. This method returns a Mono<Void> which is a special convention in reactor-core. This roughly equivalent to a Completable in rxjava2. To mimic this behavior in reactor-core, call the <u>then</u> method on a Flux or a Mono. This will ignore all elements that are emitted from the stream, and either complete or emit an exception.</p>
+
+<h4 id="toc_4">Write some Code</h4>
+
+<p>To really get a feel for how this works, the next step is to write some code. One idea I would suggest are to port the sample app to the database of your choice. Another idea is to create endpoints for creating a new department and deleting one. You can use the <u>createNewEmployee</u> and <u>deleteEmployee</u> methods as references.</p>
+
+<h4 id="toc_5">Conclusion</h4>
+
+<p>The reality is that many applications today use SQL databases, and reactive application developers did not have an easy way to access them without turning their non-blocking application into a blocking application. Hopefully in the future there will be great solutions around truly non-blocking JDBC drivers. Until that time, I hope you can see with this blog post, that while not perfect, there is an effective solution.</p>
+
+<ul>
+<li>  <a href="https://medium.com/tag/java?source=post">Java</a></li>
+<li>  <a href="https://medium.com/tag/rxjava?source=post">Rxjava</a></li>
+<li>  <a href="https://medium.com/tag/spring?source=post">Spring</a></li>
+<li>  <a href="https://medium.com/tag/reactive?source=post">Reactive</a></li>
+<li>  <a href="https://medium.com/tag/rest?source=post">Rest</a></li>
+</ul>
 
                         
                       </div>
@@ -219,10 +384,10 @@
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/6/18</span>
+                    <span class="date">2018/7/7</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Cocurrency.html'>Cocurrency</a></span>
+          					    <span class="posted-in"><a href='Java.html'>Java</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -293,9 +458,9 @@
         
             <a href="Coding.html"><strong>Coding</strong></a>
         
-            <a href="Solution.html"><strong>Solution</strong></a>
+            <a href="Modeling.html"><strong>Modeling</strong></a>
         
-            <a href="Archtect.html"><strong>Archtect</strong></a>
+            <a href="Archtecting.html"><strong>Archtecting</strong></a>
          
         </p>
 
@@ -312,31 +477,31 @@
 	      
 		      
 			      <li class="post">
-			        <a href="15359384213292.html">Securing Spring Boot with JWTs</a>
+			        <a href="15389311738065.html">重构到更深层的模型</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15358820607055.html">Java 8 Concurrency Tutorial: Atomic Variables and ConcurrentMap</a>
+			        <a href="15389278377243.html">IAM of Google Cloud</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15358774987730.html">Java 8 Concurrency Tutorial: Synchronization and Locks</a>
+			        <a href="15389224951575.html">RSocket, a New Application Network Protocol for Reactive Applications, Announced at SpringOne</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15358757119900.html">Java 8 Concurrency Tutorial: Threads and Executors</a>
+			        <a href="15389220103546.html">如何形象地描述RxJava中的背压和流控机制？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15358756631902.html">Java 8 Stream Tutorial</a>
+			        <a href="15389214670417.html">Modeling Uncertainty with Reactive DDD</a>
 			      </li>
 		     
 		  

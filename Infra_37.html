@@ -80,9 +80,9 @@
         
             <li><a href="Coding.html">Coding</a></li>
         
-            <li><a href="Solution.html">Solution</a></li>
+            <li><a href="Modeling.html">Modeling</a></li>
         
-            <li><a href="Archtect.html">Archtect</a></li>
+            <li><a href="Archtecting.html">Archtecting</a></li>
          
 
       </ul>
@@ -105,284 +105,403 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15274384746652.html">
+                <a class="clearlink" href="15277861393795.html">
                 
-                  <h1>基于 Docker 搭建 MySQL 主从复制 - 秋田君</h1>
+                  <h1>深入浅出Netty - EventLoop, EventLoopGroup</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://my.oschina.net/u/3773384/blog/1810111">原文地址</a></p>
+<p>DECEMBER 24 2016 <a href="https://caorong.github.io/2016/12/24/head-first-netty-1/">原文地址</a></p>
 </blockquote>
 
-<pre><code>本篇博文相对简单，因为是初次使用 Docker，MySQL 的主从复制之前也在 Centos 环境下搭建过，但是也忘的也差不多了，因此本次尝试在 Docker 中搭建。根据网上教程走还是踩了一些坑，不过所幸最终搭建成功，因此记录下来，避免以后踩了重复的坑。
+<p>近年来netty 十分流行，至于为何那么流行，因为它性能好，能更有效的利用系统资源。</p>
+
+<p>但是， netty 很容易上手， 但是很多时候却无法理解设计的初衷， 比如为什么会有 EventLoop 这个东东， 本文从历史阐述原因。</p>
+
+<h2 id="toc_0"><a href="#%E5%90%8C%E6%AD%A5%E7%BD%91%E7%BB%9C%E6%A8%A1%E5%9E%8B" title="同步网络模型"></a>同步网络模型</h2>
+
+<p>首先说说同步模型， 也就是常说的 bio， bio 是基于 stream 的。 网上找到一个图如下</p>
+
+<p><img src="media/15277861393795/15277864485883.jpg" alt=""/></p>
+
+<p>从图可知，对于bio 来说，我的程序何时处理完需要靠 看 datasource 何时发完数据。</p>
+
+<p>这是非常坑爹的， 举个例子， 如果我的服务是一个多线程的 bio 的服务(比如 10个线程)，然后某个黑客建10个 telnet 连上你的server， holding住 不发数据，那么你的服务就down了。</p>
+
+<p>那么如何解决这种问题？ 如果 waiting client 发的数据不阻塞 worker 线程不就行了？</p>
+
+<p>于是出现了 异步网络模型</p>
+
+<h2 id="toc_1"><a href="#%E5%BC%82%E6%AD%A5%E7%BD%91%E7%BB%9C%E6%A8%A1%E5%9E%8B" title="异步网络模型"></a>异步网络模型</h2>
+
+<p>异步网络模型， 也就是非阻塞IO， 在java 中由于 jdk1.4 之后才被引入所以被称之为 Nio (New IO)</p>
+
+<p>网上同样找到个图</p>
+
+<p><img src="media/15277861393795/15277864586815.jpg" alt=""/></p>
+
+<p>由图可知， 实现异步的原理是 系统帮你给每一个连接(channel) 都维护了一个 <code>buffer</code>。<br/>
+将 client 发来的数据暂存到 <code>buffer</code> 中, 待 java 进程需要的时候一次性做一次内存拷贝，在 java 进程中使用。</p>
+
+<p>当然， 写出也是同样的 写到 <code>buffer</code> 中，当 <code>buffer</code> 满 或者 手动调用 <code>flush</code> 写出去。</p>
+
+<p>下面有个简单的 非阻塞 echo server demo， 当读到 q 时关闭连接。</p>
+
+<pre><code class="language-java">ServerSocketChannel serverSocketChannel = ServerSocketChannel.open();
+
+serverSocketChannel.socket().bind(new InetSocketAddress(9999));
+serverSocketChannel.configureBlocking(false);
+
+final List&lt;SocketChannel&gt; socketChannelList = Lists.newLinkedList();
+
+new Thread(new Runnable() {
+  @Override
+  public void run() {
+    while (true) {
+      // 处理 每个连接是否可读, 这里的逻辑是 读4个字节后切断连接
+      for (SocketChannel socketChannel : Lists.newArrayList(socketChannelList)) {
+        try {
+          ByteBuffer buf = ByteBuffer.allocate(4);
+          int readed = socketChannel.read(buf);
+          System.out.println(readed);
+          System.out.println(Arrays.toString(buf.array()));
+          if (readed &gt; 0 &amp;&amp; buf.array()[0] == &#39;q&#39;) {
+            // close
+            socketChannel.close();
+            // remove from list
+            socketChannelList.remove(socketChannel);
+          }
+        } catch (Throwable e) {
+          e.printStackTrace();
+        }
+      }
+      try {
+        Thread.sleep(100);
+      } catch (InterruptedException e) {
+      }
+    }
+  }
+}, &quot;server-handler-thread&quot;).start();
+
+// 等待新连接连进来
+while (true) {
+  SocketChannel socketChannel = serverSocketChannel.accept();
+  if (socketChannel != null) {
+    socketChannelList.add(socketChannel);
+  }
+  Thread.sleep(1000);
+}
 </code></pre>
 
-<h2 id="toc_0">搭建环境</h2>
+<p>简单分析下上面的代码，</p>
 
-<p>Centos 7.2 64 位</p>
+<ol>
+<li> 由于 accept 是非阻塞的， 所以我们要一直轮询 判断是否有新连接进来。</li>
+<li> 连接进来后，由于我们不知道 client 何时能发完数据， 所以我们维护了一个列表 <code>socketChannelList</code> 定期去轮询列表，看是否有数据可读。</li>
+</ol>
 
-<p>MySQL 5.7.13</p>
+<p>但是后来大家发现， 每当用 nonblocking socket 的时候都要做类似的操作， 于是想把它们提出来，提取成一个通用模块， 让代码实现更容易，</p>
 
-<p>Docker 1.13.1</p>
+<p>在 <a href="https://en.wikipedia.org/wiki/Berkeley_sockets">berkeley socket</a> 中这个模块被称为 select, poll, epoll. (后面2个是加强版)</p>
 
-<p>接下来，我们将会在一台服务器上安装 docker，并使用 docker 运行三个 MySQL 容器，分别为一主两从。</p>
+<p>而在java中， java 在他们之上抽象成 Selector</p>
 
-<h2 id="toc_1">安装 docker</h2>
+<h2 id="toc_2"><a href="#Selector-select-poll-epoll" title="Selector(select, poll, epoll)"></a>Selector(select, poll, epoll)</h2>
 
-<p>执行命令</p>
+<p>既然 select 是一个使用 nonblocking io 的通用封装， 那么在 linux 中， 为什么要有 select, poll, epoll 这么多的选择呢？</p>
 
-<pre><code>[root@VM_0_17_centos ~]# yum install docker
+<p>我猜测，最早其实只有 select， 然后由于linux 是一个开源， 所以， 后来别人实现了性能更好的 poll, 再之后 epoll 也是这样。</p>
+
+<p>但是, 由于它们都在 linux 2.6.12 之前就已经被实现了， 在github上 都看不到具体提交历史了。。</p>
+
+<p><a href="https://github.com/torvalds/linux/commits/a379f71a30dddbd2e7393624e455ce53c87965d1/fs/select.c?after=Y3Vyc29yOqN59xow3dvS5zk2JORVzlPIeWXRKzY5">select.c</a>,<br/>
+<a href="https://github.com/torvalds/linux/commits/5924bbecd0267d87c24110cbe2041b5075173a25/include/linux/poll.h">poll.h</a>,<br/>
+<a href="https://github.com/torvalds/linux/commits/5924bbecd0267d87c24110cbe2041b5075173a25/include/linux/eventpoll.h">eventpoll.h</a></p>
+
+<p>我们再来看看 使用了 selector 后的非阻塞 IO 的编码, 同样实现一个 echo server</p>
+
+<pre><code class="language-java">Selector selector = Selector.open();
+ServerSocketChannel servChannel = ServerSocketChannel.open();
+servChannel.configureBlocking(false);
+// 建立一个server socket，到本地端口9999， backlog 1024
+servChannel.socket().setReuseAddress(true);
+servChannel.socket().bind(new InetSocketAddress(9999), 1024);
+// selector 关心 server 上的 ACCEPT 事件
+servChannel.register(selector, SelectionKey.OP_ACCEPT); 
+
+while (start) {
+  try {
+    // 阻塞等待 直到有IO事件可读(系统IO事件队列不为空)
+    selector.select();
+    // 获取 事件 以及 事件所对应的 channel (client server 的连接)
+    Set&lt;SelectionKey&gt; selectedKeys = selector.selectedKeys();
+    Iterator&lt;SelectionKey&gt; it = selectedKeys.iterator();
+    SelectionKey key = null;
+    while (it.hasNext()) {
+      key = it.next();
+      it.remove();
+      try {
+        if (key.isValid()) {
+          // OP_ACCEPT 事件 表示有个新client 完成了三次握手。连接上了本服务器
+          if (key.isAcceptable()) {
+            // Accept the new connection
+            ServerSocketChannel ssc = (ServerSocketChannel) key.channel();
+            SocketChannel sc = ssc.accept();
+            sc.configureBlocking(false);
+            // 将该连接的可读事件 注册到 selector， 到时候他发起请求的时候，我会收到新事件
+            sc.register(selector, SelectionKey.OP_READ);
+          }
+          // OP_READ 事件 说明 client 发的数据已经发到了系统缓冲区，server 可以去读了。
+          if (key.isReadable()) {
+            SocketChannel sc = (SocketChannel) key.channel();
+            // 分配用户台空间, 将数据从内核态 拷贝到 用户态
+            ByteBuffer readBuffer = ByteBuffer.allocate(4);
+            int readBytes = sc.read(readBuffer);
+            if (readBytes &gt; 0) {
+              // 切换读写模式 详见下面的图, 表示自己目前可以读 [position, limit]
+              readBuffer.flip();
+              byte[] bytes = new byte[readBuffer.remaining()];
+              // 将buffer 数据拷贝到 bytes 数组
+              // 如果这里只收到一半的数据怎么办？
+              String body = new String(bytes, &quot;UTF-8&quot;);
+              System.out.println(body);
+              // 将 read的数据 写回去
+              ByteBuffer writeBuffer = ByteBuffer.allocate(bytes.length);
+              writeBuffer.put(bytes);
+              writeBuffer.flip();
+              sc.write(writeBuffer);
+            } else if (readBytes &lt; 0) {
+              // 对端链路关闭
+              key.cancel();
+              sc.close();
+            } else
+              ;
+          }
+        }
+      } catch (Exception e) {
+        if (key != null) {
+          key.cancel();
+          if (key.channel() != null)
+            key.channel().close();
+        }
+      }
+    }
+  } catch (Exception e) {
+    throw e;
+  }
+}
 </code></pre>
 
-<p>如果有提示，一路 y 下去</p>
-
-<p>安装成功启动 Docker 后，查看版本</p>
-
-<pre><code>[root@VM_0_17_centos ~]# docker version
-Client:
- Version:         1.13.1
- API version:     1.26
- Package version: &lt;unknown&gt;
- Go version:      go1.8.3
- Git commit:      774336d/1.13.1
- Built:           Wed Mar  7 17:06:16 2018
- OS/Arch:         linux/amd64
-
-Server:
- Version:         1.13.1
- API version:     1.26 (minimum version 1.12)
- Package version: &lt;unknown&gt;
- Go version:      go1.8.3
- Git commit:      774336d/1.13.1
- Built:           Wed Mar  7 17:06:16 2018
- OS/Arch:         linux/amd64
- Experimental:    false
+<pre><code class="language-sh">~ ᐅ nc localhost 9999
+1
+1
+2
+2
 </code></pre>
 
-<p>出现版本信息，则安装成功</p>
+<p>但是， 很奇怪的是，代码更长了。。。</p>
 
-<h2 id="toc_2">启动 Docker</h2>
+<p>因为其实真正的 selector 将所有的socket 的时间都封装进去了。</p>
 
-<p>启动 Docker 并设置为开机自启动</p>
+<p>带来的结果是， java 层的代码 只要一个线程就能处理所有了，(我之前的实现需要2个线程)。</p>
 
-<pre><code>[root@VM_0_17_centos ~]# systemctl  start docker.service
-[root@VM_0_17_centos ~]# systemctl  enable docker.service
+<p>当然还有个问题是， 及时用了 selector， 我们依然认为代码可读性非常差， 代码容易写错。</p>
+
+<p>于是， netty 登场了， 他在 selector 之上， 又封装了一层， 让我们先看下 同样实现 netty 的代码。</p>
+
+<h2 id="toc_3"><a href="#netty-echo-server" title="netty echo server"></a>netty echo server</h2>
+
+<pre><code class="language-java">public class Netty4Demo {
+  public class EchoHandler extends SimpleChannelInboundHandler {
+    @Override
+    public void channelRead0(ChannelHandlerContext ctx, Object msg) throws Exception {
+      // 为什么 这里可以强转String？
+      String in = (String) msg;
+      System.out.print(in);
+      // 将数据写回
+      ctx.writeAndFlush(in);
+    }
+  }
+
+  public void run() throws Exception {
+    EventLoopGroup acceptGroup = new NioEventLoopGroup(1); // 指定 Acceptor 线程池大小
+    EventLoopGroup ioGroup = new NioEventLoopGroup(1); // 指定 NIO线程池大小
+    try {
+      ServerBootstrap b = new ServerBootstrap(); // 创建 ServerBootstrap 对象，他是Netty 用于启动NIO 服务端的辅助启动类，目的是降低服务端的开发复杂度。
+      b.group(acceptGroup, ioGrou).channel(
+          NioServerSocketChannel.class) // 指定使用 java 的NioServerSocketChannel
+          .childHandler(new ChannelInitializer&lt;SocketChannel&gt;() { // 创建 IOThread 的 pipeline
+            @Override
+            public void initChannel(SocketChannel ch) throws Exception {
+              ch.pipeline()
+                .addLast(new StringDecoder())
+                .addLast(new StringEncoder()); // 添加echo Handler
+                .addLast(new EchoHandler())
+            }
+          }).option(ChannelOption.SO_BACKLOG, 128)          // server socket config backlog 设置为 128
+          .childOption(ChannelOption.SO_KEEPALIVE, true); // client socket config 设置 keepalive = true
+      // 绑定端口，开始接收进来的连接
+      ChannelFuture f = b.bind(9999).sync(); // 同步等待绑定本地端口
+
+      // 等待服务器  socket 关闭 。
+      // 在这个例子中，这不会发生，但你可以优雅地关闭你的服务器。
+      f.channel().closeFuture().sync();
+    } finally {
+      // 释放两个线程池
+      acceptGroup.shutdownGracefully();
+      ioGrou.shutdownGracefully();
+    }
+  }
+
+  public static void main(String[] args) throws Exception {
+    new Netty4Demo().run();
+  }
+}
 </code></pre>
 
-<h2 id="toc_3">安装 MySQL</h2>
-
-<p>使用 Docker 拉取 MySQL 镜像</p>
-
-<pre><code>[root@VM_0_17_centos ~]# docker pull mysql:5.7.13
+<pre><code class="language-sh">~ ᐅ nc localhost 9999
+1
+1
+2
+2
+3
+3
 </code></pre>
 
-<h2 id="toc_4">运行主容器</h2>
+<p>代码短了一些， 关键是少了很多 if 判断， 代码可读性更好了。</p>
 
-<pre><code>[root@VM_0_17_centos ~]# docker run --name master -p 3306:3306 -e MYSQL_ROOT_PASSWORD=root -d mysql:5.7.13
+<p>但是， 可读性提高(抽象)的同时， 又带出了了问题， EventLoop 是什么 , EventloopGroup 是什么？ 为什么要有它们？</p>
 
-</code></pre>
+<p>这里要解释以上的问题， 要先从 线程模型说起</p>
 
-<p>--name 为容器指定名称，这里是 master</p>
+<h2 id="toc_4"><a href="#%E7%BA%BF%E7%A8%8B%E6%A8%A1%E5%9E%8B" title="线程模型"></a>线程模型</h2>
 
-<p>-p 将容器的指定端口映射到主机的指定端口，这里是将容器的 3306 端口映射到主机的 3306 端口</p>
+<p>首先是 单线程模型， 如下图</p>
 
-<p>-e 设置环境变量，这里是指定 root 账号的密码为 root</p>
+<p><img src="media/15277861393795/15277864778610.jpg" alt=""/></p>
 
-<p>-d 后台运行容器，并返回容器 ID</p>
+<p>上面直接用 selector 实现的 echo server 就是单线程模型，<br/>
+还有类似存在 GIL 问题的语言比如 python 的 tornado 也是 单线程模型。</p>
 
-<p>mysql:5.7.13 指定运行的 mysql 版本</p>
+<p>然后是多线程模型</p>
 
-<h2 id="toc_5">检验是否启动成功</h2>
+<p><img src="media/15277861393795/15277864864829.jpg" alt=""/></p>
 
-<p>docker ps -a 显示所有的容器，包括未运行的</p>
+<p>多线程模型的区别就是 让接收连接 和 对连接读写的处理 分别用不同的线程处理。 比如上面的 echo server demo 就可以被称为一个 多线程模型。<br/>
+只不过扩展性差了些。。。</p>
 
-<pre><code>[root@VM_0_17_centos ~]# docker ps -a
-ee86c19336f8        mysql:5.7.13        &quot;docker-entrypoint...&quot;   About an hour ago   Up About an hour    0.0.0.0:3306-&gt;3306/tcp   master
+<p>netty 的 EventloopGroup 其实就是线程池， 通过它来配置 接收连接 和 处理连接读写 的线程池大小。</p>
 
-</code></pre>
+<h2 id="toc_5"><a href="#netty-%E4%B9%8B-EventloopGroup" title="netty 之 EventloopGroup"></a>netty 之 EventloopGroup</h2>
 
-<p>注意，是 UP 状态，表示正在运行中</p>
+<p><img src="media/15277861393795/15277864950859.jpg" alt=""/></p>
 
-<p>开放 3306 端口</p>
+<p>上图就是 EventLoopGroup 的大致模块图。</p>
 
-<pre><code>[root@VM_0_17_centos ~]# firewall-cmd --zone=public --add-port=3306/tcp --permanent
-[root@VM_0_17_centos ~]# firewall-cmd --reload
+<p>Boss EventloopGroup 和 worker EventloopGroup 分别 处理 接收连接， 和读写。</p>
 
-</code></pre>
+<p>而 Eventloop 里则封装了类似上面单线程的 echo server 的模块下面会详细说。</p>
 
-<p>--permanent 永久开启，避免下次开机需要再次手动开启端口</p>
+<p>对于开发者来说，主要关心紫色圈出部分。 其余的都已经封装完毕</p>
 
-<p>使用 Navicat 连接测试</p>
+<p>有几个关键点。</p>
 
-<p><img src="https://static.oschina.net/uploads/space/2018/0510/114916_0h3I_3773384.png" alt=""/></p>
+<ol>
+<li> Eventloopsize 建议设置为 2 的次方，dispatch 使用位移，更快。</li>
+<li> 侦听一个端口，只会绑定到 BossEventLoopGroup 中的一个 Eventloop，所以， BossEventLoopGroup 配置多个也无用。</li>
+</ol>
 
-<p>MySQL 主容器已经启动成功</p>
+<h2 id="toc_6"><a href="#EventLoop" title="EventLoop"></a>EventLoop</h2>
 
-<h2 id="toc_6">创建主容器的复制账号</h2>
+<p>如果只使用 tcp 和 异步阻塞的话主要关心以下2个 EventLoop (本文也只介绍这2个)</p>
 
-<p><img src="https://static.oschina.net/uploads/space/2018/0510/120249_0ZQx_3773384.png" alt=""/></p>
+<p>NioEventLoop - 基于java 原生nio</p>
 
-<p>使用 Navicat 友好的图像化界面执行 SQL</p>
-
-<pre><code>GRANT REPLICATION SLAVE ON *.* to &#39;backup&#39;@&#39;%&#39; identified by &#39;backup&#39;;
-show grants for &#39;backup&#39;@&#39;%&#39;;
-</code></pre>
-
-<p>出现如下信息表示授权成功</p>
-
-<p><img src="https://static.oschina.net/uploads/space/2018/0510/121018_Vtxn_3773384.png" alt=""/></p>
-
-<h2 id="toc_7">修改 MySQL 配置环境</h2>
-
-<p>创建配置文件目录</p>
-
-<p>目录结构如下</p>
-
-<p>/usr/local/mysql/master</p>
-
-<p>/usr/local/mysql/slave1</p>
-
-<p>/usr/local/mysql/slave2</p>
-
-<p>拷贝一份 MySQL 配置文件</p>
-
-<pre><code>[root@VM_0_17_centos local]# docker cp master:/etc/mysql/my.cnf /usr/local/mysql/master/my.cnf
-
-</code></pre>
-
-<p>进到 master 目录下，已存在拷贝的 my.cnf</p>
-
-<pre><code>[root@VM_0_17_centos master]# ll
-total 4
--rw-r--r-- 1 root root 1801 May 10 10:27 my.cnf
-
-</code></pre>
-
-<p>修改 my.cnf，在 [mysqld] 节点最后加上后保存</p>
-
-<pre><code>log-bin=mysql-bin
-server-id=1
-</code></pre>
-
-<p>log-bin=mysql-bin 使用 binary logging，mysql-bin 是 log 文件名的前缀</p>
-
-<p>server-id=1 唯一服务器 ID，非 0 整数，不能和其他服务器的 server-id 重复</p>
-
-<p>将修改后的文件覆盖 Docker 中 MySQL 中的配置文件</p>
-
-<pre><code>[root@VM_0_17_centos master]# docker cp /usr/local/mysql/master/my.cnf master:/etc/mysql/my.cnf
+<pre><code>level-triggered （水平触发）
 
 </code></pre>
 
-<p>重启 mysql 的 docker , 让配置生效</p>
+<p>EpollEventLoop - native jni 直接调用 epoll, only work on linux</p>
 
-<pre><code>[root@VM_0_17_centos master]# docker restart master
-</code></pre>
-
-<p>启动后，重新测试连接，连接成功表示主容器配置成功</p>
-
-<h2 id="toc_8">运行 MySQL 从容器</h2>
-
-<p>首先运行从容器</p>
-
-<pre><code>[root@VM_0_17_centos ~]# docker run --name slave1 -p 3307:3306 -e MYSQL_ROOT_PASSWORD=root -d mysql:5.7.13
+<pre><code>edge-triggered （边缘触发）更少的系统调用
+C代码，更少GC，更少synchronized
+暴露了更多的Socket配置参数
 
 </code></pre>
 
-<p>与主容器相似，拷贝配置文件至 slave1 目录修改后覆盖回 Docker 中</p>
+<h3 id="toc_7"><a href="#%E6%B5%81%E7%A8%8B%E5%9B%BE" title="流程图"></a>流程图</h3>
 
-<pre><code>log-bin=mysql-bin
-server-id=2
+<p><img src="media/15277861393795/15277865072620.jpg" alt=""/></p>
+
+<p>关键点</p>
+
+<ol>
+<li> 整个loop 干的事情就是 <code>select -&gt; processIO -&gt; runAllTask</code></li>
+<li> 这是一个死循环</li>
+<li> 那么这个loop 如何自己优雅退出？ noway，只能通过外部添加 CloseTask， 比如添加到 MpscQueue</li>
+<li> deadline 为 定时任务的触发时间，避免 select 阻塞, 让 定时任务不能及时执行。</li>
+<li> 在select 这一步 解决 epollbug</li>
+</ol>
+
+<p>关于解决 epoll bug的原理是 应当 “阻塞”的 select 变得不再阻塞。<br/>
+所以只需要统计下 select 次数就行了</p>
+
+<p>部分关键代码:</p>
+
+<pre><code class="language-java">for(;;){
+    int selectedKeys = selector.select(timeoutMillis); // select with timeout
+    selectCnt ++;
+    // 我由于 select 阻塞 而等待了 timeoutMillis 毫秒， 说明， 我阻塞了，说明没有bug
+    if (time - TimeUnit.MILLISECONDS.toNanos(timeoutMillis) &gt;= currentTimeNanos) {
+        selectCnt = 1;
+    } else if (SELECTOR_AUTO_REBUILD_THRESHOLD &gt; 0 &amp;&amp;
+            selectCnt &gt;= SELECTOR_AUTO_REBUILD_THRESHOLD) {
+        // 在小于 timeoutMillis 毫秒的时间内 select 的次数超过了 阀值(512) 次
+        rebuildSelector();
+        selector = this.selector;
+
+        selector.selectNow();// Select again
+        selectCnt = 1;
+        break;
+    }
+}
 </code></pre>
 
-<p>别忘记，重启 slave1 容器，使配置生效</p>
+<h2 id="toc_8"><a href="#other" title="other"></a>other</h2>
 
-<h2 id="toc_9">配置主从复制</h2>
+<h3 id="toc_9"><a href="#Selector-wakeup" title="Selector.wakeup()"></a>Selector.wakeup()</h3>
 
-<p>使用 Navicat 连接 slave1 后新建查询，执行以下 SQL</p>
+<p>java 的 Selector 在原生的 select api 之上 增加了个 Selector.wakeup()</p>
 
-<pre><code>CHANGE MASTER TO 
-MASTER_HOST=&#39;ip&#39;,
-MASTER_PORT=3306,
-MASTER_USER=&#39;backup&#39;,
-MASTER_PASSWORD=&#39;backup&#39;;
+<p>她的目的是唤醒 阻塞在 <code>select()</code> 的线程, (通过写一个字节)</p>
 
-START SLAVE;
-</code></pre>
+<p>为什么要唤醒？ 什么时候需要唤醒？</p>
 
-<p>MASTER_HOST 填 Navicat 连接配置中的 ip 应该就可以</p>
+<ol>
+<li>注册了新的 channel 或者事件。</li>
+<li>channel 关闭， 取消注册。</li>
+<li>优先级更高的事件触发（如定时器事件）， 希望及时处理。</li>
+</ol>
 
-<p>MASTER_PORT 主容器的端口</p>
+<h4 id="toc_10"><a href="#%E5%8E%9F%E7%90%86" title="原理"></a>原理</h4>
 
-<p>MASTER_USER 同步账号的用户名</p>
+<p>Linux上利用pipe调用创建一个管道，Windows上则是一个loopback的tcp连接。这是因为win32的管道无法加入select的fd set，将管道或者TCP连接加入select fd set。</p>
 
-<p>MASTER_PASSWORD 同步账号的密码</p>
+<p>wakeup往管道或者连接写入一个字节，阻塞的select因为有I/O事件就绪，立即返回。可见，wakeup的调用开销不可忽视。</p>
 
-<h2 id="toc_10">检查是否配置成功</h2>
+<p>之前看到的 coolshell 也分析过 –&gt; Java NIO类库Selector机制解析（<a href="http://blog.csdn.net/haoel/archive/2008/03/27/2224055.aspx">上</a>，<a href="http://blog.csdn.net/haoel/archive/2008/03/27/2224069.aspx">下</a>，<a href="http://blog.csdn.net/haoel/archive/2008/05/04/2379586.aspx">续</a>）</p>
 
-<pre><code>show slave status;
-</code></pre>
+<h1 id="toc_11"><a href="#reference" title="reference"></a>reference</h1>
 
-<p><img src="https://static.oschina.net/uploads/space/2018/0510/123902_gnvI_3773384.png" alt=""/></p>
+<p><a href="http://www.infoq.com/cn/articles/netty-threading-model">http://www.infoq.com/cn/articles/netty-threading-model</a></p>
 
-<p>Slave_IO_State 如果是 Waiting for master to send event，那么就成功一半了，如果是 Connecting to master，基本就是配置失败了，建议重新检查下配置，具体失败的原因可以查看日志追踪</p>
+<p><a href="http://calvin1978.blogcn.com/articles/netty-performance.html">http://calvin1978.blogcn.com/articles/netty-performance.html</a></p>
 
-<pre><code>[root@VM_0_17_centos master]# docker logs slave -f
-</code></pre>
+<p><a href="http://calvin1978.blogcn.com/articles/netty-performance2.html">http://calvin1978.blogcn.com/articles/netty-performance2.html</a></p>
 
-<p>我遇到的是 MASTER_USER 和 MASTER_PASSWORD 是否手打输错了，贴出错误日志</p>
-
-<pre><code>2018-05-10T02:57:00.688887Z 11 [ERROR] Slave I/O for channel &#39;&#39;: error connecting to master &#39;bakcup@ip:3306&#39; - retry-time: 60  retries: 2, Error_code: 1045
-2018-05-10T02:58:00.690476Z 11 [ERROR] Slave I/O for channel &#39;&#39;: error connecting to master &#39;bakcup@ip:3306&#39; - retry-time: 60  retries: 3, Error_code: 1045
-</code></pre>
-
-<p>注意看日志中的 bakcup，解决方法如下</p>
-
-<pre><code>STOP SLAVE;
-
-CHANGE MASTER TO 
-MASTER_HOST=&#39;连接Navicat的ip&#39;,
-MASTER_PORT=正确的端口,
-MASTER_USER=&#39;正确的用户名&#39;,
-MASTER_PASSWORD=&#39;正确的密码&#39;;
-
-START SLAVE;
-</code></pre>
-
-<p>接着上文，我们说成功一半，并没有说成功了，那么另一半在于 Slave_IO_Running 与 Slave_SQL_Running</p>
-
-<p>如果都是 Yes，那么恭喜你，可以测试主从复制的效果了，如果有一个不是 Yes，一半是重启从容器后，事务回滚引起的，那么给出解决方法如下</p>
-
-<pre><code>stop slave ;
-set GLOBAL SQL_SLAVE_SKIP_COUNTER=1;
-start slave ;
-</code></pre>
-
-<p>执行后，再次观察三个关键字段应该就都没问题了</p>
-
-<p>至此，一主一从已经搭建完成，再添加从实例的方式与上文一致，这里就不在赘述了。</p>
-
-<h2 id="toc_11">测试主从复制</h2>
-
-<p>首先，在主实例中创建一个测试数据库</p>
-
-<p><img src="https://static.oschina.net/uploads/space/2018/0510/130207_7Ty1_3773384.png" alt=""/></p>
-
-<p>打开（刷新）从实例，可见 test 库已存在</p>
-
-<p><img src="https://static.oschina.net/uploads/space/2018/0510/130133_ITNO_3773384.png" alt=""/></p>
-
-<p>在 test 库中创建一个表 t_test，添加一个 id 测试字段</p>
-
-<p>向表中添加几个数据</p>
-
-<p><img src="https://static.oschina.net/uploads/space/2018/0510/130357_IEZg_3773384.png" alt=""/></p>
-
-<p>刷新从库，可见 t_test 表及其中 1、2、3、4 数据已存在</p>
-
-<p>至此，一个具备主从复制的一主两从的 MySQL 就已搭建完成。</p>
+<p><a href="http://tech.meituan.com/nio.html">http://tech.meituan.com/nio.html</a></p>
 
                         
                       </div>
@@ -391,10 +510,10 @@ start slave ;
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/5/28</span>
+                    <span class="date">2018/6/1</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Container.html'>Container</a></span>
+          					    <span class="posted-in"><a href='Network.html'>Network</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -465,9 +584,9 @@ start slave ;
         
             <a href="Coding.html"><strong>Coding</strong></a>
         
-            <a href="Solution.html"><strong>Solution</strong></a>
+            <a href="Modeling.html"><strong>Modeling</strong></a>
         
-            <a href="Archtect.html"><strong>Archtect</strong></a>
+            <a href="Archtecting.html"><strong>Archtecting</strong></a>
          
         </p>
 
@@ -484,31 +603,31 @@ start slave ;
 	      
 		      
 			      <li class="post">
-			        <a href="15359384213292.html">Securing Spring Boot with JWTs</a>
+			        <a href="15389311738065.html">重构到更深层的模型</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15358820607055.html">Java 8 Concurrency Tutorial: Atomic Variables and ConcurrentMap</a>
+			        <a href="15389278377243.html">IAM of Google Cloud</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15358774987730.html">Java 8 Concurrency Tutorial: Synchronization and Locks</a>
+			        <a href="15389224951575.html">RSocket, a New Application Network Protocol for Reactive Applications, Announced at SpringOne</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15358757119900.html">Java 8 Concurrency Tutorial: Threads and Executors</a>
+			        <a href="15389220103546.html">如何形象地描述RxJava中的背压和流控机制？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15358756631902.html">Java 8 Stream Tutorial</a>
+			        <a href="15389214670417.html">Modeling Uncertainty with Reactive DDD</a>
 			      </li>
 		     
 		  

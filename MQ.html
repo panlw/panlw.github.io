@@ -80,9 +80,9 @@
         
             <li><a href="Coding.html">Coding</a></li>
         
-            <li><a href="Solution.html">Solution</a></li>
+            <li><a href="Modeling.html">Modeling</a></li>
         
-            <li><a href="Archtect.html">Archtect</a></li>
+            <li><a href="Archtecting.html">Archtecting</a></li>
          
 
       </ul>
@@ -105,185 +105,93 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15340910961772.html">
+                <a class="clearlink" href="15376981994343.html">
                 
-                  <h1>RocketMQ 4.3 正式发布，支持分布式事务</h1>
+                  <h1>Kafka实践：到底该不该把不同类型的消息放在同一个主题中？</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
-                        	<blockquote>
-<p>原文地址 <a href="http://www.infoq.com/cn/news/2018/08/rocketmq-4.3-release">http://www.infoq.com/cn/news/2018/08/rocketmq-4.3-release</a></p>
+                        	<pre><code>作者 Martin Kleppmann，译者 无明  发布于 2018年8月22日
+</code></pre>
+
+<blockquote>
+<p><a href="http://www.infoq.com/cn/articles/event-types-in-kafka-topic">http://www.infoq.com/cn/articles/event-types-in-kafka-topic</a></p>
+
+<p>英文原文：<a href="http://martin.kleppmann.com/2018/01/18/event-types-in-kafka-topic.html">http://martin.kleppmann.com/2018/01/18/event-types-in-kafka-topic.html</a></p>
 </blockquote>
 
-<p>近日，Apache RocketMQ 社区正式发布 4.3 版本。此次发布不仅包括提升性能，减少内存使用等原有特性增强，还修复了部分社区提出的若干问题，更重要的是该版本开源了社区最为关心的分布式事务消息，而且实现了对外部组件的零依赖。接下来，本文将详细探秘 RocketMQ 事务消息的设计原理以及实现机制。</p>
+<p>如果你使用了像 <a href="http://kafka.apache.org/">Kafka</a> 这样的流式处理平台，就要搞清楚一件事情：你需要用到哪些主题？特别是如果你要将一堆不同的事件作为消息发布到 Kafka，是将它们放在同一个主题中，还是将它们拆分到不同的主题中？</p>
 
-<h2 id="toc_0"><strong>一</strong> <strong>需求缘起</strong></h2>
+<p>Kafka 主题最重要的一个功能是可以让消费者指定它们想要消费的消息子集。在极端情况下，将所有数据放在同一个主题中可能不是一个好主意，因为这样消费者就无法选择它们感兴趣的事件——它们需要消费所有的消息。另一种极端情况，拥有数百万个不同的主题也不是一个好主意，因为 Kafka 的每个主题都是有成本的，拥有大量主题会损害性能。</p>
 
-<p>在微服务架构中，随着服务的逐步拆分，数据库私有已经成为共识，这也导致所面临的分布式事务问题成为微服务落地过程中一个非常难以逾越的障碍，但是目前尚没有一个完整通用的解决方案。</p>
+<p>实际上，从性能的角度来看，分区数量才是关键因素。在 Kafka 中，每个主题至少对应一个分区，如果你有 n 个主题，至少会有 n 个分区。不久之前，Jun Rao 写了一篇<a href="https://www.confluent.io/blog/how-to-choose-the-number-of-topicspartitions-in-a-kafka-cluster/">博文</a>，解释了拥有多个分区的成本（端到端延迟、文件描述符、内存开销、发生故障后的恢复时间）。根据经验，如果你关心延迟，那么每个节点分配几百个分区就可以了。如果每个节点的分区数量超过成千上万个，就会造成较大的延迟。</p>
 
-<p>其实不仅仅是在微服务架构中，随着用户访问量的逐渐上涨，数据库甚至是服务的分片、分区、水平拆分、垂直拆分已经逐渐成为较为常用的提升瓶颈的解决方案，因此越来越多的原子操作变成了跨库甚至是跨服务的事务操作。最终结果是在对高性能、高扩展性，高可用性的追求的道路上，我们开始逐渐放松对一致性的追求，但是在很多场景下，尤其是账务，电商等业务中，不可避免的存在着一致性问题，使得我们不得不去探寻一种机制，用以在分布式环境中保证事务的一致性。</p>
+<p>关于性能的讨论为设计主题结构提供了一些指导：如果你发现自己有数千个主题，那么将一些细粒度、低吞吐量的主题合并到粗粒度主题中可能是个明智之举，这样可以避免分区数量蔓延。</p>
 
-<h2 id="toc_1"><strong>二</strong> <strong>理论基石</strong></h2>
+<p>然而，性能并不是我们唯一关心的问题。在我看来，更重要的是主题结构的数据完整性和数据模型。我们将在本文的其余部分讨论这些内容。</p>
 
-<p>微服务使得单体架构扩展为分布式架构，在扩展的过程中，逐渐丧失了单体架构中数据源单一，可以直接依赖于数据库进行事务操作的能力，而关系型数据库中，提供了强大的事务处理能力，可以满足 ACID（Atomicity，Consistency，Isolation，Durability）的特性，这种特性保证了数据操作的强一致性，这也是分布式环境中弱一致性以及最终一致性能够得以实现的基础。</p>
+<h2 id="toc_0">主题等于相同类型事件的集合？</h2>
 
-<p>数据一致性分为三个种类型：强一致性，弱一致性以及最终一致性，正如上文所述，数据库实现的就是强一致性，能够保证在写入一份新的数据库，立即使其可见。最终一致性是弱一致性的强化版，系统保证在没有后续更新的前提下，系统最终返回上一次更新操作的值。在没有故障发生的前提下，不一致窗口的时间主要受通信延迟，系统负载和复制副本的个数影响。</p>
+<p>人们普遍认为应该将相同类型的事件放在同一主题中，不同的事件类型应该使用不同的主题。这种思路让我们联想到关系型数据库，其中表是相同类型记录的集合，于是我们就有了数据库表和 Kafka 主题之间的类比。</p>
 
-<p>然而，微服务作为分布式系统，同样受 CAP<sup>[1]</sup> 原理的制约，在 CAP 理论中， C：Consistency、A：Availability、P：Partition tolerance 三者不可同时满足，而服务化中，更多的是提升 A 以及 P，在这个过程中不可避免的会降低对 C 的要求，因此，BASE 理论随之而来。</p>
+<p><a href="https://docs.confluent.io/current/schema-registry/docs/index.html">Confluent Avro Schema Registry</a> 进一步强化了这种概念，因为它鼓励你对主题的所有消息使用相同的 Avro 模式（schema）。模式可以在保持兼容性的同时进行演化（例如通过添加可选字段），但所有消息都必须符合某种记录类型。稍后我会再回过头来讨论这个问题。</p>
 
-<p>BASE<sup>[2]</sup> 理论来源于 ebay 在 2008 年 ACM 中发表的论文，BASE 理论的基本原则有三个：Basically Available，Soft state，Eventually consistent，主要目的是为了提升分布式系统的可伸缩性，论文同样阐述了如何对业务进行调整以及折中的手段，BASE 理论的提出为分布式事务的发展指出了一个方向。</p>
+<p>对于某些类型的流式数据，例如活动事件，要求同一主题中所有消息都符合相同的模式，这是合理的。但是，有些人把 Kafka 当成了数据库来用，例如<a href="https://docs.microsoft.com/en-us/azure/architecture/patterns/event-sourcing">事件溯源</a>，或者<a href="https://www.confluent.io/blog/build-services-backbone-events/">在微服务之间交换数据</a>。对于这种情况，我认为是否将主题定义为具有相同模式的消息集合就不那么重要了。这个时候，更重要的是主题分区中的消息必须是有序的。</p>
 
-<p>在最终一致性的实现过程中，最基本的操作就是保证事务参与者的幂等性，所谓的幂等性，就是业务方能够使用相关的手段，保证单个事务多次提交依然能够保证达到同样的目的。</p>
+<p>想象一下这样的场景：你有一个实体（比如客户），这个实体可能会发生许多不同的事情，比如创建客户、客户更改地址、客户向帐户中添加新的信用卡、客户发起客服请求，客户支付账单、客户关闭帐户。</p>
 
-<h2 id="toc_2"><strong>三</strong> <strong>当前解决方案</strong></h2>
+<p>这些事件之间的顺序很重要。例如，我们希望其他事件必须在创建客户之后才能发生，并且在客户关闭帐户之后不能再发生其他事件。在使用 Kafka 时，你可以将它们全部放在同一个主题分区中来保持它们的顺序。在这个示例中，你可以使用客户 ID 作为分区的键，然后将所有事件放在同一个主题中。它们必须位于同一主题中，因为不同的主题对应不同的分区，而 Kafka 是不保证分区之间的顺序的。</p>
 
-<h3 id="toc_3">1. 2PC/3PC</h3>
+<h2 id="toc_1">顺序问题</h2>
 
-<p>谈到分布式事务，首先要说的就是 2PC（two phase commit）方案，如下图所示 <sup>[3]</sup>：</p>
+<p>如果你为 customerCreated、customerAddressChanged 和 customerInvoicePaid 事件使用了不同的主题，那么这些主题的消费者可能就看不到这些事件之间的顺序。例如，消费者可能会看到一个不存在的客户做出的地址变更（这个客户尚未创建，因为相应的 customerCreated 事件可能发生了延迟）。</p>
 
-<p><a href="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/14image001-1533615962474.png"><img src="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/14image001-1533615962474.png" alt=""/></a></p>
+<p>如果消费者暂停一段时间（比如进行维护或部署新版本），那么事件出现乱序的可能性就更高了。在消费者停止期间，事件继续发布，并且这些事件被存储在特定定的主题分区中。当消费者再次启动时，它会消费所有积压在分区中的事件。如果消费者只消费一个分区，那就没问题：积压的事件会按照它们存储的顺序依次被处理。但是，如果消费者同时消费几个主题，就会按任意顺序读取主题中数据。它可以先读取积压在一个主题上的所有数据，然后再读取另一个主题上积压的数据，或者交错地读取多个主题的数据。</p>
 
-<p>2PC 把事务的执行分为两个阶段，第一个阶段即 prepare 阶段，这个阶段实际上就是投票阶段，协调者向参与者确认是否可以共同提交，再得到全部参与者的所有回答后，协调者向所有的参与者发布共同提交或者共同回滚的指令，用以保证事务达到一致性。            </p>
+<p>因此，如果你将 customerCreated、customerAddressChanged 和 customerInvoicePaid 事件放在三个单独的主题中，那么消费者可能会在看到 customerCreated 事件之前先看到 customerAddressChanged 事件。因此，消费者很可能会看到一个客户的 customerAddressChanged 事件，但这个客户却未被创建。</p>
 
-<p>但是分布式系统中的所有通信均存在着三种状态：成功，失败，超时。其中，超时状态的存在是我们在设计分布式系统时所面对的永远的痛，2PC 同样存在问题，尤其是在发送完可以提交的指令后，参与者在没有收到提交或者回滚的指令时，面对已经上锁的资源，面对已经写出去的 undo 或者 redo 日志，参与者会一时陷入手足无措的状态，为了解决这个问题，3PC 应运而生，如下图所示 [4]：</p>
+<p>你可能会想到为每条消息附加时间戳，并用它来对事件进行排序。如果你将事件导入数据仓库，再对事件进行排序，或许是没有问题的。但在流数据中只使用时间戳是不够的：在你收到一个具有特定时间戳的事件时，你不知道是否需要等待具有较早时间戳的事件，或者所有之前的事件是否已经在当前事情之前到达。依靠时钟进行同步通常会导致噩梦，有关时钟问题的更多详细信息，请参阅 “Designing Data-Intensive Applications” 的第 8 章。</p>
 
-<p><a href="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/14image003-1533615963768.png"><img src="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/14image003-1533615963768.png" alt=""/></a></p>
+<h2 id="toc_2">何时拆分主题，何时合并主题？</h2>
 
-<p>3PC 在 commit 之前增加了 preCommit 的过程，使得在参与者在收不到确认时，依然可以从容 commit 或者 rollback，避免资源锁定太久导致浪费。但是 3PC 同样存在着很多问题。实现起来非常复杂，因为很难通过多次询问来解决系统间分歧问题，尤其是存在超时状态互不信任的分布式网络中，这也就是著名的拜占庭将军问题 <sup>[5]</sup>。</p>
+<p>基于这个背景，我将给出一些经验之谈，帮你确定哪些数据应该放在同一主题中，以及哪些数据应该放在不同的主题中。</p>
 
-<p>总结一下，2PC 是几乎所有分布式事务算法的基础，后续的分布式事务算法几乎都由此改进而来，其优缺点非常明显：</p>
+<ol>
+<li><p>首先，需要保持固定顺序的事件必须放在同一主题中（并且需要使用相同的分区键）。如果事件属于同一实体，那么事件的顺序就很重要。因此，我们可以说，同一实体的所有事件都应该保存在同一主题中。</p>
+
+<p>如果你使用事件溯源进行数据建模，事件的排序尤为重要。聚合对象的状态是通过以特定的顺序重放事件日志而得出的。因此，即使可能存在不同的事件类型，聚合所需要的所有事件也必须在同一主题中。</p></li>
+<li><p>对于不同实体的事件，它们应该保存在相同的主题中还是不同的主题中？我想说，如果一个实体依赖于另一个实体（例如一个地址属于一个客户），或者经常需要同时用到它们，那么它们也应该保存在同一主题中。另一方面，如果它们不相关，并且属于不同的团队，那么最好将它们放在不同的主题中。</p>
+
+<p>另外，这也取决于事件的吞吐量：如果一个实体类型的事件吞吐量比其他实体要高很多，那么最好将它分成几个主题，以免让只想消费低吞吐量实体的消费者不堪重负（参见第 4 点）。不过，可以将多个具有低吞吐量的实体合并起来。</p></li>
+<li><p>如果一个事件涉及多个实体该怎么办？例如，订单涉及到产品和客户，转账至少涉及到两个账户。</p>
+
+<p>我建议在一开始将这些事件记录为单个原子消息，而不是将其分成几个属于不同主题的消息。在记录事件时，最好可以保持原封不动，即尽可能保持数据的原始形式。你可以随后使用流式处理器来拆分复合事件，但如果过早进行拆分，想要重建原始事件会难得多。如果能够为初始事件分配一个唯一 ID（例如 UUID）就更好了，之后如果你要拆分原始事件，可以带上这个 ID，从而可以追溯到每个事件的起源。</p></li>
+<li><p>看看消费者需要订阅的主题数量。如果几个消费者都订阅了一组特定的主题，这表明可能需要将这些主题合并在一起。</p>
+
+<p>如果将细粒度的主题合并成粗粒度的主题，一些消费者可能会收到他们不需要的事件，需要将其忽略。这不是什么大问题：消费消息的成本非常低，即使最终忽略了一大半的事件，总的成本可能也不会很大。只有当消费者需要忽略绝大多数消息（例如 99.9％是不需要的）时，我才建议将大容量事件流拆分成小容量事件流。</p></li>
+<li><p>用作 Kafka Streams 状态存储（KTable）的变更日志主题应该与其他主题分开。在这种情况下，这些主题由 Kafka Streams 流程来管理，所以不应该包含其他类型的事件。</p>
+
+<p>最后，如果基于上述的规则依然无法做出正确的判断，该怎么办？那么就按照类型对事件进行分组，把相同类型的事件放在同一个主题中。不过，我认为这条规则是最不重要的。</p></li>
+</ol>
+
+<h2 id="toc_3">模式管理</h2>
+
+<p>如果你的数据是普通文本（如 JSON），而且没有使用静态的模式，那么就可以轻松地将不同类型的事件放在同一个主题中。但是，如果你使用了模式编码（如 Avro），那么在单个主题中保存多种类型的事件则需要考虑更多的事情。</p>
+
+<p>如上所述，基于 Avro 的 Kafka Confluent Schema Registry 假设了一个前提，即每个主题都有一个模式（更确切地说，一个模式用于消息的键，一个模式用于消息的值）。你可以注册新版本的模式，注册表会检查模式是否向前和向后兼容。这样设计的一个好处是，你可以让不同的生产者和消费者同时使用不同版本的模式，并且仍然保持彼此的兼容性。</p>
+
+<p>Confluent 的 Avro 序列化器通过 subject 名称在注册表中注册模式。默认情况下，消息键的 subject 为 <topic>-key，消息值的 subject 为 &lt; topic&gt;-value。模式注册表会检查在特定 subject 下注册的所有模式的相互兼容性。</p>
+
+<p>最近，我为 Avro 序列化器提供了一个补丁（<a href="https://github.com/confluentinc/schema-registry/pull/680">https://github.com/confluentinc/schema-registry/pull/680</a>），让兼容性检查变得更加灵活。这个补丁添加了两个新的配置选项：key.subject.name.strategy（用于定义如何构造消息键的 subject 名称）和 value.subject.name.strategy（用于定义如何构造消息值的 subject 名称）。它们的值可以是如下几个：</p>
 
 <ul>
-<li>  优点：在于已经有较为成熟的实现方案，比如 XA。</li>
-<li>  缺点：XA 是一个阻塞协议。服务在投票后需要等待协调器的决定，此时服务会阻塞并锁定资源。由于其阻塞机制和最差时间复杂度高， 因此，这种设计不能适应随着事务涉及的服务数量增加而扩展的需要，很难用于并发较高以及子事务声明周期较长 (long-running transactions) 的分布式服务中。</li>
+<li>  io.confluent.kafka.serializers.subject.TopicNameStrategy（默认）：消息键的 subject 名称为 <topic>-key，消息值为 &lt; topic&gt;-value。这意味着主题中所有消息的模式必须相互兼容。</li>
+<li>  io.confluent.kafka.serializers.subject.RecordNameStrategy：subject 名称是 Avro 记录类型的完全限定名。因此，模式注册表会检查特定记录类型的兼容性，而不管是哪个主题。这个设置允许同一主题包含不同类型的事件。</li>
+<li>  io.confluent.kafka.serializers.subject.TopicRecordNameStrategy：subject 名称是 <topic>-<type>，其中 &lt; topic &gt; 是 Kafka 主题名，<type > 是 Avro 记录类型的完全限定名。这个设置允许同一主题包含不同类型的事件，并进一步对当前主题进行兼容性检查。</li>
 </ul>
 
-<h3 id="toc_4">2. SAGA</h3>
-
-<p>SAGA 算法 <sup>[6]</sup>于 1987 年提出，是一种异步的分布式事务解决方案，其理论基础在于，其假设所有事件按照顺序推进，总能达到系统的最终一致性，因此 saga 需要服务分别定义提交接口以及补偿接口，当某个事务分支失败时，调用其它的分支的补偿接口来进行回滚，saga 的具体实现分为两种：Choreography 以及 Orchestration，</p>
-
-<p>（1）   Choreography：如下图所示：</p>
-
-<p><a href="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/13image005-1533615965769.png"><img src="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/13image005-1533615965769.png" alt=""/></a></p>
-
-<p>这种模式下不存在协调器的概念，每个节点均对自己的上下游负责，在监听处理上游节点事件的同时，对下游节点发布事件。</p>
-
-<p>（2）   Orchestration：存在中心节点的模式，如下图所示：</p>
-
-<p><a href="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/11image007-1533615966677.png"><img src="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/11image007-1533615966677.png" alt=""/></a></p>
-
-<p>该中心节点，即协调器知道整个事务的分布状态，相比于无中心节点方式，该方式有着许多优点：</p>
-
-<ol>
-<li> 能够避免事务之间的循环依赖关系。</li>
-<li> 参与者只需要执行命令 / 回复 (其实回复消息也是一种事件消息)，降低参与者的复杂性。</li>
-<li> 开发测试门槛低。</li>
-<li> 在添加新步骤时，事务复杂性保持线性，回滚更容易管理。因此大多数 saga 模型实现均采用了这种思路。</li>
-</ol>
-
-<p>总结一下：SAGA 模型的优点在于其降低了事务粒度，使得事务扩展更加容易，同时采用了异步化方式提升性能。但是其缺点在于很多时候很难定义补偿接口，回滚代价高，而且由于 SAGA 在执行过程中采用了先提交后补偿的思路进行操作，所以单个子事务在并发提交时的隔离性很难保证。</p>
-
-<h3 id="toc_5">3. TCC</h3>
-
-<p>TCC(Try-Confirm-Concel) 模型 <sup>[7]</sup> 同样是一种补偿性事务，主要分为 Try：检查、保留资源，Confirm：执行事务，Concel：释放资源三个阶段，如下图所示：</p>
-
-<p><a href="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/10image009-1533615965391.png"><img src="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/10image009-1533615965391.png" alt=""/></a></p>
-
-<p>其中，活动管理器记录了全局事务的推进状态以及各子事务的执行状态，负责推进各个子事务共同进行提交或者回滚。同时负责在子事务处理超时后不停重试，重试不成功后转手工处理，用以保证事务的最终一致性。</p>
-
-<p>总结一下，相比于 SAGA 模型，其优点在于尝试阶段仅仅只是对业务系统做检测，并保留业务资源，并没有真正提交，所以后续 SAGA 需要针对提交的事务做补偿，而 TCC 则仅仅需要释放保留资源，降低了补偿成本；并且，由于在 Try 阶段对资源进行了保留锁定，所以相比于 SAGA 模式，TCC 模式拥有更高的隔离性。</p>
-
-<p>缺点：相比于 SAGA 模式，TCC 模式多增加了一个状态，导致在业务开发过程中，复杂度上升，而且协调器与子事务的通信过程增加，状态轮转处理也更为复杂。</p>
-
-<h2 id="toc_6"><strong>四</strong> <strong>事务消息</strong></h2>
-
-<p>以购物场景为例，张三购买物品，账户扣款 100 元的同时，需要保证在下游的会员服务中给该账户增加 100 积分。由于数据库私有，所以导致在实际的操作过程中会出现很多问题，比如先发送消息，可能会因为扣款失败导致账户积分无故增加，如果先执行扣款，则有可能因服务宕机，导致积分不能增加，无论是先发消息还是先执行本地事务，都有可能导致出现数据不一致的结果。</p>
-
-<p><a href="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/9image011-1533615967660.png"><img src="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/9image011-1533615967660.png" alt=""/></a></p>
-
-<p>事务消息的本质就是为了解决此类问题，解决本地事务执行与消息发送的原子性问题。目前，事务消息在多种分布式消息中间件种均有实现，但是其实现方式思路却各有不同。</p>
-
-<h3 id="toc_7">1. 传统事务消息实现</h3>
-
-<p>传统事务消息实现，一种思路是依赖于 AMQP 协议用来确保消息发送成功，AMQP 模式下需要在发送在发送事务消息时进行两阶段提交，首先进行 tx_select 开启事务，然后再进行消息发送，最后进行消息的 commit 或者是 rollback。这个过程可以保证在消息发送成功的同时本地事务也一定成功执行，但事务粒度不好控制，而且会导致性能急剧下降，同时依然无法解决本地事务执行与消息发送的原子性问题。</p>
-
-<p>还有另外一种思路，就是通过保证多条消息的同时可见性来保证事务一致性。但是此类消息事务实现机制更多的是用到 consume-transform-produce 场景中，其本质还是用来保证消息自身事务，并没有把外部事务包含进来。</p>
-
-<h3 id="toc_8">2. RocketMQ 事务消息</h3>
-
-<p>RocketMQ 事务消息设计则主要是为了解决 Producer 端的消息发送与本地事务执行的原子性问题，RocketMQ 的设计中 broker 与 producer 端的双向通信能力，使得 broker 天生可以作为一个事务协调者存在；而 RocketMQ 本身提供的存储机制，则为事务消息提供了持久化能力；RocketMQ 的高可用机制以及可靠消息设计，则为事务消息在系统在发生异常时，依然能够保证事务的最终一致性达成。</p>
-
-<p><strong>2.1 RocketMQ </strong><strong>事务消息设计</strong></p>
-
-<p>事务消息作为一种异步确保型事务， 将两个事务分支通过 MQ 进行异步解耦，RocketMQ 事务消息的设计流程同样借鉴了两阶段提交理论，整体交互流程如下图所示：</p>
-
-<p><a href="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/8image013-1533615967005.png"><img src="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/8image013-1533615967005.png" alt=""/></a></p>
-
-<ol>
-<li> 事务发起方首先发送 prepare 消息到 MQ。</li>
-<li> 在发送 prepare 消息成功后执行本地事务。</li>
-<li> 根据本地事务执行结果返回 commit 或者是 rollback。</li>
-<li> 如果消息是 rollback，MQ 将删除该 prepare 消息不进行下发，如果是 commit 消息，MQ 将会把这个消息发送给 consumer 端。</li>
-<li> 如果执行本地事务过程中，执行端挂掉，或者超时，MQ 将会不停的询问其同组的其它 producer 来获取状态。</li>
-<li> Consumer 端的消费成功机制有 MQ 保证。</li>
-</ol>
-
-<p><strong>2.2 RocketMQ</strong> <strong>事务消息实现</strong></p>
-
-<p>RocketMQ 事务消息在实现上充分利用了 RocketMQ 本身机制，在实现零依赖的基础上，同样实现了高性能、可扩展、全异步等一系列特性。</p>
-
-<p>在具体实现上，RocketMQ 通过使用 Half Topic 以及 Operation Topic 两个内部队列来存储事务消息推进状态，如下图所示：</p>
-
-<p><a href="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/6image015-1533615967327.png"><img src="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/6image015-1533615967327.png" alt=""/></a></p>
-
-<p>其中，Half Topic 对应队列中存放着 prepare 消息，Operation Topic 对应的队列则存放了 prepare message 对应的 commit/rollback 消息，消息体中则是 prepare message 对应的 offset，服务端通过比对两个队列的差值来找到尚未提交的超时事务，进行回查。</p>
-
-<p>在具体实现上，事务消息作为普通消息的一个应用场景，在实现过程中进行了分层抽象，从而避免了对 RocketMQ 原有存储机制的修改，如下图所示：</p>
-
-<p><a href="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/4image017-1533615969003.png"><img src="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/4image017-1533615969003.png" alt=""/></a></p>
-
-<p>从用户侧来说，用户需要分别实现本地事务执行以及本地事务回查方法，因此只需关注本地事务的执行状态即可；而在 service 层，则对事务消息的两阶段提交进行了抽象，同时针对超时事务实现了回查逻辑，通过不断扫描当前事务推进状态，来不断反向请求 Producer 端获取超时事务的执行状态，在避免事务挂起的同时，也避免了 Producer 端的单点故障。而在存储层，RocketMQ 通过 Bridge 封装了与底层队列存储的相关操作，用以操作两个对应的内部队列，用户也可以依赖其它存储介质实现自己的 service，RocketMQ 会通过 ServiceProvider 加载进来。</p>
-
-<p>从上述事务消息设计中可以看到，RocketMQ 事务消息较好的解决了事务的最终一致性问题，事务发起方仅需要关注本地事务执行以及实现回查接口给出事务状态判定等实现，而且在上游事务峰值高时，可以通过消息队列，避免对下游服务产生过大压力。</p>
-
-<p>事务消息不仅适用于上游事务对下游事务无依赖的场景，还可以与一些传统分布式事务架构相结合，而 MQ 的服务端作为天生的具有高可用能力的协调者，使得我们未来可以基于 RocketMQ 提供一站式轻量级分布式事务解决方案，用以满足各种场景下的分布式事务需求。</p>
-
-<h2 id="toc_9"><strong>五</strong> <strong>参考文献</strong></h2>
-
-<p>[1] <a href="https://en.wikipedia.org/wiki/Cap">https://en.wikipedia.org/wiki/Cap</a></p>
-
-<p>[2] <a href="https://dl.acm.org/citation.cfm?id=1394128">https://dl.acm.org/citation.cfm?id=1394128</a></p>
-
-<p>[3] <a href="https://en.wikipedia.org/wiki/Two-phase_commit_protocol">https://en.wikipedia.org/wiki/Two-phase_commit_protocol</a></p>
-
-<p>[4] <a href="https://en.wikipedia.org/wiki/Three-phase_commit_protocol">https://en.wikipedia.org/wiki/Three-phase_commit_protocol</a></p>
-
-<p>[5] <a href="https://people.eecs.berkeley.edu/%7Eluca/cs174/byzantine.pdf">https://people.eecs.berkeley.edu/~luca/cs174/byzantine.pdf</a></p>
-
-<p>[6] <a href="https://www.cs.cornell.edu/andru/cs711/2002fa/reading/sagas.pdf">https://www.cs.cornell.edu/andru/cs711/2002fa/reading/sagas.pdf</a></p>
-
-<p>[7] <a href="https://www.cloud.alipay.com/docs/2/69656">https://www.cloud.alipay.com/docs/2/69656</a></p>
-
-<h2 id="toc_10">作者介绍</h2>
-
-<p><strong>冯嘉</strong>，Apache RocketMQ 联合创始人，LInux OpenMessaging 标准创始人。阿里巴巴高级技术专家，带领团队、社区打造了中国分布式云计算领域第一个 Apache 顶级开源中间件项目，创立分布式消息领域的国际标准 OpenMessaging。 冯嘉作为阿里巴巴 RocketMQ 技术负责人，具有丰富的分布式软件架构、高并发网站设计、性能调优经验，拥有国内外多项分布式、推荐领域的专利授权。目前专注于大规模分布式系统、分布式消息引擎、流计算领域，关注 Hbase/Hadoop/Spark/Flink 等大数据技术栈。</p>
-
-<p><strong>杜恒</strong>，阿里巴巴技术专家，Apache RocketMQ 内核控，拥有多年分布式系统研发经验，对 Microservice, Messaging，Storage 等领域有深刻理解，拥有多年金融领域开发设计经验。目前专注 RocketMQ 内核优化以及 Messaging 生态建设。</p>
-
-<p><input type="hidden"></p>
-
-<p>相关内容</p>
-
-<h3 id="toc_11"><a href="http://www.infoq.com/cn/presentations/message-engine-under-the-flood-peak-of-trillions-of-data-apache-rocketmq?utm_source=infoq&amp;utm_medium=related_content_link&amp;utm_campaign=relatedContent_undefined_clk">万亿级数据洪峰下的消息引擎——Apache RocketMQ</a></h3>
-
-<h3 id="toc_12"><a href="http://www.infoq.com/cn/articles/rocketmq-incubation-in-apache?utm_source=infoq&amp;utm_medium=related_content_link&amp;utm_campaign=relatedContent_undefined_clk">RocketMQ Apache 顶级项目之路</a></h3>
-
-<h3 id="toc_13"><a href="http://www.infoq.com/cn/news/2018/08/kafka2.0-new-features?utm_source=infoq&amp;utm_medium=related_content_link&amp;utm_campaign=relatedContent_undefined_clk">Kafka 2.0 重磅发布，新特性独家解读</a></h3>
-
-<h3 id="toc_14"><a href="http://www.infoq.com/cn/articles/how-to-design-an-outstanding-microservice-framework?utm_source=infoq&amp;utm_medium=related_content_link&amp;utm_campaign=relatedContent_undefined_clk">如何设计一个优质的微服务框架：Apache ServiceComb 的开放性设计</a></h3>
-
-<h3 id="toc_15"><a href="http://www.infoq.com/cn/news/2018/04/apache-servicecomb?utm_source=infoq&amp;utm_medium=related_content_link&amp;utm_campaign=relatedContent_undefined_clk">Apache ServiceComb（incubating） 第一个版本发布</a></h3>
+<p>有了这个新特性，你就可以轻松地将属于特定实体的所有不同类型的事件放在同一个主题中。现在，你可以自由选择主题的粒度，而不仅限于一个类型对应一个主题。</p>
 
                         
                       </div>
@@ -292,7 +200,7 @@
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/8/13</span>
+                    <span class="date">2018/9/23</span>
                     <span>posted in&nbsp;</span> 
           				  
           					    <span class="posted-in"><a href='MQ.html'>MQ</a></span>
@@ -319,7 +227,7 @@
 			  </div>
 			  <div class="large-6 columns">
 			<p class="text-right" style="padding-top:25px;">
-			
+			 <a href="MQ_1.html">&raquo; Next Page</a> 
 			</p>
 			  </div>
 			</div>
@@ -366,9 +274,9 @@
         
             <a href="Coding.html"><strong>Coding</strong></a>
         
-            <a href="Solution.html"><strong>Solution</strong></a>
+            <a href="Modeling.html"><strong>Modeling</strong></a>
         
-            <a href="Archtect.html"><strong>Archtect</strong></a>
+            <a href="Archtecting.html"><strong>Archtecting</strong></a>
          
         </p>
 
@@ -385,31 +293,31 @@
 	      
 		      
 			      <li class="post">
-			        <a href="15359384213292.html">Securing Spring Boot with JWTs</a>
+			        <a href="15389311738065.html">重构到更深层的模型</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15358820607055.html">Java 8 Concurrency Tutorial: Atomic Variables and ConcurrentMap</a>
+			        <a href="15389278377243.html">IAM of Google Cloud</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15358774987730.html">Java 8 Concurrency Tutorial: Synchronization and Locks</a>
+			        <a href="15389224951575.html">RSocket, a New Application Network Protocol for Reactive Applications, Announced at SpringOne</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15358757119900.html">Java 8 Concurrency Tutorial: Threads and Executors</a>
+			        <a href="15389220103546.html">如何形象地描述RxJava中的背压和流控机制？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15358756631902.html">Java 8 Stream Tutorial</a>
+			        <a href="15389214670417.html">Modeling Uncertainty with Reactive DDD</a>
 			      </li>
 		     
 		  

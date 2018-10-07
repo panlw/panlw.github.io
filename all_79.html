@@ -80,9 +80,9 @@
         
             <li><a href="Coding.html">Coding</a></li>
         
-            <li><a href="Solution.html">Solution</a></li>
+            <li><a href="Modeling.html">Modeling</a></li>
         
-            <li><a href="Archtect.html">Archtect</a></li>
+            <li><a href="Archtecting.html">Archtecting</a></li>
          
 
       </ul>
@@ -105,443 +105,316 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15290784953983.html">
+                <a class="clearlink" href="15305085046380.html">
                 
-                  <h1>swoole 协程初体验</h1>
+                  <h1>How to Dockerize your End-to-End acceptance tests</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://www.jianshu.com/p/745b0b3ffae7">https://www.jianshu.com/p/745b0b3ffae7</a><br/>
-2018-5-30 14:31:38</p>
+<p><a href="https://medium.freecodecamp.org/how-to-dockerize-your-end-to-end-acceptance-tests-dbb593acb8e0">https://medium.freecodecamp.org/how-to-dockerize-your-end-to-end-acceptance-tests-dbb593acb8e0</a></p>
 </blockquote>
 
-<p>折腾 swoole 协程有一段时间了, 总结一篇入门贴, 希望对新手有帮助.</p>
+<p>This article serves as a “how-to” guide for using Selenium Docker images alongside CodeceptJS and an Express server.</p>
 
-<p>内容概览:</p>
-
-<ul>
-<li>  协程的执行顺序: 初窥 swoole 中协程的调度</li>
-<li>  协程为什么快: 减少 IO 阻塞带来的性能损耗</li>
-<li>  swoole 协程和 go 协程对比: 单进程 vs 多线程</li>
-</ul>
-
-<h2 id="toc_0">协程的执行顺序</h2>
-
-<p>先来看看基础的例子:</p>
-
-<pre><code class="language-go">go(function () {
-    echo &quot;hello go1 \n&quot;;
-});
-
-echo &quot;hello main \n&quot;;
-
-go(function () {
-    echo &quot;hello go2 \n&quot;;
-});
-
-</code></pre>
-
-<p><code>go()</code> 是 <code>\Co::create()</code> 的缩写, 用来创建一个协程, 接受 callback 作为参数, callback 中的代码, 会在这个新建的协程中执行.</p>
-
-<p><strong>备注</strong>: <code>\Swoole\Coroutine</code> 可以简写为 <code>\Co</code></p>
-
-<p>上面的代码执行结果:</p>
-
-<pre><code class="language-sh">root@b98940b00a9b /v/w/c/p/swoole# php co.php
-hello go1
-hello main
-hello go2
-</code></pre>
-
-<p>执行结果和我们平时写代码的顺序, 好像没啥区别. 实际执行过程:</p>
+<p>In it, we will cover:</p>
 
 <ul>
-<li>  运行此段代码, <strong>系统启动一个新进程</strong></li>
-<li>  遇到 <code>go()</code>, 当前进程中生成一个协程, 协程中输出 <code>heelo go1</code>, 协程退出</li>
-<li>  进程继续向下执行代码, 输出 <code>hello main</code></li>
-<li>  再生成一个协程, 协程中输出 <code>heelo go2</code>, 协程退出</li>
+<li>  What is E2E acceptance testing?</li>
+<li>  Why use Docker?</li>
+<li>  Loosely coupled testing tools</li>
+<li>  Layers of testing tools</li>
+<li>  Creating a test project</li>
 </ul>
 
-<p><strong>运行此段代码, 系统启动一个新进程</strong>. 如果不理解这句话, 你可以使用如下代码:</p>
+<h3 id="toc_0">E2E Acceptance Testing</h3>
 
-<pre><code class="language-php">// co.php
-&lt;?php
+<p><a href="https://en.wikipedia.org/wiki/Acceptance_testing">Acceptance testing</a> is a <a href="https://www.tutorialspoint.com/software_testing_dictionary/acceptance_testing.htm">phase</a> in a typical software development process. It covers tests to see if the product has met the overall requirement specifications, and if it is “accepted” as ready for delivery. It is typically the last phase of testing before releasing the product to production. This could include user-based acceptance tests, business-based acceptance tests, or even alpha/beta testing.</p>
 
-sleep(100);
+<p><a href="http://toolsqa.com/software-testing/what-does-end-to-end-test-mean/">End-to-End</a> (E2E) testing is one implementation of acceptance testing. It is an <u>approach</u> to acceptance testing, but the terms are not synonymous. It allows testing the flow of an application from start to finish to see if it is performing as designed. In the case of a web application, it would involve determining a user scenario and testing each of the steps the user would take in order. The test fails if the scenario is not completed successfully.</p>
 
-</code></pre>
+<p>Various tools exist to automate this process, simulating user interaction with the application.</p>
 
-<p>执行并使用 <code>ps aux</code> 查看系统中的进程:</p>
+<h3 id="toc_1">Why Docker?</h3>
 
-<pre><code class="language-sh">root@b98940b00a9b /v/w/c/p/swoole# php co.php &amp;
-⏎
-root@b98940b00a9b /v/w/c/p/swoole# ps aux
-PID   USER     TIME   COMMAND
-    1 root       0:00 php -a
-   10 root       0:00 sh
-   19 root       0:01 fish
-  749 root       0:00 php co.php
-  760 root       0:00 ps aux
-⏎
+<p>Creating and running E2E tests is often considered a flaky and complex process. It requires a lot of set up that can still easily fail when run on different machines or in a CI (continuous integration) environment. Installing and maintaining different browsers and WebDrivers both for local tests and CI tests takes time. And even when done, it can still fail because of simple issues such as if the <a href="https://medium.com/@garrensmith/consistent-selenium-testing-with-docker-f2d5a24a1bc5">screen resolution on developer’s local machines, or in CI, is different</a>.</p>
 
-</code></pre>
+<p>The standard advantages of Docker also apply: not having to deal with OS compatibility or having dependancies installed. To run the Selenium Server you would need Java installed (<a href="https://engineering.thetrainline.com/dockerize-your-webdriverio-environment-to-run-everywhere-4f98e7a1d80e">or at least be started/stopped explicitly</a>). To run Express you would need Node.js, and for Chrome you’d need Chrome itself as well as ChromeDriver.</p>
 
-<p>我们来稍微改一改, 体验协程的调度:</p>
+<p>When using Docker these dependancies are eliminated. You simply use different containers that already contain these, which will function precisely the same no matter on which machine they are run. When you then think how easy it is to build Docker into your CI, Dockerizing your test process becomes an obvious choice.</p>
 
-<pre><code class="language-go">use Co;
+<h3 id="toc_2">Loosely coupled testing tools</h3>
 
-go(function () {
-    Co::sleep(1); // 只新增了一行代码
-    echo &quot;hello go1 \n&quot;;
-});
+<p>There are several frameworks available when writing E2E tests, and for a newcomer it can be hard to know which to choose and invest time into. If you choose the wrong one, you’ll have wasted a lot of time.</p>
 
-echo &quot;hello main \n&quot;;
-
-go(function () {
-    echo &quot;hello go2 \n&quot;;
-});
-
-</code></pre>
-
-<p><code>\Co::sleep()</code> 函数功能和 <code>sleep()</code> 差不多, 但是它模拟的是 <strong>IO 等待</strong> (IO 后面会细讲). 执行的结果如下:</p>
-
-<pre><code>root@b98940b00a9b /v/w/c/p/swoole# php co.php
-hello main
-hello go2
-hello go1
-
-</code></pre>
-
-<p>怎么不是顺序执行的呢? 实际执行过程:</p>
-
-<ul>
-<li>  运行此段代码, 系统启动一个新进程</li>
-<li>  遇到 <code>go()</code>, 当前进程中生成一个协程</li>
-<li>  协程中遇到 <strong>IO 阻塞</strong> (这里是 <code>Co::sleep()</code> 模拟出的 <strong>IO 等待</strong>), <strong>协程让出控制, 进入协程调度队列</strong></li>
-<li>  进程继续向下执行, 输出 <code>hello main</code></li>
-<li>  执行下一个协程, 输出 <code>hello go2</code></li>
-<li>  之前的协程准备就绪, 继续执行, 输出 <code>hello go1</code></li>
-</ul>
-
-<p>到这里, 已经可以看到 swoole 中 <strong>协程与进程的关系</strong>, 以及 <strong>协程的调度</strong>, 我们再改一改刚才的程序:</p>
-
-<pre><code class="language-go">go(function () {
-    Co::sleep(1);
-    echo &quot;hello go1 \n&quot;;
-});
-
-echo &quot;hello main \n&quot;;
-
-go(function () {
-    Co::sleep(1);
-    echo &quot;hello go2 \n&quot;;
-});
-
-</code></pre>
-
-<p>我想你已经知道输出是什么样子了:</p>
-
-<pre><code class="language-sh">root@b98940b00a9b /v/w/c/p/swoole# php co.php
-hello main
-hello go1
-hello go2
-⏎
-
-</code></pre>
-
-<h2 id="toc_1">协程快在哪? 减少 IO 阻塞导致的性能损失</h2>
-
-<p>大家可能听到使用协程的最多的理由, 可能就是 <strong>协程快</strong>. 那看起来和平时写得差不多的代码, 为什么就要快一些呢? 一个常见的理由是, <strong>可以创建很多个协程来执行任务, 所以快</strong>. 这种说法是对的, 不过还停留在表面.</p>
-
-<p>首先, 一般的计算机任务分为 2 种:</p>
-
-<ul>
-<li>  CPU 密集型, 比如加减乘除等科学计算</li>
-<li>  IO 密集型, 比如网络请求, 文件读写等</li>
-</ul>
-
-<p>其次, 高性能相关的 2 个概念:</p>
-
-<ul>
-<li>  并行: 同一个时刻, 同一个 CPU 只能执行同一个任务, 要同时执行多个任务, 就需要有多个 CPU 才行</li>
-<li>  并发: 由于 CPU 切换任务非常快, 快到人类可以感知的极限, 就会有很多任务 <strong>同时执行</strong> 的错觉</li>
-</ul>
-
-<p>了解了这些, 我们再来看协程, 协程适合的是 <strong>IO 密集型</strong> 应用, 因为协程在 <strong>IO 阻塞</strong> 时会自动调度, 减少 IO 阻塞导致的时间损失.</p>
-
-<p>我们可以对比下面三段代码:</p>
-
-<ul>
-<li>  普通版: 执行 4 个任务</li>
-</ul>
-
-<pre><code class="language-php">$n = 4;
-for ($i = 0; $i &lt; $n; $i++) {
-    sleep(1);
-    echo microtime(true) . &quot;: hello $i \n&quot;;
-};
-echo &quot;hello main \n&quot;;
-
-</code></pre>
-
-<pre><code class="language-sh">root@b98940b00a9b /v/w/c/p/swoole# time php co.php
-1528965075.4608: hello 0
-1528965076.461: hello 1
-1528965077.4613: hello 2
-1528965078.4616: hello 3
-hello main
-real    0m 4.02s
-user    0m 0.01s
-sys     0m 0.00s
-⏎
-
-</code></pre>
-
-<ul>
-<li>  单个协程版:</li>
-</ul>
-
-<pre><code class="language-php">$n = 4;
-go(function () use ($n) {
-    for ($i = 0; $i &lt; $n; $i++) {
-        Co::sleep(1);
-        echo microtime(true) . &quot;: hello $i \n&quot;;
-    };
-});
-echo &quot;hello main \n&quot;;
-
-</code></pre>
-
-<pre><code>root@b98940b00a9b /v/w/c/p/swoole# time php co.php
-hello main
-1528965150.4834: hello 0
-1528965151.4846: hello 1
-1528965152.4859: hello 2
-1528965153.4872: hello 3
-real    0m 4.03s
-user    0m 0.00s
-sys     0m 0.02s
-⏎
-
-</code></pre>
-
-<ul>
-<li>  多协程版: <strong>见证奇迹的时刻</strong></li>
-</ul>
-
-<pre><code class="language-php">$n = 4;
-for ($i = 0; $i &lt; $n; $i++) {
-    go(function () use ($i) {
-        Co::sleep(1);
-        echo microtime(true) . &quot;: hello $i \n&quot;;
-    });
-};
-echo &quot;hello main \n&quot;;
-
-</code></pre>
-
-<pre><code class="language-sh">root@b98940b00a9b /v/w/c/p/swoole# time php co.php
-hello main
-1528965245.5491: hello 0
-1528965245.5498: hello 3
-1528965245.5502: hello 2
-1528965245.5506: hello 1
-real    0m 1.02s
-user    0m 0.01s
-sys     0m 0.00s
-⏎
-
-</code></pre>
-
-<p>为什么时间有这么大的差异呢:</p>
-
-<ul>
-<li>  普通写法, 会遇到 <strong>IO 阻塞</strong> 导致的性能损失</li>
-<li>  单协程: 尽管 IO 阻塞 引发了协程调度, 但当前只有一个协程, 调度之后还是执行当前协程</li>
-<li>  多协程: 真正发挥出了协程的优势, 遇到 IO 阻塞 时发生调度, IO 就绪时恢复运行</li>
-</ul>
-
-<p>我们将多协程版稍微修改一下:</p>
-
-<ul>
-<li>  多协程版 2: CPU 密集型</li>
-</ul>
-
-<pre><code class="language-php">$n = 4;
-for ($i = 0; $i &lt; $n; $i++) {
-    go(function () use ($i) {
-        // Co::sleep(1);
-        sleep(1);
-        echo microtime(true) . &quot;: hello $i \n&quot;;
-    });
-};
-echo &quot;hello main \n&quot;;
-
-</code></pre>
-
-<pre><code class="language-sh">root@b98940b00a9b /v/w/c/p/swoole# time php co.php
-1528965743.4327: hello 0
-1528965744.4331: hello 1
-1528965745.4337: hello 2
-1528965746.4342: hello 3
-hello main
-real    0m 4.02s
-user    0m 0.01s
-sys     0m 0.00s
-⏎
-
-</code></pre>
-
-<p>只是将 <code>Co::sleep()</code> 改成了 <code>sleep()</code>, 时间又和普通版差不多了. 因为:</p>
-
-<ul>
-<li>  <code>sleep()</code> 可以看做是 CPU 密集型任务, 不会引起协程的调度</li>
-<li>  <code>Co::sleep()</code> 模拟的是 IO 密集型任务, 会引发协程的调度</li>
-</ul>
-
-<p><strong>这也是为什么, 协程适合 IO 密集型 的应用.</strong></p>
-
-<p>再来一组对比的例子: 使用 redis</p>
-
-<pre><code class="language-php">// 同步版, redis使用时会有 IO 阻塞
-$cnt = 2000;
-for ($i = 0; $i &lt; $cnt; $i++) {
-    $redis = new \Redis();
-    $redis-&gt;connect(&#39;redis&#39;);
-    $redis-&gt;auth(&#39;123&#39;);
-    $key = $redis-&gt;get(&#39;key&#39;);
-}
-
-// 单协程版: 只有一个协程, 并没有使用到协程调度减少 IO 阻塞
-go(function () use ($cnt) {
-    for ($i = 0; $i &lt; $cnt; $i++) {
-        $redis = new Co\Redis();
-        $redis-&gt;connect(&#39;redis&#39;, 6379);
-        $redis-&gt;auth(&#39;123&#39;);
-        $redis-&gt;get(&#39;key&#39;);
-    }
-});
-
-// 多协程版, 真正使用到协程调度带来的 IO 阻塞时的调度
-for ($i = 0; $i &lt; $cnt; $i++) {
-    go(function () {
-        $redis = new Co\Redis();
-        $redis-&gt;connect(&#39;redis&#39;, 6379);
-        $redis-&gt;auth(&#39;123&#39;);
-        $redis-&gt;get(&#39;key&#39;);
-    });
-}
-
-</code></pre>
-
-<p>性能对比:</p>
-
-<pre><code class="language-sh"># 多协程版
-root@0124f915c976 /v/w/c/p/swoole# time php co.php
-real    0m 0.54s
-user    0m 0.04s
-sys     0m 0.23s
-⏎
-
-# 同步版
-root@0124f915c976 /v/w/c/p/swoole# time php co.php
-real    0m 1.48s
-user    0m 0.17s
-sys     0m 0.57s
-⏎
-
-</code></pre>
-
-<h2 id="toc_2">swoole 协程和 go 协程对比: 单进程 vs 多线程</h2>
-
-<p>接触过 go 协程的 coder, 初始接触 swoole 的协程会有点 <strong>懵</strong>, 比如对比下面的代码:</p>
-
-<pre><code class="language-go">package main
-
-import (
-    &quot;fmt&quot;
-    &quot;time&quot;
-)
-
-func main() {
-    go func() {
-        fmt.Println(&quot;hello go&quot;)
-    }()
-
-    fmt.Println(&quot;hello main&quot;)
-
-    time.Sleep(time.Second)
-}
-
-</code></pre>
-
-<pre><code class="language-sh">&gt; 14:11 src $ go run test.go
-hello main
-hello go
-
-</code></pre>
-
-<p>刚写 go 协程的 coder, 在写这个代码的时候会被告知不要忘了 <code>time.Sleep(time.Second)</code>, 否则看不到输出 <code>hello go</code>, 其次, <code>hello go</code> 与 <code>hello main</code> 的顺序也和 swoole 中的协程不一样.</p>
-
-<p>原因就在于 swoole 和 go 中, <strong>实现协程调度的模型不同</strong>.</p>
-
-<p>上面 go 代码的执行过程:</p>
-
-<ul>
-<li>  运行 go 代码, 系统启动一个新进程</li>
-<li>  查找 <code>package main</code>, 然后执行其中的 <code>func mian()</code></li>
-<li>  <strong>遇到协程, 交给协程调度器执行</strong></li>
-<li>  继续向下执行, 输出 <code>hello main</code></li>
-<li>  如果不添加 <code>time.Sleep(time.Second)</code>, main 函数执行完, 程序结束, 进程退出, 导致调度中的协程也终止</li>
-</ul>
-
-<p>go 中的协程, 使用的 MPG 模型:</p>
-
-<ul>
-<li>  M 指的是 Machine, 一个 M 直接关联了一个内核线程</li>
-<li>  P 指的是 processor, 代表了 M 所需的上下文环境, 也是处理用户级代码逻辑的处理器</li>
-<li>  G 指的是 Goroutine, 其实本质上也是一种轻量级的线程</li>
-</ul>
-
-<p><img src="https://upload-images.jianshu.io/upload_images/567399-d400f4b192f3dc48.png" alt=""/></p>
-
-<p>而 swoole 中的协程调度使用 <strong>单进程模型</strong>, 所有协程都是在当前进程中进行调度, 单进程的好处也很明显 -- <strong>简单 / 不用加锁 / 性能也高</strong>.</p>
-
-<p>无论是 go 的 MPG 模型, 还是 swoole 的 单进程模型, 都是对 CSP 理论 的实现.</p>
+<p>This is where <a href="http://codecept.io/">CodeceptJS</a> comes into the picture. CodeceptJS is a testing framework that takes a scenario-driven, <a href="https://en.wikipedia.org/wiki/Behavior-driven_development">behaviour driven development</a> (BDD) approach, with an API language that is easy for non-engineers to understand and use. However, perhaps even more importantly, it is backend agnostic. It is written on top of several popular testing libraries (WebDriverIO or Puppeteer, for example) and its single high level API communicates to whichever one you choose. It’s <a href="https://hackernoon.com/effective-end-2-end-testing-in-javascript-with-codeceptjs-37c8d7d6a928">creators believe</a> that</p>
 
 <blockquote>
-<p>CSP 通信方式, 在 1985 年时的论文就已经有了, 做理论研究的人, 如果没有能提前几年, 十几年甚至几十年的大胆假设, 可能很难提高了.</p>
+<p>Your tests should not be bound to your execution engine. Whether you choose Selenium or Puppeteer your tests should look almost the same. If you (later) feel the limitation of one engine you can easily switch your tests to other.</p>
 </blockquote>
 
-<h2 id="toc_3">写在最后</h2>
+<h3 id="toc_3">Layers of testing tools</h3>
 
-<p>今天从 <code>go()</code> 出发, 得以一瞥协程世界, 协程的世界里还有很多很有意思的东西, 需要我们去发现. 比如:</p>
+<p><img src="https://cdn-images-1.medium.com/max/1600/1*p0ALhZOLfRFYBvosshCmjQ.png" alt=""/>Some of the different products available at each layer of simulating user interaction with a browser</p>
+
+<p>Let’s take a bottom-up approach to looking at how each layer builds on the last.</p>
+
+<p>It is worth initially referencing <a href="https://www.seleniumhq.org/">Selenium</a>, a long running project with an actively used set of tools, which today is made up of Selenium WebDriver, Grid, Server, and IDE. In creating these tools they have set many industry standards, often confusingly named after the Selenium product they came from. This can be seen in ‘Selenium WebDriver’, and the ‘WebDriver wire protocol’ that was established in its development. Those applicable will be shown in more detail below.</p>
+
+<h4 id="toc_4">Browser</h4>
+
+<p>Any web browser: Chrome, Firefox, Internet Explorer, Safari, Opera, and so on. Often referred to as the ‘user agent’ in documentation.</p>
+
+<h4 id="toc_5">W3C’s WebDriver wire protocol</h4>
+
+<p>The WebDriver wire protocol is a platform and language-neutral way of interacting with web browsers. It defines a common <a href="http://www.drdobbs.com/web-development/restful-web-services-a-tutorial/240169069">RESTful web service</a> using JSON over HTTP in request/response pairs. It allows DOM elements to be manipulated from an external source, while also allowing navigation to web pages, user input, JavaScript execution, and more.</p>
+
+<p>Initially written by Selenium for the Selenium WebDriver, this protocol has now reached the Editor’s Draft stage in becoming an official <a href="https://w3c.github.io/webdriver/">W3C standard</a>.</p>
+
+<p>Other protocols do exit, but will not be covered in great detail here. All explanations will assume a backend that implements the WebDriver wire protocol.</p>
+
+<p>Another notable protocol is the <a href="https://chromedevtools.github.io/devtools-protocol/">Chrome DevTools protocol</a> used by <a href="https://github.com/GoogleChrome/puppeteer">Puppeteer</a>. Puppeteer does not use Selenium Server, and comes bundled with a recent version of <a href="https://www.howtogeek.com/202825/what%E2%80%99s-the-difference-between-chromium-and-chrome/">Chromium</a> intended for local use. If you wish to run Puppeteer in Docker, you can either use the <a href="https://codecept.io/docker/">CodeceptJS image</a> (that comes with Puppeteer and Nightmare) or follow the official guide to creating a <a href="https://github.com/GoogleChrome/puppeteer/blob/master/docs/troubleshooting.md#running-puppeteer-in-docker">custom image</a> that can support it.</p>
+
+<h4 id="toc_6">Browser WebDrivers</h4>
+
+<p>These are browser specific implementations of the WebDriver wire protocol, for example <a href="https://sites.google.com/a/chromium.org/chromedriver/home">ChromeDriver</a> for Chrome or <a href="https://github.com/mozilla/geckodriver">GeckoDriver</a> for Firefox. Each acts as a standalone <a href="https://github.com/SeleniumHQ/selenium/wiki/JsonWireProtocol#server">server</a> to receive requests from the <a href="https://github.com/SeleniumHQ/selenium/wiki/JsonWireProtocol#client">client</a> where the WebDriver API is being used (generally where the tests are held). In order to communicate with the intended browser, the correct WebDriver implementation <strong>must</strong> be installed.</p>
+
+<h4 id="toc_7">Selenium Server</h4>
+
+<p>If the tests are being run on the same machine that they are defined, then the client-side WebDriver API implementation used (described below) can communicate directly with the browser WebDriver and a <a href="https://www.seleniumhq.org/docs/03_webdriver.jsp">Selenium Server is not required</a>.</p>
+
+<p>However, if tests are to be run on a different machine, whether in CI, in a <a href="https://www.guru99.com/introduction-to-selenium-grid.html">Selenium Grid</a> setup across multiple machines or virtual machines (VMs), on a remote testing platform such as <a href="https://www.browserstack.com/start#os=Windows&amp;os_version=7&amp;browser=IE&amp;browser_version=11.0&amp;zoom_to_fit=true&amp;full_screen=true&amp;resolution=responsive-mode&amp;url=https%3A%2F%2Fwww.skyscanner.net%2Ftransport%2Fflights%2Fedi%2Fde%3Fmigrate%3Dtrue&amp;speed=1">BrowserStack</a> or <a href="https://saucelabs.com/">SauceLabs</a>, or within Docker, then a Selenium Server is used. It acts as a proxy to forward requests from the client-side WebDriver API to the correct browser WebDriver, and passes back the response from the browser.</p>
+
+<p><img src="https://cdn-images-1.medium.com/max/1600/1*hmr8_c0WIcilEsMdfc-u-w.png" alt=""/>As we’ll see later, ‘machine’ can also be swapped for ‘container’</p>
+
+<h4 id="toc_8">Client-side WebDriver Implementation</h4>
+
+<p>A variety of tools implement the client-side WebDriver wire protocol. Here the protocol can be seen as an API to send requests to the browser via the layers described above. Many tools using the protocol are full frameworks, such as <a href="http://webdriver.io/guide/getstarted/modes.html">WebDriverIO</a>, that include their own test runners.</p>
+
+<p>Other implementations include: the <a href="https://www.swtestacademy.com/selenium-testing-selenium-history/">original</a> Selenium WebDriver, Protractor, Appium, and more.</p>
+
+<p>The libraries of each aim to achieve the same results, but with slightly different focuses and API implementations. This can be as basic as <a href="http://www.protractortest.org/#/tutorial">Protractor’s</a> <code>browser.get(url)</code> versus <a href="http://webdriver.io/api/protocol/url.html">WebDriverIO’s</a> <code>browser.url(url)</code>.</p>
+
+<h4 id="toc_9">One API to rule them all</h4>
+
+<p>As described at the beginning of this section, this is where CodeceptJS comes into play. It refers to other client-side WebDriver protocol (or other) implementations as “<a href="https://codecept.io/helpers/WebDriverIO/">helpers</a>”, and allows you to specify the helper you prefer while using one API language. CodeceptJS does not care which protocol is being used by the helper chosen.</p>
+
+<p>WebDriverIO, Puppeteer, Protractor, Nightmare and Appium are all current helpers that are available.</p>
+
+<p>In CodeceptJS the previous command would be <code>I.amOnPage(url)</code> no matter which helper was chosen. This means that if you wanted to switch out your backend to one of the other helpers supported, your tests would not have to be re-written. It is possible to <a href="https://codecept.io/helpers/">overwrite or add to</a> the default API methods via custom classes should you wish.</p>
+
+<h3 id="toc_10">Creating a test project</h3>
+
+<p>With so many layers this starts to sound complex, but between CodeceptJS’s initialisation script and Docker images, we can quickly have a working example.</p>
+
+<h4 id="toc_11">What we will produce</h4>
+
+<p><img src="https://cdn-images-1.medium.com/max/1600/1*wKrNJtA4OpbtHjhTRCsc5w.png" alt=""/>Two containers will be used for now, though this can be extended</p>
+
+<p>We will write a simple test in CodeceptJS, specifying a WebDriverIO backend helper, that will communicate with a remote browser within the standalone-firefox Docker container. We will use the Express “hello world” app, but this could be replaced by any app you wish.</p>
+
+<p><img src="https://cdn-images-1.medium.com/max/1600/1*XT4px3Nj57WeVjdv6Rt7mg.png" alt=""/>Soon only two commands will be needed to run the Dockerized app and all test suites</p>
+
+<p>Once we have everything set up, we will be able to run only two commands to run the tests:</p>
 
 <ul>
-<li>  我们普通版的代码是当前进程里执行的, 只是单个进程, 可我们现在可能有了很多协程, 会不会有什么奇遇呢?</li>
+<li>  <code>docker-compose up --build</code></li>
+<li>  <code>docker exec -it app npm run test:e2e</code></li>
 </ul>
 
-<p>还有一个细节: swoole 中有 <code>Co::sleep()</code> 和 <code>sleep()</code> 2 个方法的, 而 go 中只有 <code>time.Sleep()</code> 一个方法?</p>
+<p>By running in two side by side terminal windows, we can see the containers running and the test executing in real time.</p>
 
-<p>这是 swoole 协程需要经历的一个阶段 (毕竟 go 快 10 年了), 还不够 <strong>智能的判断 IO 阻塞</strong>, 所以上面也使用了相应的协程版 redis <code>co\Redis()</code> -- 你得使用配套协程版, 才能达到协程调度的效果.</p>
-
-<p>如果对协程的发展阶段感兴趣, 可以阅读下面这篇文章:</p>
+<h4 id="toc_12"><u>Prerequisites</u></h4>
 
 <ul>
-<li>  <a href="https://my.oschina.net/yyzybb/blog/1817226">Why c++ coroutine？Why libgo？</a>: 关于协程全景式的概述的, 推荐花时间读一读</li>
+<li>  <a href="https://store.docker.com/search?type=edition&amp;offering=community">Docker</a>, for whichever machine you are developing on.</li>
+<li>  You could also install <a href="https://nodesource.com/blog/installing-nodejs-tutorial-mac-os-x/">Node.js, &amp; npm</a> for local development and debugging, but these can also be fully run within Docker.</li>
 </ul>
 
-<p>想解锁 swoole 协程的更多姿势:</p>
+<h4 id="toc_13">File structure</h4>
+
+<p>We will be producing the file structure below. You can see a <a href="https://github.com/dominicfraser/CodeceptJSDockerExamples/tree/master/seleniumStandaloneFirefox">working example on Github</a>.</p>
+
+<pre><code>|-- .gitignore 
+|-- output/
+|-- Dockerfile
+|-- app.js
+|-- docker-compose.yml
+|-- package.json
+|-- package-lock.json
+|-- e2eTests/    
+|-- common_test.js    
+|-- docker.conf.js
+</code></pre>
+
+<h4 id="toc_14">Dependencies</h4>
+
+<p>First we will create our <a href="https://docs.nodejitsu.com/articles/getting-started/npm/what-is-the-file-package-json/">package.json</a> with Express as a dependency and CodeceptJS and WebDriverIO as dev dependencies.</p>
+
+<pre><code class="language-json">{
+  &quot;name&quot;: &quot;example-standalone-firefox&quot;,
+  &quot;version&quot;: &quot;1.0.0&quot;,
+  &quot;description&quot;: &quot;Example of Dockerizing E2E testing&quot;,
+  &quot;scripts&quot;: {
+    &quot;start&quot;: &quot;node app.js&quot;,
+    &quot;test:e2e&quot;: &quot;codeceptjs run --steps --verbose --config=./e2eTests/docker.conf.js&quot;
+  },
+  &quot;dependencies&quot;: {
+    &quot;express&quot;: &quot;^4.16.3&quot;
+  },
+  &quot;devDependencies&quot;: {
+    &quot;codeceptjs&quot;: &quot;^1.2.0&quot;,
+    &quot;webdriverio&quot;: &quot;^4.12.0&quot;
+  }
+}
+</code></pre>
+
+<p>We have also included two scripts, one to run the Express app we will add (<code>npm run start</code>), and one to run our CodeceptJS test (<code>npm run test:e2e</code>).</p>
+
+<pre><code class="language-json">codeceptjs run --steps --verbose --config=./e2eTests/docker.conf.js```
+
+`--steps` is great for showing output in the terminal as tests are running, while `--verbose` extends the level of detail even further. `--verbose` is likely not needed as standard, but is good for seeing how the example works. `--config` shows us the path to the backend configuration file, in this case kept in a separate `e2eTests` directory.
+
+#### Our app
+
+Next we need an app to test. For this we will run the Express “[hello world](https://expressjs.com/en/starter/hello-world.html)” app from `app.js`.
+
+```js
+const express = require(&#39;express&#39;);
+const app = express();
+app.get(&#39;/&#39;, (req, res) =&gt; res.send(&#39;Hello World!&#39;));
+const server = app.listen(3000, () =&gt; {
+    const port = server.address().port
+    console.log(`Example app listening on port ${port}`)
+ })
+ ```
+
+You can view this using `npm run start` and then going to `localhost:3000` in your browser.
+
+#### Test configuration
+
+CodeceptJS requires two files, a configuration file and a test file. The test file is extremely simple: it tests that the app can be accessed, saves a screenshot, and checks that the text “Hello” can be seen on the page.
+
+```js
+Feature(&#39;Basic test&#39;);
+Scenario(&#39;navigate to homepage&#39;, I =&gt; {
+  I.amOnPage(&#39;http://app:3000&#39;);
+  I.saveScreenshot(&#39;frontpageScreenshot.png&#39;);
+  I.see(&#39;Hello&#39;);
+});
+</code></pre>
+
+<p>The first indication that we will be using multiple Docker containers is shown here in the use of <code>app:3000</code> rather than <code>localhost:3000</code>. <code>localhost</code> can only be understood from within a single container. If a command is being run from another container (in this case by Firefox in our second Selenium container), then it needs a more definitive reference. We could use the first container’s IP address directly, but using the container’s name is much easier to read.</p>
+
+<p>In this case, <code>app</code> will be the name of the container that is running the app, so we can use <code>app:3000</code>. Don’t worry if you don’t follow this yet, seeing how our <code>docker-compose.yml</code> is structured will help.</p>
+
+<p>We also need a main <a href="https://codecept.io/configuration/">configuration</a> file. This can be written in JSON or JS, but here we use JS. Let’s look at this:</p>
+
+<pre><code class="language-js">exports.config = {
+  tests: &#39;./*_test.js&#39;,    // how to know which files are test files
+  output: &#39;./output&#39;,      // where to save screenshots
+  helpers: {
+   WebDriverIO: {               // which backend helper to use
+     url: &#39;http://app:3000&#39;,    // a base URL to start on
+     host: &#39;firefox-container&#39;, // identifying where selenium runs
+     browser: &#39;firefox&#39;,        // a series of [config options](https://codecept.io/helpers/WebDriverIO/)
+     smartWait: 5000,              
+     waitForTimeout: 10000,
+     desiredCapabilities: {        // for a demo app we do not want 
+         acceptInsecureCerts: true,   to worry about SSL certs
+     }
+   },
+  },
+  name: &#39;codeceptjs-docker&#39;,
+};
+</code></pre>
+
+<h4 id="toc_15">Setting up Docker</h4>
+
+<p>Referring back to the diagram above in the “What we will produce” section, we can see that we will be using two Docker containers. They must be aware of each other and be able to communicate. One will contain our app and tests, and one a Selenium Server, GeckoDriver, and Firefox, so that we do not need Firefox installed on our local machine.</p>
+
+<p><a href="https://docs.docker.com/compose/">Docker Compose</a> is a tool for “defining and running multi-container Docker applications.” It starts Docker containers with the <a href="https://docs.docker.com/compose/reference/overview/">command</a> <code>docker-compose up</code>, and stops them with <code>docker-compose down</code>. If a user defined Dockerfile is being used, <code>--build</code> is used to build it, either the first time <code>docker-compose up</code> is run, or if changes have been made to the Dockerfile. <code>docker-compose.yml</code> is the file that defines what the <code>up</code> command will do.</p>
+
+<p>Our next step is to create this <code>docker-compose.yml</code>. It is heavily dependant on indentation.</p>
+
+<pre><code class="language-yml">version: &quot;2&quot;        // which version of compose syntax you are using
+services:
+  app:
+    container_name: app  // explicit so we can use this for app:3000
+    build: .             // a self defined Dockerfile, see below
+    ports:               // exposes port 3000 (where express runs)
+      - &quot;3000:3000&quot;         to other containers, and to our local       
+    depends_on:             browser
+      - firefox-container
+    volumes:             // maps so changes to these can be seen
+      - ./e2eTests:/e2eTests
+      - ./package.json:/package.json
+      - ./package-lock.json:/package-lock.json
+      - ./.gitignore:/.gitignore
+      - ./app.js:/app.js
+  firefox-container:      // we&#39;ll look at this below
+    container_name: firefox-container
+    image: selenium/standalone-firefox:3.12.0-americium
+    volumes:
+      - /dev/shm:/dev/shm
+    ports:
+      - &quot;4444:4444&quot;
+</code></pre>
+
+<p>For our Selenium Server, drivers, and browser, we use a pre-defined image available from the public <a href="https://hub.docker.com/">Docker Hub</a> called <a href="https://hub.docker.com/r/selenium/standalone-firefox/">selenium/standalone-firefox</a>. We specify which version we want, 3.12.0-americium. If we did not specify this the latest image would be used by default (which is not a bad thing). As <a href="https://github.com/SeleniumHQ/docker-selenium#running-the-images">advised</a>, we configure it to share the host’s memory to prevent the browser being run from crashing, and expose port 4444, the default Selenium port. We also map this to port 4444 on our local machine, allowing us to visit <code>localhost:4444/wd/hub/static/resource/hub.html</code> in our browser.</p>
+
+<p>For our <code>app</code> container, we are not just using an image built by someone else, but are writing a Dockerfile to specify how our app is built. In the same way as the <code>selenium-firefox</code> container we expose a port, 3000 in this case, as that is where Express runs by default. By mapping this using <code>3000:3000</code> we are able to visit <code>localhost:3000</code> while the app is being run in Docker to see it in our local browser.</p>
+
+<p>Our Dockerfile uses the public <code>node:carbon</code> image as a base, sets the working directory, copies some files from our local machine to the container, runs <code>npm install</code> so that the container has all needed dependencies, and then runs the <code>npm start</code> command we specified.</p>
+
+<pre><code class="language-dockerfile">FROM node:carbon
+WORKDIR ./
+COPY ./package.json ./package-lock.json ./app.js ./
+RUN npm install
+CMD [ &quot;npm&quot;, &quot;start&quot; ]
+</code></pre>
+
+<p>This means that when <code>docker-compose up --build</code> is run, it will follow these steps, resulting in our app being ready and running on port 3000.</p>
+
+<p><strong>Note</strong>: The <code>--build</code> flag is only needed the first time <code>docker-compose up</code> is run, or if changes have been made to our Dockerfile or the steps executed within it. For example, if we added another dependency in our <code>package.json</code> then Docker would not know about it if we did not rebuild our image, as <code>npm install</code> is run within the Dockerfile.</p>
+
+<h4 id="toc_16">Running tests</h4>
+
+<p>We now have a simple app, tests written for it, and a Docker Compose configuration that will run both our app, a Selenium Server, and Firefox.</p>
+
+<p>We can start all of these using <code>docker-compose up --build</code>.</p>
+
+<p>To run commands <u>within</u> a running Docker container, <code>docker exec</code> can be used from another terminal window. The format is:</p>
+
+<p><code>docker exex &lt;flags&gt; &lt;container_name&gt; &lt;command&gt;</code></p>
+
+<p>The command we will use is:</p>
+
+<p><code>docker exec [-it](https://docs.docker.com/engine/reference/commandline/exec/#options) app npm run test:e2e</code></p>
+
+<p>We can now see our test running, and see each step as it is performed! From here we can extend what our test does, add additional tests (ending the filenames in <code>_test.js</code>), and use the same two commands to run them. No more setup is needed.</p>
+
+<p>You now have an easily extensible E2E testing setup that can be relied on to run the same way no matter which machine it is run on. It was written with API commands that can be easily understood by both developers and non-developers. All that remains now is to decide which behaviour your app should be capable of, and test it!</p>
+
+<h3 id="toc_17">Final words</h3>
+
+<p>SeleniumHQ also produces Docker <a href="https://github.com/SeleniumHQ/docker-selenium#standalone-chrome-and-firefox">images for Chrome testing</a>, and images for using Selenium Grid for running multiple instances of Chrome and Firefox at one time.</p>
+
+<p>CodeceptJS also has <a href="https://codecept.io/docker/">instructions for running CodeceptJS in Docker</a>, so that it does not need to be specified as a dependency in your app.</p>
+
+<p>A more technical, but still starter level description of how Docker works can be seen in the first section of the post I wrote titled <a href="https://medium.freecodecamp.org/amazon-ecs-terms-and-architecture-807d8c4960fd">_A beginner’s guide to Amazon’s Elastic Container Service_</a>_._</p>
+
+<p>Thanks for reading 😀</p>
+
+<h4 id="toc_18">Resources</h4>
 
 <ul>
-<li>  <a href="https://segmentfault.com/a/1190000013239349">Swoole 2.1 正式版发布，协程 + 通道带来全新的 PHP 编程模式</a></li>
-<li>  <a href="https://segmentfault.com/a/1190000015291606">Swoole 4.0 正式版，面向生产环境的 PHP 协程引擎</a></li>
-<li>  <a href="https://github.com/ThinkDevelopers/PHPConChina/blob/master/PHPCON2018/Swoole4-%E5%85%A8%E6%96%B0%E7%9A%84PHP%E7%BC%96%E7%A8%8B%E6%A8%A1%E5%BC%8F_%E9%9F%A9%E5%A4%A9%E5%B3%B0_PHPCON2018.pdf">Swoole4 - 全新的 PHP 编程模式_韩天峰_PHPCON2018</a></li>
+<li>  <a href="https://github.com/dominicfraser/CodeceptJSDockerExamples">Github</a> of CodeceptJS Docker examples</li>
+<li>  <a href="https://codecept.io/quickstart/">CodeceptJS QuickStart guide</a></li>
+<li>  <a href="https://www.youtube.com/watch?v=cDwNfAEo0lA">Selenium WebDriver Architecture</a></li>
+<li>  <a href="https://seleniumjava.com/2015/09/13/how-does-selenium-webdriver-work/">Selenium WebDriver Flow</a></li>
 </ul>
-
-<p>最后, <a href="https://gitee.com/daydaygo/coding/blob/master/php/swoole/co.php">本期示例代码可以从我的开源项目中获取, 请享用</a></p>
 
                         
                       </div>
@@ -550,10 +423,10 @@ hello go
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/6/16</span>
+                    <span class="date">2018/7/2</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Cocurrency.html'>Cocurrency</a></span>
+          					    <span class="posted-in"><a href='QA.html'>QA</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -624,9 +497,9 @@ hello go
         
             <a href="Coding.html"><strong>Coding</strong></a>
         
-            <a href="Solution.html"><strong>Solution</strong></a>
+            <a href="Modeling.html"><strong>Modeling</strong></a>
         
-            <a href="Archtect.html"><strong>Archtect</strong></a>
+            <a href="Archtecting.html"><strong>Archtecting</strong></a>
          
         </p>
 
@@ -643,31 +516,31 @@ hello go
 	      
 		      
 			      <li class="post">
-			        <a href="15359384213292.html">Securing Spring Boot with JWTs</a>
+			        <a href="15389311738065.html">重构到更深层的模型</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15358820607055.html">Java 8 Concurrency Tutorial: Atomic Variables and ConcurrentMap</a>
+			        <a href="15389278377243.html">IAM of Google Cloud</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15358774987730.html">Java 8 Concurrency Tutorial: Synchronization and Locks</a>
+			        <a href="15389224951575.html">RSocket, a New Application Network Protocol for Reactive Applications, Announced at SpringOne</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15358757119900.html">Java 8 Concurrency Tutorial: Threads and Executors</a>
+			        <a href="15389220103546.html">如何形象地描述RxJava中的背压和流控机制？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15358756631902.html">Java 8 Stream Tutorial</a>
+			        <a href="15389214670417.html">Modeling Uncertainty with Reactive DDD</a>
 			      </li>
 		     
 		  

@@ -80,9 +80,9 @@
         
             <li><a href="Coding.html">Coding</a></li>
         
-            <li><a href="Solution.html">Solution</a></li>
+            <li><a href="Modeling.html">Modeling</a></li>
         
-            <li><a href="Archtect.html">Archtect</a></li>
+            <li><a href="Archtecting.html">Archtecting</a></li>
          
 
       </ul>
@@ -105,23 +105,213 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="14562278880897.html">
+                <a class="clearlink" href="15262240665064.html">
                 
-                  <h1>Spring Transaction Management Best Practices</h1>
+                  <h1>Spring Boot で WebSocket (STOMPではなく、TextWebSocketHandler)を試してみる</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
-                        	<p>In this post I’ll create a placeholder that I’ll keep updating in the future accumulating Spring Transaction Management best practises that I find along the way:</p>
+                        	<blockquote>
+<p>2017-05-10<br/>
+<a href="http://blog.enjoyxstudy.com/entry/2017/05/10/000000">http://blog.enjoyxstudy.com/entry/2017/05/10/000000</a></p>
+</blockquote>
 
-<p>Keep the <code>@Transactional</code> definition at the Service layer and not the DAO layer. Service beans might use multiple DAOs ACID-ly under the same transaction. If otherwise transaction management is defined at the DAO level, Service beans will pay the price of creating multiple transactions for a conceptually grouped operation let alone the data inconsistencies we’ll risk having not defining ACID Service operations.<br/>
-Further underlying the previous point we can define <code>@Transactional(propagation = Propagation.MANDATORY)</code> at the class level of our DAOs, therefore enforcing the consumers of our DAOs to initiate transaction management.</p>
+<p>こないだSTOMP over WebSocketを試してみましたが、今度はSTOMPを使わずに、<code>TextWebSocketHandler</code>を使ったWebSocketを試してみます。題材も同じくチャットです。</p>
 
-<p>Know what are the defaults of the @Transactional annotation and don’t just use it by faith. Namely, if not specified otherwise, propagation is set to Propagation.REQUIRED which means use an existing transaction otherwise create a new one; isolation is set to <code>Isolation.DEFAULT</code> that is defined by the underlying DB default which normally results to <code>Isolation.READ_COMMITED</code>; readOnly flag is switched off by default; rollbackFor can be defined for a Throwable class but beware: by default rollback occurs only if a RuntimeException is thrown unless this parameter is setup.</p>
+<ul>
+<li>  <a href="https://github.com/onozaty/sandbox-spring-boot/tree/master/spring-boot-websocket">sandbox-spring-boot/spring-boot-websocket at master · onozaty/sandbox-spring-boot · GitHub</a></li>
+</ul>
 
-<p>Be careful of the readOnly flag. Although <code>@Transactional(readOnly = true, propagation=Propagation.REQUIRED)</code> will throw an exception upon a JDBC insert/update command within that transaction, it wouldn’t have the expected behavior on an insert/update ORM operation where the operation will unintuitively go through and be committed successfully. Under an ORM environment use the flag along with Propagation.SUPPORTS. In that case we won’t have to pay for the cost of creating a new transaction simply for a select operation unless there is one in place. Or even still consider ditching the whole @Transactional management for select operations.</p>
+<p>ルームの情報をどのように渡そうか悩みました。コードを書き始めるまでは、WebSocketで接続する先にヘッダとかで渡せばいいかなと思っていましたが、調べてみたら渡せなかったので、やもえずURLのクエリパラメータとして渡すようにしました。</p>
 
-<p>Be careful when using <code>Propagation.REQUIRES_NEW</code> that is not in the top level. It causes problems more times than not. Since every time a new transaction is wrapping that aspect, in cases where multiple REQUIRES_NEWs are included within the same transactional service method in cases of a rollback ACID is not respected and inconsistent data are left in the DB. On the other hand, just using it on the top level of the transaction method is fine and actually equates the default <code>Propagation.REQUIRED</code>.</p>
+<h2 id="toc_0">コード</h2>
+
+<p>テキストでのやり取りを行うので、<code>TextWebSocketHandler</code> を利用します。<code>TextWebSocketHandler</code>の各メソッドをoverrideして必要な処理を実装するだけです。</p>
+
+<p>ルームの情報は、URLのクエリとしてクライアントから送っているので、接続が確立したタイミング(<code>afterConnectionEstablished</code>)にて、ルーム毎に<code>WebSocketSession</code>を保持するようにします。 メッセージを受け取ったら、自分のルームと同じ<code>WebSocketSession</code>に対して、メッセージを送るだけです。</p>
+
+<pre><code class="language-java">package com.example;
+
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArraySet;
+
+import org.springframework.stereotype.Component;
+import org.springframework.web.socket.CloseStatus;
+import org.springframework.web.socket.TextMessage;
+import org.springframework.web.socket.WebSocketSession;
+import org.springframework.web.socket.handler.TextWebSocketHandler;
+
+@Component
+public class ChatHandler extends TextWebSocketHandler {
+
+    private ConcurrentHashMap&lt;String, Set&lt;WebSocketSession&gt;&gt; roomSessionPool = new ConcurrentHashMap&lt;&gt;();
+
+    @Override
+    public void afterConnectionEstablished(WebSocketSession session) throws Exception {
+
+        String roomName = session.getUri().getQuery();
+
+        roomSessionPool.compute(roomName, (key, sessions) -&gt; {
+
+            if (sessions == null) {
+                sessions = new CopyOnWriteArraySet&lt;&gt;();
+            }
+            sessions.add(session);
+
+            return sessions;
+        });
+    }
+
+    @Override
+    protected void handleTextMessage(WebSocketSession session, TextMessage message) throws Exception {
+
+        String roomName = session.getUri().getQuery();
+
+        for (WebSocketSession roomSession : roomSessionPool.get(roomName)) {
+            roomSession.sendMessage(message);
+        }
+    }
+
+    @Override
+    public void afterConnectionClosed(WebSocketSession session, CloseStatus status) throws Exception {
+
+        String roomName = session.getUri().getQuery();
+
+        roomSessionPool.compute(roomName, (key, sessions) -&gt; {
+
+            sessions.remove(session);
+            if (sessions.isEmpty()) {
+                // 1件もない場合はMapからクリア
+                sessions = null;
+            }
+
+            return sessions;
+        });
+    }
+}
+</code></pre>
+
+<p>WebSocketの設定として、URLとHandlerを紐付けます。</p>
+
+<pre><code class="language-java">package com.example;
+
+import org.springframework.context.annotation.Configuration;
+import org.springframework.web.socket.config.annotation.EnableWebSocket;
+import org.springframework.web.socket.config.annotation.WebSocketConfigurer;
+import org.springframework.web.socket.config.annotation.WebSocketHandlerRegistry;
+
+import lombok.AllArgsConstructor;
+
+@Configuration
+@EnableWebSocket
+@AllArgsConstructor
+public class WebSocketConfig implements WebSocketConfigurer {
+
+    private final ChatHandler chatHandler;
+
+    @Override
+    public void registerWebSocketHandlers(WebSocketHandlerRegistry registry) {
+        registry.addHandler(chatHandler, &quot;/endpoint&quot;);
+    }
+
+}
+</code></pre>
+
+<p>クライアント側では、下記のようなコードになりました。</p>
+
+<pre><code class="language-html">&lt;!DOCTYPE html&gt;
+&lt;html lang=&quot;ja&quot;&gt;
+&lt;head&gt;
+&lt;meta charset=&quot;UTF-8&quot; /&gt;
+&lt;title&gt;チャット&lt;/title&gt;
+&lt;link rel=&quot;stylesheet&quot; href=&quot;/webjars/bootstrap/3.3.7/css/bootstrap.min.css&quot; /&gt;
+&lt;link rel=&quot;stylesheet&quot; href=&quot;/webjars/bootstrap/3.3.7/css/bootstrap-theme.min.css&quot; /&gt;
+&lt;/head&gt;
+&lt;body&gt;
+  &lt;div class=&quot;container&quot;&gt;
+    &lt;h2&gt;チャット&lt;/h2&gt;
+    &lt;div class=&quot;form-horizontal&quot;&gt;
+      &lt;div class=&quot;form-group&quot;&gt;
+        &lt;label for=&quot;roomName&quot; class=&quot;col-sm-2 control-label&quot;&gt;ルーム&lt;/label&gt;
+        &lt;div class=&quot;col-sm-2&quot;&gt;
+          &lt;input id=&quot;roomName&quot; type=&quot;text&quot; class=&quot;form-control&quot; value=&quot;example&quot; /&gt;
+        &lt;/div&gt;
+        &lt;div class=&quot;col-sm-3&quot;&gt;
+          &lt;button id=&quot;connectButton&quot; type=&quot;button&quot; class=&quot;btn btn-default&quot;&gt;接続&lt;/button&gt;
+          &lt;button id=&quot;disconnectButton&quot; class=&quot;btn btn-default&quot;&gt;切断&lt;/button&gt;
+        &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;form-group&quot;&gt;
+        &lt;label for=&quot;message&quot; class=&quot;col-sm-2 control-label&quot;&gt;メッセージ&lt;/label&gt;
+        &lt;div class=&quot;col-sm-4&quot;&gt;
+          &lt;input id=&quot;message&quot; type=&quot;text&quot; class=&quot;form-control&quot; /&gt;
+        &lt;/div&gt;
+        &lt;div class=&quot;col-sm-2&quot;&gt;
+          &lt;button id=&quot;sendButton&quot; type=&quot;button&quot; class=&quot;btn btn-default&quot;&gt;送信&lt;/button&gt;
+        &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;row&quot;&gt;
+        &lt;div class=&quot;col-sm-4 col-sm-offset-2&quot;&gt;
+          &lt;ul id=&quot;messageList&quot; class=&quot;list-unstyled&quot;&gt;
+          &lt;/ul&gt;
+        &lt;/div&gt;
+      &lt;/div&gt;
+    &lt;/div&gt;
+  &lt;/div&gt;
+  &lt;script src=&quot;/webjars/jquery/1.12.4/jquery.min.js&quot;&gt;&lt;/script&gt;
+  &lt;script src=&quot;/webjars/bootstrap/3.3.7/js/bootstrap.min.js&quot;&gt;&lt;/script&gt;
+  &lt;script&gt;
+    $(function() {
+      var endpoint = &#39;ws://&#39; + location.host + &#39;/endpoint&#39;;
+      var webSocket = null;
+
+      $(&#39;#connectButton&#39;).click(function() {
+
+        $(&quot;#messageList&quot;).empty();
+
+        webSocket = new WebSocket(endpoint + &#39;?&#39; + encodeURIComponent($(&#39;#roomName&#39;).val()));
+        webSocket.onopen = function() {
+          $(&#39;#roomName&#39;).prop(&#39;disabled&#39;, true);
+          $(&#39;#connectButton&#39;).prop(&#39;disabled&#39;, true);
+          $(&#39;#disconnectButton&#39;).prop(&#39;disabled&#39;, false);
+        };
+        webSocket.onclose = function() {
+        };
+        webSocket.onmessage = function(message) {
+          $(&#39;#messageList&#39;).prepend($(&#39;&lt;li&gt;&#39;).text(message.data));
+        };
+        webSocket.onerror = function() {
+          alert(&#39;エラーが発生しました。&#39;);
+        };
+      });
+
+      $(&#39;#disconnectButton&#39;).click(function() {
+
+        webSocket.close();
+        webSocket = null;
+
+        $(&#39;#roomName&#39;).prop(&#39;disabled&#39;, false);
+        $(&#39;#connectButton&#39;).prop(&#39;disabled&#39;, false);
+        $(&#39;#disconnectButton&#39;).prop(&#39;disabled&#39;, true);
+      });
+
+      $(&#39;#sendButton&#39;).click(function() {
+        if (!webSocket) {
+          alert(&#39;未接続です。&#39;);
+          return;
+        }
+
+        webSocket.send($(&#39;#message&#39;).val());
+      });
+    });
+  &lt;/script&gt;
+&lt;/body&gt;
+&lt;/html&gt;
+</code></pre>
+
+<p>STOMPの時のほうが、いろいろシンプルに書けるので、ブラウザがクライアントならば、STOMPを使わない理由はないかなと思っています。</p>
 
                         
                       </div>
@@ -130,7 +320,7 @@ Further underlying the previous point we can define <code>@Transactional(propaga
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2016/2/23</span>
+                    <span class="date">2018/5/13</span>
                     <span>posted in&nbsp;</span> 
           				  
           					    <span class="posted-in"><a href='Java.html'>Java</a></span>
@@ -157,7 +347,7 @@ Further underlying the previous point we can define <code>@Transactional(propaga
 			  </div>
 			  <div class="large-6 columns">
 			<p class="text-right" style="padding-top:25px;">
-			
+			 <a href="Java_28.html">&raquo; Next Page</a> 
 			</p>
 			  </div>
 			</div>
@@ -204,9 +394,9 @@ Further underlying the previous point we can define <code>@Transactional(propaga
         
             <a href="Coding.html"><strong>Coding</strong></a>
         
-            <a href="Solution.html"><strong>Solution</strong></a>
+            <a href="Modeling.html"><strong>Modeling</strong></a>
         
-            <a href="Archtect.html"><strong>Archtect</strong></a>
+            <a href="Archtecting.html"><strong>Archtecting</strong></a>
          
         </p>
 
@@ -223,31 +413,31 @@ Further underlying the previous point we can define <code>@Transactional(propaga
 	      
 		      
 			      <li class="post">
-			        <a href="15359384213292.html">Securing Spring Boot with JWTs</a>
+			        <a href="15389311738065.html">重构到更深层的模型</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15358820607055.html">Java 8 Concurrency Tutorial: Atomic Variables and ConcurrentMap</a>
+			        <a href="15389278377243.html">IAM of Google Cloud</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15358774987730.html">Java 8 Concurrency Tutorial: Synchronization and Locks</a>
+			        <a href="15389224951575.html">RSocket, a New Application Network Protocol for Reactive Applications, Announced at SpringOne</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15358757119900.html">Java 8 Concurrency Tutorial: Threads and Executors</a>
+			        <a href="15389220103546.html">如何形象地描述RxJava中的背压和流控机制？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15358756631902.html">Java 8 Stream Tutorial</a>
+			        <a href="15389214670417.html">Modeling Uncertainty with Reactive DDD</a>
 			      </li>
 		     
 		  

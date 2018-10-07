@@ -80,9 +80,9 @@
         
             <li><a href="Coding.html">Coding</a></li>
         
-            <li><a href="Solution.html">Solution</a></li>
+            <li><a href="Modeling.html">Modeling</a></li>
         
-            <li><a href="Archtect.html">Archtect</a></li>
+            <li><a href="Archtecting.html">Archtecting</a></li>
          
 
       </ul>
@@ -105,683 +105,169 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15248829536577.html">
+                <a class="clearlink" href="15277821532847.html">
                 
-                  <h1>A tale of Webpack 4 and how to finally configure it in the right way</h1>
+                  <h1>Aspect-Oriented Programming in Spring Boot Part 2: Spring JDK Proxies vs CGLIB vs AspectJ</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://hackernoon.com/a-tale-of-webpack-4-and-how-to-finally-configure-it-in-the-right-way-4e94c8e7e5c1">https://hackernoon.com/a-tale-of-webpack-4-and-how-to-finally-configure-it-in-the-right-way-4e94c8e7e5c1</a></p>
+<p>Justin Wilson May 9, 2016<br/>
+<a href="https://www.credera.com/blog/technology-insights/open-source-technology-insights/aspect-oriented-programming-in-spring-boot-part-2-spring-jdk-proxies-vs-cglib-vs-aspectj/">https://www.credera.com/blog/technology-insights/open-source-technology-insights/aspect-oriented-programming-in-spring-boot-part-2-spring-jdk-proxies-vs-cglib-vs-aspectj/</a></p>
 </blockquote>
 
-<p>There are a million tutorials online, so you probably have seen a thousand different ways to configure Webpack file. And all of them will be working examples. Why is it so? Webpack itself has been evolving really fast and a lot of loaders and plugins have to keep up. This is a major reason why the configuration files are so different: with a different version combination of the same tools things might work, or break.</p>
+<p>This is the second entry in a three-part series on aspect-oriented programming (AOP) with Spring Boot. This entry covers the differences between using AOP with Spring JDK proxies, CGLIB proxes, and AspectJ load-time weaving (LTW). The <a href="https://www.credera.com/blog/technology-insights/open-source-technology-insights/aspect-oriented-programming-in-spring-boot-part-1-making-your-own-hystrix-aspect/">first entry</a> covered how to write your own aspect, and the <a href="https://www.credera.com/blog/technology-insights/open-source-technology-insights/aspect-oriented-programming-in-spring-boot-part-3-setting-up-aspectj-load-time-weaving/">last entry</a> will contain detailed AspectJ LTW setup information.</p>
 
-<p>Let me just say one thing, and this is my sincere opinion: a lot of people have been complaining about webpack and how cumbersome it is. This is true in many ways, although I have to say with my experience of working with gulp and grunt, you stumble upon the same type of errors there too, meaning that when you use npm modules, it’s inevitable that some versions would be incompatible.</p>
+<p><strong>How Can You Call Code Without Writing Its Invocation?</strong></p>
 
-<p>Webpack 4 so far is the popular module bundler that has just undergone a massive update. There is a lot of new things it has to offer, such as zero configuration, reasonable defaults, performance improvement, optimisation tools out of the box.</p>
+<p>The Spring framework supports two main methods of AOP—Spring proxies and AspectJ. Both methods allow code snippets called aspects to be injected or “woven” around existing code by targeting specific join points. However, even though both AOP styles can use the same code for their aspects, the way in which they weave those aspects into existing code is completely different.</p>
 
-<p>If you are completely new to webpack, a great way to start would be to read the docs. <a href="https://webpack.js.org/concepts/">Webpack has a pretty nice documentation</a> with many parts explained, so I will go through them very briefly.</p>
+<p><strong>Spring Proxies: JDK and CGLIB Styles</strong></p>
 
-<p>Zero config: webpack 4 does not require a configuration file, this is new for the version 4. Webpack kinda grows step by step, so there is no need to do a monstrous configuration from the start.</p>
+<p>Every Spring bean (heretofore referred to as just a “bean”) can be considered a managed component. Whenever you declare a bean in XML or use @Component, @Service, or @Repository on a class targeted by Spring’s annotation component scanning (which is enabled by default for Spring Boot), that class is instantiated and managed as a singleton bean by the Spring framework. (It’s technically possible to use different scoping mechanisms to avoid singletons, but those won’t be covered here; see <a href="https://www.credera.com/blog/technology-insights/java/dependency-injection-part-3-spring/">my blog series on dependency injection</a> for more information.) Spring can inject references to that bean into other beans that request it using the @Autowired annotation (or @Resource or @Inject annotations) or beans that use “ref” in their XML definition. However, Spring doesn’t actually provide a literal reference to the original bean when it’s injected—it wraps the bean in a proxy class to give Spring a chance to weave in AOP code if needed.</p>
 
-<p>Performance improvement: webpack 4 is the fastest version of webpack so far.</p>
+<p>There are two ways Spring can make proxies:</p>
 
-<p>Reasonable defaults: webpack 4main concepts are <u>entry, output, loaders, plugins</u>. I will not cover these in details, although the difference between loaders and plugins is very vague. It all depends on how library author has implemented it.</p>
+<p>1. By default, Spring will try to use <a href="http://www.ibm.com/developerworks/java/library/j-jtp08305/index.html">JDK dynamic proxy libraries</a> to create a new instance of the injected bean’s interface which will act as a delegate to that bean. This behavior is demonstrated by the <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-proxy/src/test/java/org/jdw/blog/ProxyHystrixAspectTest.java#L36">unit tests</a> that use injected beans with interfaces in the <a href="https://github.com/jwilsoncredera/spring-aop-blog/tree/master/spring-aop-proxy">spring-aop-proxy sample project</a>.</p>
 
-<h3 id="toc_0">Core concepts</h3>
+<p><a href="https://www.credera.com/wp-content/uploads/2016/04/Picture2-4.png"><img src="https://www.credera.com/wp-content/uploads/2016/04/xPicture2-4.png.pagespeed.ic.dhHNYptsoi.webp" alt="Picture2"/></a></p>
 
-<h4 id="toc_1">Entry</h4>
+<p>2. If CGLIB is available on the classpath (which comes by default with Spring Boot) and there is no interface to implement a proxy with, CGLIB will be used to make a new object that extends the target bean’s class and acts as a delegate to that original bean. This behavior is also demonstrated by a <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-proxy/src/test/java/org/jdw/blog/ProxyHystrixAspectTest.java#L65">unit test</a> that uses an injected bean without an interface in the <a href="https://github.com/jwilsoncredera/spring-aop-blog/tree/master/spring-aop-proxy">spring-aop-proxy sample project</a>.</p>
 
-<p>This should be your _.js_ file. Now you will probably see a few configurations where people include _.scss_ or _.css_ file there. This is a major hack and can lead to a lot of unexpected errors. Also sometimes you see an entry with a few _.js_ files. While some solutions allow you to do so, I would say it usually adds more complexity and only do it when you really know why you are doing it.</p>
+<p><a href="https://www.credera.com/wp-content/uploads/2016/04/Picture3-3.png"><img src="https://www.credera.com/wp-content/uploads/2016/04/xPicture3-3.png.pagespeed.ic.W2zdwkeosT.webp" alt="Picture3"/></a></p>
 
-<h4 id="toc_2">Output</h4>
+<p>By default, Spring Boot will use JDK proxies if the bean has an interface and CGLIB proxies if the bean does not. If you try to inject a bean using its concrete class and that bean has an interface, Spring will fail to find the bean with a NoSuchBeanDefinitionException because it will fail to create a JDK proxy using the concrete class. In the first example above, that would be using this:</p>
 
-<p>This is your <u>build/</u> or <u>dist/</u> or <u>wateveryounameit/</u> folder where your end js file will be hosted. This is your end result comprised of modules.</p>
+<p>| </p>
 
-<h4 id="toc_3">Loaders</h4>
-
-<p>They mostly compile or transpile your code, like postcss-loader will go through different plugins. You will see it later.</p>
-
-<h4 id="toc_4">Plugins</h4>
-
-<p>Plugins play a vital role in outputting your code into files.</p>
-
-<h3 id="toc_5">Quickstart</h3>
-
-<p>Create a new directory and move into it:</p>
-
-<pre><code>mkdir webpack-4-tutorial
-cd webpack-4-tutorial
+<pre><code class="language-java">@Autowired
+private ImplForInterface bean;
 </code></pre>
 
-<p>Initialize a package.json :</p>
+<p>Instead of this:</p>
 
-<pre><code>npm init
+<pre><code class="language-java">@Autowired
+private Interface bean;
 </code></pre>
 
-<p>We need to download webpack v4 as a module and webpack-cli to run it from your terminal.</p>
+<p>To get around this limitation and be able to inject concrete classes that have interfaces, you have to tell Spring to always use CGLIB for all beans. This will disable Spring’s use of JDK proxies entirely, making Spring always extend concrete classes even if an interface is injected. To enable this in Spring Boot, just add the following Java property, as seen in the <a href="https://github.com/jwilsoncredera/spring-aop-blog/tree/master/spring-aop-proxy-cglib">spring-aop-proxy-cglib</a> sample project’s <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-proxy-cglib/src/main/resources/application.properties">application.properties</a> file:</p>
 
-<pre><code>npm install webpack webpack-cli --save-dev
-</code></pre>
+<p>spring.aop.proxy-target-class=true</p>
 
-<p>Make sure you have version 4 installed, if not, you can explicitly specify it in your <u>package.json</u> file. Now open up <u>package.json</u> and add a build script:</p>
+<p><strong>Spring Proxies: Annotations on Interfaces</strong></p>
 
-<pre><code>&quot;scripts&quot;: {
-  &quot;dev&quot;: &quot;webpack&quot;
-}
-</code></pre>
-
-<p>You will most likely see a warning:</p>
-
-<pre><code>WARNING in configuration
-
-The ‘mode’ option has not been set, webpack will fallback to ‘production’ for this value. Set ‘mode’ option to ‘development’ or ‘production’ to enable defaults for each environment.
-
-You can also set it to ‘none’ to disable any default behavior. Learn more: [https://webpack.js.org/concepts/mode/](https://webpack.js.org/concepts/mode/)
-</code></pre>
-
-<h3 id="toc_6">Webpack 4 modes</h3>
-
-<p>You need to edit your script to contain mode flag:</p>
-
-<pre><code>&quot;scripts&quot;: {
- &quot;dev&quot;: &quot;webpack --mode development&quot;
-}
-
-ERROR in Entry module not found: Error: Can’t resolve ‘./src’ in ‘~/webpack-4-quickstart’
-</code></pre>
-
-<p>This means webpack is looking for a folder _.src/_ with an <u>index.js</u> file. This is a default behaviour for webpack 4 since it requires zero configuration.</p>
-
-<p>Let`s go create a directory with a _.js_ file like this ./src/index.js and put some code there.</p>
-
-<pre><code>console.log(&quot;hello, world&quot;);
-</code></pre>
-
-<p>Now run the dev script:</p>
-
-<pre><code>npm run dev
-</code></pre>
-
-<p>Now you have a ./dist/main.js directory. This is great since we know our code compiled. But what did just happen?</p>
-
-<blockquote>
-<p>By default, webpack requires zero configuration meaning you do not have to fiddle with webpack.config.js to get started using it. Because of that, it had to assume some default behaviour, such that it will always look for ./src folder by default and index.js in it and output to ./dist/main.js main.js is your compiled file with dependencies.</p>
-</blockquote>
-
-<p>Having 2 configuration files is a common practice in webpack, especially in big projects. Usually you would have one file for development and one for production. In webpack 4 you have modes: <u>production</u> and <u>development</u>. That eliminates the need for having two files (for medium-sized projects).</p>
-
-<pre><code>&quot;scripts&quot;: {
-  &quot;dev&quot;: &quot;webpack --mode development&quot;,
-  &quot;build&quot;: &quot;webpack --mode production&quot;
-}
-</code></pre>
-
-<p>If you paid close attention, you have checked your <u>main.js</u> file and saw it was not minified.</p>
-
-<p><u>I will use build script in this example since it provides a lot of optimisation out of the box, but feel free to use any of them from now on. The core difference between build and dev scripts is how they output files. Build is created for production code. Dev is created for development, meaning that it supports hot module replacement, dev server, and a lot of things that assist your dev work.</u></p>
-
-<p>You can override defaults in npm scripts easily, just use flags:</p>
-
-<pre><code>&quot;scripts&quot;: {
-  &quot;dev&quot;: &quot;webpack --mode development ./src/index.js --output ./dist/main.js&quot;,
-  &quot;build&quot;: &quot;webpack --mode production ./src/index.js --output ./dist/main.js&quot;
-}
-</code></pre>
-
-<p>This will override the default option without having to configure anything yet.</p>
-
-<p>As an exercise, try also these flags:</p>
+<p>Consider an aspect that’s used to weave code around annotated methods (such as the <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-common/src/main/java/org/jdw/blog/common/aspect/HystrixAspect.java">HystrixAspect</a> that targets <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-common/src/main/java/org/jdw/blog/common/annotation/HystrixWrapper.java">@HystrixWrapper</a> annotated methods from part one in this series).</p>
 
 <ul>
-<li>  — watch flag for enabling watch mode. It will watch your file changes and recompile every time some file has been updated.</li>
-</ul>
-
-<pre><code>&quot;scripts&quot;: {
-  &quot;dev&quot;: &quot;webpack --mode development ./src/index.js --output ./dist/main.js --watch&quot;, 
-  &quot;build&quot;: &quot;webpack --mode production ./src/index.js --output ./dist/main.js --watch&quot;
-}
-</code></pre>
+<li>  When a Spring JDK proxy is used, the join point annotation should be present on both the interface’s method and the concrete class’s method for the aspect to trigger correctly.
 
 <ul>
-<li>  — entry flag. Works exactly like output, but rewrites the entry path.</li>
-</ul>
-
-<h3 id="toc_7">Transpile your .js code</h3>
-
-<p>Modern JS code is mostly written is ES6, and ES6 is not supported by all the browsers. So you need to transpile it — a fancy word for turn your ES6 code into ES5. You can use babel for that — the most popular tool to transpile things now. Of course, we do not only do it for ES6 code, but for many JS implementations such as TypeScript, React, etc.</p>
-
-<pre><code>npm install babel-core babel-loader babel-preset-env --save-dev
-</code></pre>
-
-<p>This is the part when you need to create a config file for babel.</p>
-
-<pre><code>nano .babelrc
-</code></pre>
-
-<p>paste there:</p>
-
-<pre><code>{  
-  &quot;presets&quot;: [&quot;env&quot;]
-}
-</code></pre>
-
-<p>We have two options for configuring babel-loader:</p>
+<li>  The <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-proxy/src/test/java/org/jdw/blog/ProxyHystrixAspectTest.java#L72">second to last test in the spring-aop-proxy test class</a> proves that both the interface and the concrete class require the join point annotation when a JDK proxy is used.</li>
+</ul></li>
+<li>  When a CGLIB proxy is used, the concrete implementation must have the annotation on its method for the aspect to trigger.
 
 <ul>
-<li>  using a configuration file webpack.config.js</li>
-<li>  using --module-bind in your npm scripts</li>
+<li>  The <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-proxy-cglib/src/test/java/org/jdw/blog/ProxyCglibHystrixAspectTest.java#L96">second to last test in the spring-aop-proxy-cglib test class</a> proves that the interface’s join point annotations are ignored when CGLIB is used.</li>
+</ul></li>
 </ul>
 
-<p>You can technically do a lot with new flags webpack introduces but I would prefer webpack.config.js for simplicity reasons.</p>
+<p>The <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-proxy/src/test/java/org/jdw/blog/ProxyHystrixAspectTest.java#L48">JDK proxy unit test that expects an <strong>InaccessablePointcutAnnotationException</strong></a> is of particular interest. It demonstrates that if you’re using a JDK proxy and the join point annotation is present on the concrete implementation of a bean and not on its interface, the aspect will still trigger but it won’t be able to find the annotation that was used to trigger it. This prevents us from finding the Hystrix command group key that should come from the wrapped method’s annotation, as shown in the bold parts of the example below. (<a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-common/src/main/java/org/jdw/blog/common/annotation/HystrixWrapper.java">This</a> is the GitHub link for the @HystrixWrapper annotation, and <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-common/src/main/java/org/jdw/blog/common/aspect/HystrixAspect.java">this</a> is the link for the HystrixAspect.)</p>
 
-<h3 id="toc_8">Configuration file</h3>
+<pre><code class="language-java">@Retention(RetentionPolicy.RUNTIME)
+@Target(ElementType.METHOD)
+public @interface HystrixWrapper {
+  public String commandGroupKey();
+}
+@Aspect
+@Component
+public class HystrixAspect {
 
-<p>Although webpack advertises itself as a zero-configuration platform, it mostly applies to general defaults such as entry and output.</p>
+  @Around(&quot;within(org.jdw.blog..*) &amp;amp;&amp;amp; &quot;  &quot;@annotation(org.jdw.blog.common.annotation.HystrixWrapper)&quot;)
+  public Object around(final ProceedingJoinPoint joinPoint) {
 
-<p>At this point we will create webpack.config.js with the following content:</p>
+    Method method = ((MethodSignature) joinPoint.getSignature()).getMethod();
+    HystrixWrapper annotation = method.getAnnotation(HystrixWrapper.class);
+    if (annotation == null) {      // Can occur when not using CCGLIB-style &#39;subclass&#39; proxies,
+      // when using an interface that has a concrete class
+      // that has the annotation.
+      throw new InaccessablePointcutAnnotationException();    }
 
-<pre><code>// webpack v4
-
-const path = require(&#39;path&#39;);
-
-module.exports = {
-  entry: { main: &#39;./src/index.js&#39; },
-  output: {
-    path: path.resolve(__dirname, &#39;dist&#39;),
-    filename: &#39;main.js&#39;
-  },
-  module: {
-    rules: [
-      {
-        test: /\.js$/,
-        exclude: /node_modules/,
-        use: {
-          loader: &quot;babel-loader&quot;
-        }
-      }
-    ]
+    // Hystrix invocation code goes here, see GitHub for details. 
+    // [https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-common/src/main/java/org/jdw/blog/common/aspect/HystrixAdvice.java](https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-common/src/main/java/org/jdw/blog/common/aspect/HystrixAdvice.java)
   }
-};
-</code></pre>
-
-<p>also we will remove flags from our npm scripts now.</p>
-
-<pre><code>&quot;scripts&quot;: {
-  &quot;build&quot;: &quot;webpack --mode production&quot;,
-  &quot;dev&quot;: &quot;webpack --mode development&quot;
-},
-</code></pre>
-
-<p>Now when we run <u>npm run dev</u>it should output us a nice minified _.js_ file into _./dist/main.js_ If not, try re-installing babel-loader.</p>
-
-<blockquote>
-<p>The most common pattern of webpack is to use it to compile react application. While this is true, we will not concentrate on React part in this tutorial since I want it to be framework agnostic. Instead, I will show you how to proceed and create your .html and .css configuration.</p>
-</blockquote>
-
-<h3 id="toc_9">HTML and CSS imports</h3>
-
-<p>Lets create a small <u>index.html</u> file first in our _./dist_ folder</p>
-
-<pre><code>&lt;html&gt;
-  &lt;head&gt;
-    &lt;link rel=&quot;stylesheet&quot; href=&quot;style.css&quot;&gt;
-  &lt;/head&gt;
-  &lt;body&gt;
-    &lt;div&gt;Hello, world!&lt;/div&gt;
-    &lt;script src=&quot;main.js&quot;&gt;&lt;/script&gt;
-  &lt;/body&gt;
-&lt;/html&gt;
-</code></pre>
-
-<p>As you can see, we are importing here <u>style.css</u> Lets configure it! As we agreed, we ca only have one entry point for webpack. Sow were do we put our css to?</p>
-
-<p>Create a <u>style.css</u> in our _./src_ folder</p>
-
-<pre><code>div {
-  color: red;
 }
 </code></pre>
 
-<p>Do not forget to include it into your .js file:</p>
+<p><strong>I recommend always using CGLIB to avoid this edge case.</strong> Doing so makes all Spring proxy behavior consistent since JDK proxies will never be used, it allows the injection of concrete implementations of beans which can be useful for unit tests, and it negates the need to duplicate join point annotations on interfaces and concrete classes (which could easily get out of sync). As a reminder, to always use CGLIB, just set the “spring.aop.proxy-target-class” property to true.</p>
 
-<pre><code>import &quot;./style.css&quot;;
-console.log(&quot;hello, world&quot;);
-</code></pre>
+<p>Before using CGLIB, ensure your codebase always uses pre-existing AOP annotations (such as @Transactional) on concrete classes instead of only on interfaces. Interface-only AOP annotations will be ignored when CGLIB is enabled. Changing when @Transactional aspects are triggered could lead to items not being saved to the database, or poor performance due to transactional boundary shifting.</p>
 
-<p>In webpack create a new rule for css files:</p>
+<p><strong>Spring Proxies: Annotations in Concrete Classes</strong></p>
 
-<pre><code>// webpack v4
-const path = require(&#39;path&#39;);
-const ExtractTextPlugin = require(&#39;extract-text-webpack-plugin&#39;);
+<p>Both JDK- and CGLIB-style Spring proxies have one glaring weakness—AOP can only be invoked by calling a method on an injected bean. Consider a bean with these two methods (all of the classes in <a href="https://github.com/jwilsoncredera/spring-aop-blog/tree/master/spring-aop-common/src/main/java/org/jdw/blog/common/executable">this package</a> qualify):</p>
 
-module.exports = {
-  entry: { main: &#39;./src/index.js&#39; },
-  output: {
-    path: path.resolve(__dirname, &#39;dist&#39;),
-    filename: &#39;main.js&#39;
-  },
-  module: {
-    rules: [
-      {
-        test: /\.js$/,
-        exclude: /node_modules/,
-        use: {
-          loader: &quot;babel-loader&quot;
-        }
-      },
-      {
-        test: /\.css$/,
-        use: ExtractTextPlugin.extract(
-          {
-            fallback: &#39;style-loader&#39;,
-            use: [&#39;css-loader&#39;]
-          })
-      }
-    ]
-  }
-};
-</code></pre>
+<pre><code class="language-java">@HystrixWrapper(commandGroupKey = &quot;blog&quot;)
+public long hystrixWrappedGetCurrentThreadId() {
+  return getCurrentThreadId();
+}
 
-<p>in terminal run</p>
-
-<pre><code>npm install extract-text-webpack-plugin --save-dev
-npm install style-loader css-loader --save-dev
-</code></pre>
-
-<p>We need yo use extract text plugin to compile our .css. As you can see, we also added a new rule for .css.</p>
-
-<blockquote>
-<p>A quick description of how rules usually work:</p>
-</blockquote>
-
-<pre><code>{
-  test: /\.YOUR_FILE_EXTENSION$/,
-  exclude: /SOMETHING THAT IS THAT EXTENSION BUT SHOULD NOT BE PROCESSED/,
-  use: { loader: &quot;loader for your file extension  or a group of loaders&quot; }
+public long nestedHystrixWrappedGetCurrentThreadId() {
+  return hystrixWrappedGetCurrentThreadId();
 }
 </code></pre>
 
-<p>We need to use ExtractTextPlugin because webpack be default only understands _.js_ format. ExtractTextPlugin gets your_ .css_ and extracts it into a separate _.css_ file in your _./dist_ directory.</p>
+<p>The second method cannot trigger the HystrixAspect when calling the first method because it invokes the first method directly without going through a Spring proxy—the bean is just calling one of its own methods. Spring doesn’t have any opportunities to inject the aspect code. This is demonstrated by every other test in both the <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-proxy/src/test/java/org/jdw/blog/ProxyHystrixAspectTest.java#L42">spring-aop-proxy test class</a> and <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-proxy-cglib/src/test/java/org/jdw/blog/ProxyCglibHystrixAspectTest.java#L41">spring-aop-proxy-cglib test class</a> (all the tests that start with “testNestedHystrixWrappedMethod”).</p>
 
-<blockquote>
-<p>Spoiler: in certain articles, you will hear that ExtractTextPlugin does not work with webpack 4 but it worked for me :) It proves my point of modules ambiguity in set-up and if it absolutely does not work for you, you can switch to MiniCssExtractPlugin. I will show you how to configure another one later in this article.</p>
-</blockquote>
+<p>However, when AspectJ is used instead of Spring proxies, the HystrixAspect <u>does</u> trigger when a bean calls its own join point annotated method. This is shown by every other test in the <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-aspectj-ltw/src/test/java/org/jdw/blog/AspectJHystrixAspectTest.java#L41">spring-aop-aspectj-ltw test class</a> (which also begin with “testNestedHystrixWrappedMethod”)—every scenario that fails to invoke the Hystrix aspect for Spring proxies succeeds for AspectJ (except for <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-aspectj-ltw/src/test/java/org/jdw/blog/AspectJHystrixAspectTest.java#L101">one specific scenario</a> which will be covered later). How can this be?</p>
 
-<pre><code>// webpack v4
-const path = require(&#39;path&#39;);
-const ExtractTextPlugin = require(&#39;extract-text-webpack-plugin&#39;);
+<p><strong>AspectJ</strong></p>
 
-module.exports = {
-  entry: { main: &#39;./src/index.js&#39; },
-  output: {
-    path: path.resolve(__dirname, &#39;dist&#39;),
-    filename: &#39;main.js&#39;
-  },
-  module: {
-    rules: [
-      {
-        test: /\.js$/,
-        exclude: /node_modules/,
-        use: {
-          loader: &quot;babel-loader&quot;
-        }
-      },
-      {
-        test: /\.css$/,
-        use: ExtractTextPlugin.extract(
-          {
-            fallback: &#39;style-loader&#39;,
-            use: [&#39;css-loader&#39;]
-          })
-      }
-    ]
-  },
-  plugins: [ 
-    new ExtractTextPlugin({filename: &#39;style.css&#39;})
-  ]
-};;
+<p>AspectJ extends the Java compiler to weave aspect code directly into join points. It doesn’t require Spring to run. Instead, you need to use <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-aspectj-ltw/README.md">JVM arguments</a> to enable a compiler extension along with an <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-aspectj-ltw/src/main/resources/META-INF/aop.xml">aop.xml file</a> and <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-aspectj-ltw/src/main/java/org/jdw/blog/config/AspectJConfig.java">another configuration file</a> which will be covered in part three of this series.</p>
+
+<p>This has two important ramifications. First, if you’re using AspectJ, you don’t need to inject Spring beans to invoke AOP functionality. Technically you don’t even need Spring beans for AOP at all when AspectJ is enabled—you could manually create a new object and invoke AOP code on it right away if it had join points your aspects could target.</p>
+
+<p>Second, if an object calls its own methods it can trigger AOP code, unlike AOP using Spring proxies. Here’s a visual example of how this AspectJ behavior would look if the @HystrixAspect used @Before instead of @Around to inject code in front of its join point targets instead of completely wrapping them (because it’s easier to depict):</p>
+
+<p><a href="https://www.credera.com/wp-content/uploads/2016/04/Picture5-2.png"><img src="https://www.credera.com/wp-content/uploads/2016/04/xPicture5-2.png.pagespeed.ic.PXtdJ6_MY_.webp" alt="Picture5"/></a></p>
+
+<p>The fact that beans can trigger their own AOP code means you need to be very careful when enabling AspectJ on existing Spring projects, because this can change when database transactions are started by @Transactional annotations. For example, if you had a bean with two methods and one didn’t have an @Transactional annotation and it called another one that did, then that invocation would start a database transaction with AspectJ enabled but not with default Spring proxy-based AOP.</p>
+
+<pre><code class="language-java">public void notAnnotated() {
+  annotated();
+}
+
+@Transactional
+public void annotated() {
+  // With AspectJ, a direct call from notAnnotated will enable the transaction.
+  // Without it, this method will only get a transaction if it was called from a Spring proxy.
+}
 </code></pre>
 
-<p>Since version 4, Webpack 4 has problems with this plugin, so you might run into this error:</p>
+<p>Luckily, there is a way around this issue—AspectJ and Spring proxies can co-exist. The <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-aspectj-ltw/src/main/resources/META-INF/aop.xml">aop.xml file</a> lets you decide which aspects will be managed by AspectJ and which packages are included or excluded from AspectJ code weaving. If you exclude classes that use @Transactional from AspectJ weaving, their behavior will default to the same Spring proxy behavior they were using before. Stay tuned for part three of this series, which covers how to configure an aop.xml file.</p>
 
-<p><a href="https://github.com/webpack-contrib/extract-text-webpack-plugin/issues/701" title="https://github.com/webpack-contrib/extract-text-webpack-plugin/issues/701">Webpack 4 compatibility · Issue #701 · webpack-contrib/extract-text-webpack-plugin<br/>
-<u>I&#39;m trying to use this plugin with webpack 4 alpha 5 and getting the following error: Error: Chunk.entrypoints: Use…</u>github.com</a><a href="https://github.com/webpack-contrib/extract-text-webpack-plugin/issues/701"></a></p>
+<p><strong>What About That Unit Test Where AspectJ Didn’t Work?</strong></p>
 
-<p>To fix it, you can run</p>
+<p>As noted earlier, every other test in the <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-aspectj-ltw/src/test/java/org/jdw/blog/AspectJHystrixAspectTest.java#L41">spring-aop-aspectj unit test</a> (which each begin with “testNestedHystrixWrappedMethod”) demonstrates how beans can trigger the HystrixAspect when calling their own @HystrixWrapper join point annotated methods without going through Spring beans… except for the <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-aspectj-ltw/src/test/java/org/jdw/blog/AspectJHystrixAspectTest.java#L102">last test</a>.</p>
 
-<pre><code>npm install -D extract-text-webpack-plugin@next
+<p>That last test invokes the “nestedGetCurrentThreadId” method on a Spring CGLIB proxy of a class similar to the example below (<a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-common/src/main/java/org/jdw/blog/common/executable/NonAnnotatedImplForInterfaceWithAnnotation.java#L22">GitHub link for the original class</a>). The class’s interface annotates “getCurrentThreadId” with @HystrixWrapper, but the concrete class itself does not. Thus, when “getCurrentThreadId” is invoked by “nestedGetCurrentThreadId” within the CGLIB proxy, AspectJ looks at the concrete class instead of the interface and can’t find the @HystrixWrapper join point. Therefore, the HystrixAspect is not woven.</p>
+
+<pre><code class="language-java">@Override
+public long getCurrentThreadId () {
+  return Thread.currentThread().getId();
+}
+
+@Override
+public long nestedGetCurrentThreadId () {
+  return getCurrentThreadId();
+}
 </code></pre>
 
-<blockquote>
-<p>Pro tip: google errors you get and try to find similar question in Github issues or just ask a question on StackOverflow.</p>
-</blockquote>
+<p>The takeaway from this scenario is that you should always put join point annotations on concrete classes when using AspectJ, just like you should when using Spring CGLIB proxies for AOP.</p>
 
-<p>After that, your css code should compile to _./dist/style.css_</p>
+<p><strong>Next Steps</strong></p>
 
-<p>At this point in my package.json my dev dependencies look like this:</p>
-
-<pre><code>&quot;devDependencies&quot;: {
-    &quot;babel-core&quot;: &quot;^6.26.0&quot;,
-    &quot;babel-loader&quot;: &quot;^7.1.4&quot;,
-    &quot;babel-preset-env&quot;: &quot;^1.6.1&quot;,
-    &quot;css-loader&quot;: &quot;^0.28.11&quot;,
-    &quot;extract-text-webpack-plugin&quot;: &quot;^4.0.0-beta.0&quot;,
-    &quot;style-loader&quot;: &quot;^0.20.3&quot;,
-    &quot;webpack&quot;: &quot;^4.4.1&quot;,
-    &quot;webpack-cli&quot;: &quot;^2.0.12&quot;
-  }
-</code></pre>
-
-<p>Please, note that another combination might not work since even updating webpack-cli v2.0.12 to 2.0.13 can break it. #justwebpackthings</p>
-
-<p>So now it should output your <u>style.css</u> into _./dist_ folder.</p>
-
-<p><img src="media/15248829536577/15248838758588.png" alt=""/></p>
-
-<h3 id="toc_10">Configure support for SCSS</h3>
-
-<p>It is very common to develop websites with SASS and POSTCSS, they are very helpful. So we will include support for SASS first. Let`s rename our _./src/style.css_ and create another folder to store _.scss_ files in there. Now we need to add support for _.scss_ formatting.</p>
-
-<pre><code>npm install node-sass sass-loader --save-dev
-</code></pre>
-
-<p>replace style.scss with _./scss/main.scss_ in your _.js_ file.</p>
-
-<h3 id="toc_11">HTML template</h3>
-
-<p>Now lets create _.html_ file template. Add <u>index.html</u> to _./src_ file with exactly the same structure.</p>
-
-<pre><code>&lt;html&gt;
-  &lt;head&gt;
-    &lt;link rel=&quot;stylesheet&quot; href=&quot;style.css&quot;&gt;
-  &lt;/head&gt;
-  &lt;body&gt;
-    &lt;div&gt;Hello, world!&lt;/div&gt;
-    &lt;script src=&quot;main.js&quot;&gt;&lt;/script&gt;
-  &lt;/body&gt;
-&lt;/html&gt;
-</code></pre>
-
-<p>We will need to use html plugin for this file in order to use it as a template.</p>
-
-<pre><code>npm install html-webpack-plugin --save-dev
-</code></pre>
-
-<p>Add it to your webpack file:</p>
-
-<pre><code>// webpack v4
-const path = require(&#39;path&#39;);
-const ExtractTextPlugin = require(&#39;extract-text-webpack-plugin&#39;);
-const HtmlWebpackPlugin = require(&#39;html-webpack-plugin&#39;);
-
-module.exports = {
-  entry: { main: &#39;./src/index.js&#39; },
-  output: {
-    path: path.resolve(__dirname, &#39;dist&#39;),
-    filename: &#39;main.js&#39;
-  },
-  module: {
-    rules: [
-      {
-        test: /\.js$/,
-        exclude: /node_modules/,
-        use: {
-          loader: &quot;babel-loader&quot;
-        }
-      },
-      {
-        test: /\.scss$/,
-        use: ExtractTextPlugin.extract(
-          {
-            fallback: &#39;style-loader&#39;,
-            use: [&#39;css-loader&#39;, &#39;sass-loader&#39;]
-          })
-      }
-    ]
-  },
-  plugins: [ 
-    new ExtractTextPlugin(
-      {filename: &#39;style.css&#39;}
-    ),
-    new HtmlWebpackPlugin({
-      inject: false,
-      hash: true,
-      template: &#39;./src/index.html&#39;,
-      filename: &#39;index.html&#39;
-    })
-  ]
-};
-</code></pre>
-
-<p>Now your file from _./src/index.html_ is a template for your final index.html file. To check that everything works, delete every file from _./dist_ folder and the folder itself.</p>
-
-<pre><code>rm -rf /dist
-npm run dev
-</code></pre>
-
-<p>You will see that _./dist_ folder was created on its own and there are three files: index.html, style.css, script.js.</p>
-
-<h3 id="toc_12">Caching and Hashing</h3>
-
-<p>One of the most common problems in development is implementing caching. It is very important to understand how it works since you want your users to always have the best latest version of your code.</p>
-
-<p>Since this blogpost is mainly about webpack configuration, we will not concentrate on how caching works in details. I will just say that one of the most popular ways to solve caching problems is adding a <u>hash number</u> to asset files, such <u>style.css</u> and <u>script.js</u>. You can read about it <a href="https://developers.google.com/web/fundamentals/performance/webpack/use-long-term-caching#split-the-code-into-routes-and-pages">here</a>. Hashing is needed to teach our browser to only request changed files.</p>
-
-<p>Webpack 4 has a prebuilt functionality for it implemented via <a href="https://webpack.js.org/guides/caching/">chunkhash</a>. It can be done with:</p>
-
-<pre><code>// webpack v4
-const path = require(&#39;path&#39;);
-const ExtractTextPlugin = require(&#39;extract-text-webpack-plugin&#39;);
-const HtmlWebpackPlugin = require(&#39;html-webpack-plugin&#39;);
-
-module.exports = {
-  entry: { main: &#39;./src/index.js&#39; },
-  output: {
-    path: path.resolve(__dirname, &#39;dist&#39;),
-    filename: &#39;[name].[chunkhash].js&#39;
-  },
-  module: {
-    rules: [
-      {
-        test: /\.js$/,
-        exclude: /node_modules/,
-        use: {
-          loader: &quot;babel-loader&quot;
-        }
-      },
-      {
-        test: /\.scss$/,
-        use: ExtractTextPlugin.extract(
-          {
-            fallback: &#39;style-loader&#39;,
-            use: [&#39;css-loader&#39;, &#39;sass-loader&#39;]
-          })
-      }
-    ]
-  },
-  plugins: [ 
-    new ExtractTextPlugin(
-      {filename: &#39;style.[chunkhash].css&#39;, disable: false, allChunks: true}
-    ),
-    new HtmlWebpackPlugin({
-      inject: false,
-      hash: true,
-      template: &#39;./src/index.html&#39;,
-      filename: &#39;index.html&#39;
-    }),
-  ]
-};
-</code></pre>
-
-<p>In your_./src/index.html_ file add</p>
-
-<pre><code>&lt;html&gt;
-  &lt;head&gt;
-    &lt;link rel=&quot;stylesheet&quot; href=&quot;&lt;%=htmlWebpackPlugin.files.chunks.main.css %&gt;&quot;&gt;
-  &lt;/head&gt;
-  &lt;body&gt;
-    &lt;div&gt;Hello, world!&lt;/div&gt;
-    &lt;script src=&quot;&lt;%= htmlWebpackPlugin.files.chunks.main.entry %&gt;&quot;&gt;&lt;/script&gt;
-  &lt;/body&gt;
-&lt;/html&gt;
-</code></pre>
-
-<p>This syntax will teach your template to use hashed files. This is a new feature implemented after this issue:</p>
-
-<p><a href="https://github.com/jantimon/html-webpack-plugin/pull/14" title="https://github.com/jantimon/html-webpack-plugin/pull/14">Support for .css and .manifest files and cache busting by jantimon · Pull Request #14 ·…<br/>
-<u>This pull request deprecates the usage of {%=o.htmlWebpackPlugin.assets%} and creates a new representation called…</u>github.com</a><a href="https://github.com/jantimon/html-webpack-plugin/pull/14"></a></p>
-
-<p>We will use htmlWebpackPlugin.files.chunks.main pattern described there.</p>
-
-<p>now in our _./dist_ file index.html</p>
-
-<p><img src="media/15248829536577/15248839087986.png" alt=""/></p>
-
-<p>Now if we do not change anything in our _.js_ and. <u>css</u> file and run</p>
-
-<pre><code>npm run dev
-</code></pre>
-
-<p>no matter how many times you run it, the numbers in hashes should be identical to each other in both files.</p>
-
-<h3 id="toc_13">Problem with hashing and how to solve it</h3>
-
-<p>Although we have the working implementation here, it is not perfect yet. What if we change some code in our _.scss_ file? Go ahead, change some scss there and run dev script again. Now the new file hash is not generated</p>
-
-<p>What if we add a new console.log to our _.js_ file like this:</p>
-
-<pre><code>import &quot;./style.css&quot;;
-console.log(&quot;hello, world&quot;);
-console.log(&quot;Hello, world 2&quot;);
-</code></pre>
-
-<p>If you run a dev script again, you will see that hash number has been updated in both files.</p>
-
-<p>This issue is known and there is even a stack overflow question about it:</p>
-
-<p><a href="https://stackoverflow.com/questions/44491064/updating-chunkhash-in-both-css-and-js-file-in-webpack" title="https://stackoverflow.com/questions/44491064/updating-chunkhash-in-both-css-and-js-file-in-webpack">Updating chunkhash in both css and js file in webpack<br/>
-<u>I have only got the JS file in the output whereas i have used the ExtractTextPlugin to extract the Css file.Both have…</u>stackoverflow.com</a><a href="https://stackoverflow.com/questions/44491064/updating-chunkhash-in-both-css-and-js-file-in-webpack"></a></p>
-
-<h4 id="toc_14">Now how to fix that?</h4>
-
-<p>After trying a lot of plugins that claim they solve this problem I have finally came to two types of solution:</p>
-
-<h4 id="toc_15">Solution 1</h4>
-
-<p>Replace [chukhash] with just [hash] in _.css_ extract plugin. This was one of the solutions to the <a href="https://github.com/webpack-contrib/extract-text-webpack-plugin/issues/763">issue</a>. This appears to be a conflict with webpack 4.3 which introduced a <code>[contenthash]</code> variable of its <a href="https://github.com/webpack/webpack/releases/tag/v4.3.0">own</a>. In conjunction, use this plugin: <a href="https://www.npmjs.com/package/webpack-md5-hash">webpack-md5-hash</a></p>
-
-<p>Now if you make changes to your <u>main.scss</u> file and run dev script, only a new <u>style.css</u> should be generated with a new hash.</p>
-
-<pre><code>// webpack v4
-const path = require(&#39;path&#39;);
-const ExtractTextPlugin = require(&#39;extract-text-webpack-plugin&#39;);
-const HtmlWebpackPlugin = require(&#39;html-webpack-plugin&#39;);
-const WebpackMd5Hash = require(&#39;webpack-md5-hash&#39;);
-
-module.exports = {
-  entry: { main: &#39;./src/index.js&#39; },
-  output: {
-    path: path.resolve(__dirname, &#39;dist&#39;),
-    filename: &#39;[name].[chunkhash].js&#39;
-  },
-  module: {
-    rules: [
-      {
-        test: /\.js$/,
-        exclude: /node_modules/,
-        use: {
-          loader: &quot;babel-loader&quot;
-        }
-      },
-      {
-        test: /\.scss$/,
-        use: ExtractTextPlugin.extract(
-          {
-            fallback: &#39;style-loader&#39;,
-            use: [&#39;css-loader&#39;, &#39;sass-loader&#39;]
-          })
-      }
-    ]
-  },
-  plugins: [ 
-    new ExtractTextPlugin(
-      {filename: &#39;style.[hash].css&#39;, disable: false, allChunks: true}
-    ),
-    new HtmlWebpackPlugin({
-      inject: false,
-      hash: true,
-      template: &#39;./src/index.html&#39;,
-      filename: &#39;index.html&#39;
-    }),
-    new WebpackMd5Hash()
-  ]
-};
-</code></pre>
-
-<p>Now lets test our _.js_ files. Now both files change hash.</p>
-
-<h4 id="toc_16">Solution 2</h4>
-
-<p>There might also be some conflicts still, so now lets try <a href="https://github.com/webpack-contrib/mini-css-extract-plugin">mini-css-extract plugin</a>.</p>
-
-<h3 id="toc_17">Mini-CSS plugin</h3>
-
-<p>The Mini CSS plugin is meant to replace extract-text plugin and provide you with better future compatibility.</p>
-
-<p>I have restructured my webpack file to compile style.css with <a href="https://github.com/webpack-contrib/mini-css-extract-plugin" title="https://github.com/webpack-contrib/mini-css-extract-plugin">/mini-css-extract-plugin</a> and it works for me.</p>
-
-<pre><code>// webpack v4
-const path = require(&#39;path&#39;);
-// const ExtractTextPlugin = require(&#39;extract-text-webpack-plugin&#39;);
-const HtmlWebpackPlugin = require(&#39;html-webpack-plugin&#39;);
-const WebpackMd5Hash = require(&#39;webpack-md5-hash&#39;);
-const MiniCssExtractPlugin = require(&quot;mini-css-extract-plugin&quot;);
-
-module.exports = {
-  entry: { main: &#39;./src/index.js&#39; },
-  output: {
-    path: path.resolve(__dirname, &#39;dist&#39;),
-    filename: &#39;[name].[chunkhash].js&#39;
-  },
-  module: {
-    rules: [
-      {
-        test: /\.js$/,
-        exclude: /node_modules/,
-        use: {
-          loader: &quot;babel-loader&quot;
-        }
-      },
-      {
-        test: /\.scss$/,
-        use:  [  &#39;style-loader&#39;, MiniCssExtractPlugin.loader, &#39;css-loader&#39;, &#39;sass-loader&#39;]
-      }
-    ]
-  },
-  plugins: [
-    // new ExtractTextPlugin(
-    //   {filename: &#39;style.[hash].css&#39;, disable: false, allChunks: true }
-    // ),
-    new MiniCssExtractPlugin({
-      filename: &#39;style.[contenthash].css&#39;,
-    }),
-    new HtmlWebpackPlugin({
-      inject: false,
-      hash: true,
-      template: &#39;./src/index.html&#39;,
-      filename: &#39;index.html&#39;
-    }),
-    new WebpackMd5Hash()
-  ]
-};
-</code></pre>
-
-<blockquote>
-<p>Now when I edit <u>main.scss</u> a new hash for style_.css_ is generated. And when I edit css only css hash changes and when I edit _./src/script.js_ only <u>script.js</u> hash changes!</p>
-</blockquote>
+<p>Stay tuned for the third and final entry in this blog series, which will cover how to configure AspectJ for Spring Boot. It contains a critical piece of JVM configuration information that isn’t widely found in other tutorials (including Spring’s own documentation), so be sure to catch the next entry by following @CrederaOpen on Twitter or connecting with us on LinkedIn.</p>
 
                         
                       </div>
@@ -790,10 +276,10 @@ module.exports = {
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/4/28</span>
+                    <span class="date">2018/5/31</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Node.js.html'>Node.js</a></span>
+          					    <span class="posted-in"><a href='Java.html'>Java</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -864,9 +350,9 @@ module.exports = {
         
             <a href="Coding.html"><strong>Coding</strong></a>
         
-            <a href="Solution.html"><strong>Solution</strong></a>
+            <a href="Modeling.html"><strong>Modeling</strong></a>
         
-            <a href="Archtect.html"><strong>Archtect</strong></a>
+            <a href="Archtecting.html"><strong>Archtecting</strong></a>
          
         </p>
 
@@ -883,31 +369,31 @@ module.exports = {
 	      
 		      
 			      <li class="post">
-			        <a href="15359384213292.html">Securing Spring Boot with JWTs</a>
+			        <a href="15389311738065.html">重构到更深层的模型</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15358820607055.html">Java 8 Concurrency Tutorial: Atomic Variables and ConcurrentMap</a>
+			        <a href="15389278377243.html">IAM of Google Cloud</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15358774987730.html">Java 8 Concurrency Tutorial: Synchronization and Locks</a>
+			        <a href="15389224951575.html">RSocket, a New Application Network Protocol for Reactive Applications, Announced at SpringOne</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15358757119900.html">Java 8 Concurrency Tutorial: Threads and Executors</a>
+			        <a href="15389220103546.html">如何形象地描述RxJava中的背压和流控机制？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15358756631902.html">Java 8 Stream Tutorial</a>
+			        <a href="15389214670417.html">Modeling Uncertainty with Reactive DDD</a>
 			      </li>
 		     
 		  
