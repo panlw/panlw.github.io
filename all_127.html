@@ -105,100 +105,112 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15278296738721.html">
+                <a class="clearlink" href="15293273764686.html">
                 
-                  <h1>Install NGINX + PHP + OCI8 + PDO_OCI on Mac OSX</h1>
+                  <h1>对高并发流量控制的一点思考</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
-                        	<h2 id="toc_0">1. Download</h2>
-
-<h3 id="toc_1"><a href="http://www.oracle.com/technetwork/database/database-technologies/instant-client/overview/index.html">Download Instant Client</a></h3>
-
-<blockquote>
-<p><a href="https://gist.github.com/alexbonhomme/0d5976f2126bcde34b817e0143be0dff">https://gist.github.com/alexbonhomme/0d5976f2126bcde34b817e0143be0dff</a></p>
+                        	<blockquote>
+<p><a href="http://blog.51cto.com/zhangfengzhe">zfz_linux_boy</a> 2018-01-30<br/>
+<a href="http://blog.51cto.com/zhangfengzhe/2066683">http://blog.51cto.com/zhangfengzhe/2066683</a></p>
 </blockquote>
 
-<ul>
-<li>instantclient-basic</li>
-<li>instantclient-sqlplus</li>
-<li>instantclient-sdk</li>
-</ul>
+<h2 id="toc_0">前言</h2>
 
-<h3 id="toc_2"><a href="http://php.net/downloads.php">Download PHP Source</a></h3>
+<p>在实际项目中，曾经遭遇过线上 5W+QPS 的峰值，也在压测状态下经历过 10W+QPS 的大流量请求，本篇博客的话题主要就是自己对高并发流量控制的一点思考。</p>
 
-<ul>
-<li>php-x.y.z.tar.xz</li>
-</ul>
-
-<h3 id="toc_3">Unzip all packages under <code>~/opt/</code> then get <code>~/opt/instantclient_V_R/</code> and <code>~/opt/php-x.y.z</code></h3>
-
-<h2 id="toc_4">2. Install OCI</h2>
-
-<pre><code class="language-sh">. ~/src/bash/bash_profile.d/ora12c.sh
-
-ln -s ~/opt/instantclient_V_R/sdk/include/*.h /usr/local/include/
-ln -s ~/opt/instantclient_V_R/sqlplus /usr/local/bin/
-ln -s ~/opt/instantclient_V_R/*.dylib /usr/local/lib/
-ln -s ~/opt/instantclient_V_R/*.dylib.V.1 /usr/local/lib/
-ln -s /usr/local/lib/libocci.dylib.V.1 /usr/local/lib/libocci.dylib
-ln -s /usr/local/lib/libclntsh.dylib.V.1 /usr/local/lib/libclntsh.dylib
-</code></pre>
-
-<pre><code>pecl install oci8
-</code></pre>
+<h2 id="toc_1">应对大流量的一些思路</h2>
 
 <blockquote>
-<p>If the script prompt you to provide the path to ORACLE_HOME directory, respond with:<br/>
-instantclient,/usr/local/lib</p>
+<p>首先，我们来说一下什么是大流量？</p>
+
+<p>大流量，我们很可能会冒出：TPS（每秒事务量），QPS（每秒请求量），1W+，5W+，10W+，100W+...。其实并没有一个绝对的数字，如果这个量造成了系统的压力，影响了系统的性能，那么这个量就可以称之为大流量了。</p>
+
+<p>其次，应对大流量的一些常见手段是什么？</p>
+
+<p>缓存：说白了，就是让数据尽早进入缓存，离程序近一点，不要大量频繁的访问 DB。</p>
+
+<p>降级：如果不是核心链路，那么就把这个服务降级掉。打个比喻，现在的 APP 都讲究千人千面，拿到数据后，做个性化排序展示，如果在大流量下，这个排序就可以降级掉！</p>
+
+<p>限流：大家都知道，北京地铁早高峰，地铁站都会做一件事情，就是限流了！想法很直接，就是想在一定时间内把请求限制在一定范围内，保证系统不被冲垮，同时尽可能提升系统的吞吐量。</p>
+
+<p>注意到，有些时候，缓存和降级是解决不了问题的，比如，电商的双十一，用户的购买，下单等行为，是涉及到大量写操作，而且是核心链路，无法降级的，这个时候，限流就比较重要了。</p>
+
+<p>那么接下来，我们重点说一下，限流。</p>
 </blockquote>
 
-<h3 id="toc_5">Bash Profile: ~/src/bash/bash_profile.d/ora12c.sh</h3>
+<h2 id="toc_2">限流的常用方式</h2>
 
-<pre><code class="language-sh"># Oracle Instant CLient 12c
-export ORACLE_HOME=${HOME}/opt/instantclient_12_2
-export TNS_ADMIN=${ORACLE_HOME}/network/admin
-export LD_LIBRARY_PATH=${ORACLE_HOME}:${LD_LIBRARY_PATH}
-export PATH=${PATH}:${ORACLE_HOME}
-</code></pre>
+<blockquote>
+<p>限流的常用处理手段有：计数器、滑动窗口、漏桶、令牌。</p>
+</blockquote>
 
-<h3 id="toc_6">TNS Config: <code>${TNS_ADMIN}/tnsnames.ora</code></h3>
+<p><strong>计数器</strong> </p>
 
-<pre><code class="language-ora">DBT1 =
-  (DESCRIPTION =
-    (ADDRESS_LIST =
-      (ADDRESS = (PROTOCOL = TCP)(HOST = a.b.c.d)(PORT = 1521))
-    )
-    (CONNECT_DATA =
-      (SERVICE_NAME = dbt1)
-    )
-  )
-</code></pre>
+<blockquote>
+<p>计数器是一种比较简单的限流算法，用途比较广泛，在接口层面，很多地方使用这种方式限流。在一段时间内，进行计数，与阀值进行比较，到了时间临界点，将计数器清 0。</p>
+</blockquote>
 
-<pre><code class="language-sh">sqlplus USERNAME/PASSWORD@DBT1
-</code></pre>
+<p><img src="http://i2.51cto.com/images/blog/201801/30/26433210356cfa9d26407d07d0819b14.png?x-oss-process=image/watermark,size_16,text_QDUxQ1RP5Y2a5a6i,color_FFFFFF,t_100,g_se,x_10,y_10,shadow_90,type_ZmFuZ3poZW5naGVpdGk=" alt=""/></p>
 
-<h2 id="toc_7">3. Install PDO_OCI (by PECL)</h2>
+<p><img src="http://i2.51cto.com/images/blog/201801/30/36bd0e076d23e7bcd10ac0b1ac498bb7.png?x-oss-process=image/watermark,size_16,text_QDUxQ1RP5Y2a5a6i,color_FFFFFF,t_100,g_se,x_10,y_10,shadow_90,type_ZmFuZ3poZW5naGVpdGk=" alt=""/></p>
 
-<pre><code class="language-sh">cd ~/opt/php-7.2.5/ext/pdo_oci
-phpize
-./configure --with-pdo-oci=instantclient,/usr/local/lib,12.2
-ls /usr/local/lib/php/pecl/20170718/
-</code></pre>
+<blockquote>
+<p>这里需要注意的是，存在一个时间临界点的问题。举个栗子，在 12:01:00 到 12:01:58 这段时间内没有用户请求，然后在 12:01:59 这一瞬时发出 100 个请求，OK，然后在 12:02:00 这一瞬时又发出了 100 个请求。这里你应该能感受到，在这个临界点可能会承受恶意用户的大量请求，甚至超出系统预期的承受。</p>
+</blockquote>
 
-<h2 id="toc_8">4. Config PHP Extensions</h2>
+<p><strong>滑动窗口</strong> </p>
 
-<p>/usr/local/etc/php/7.2/conf.d/ext-oci8.ini</p>
+<blockquote>
+<p>由于计数器存在临界点缺陷，后来出现了滑动窗口算法来解决。</p>
 
-<pre><code class="language-ini">extension=oci8.so
-extension=pdo_oci.so
-</code></pre>
+<p><img src="http://i2.51cto.com/images/blog/201801/30/292f2358a31662de2846a122e25bb005.png?x-oss-process=image/watermark,size_16,text_QDUxQ1RP5Y2a5a6i,color_FFFFFF,t_100,g_se,x_10,y_10,shadow_90,type_ZmFuZ3poZW5naGVpdGk=" alt=""/></p>
 
-<h2 id="toc_9">5. Restart PHP Service</h2>
+<p>滑动窗口的意思是说把固定时间片，进行划分，并且随着时间的流逝，进行移动，这样就巧妙的避开了计数器的临界点问题。也就是说这些固定数量的可以移动的格子，将会进行计数判断阀值，因此格子的数量影响着滑动窗口算法的精度。</p>
+</blockquote>
 
-<pre><code class="language-sh">brew services restart php
-</code></pre>
+<p><strong>漏桶</strong> </p>
+
+<blockquote>
+<p>虽然滑动窗口有效避免了时间临界点的问题，但是依然有时间片的概念，而漏桶算法在这方面比滑动窗口而言，更加先进。</p>
+
+<p>有一个固定的桶，进水的速率是不确定的，但是出水的速率是恒定的，当水满的时候是会溢出的。</p>
+</blockquote>
+
+<p><img src="http://i2.51cto.com/images/blog/201801/30/0bdc37469876669d8ff3813da367705d.png?x-oss-process=image/watermark,size_16,text_QDUxQ1RP5Y2a5a6i,color_FFFFFF,t_100,g_se,x_10,y_10,shadow_90,type_ZmFuZ3poZW5naGVpdGk=" alt=""/></p>
+
+<p><img src="http://i2.51cto.com/images/blog/201801/30/244ab47205fd764fd74e34f4f0da1cb8.png?x-oss-process=image/watermark,size_16,text_QDUxQ1RP5Y2a5a6i,color_FFFFFF,t_100,g_se,x_10,y_10,shadow_90,type_ZmFuZ3poZW5naGVpdGk=" alt=""/></p>
+
+<p><strong>令牌桶</strong> </p>
+
+<blockquote>
+<p>注意到，漏桶的出水速度是恒定的，那么意味着如果瞬时大流量的话，将有大部分请求被丢弃掉（也就是所谓的溢出）。为了解决这个问题，令牌桶进行了算法改进。</p>
+
+<p><img src="http://i2.51cto.com/images/blog/201801/30/35a6b4a0842d6ac0e5f5b14b7c64189d.png?x-oss-process=image/watermark,size_16,text_QDUxQ1RP5Y2a5a6i,color_FFFFFF,t_100,g_se,x_10,y_10,shadow_90,type_ZmFuZ3poZW5naGVpdGk=" alt=""/></p>
+
+<p>生成令牌的速度是恒定的，而请求去拿令牌是没有速度限制的。这意味，面对瞬时大流量，该算法可以在短时间内请求拿到大量令牌，而且拿令牌的过程并不是消耗很大的事情。（有一点生产令牌，消费令牌的意味）</p>
+
+<p>不论是对于令牌桶拿不到令牌被拒绝，还是漏桶的水满了溢出，都是为了保证大部分流量的正常使用，而牺牲掉了少部分流量，这是合理的，如果因为极少部分流量需要保证的话，那么就可能导致系统达到极限而挂掉，得不偿失。</p>
+</blockquote>
+
+<p><img src="http://i2.51cto.com/images/blog/201801/30/6b63bf4412c0d412095131091144e357.png?x-oss-process=image/watermark,size_16,text_QDUxQ1RP5Y2a5a6i,color_FFFFFF,t_100,g_se,x_10,y_10,shadow_90,type_ZmFuZ3poZW5naGVpdGk=" alt=""/></p>
+
+<h2 id="toc_3">限流神器：Guava RateLimiter</h2>
+
+<blockquote>
+<p>Guava 不仅仅在集合、缓存、异步回调等方面功能强大，而且还给我们封装好了限流的 API！</p>
+
+<p>Guava RateLimiter 基于令牌桶算法，我们只需要告诉 RateLimiter 系统限制的 QPS 是多少，那么 RateLimiter 将以这个速度往桶里面放入令牌，然后请求的时候，通过 tryAcquire() 方法向 RateLimiter 获取许可（令牌）。</p>
+</blockquote>
+
+<p><img src="http://i2.51cto.com/images/blog/201801/30/57203303c36a7c5fb5a0974ba98116d7.png?x-oss-process=image/watermark,size_16,text_QDUxQ1RP5Y2a5a6i,color_FFFFFF,t_100,g_se,x_10,y_10,shadow_90,type_ZmFuZ3poZW5naGVpdGk=" alt=""/></p>
+
+<h2 id="toc_4">分布式场景下的限流</h2>
+
+<p><strong>上面所说的限流的一些方式，都是针对单机而言的，其实大部分的场景，单机的限流已经足够了。分布式下限流的手段常常需要多种技术相结合，比如 Nginx+Lua，Redis+Lua 等去做。本文主要讨论的是单机的限流，这里就不在详细介绍分布式场景下的限流了。</strong> <br/>
+<strong>一句话，让系统的流量，先到队列中排队、限流，不要让流量直接打到系统上。</strong></p>
 
                         
                       </div>
@@ -207,12 +219,10 @@ extension=pdo_oci.so
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/6/1</span>
+                    <span class="date">2018/6/18</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Database.html'>Database</a></span>
-          				  
-          					    <span class="posted-in"><a href='Bash.html'>Bash</a></span>
+          					    <span class="posted-in"><a href='Cocurrency.html'>Cocurrency</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -302,31 +312,31 @@ extension=pdo_oci.so
 	      
 		      
 			      <li class="post">
-			        <a href="15389311738065.html">重构到更深层的模型</a>
+			        <a href="15459058392039.html">Reliable Domain Events</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389278377243.html">IAM of Google Cloud</a>
+			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389224951575.html">RSocket, a New Application Network Protocol for Reactive Applications, Announced at SpringOne</a>
+			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389220103546.html">如何形象地描述RxJava中的背压和流控机制？</a>
+			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389214670417.html">Modeling Uncertainty with Reactive DDD</a>
+			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
 			      </li>
 		     
 		  

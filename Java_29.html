@@ -105,23 +105,90 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="14562278880897.html">
+                <a class="clearlink" href="15309354381443.html">
                 
-                  <h1>Spring Transaction Management Best Practices</h1>
+                  <h1>Intersection Types: Java Generics’ most underused feature</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
-                        	<p>In this post I’ll create a placeholder that I’ll keep updating in the future accumulating Spring Transaction Management best practises that I find along the way:</p>
+                        	<blockquote>
+<p><a href="http://iteratrlearning.com/java/generics/2016/05/12/intersection-types-java-generics.html">http://iteratrlearning.com/java/generics/2016/05/12/intersection-types-java-generics.html</a></p>
+</blockquote>
 
-<p>Keep the <code>@Transactional</code> definition at the Service layer and not the DAO layer. Service beans might use multiple DAOs ACID-ly under the same transaction. If otherwise transaction management is defined at the DAO level, Service beans will pay the price of creating multiple transactions for a conceptually grouped operation let alone the data inconsistencies we’ll risk having not defining ACID Service operations.<br/>
-Further underlying the previous point we can define <code>@Transactional(propagation = Propagation.MANDATORY)</code> at the class level of our DAOs, therefore enforcing the consumers of our DAOs to initiate transaction management.</p>
+<p><u>Written on May 12, 2016</u></p>
 
-<p>Know what are the defaults of the @Transactional annotation and don’t just use it by faith. Namely, if not specified otherwise, propagation is set to Propagation.REQUIRED which means use an existing transaction otherwise create a new one; isolation is set to <code>Isolation.DEFAULT</code> that is defined by the underlying DB default which normally results to <code>Isolation.READ_COMMITED</code>; readOnly flag is switched off by default; rollbackFor can be defined for a Throwable class but beware: by default rollback occurs only if a RuntimeException is thrown unless this parameter is setup.</p>
+<p>Generic types were added to java way back in 2004 and have had extensive usage by different libraries and application developers ever since. Not all generics features have had equal usage though. In this blog post we’re going to explore Intersection Types: which are both one of the lesser-known features that Java Generics offers.</p>
 
-<p>Be careful of the readOnly flag. Although <code>@Transactional(readOnly = true, propagation=Propagation.REQUIRED)</code> will throw an exception upon a JDBC insert/update command within that transaction, it wouldn’t have the expected behavior on an insert/update ORM operation where the operation will unintuitively go through and be committed successfully. Under an ORM environment use the flag along with Propagation.SUPPORTS. In that case we won’t have to pay for the cost of creating a new transaction simply for a select operation unless there is one in place. Or even still consider ditching the whole @Transactional management for select operations.</p>
+<p>Intersection types are a form of generic type that look a bit like <code>&lt;T extends A &amp; B&gt;</code>, where <code>T</code> is a type parameter and <code>A</code> and <code>B</code> are two types. In order to understand intersection types we first need to talk about how the extends keyword is used in generics. If you see a generic type parameter like <code>&lt;T extends Comparable&gt;</code> then it means that you are going to require our generic type (T) to only be those classes that implement the interface <code>Comparable</code>. Remember when we say “extends” in generic types that could refer to either extending a class or also implementing an interface.</p>
 
-<p>Be careful when using <code>Propagation.REQUIRES_NEW</code> that is not in the top level. It causes problems more times than not. Since every time a new transaction is wrapping that aspect, in cases where multiple REQUIRES_NEWs are included within the same transactional service method in cases of a rollback ACID is not respected and inconsistent data are left in the DB. On the other hand, just using it on the top level of the transaction method is fine and actually equates the default <code>Propagation.REQUIRED</code>.</p>
+<p>Intersection types are for situations where we want to be really greedy with our requirements! We want to say only allow classes that extend both classes in the case of our intersection types. But, why on earth would we want to do this? Let’s walk through a worked example to understand intersection types properly.</p>
+
+<h2 id="toc_0">Deserializing DataInputStream and RandomAccessFile objects</h2>
+
+<p>Let’s suppose we’ve got a <code>Person</code> class and every Person has a name and an age that are instantiated in the constructor.</p>
+
+<p><code>public Person(String name, int age)</code></p>
+
+<p>Our system is trying to de-serialise person instances from an input stream, like a storage file or a network connection. In order to do this we’ve got a read method that takes a DataInputStream. It reads out the name as a Unicode string and the age as an int. After the Person instance has been read out the DataInputStream gets closed.</p>
+
+<pre><code class="language-java">private static Person read(DataInputStream source) {
+   try(DataInputStream input = source) {
+       return new Person(input.readUTF(), input.readInt());
+   }
+   catch (IOException e) {
+       e.printStackTrace();
+       return null;
+    }
+}
+</code></pre>
+
+<p>After this code has been deployed in production for a while a new requirement appears. Software development is a job never done. The new requirement requires the code to de-serialise the data from a RandomAccessFile object. Ideally you would like to re-use the logic of the read method which accepts a source of type DataInputStream. Unfortunately, an object of type <code>RandomAccessFile</code> is not a subtype of <code>DataInputStream</code> so this won’t work.</p>
+
+<h2 id="toc_1">Dummy interfaces</h2>
+
+<p>What can you do? You can notice that both DataInputStream and RandomAccessFile implement the interfaces DataInput and Closeable. Consequently, you could refactor the method read by introducing a “dummy” interface whose only purpose is to create a type that extends both DataInput and Closeable:</p>
+
+<pre><code class="language-java">interface DataInputCloseable extends DataInput, Closeable {}
+</code></pre>
+
+<p>You can now refactor the method read to use this interface as follows:</p>
+
+<pre><code class="language-java">private static Person read(DataInputCloseable source) {
+   try(DataInputStream input = source) {
+       return new Person(input.readUTF(), input.readInt());
+   }
+   catch (IOException e) {
+       e.printStackTrace();
+       return null;
+   }
+}
+</code></pre>
+
+<p>Thanks to this refactoring, you have gained both code re-use and flexibility. You are now able to re-use the same implementation of the method read but pass DataInputStream objects and RandomAccessFile objects.</p>
+
+<h2 id="toc_2">Using intersection types</h2>
+
+<p>Nonetheless, you had to introduce a kind of “dummy” interface whose only purpose is to create a new type which extends two types (DataInput and Closeable). Not only that, but because you were depending upon classes in the core JDK libraries you couldn’t retrofit that interface to the actual implementing classes. This is a situation where intersection types can be convenient. They let you do just that without introducing an unnecessary interface or class in your code. You can refactor the method read as follows:</p>
+
+<pre><code class="language-java">private static &lt;I extends DataInput &amp; Closeable&gt; Person read(I source) {
+    try(I input = source) {
+        return new Person(input.readUTF(), input.readInt());
+    }
+    catch (IOException e) {
+       e.printStackTrace();
+       return null;
+    }
+}
+</code></pre>
+
+<p>In the code above, you introduced an intersection type <code>&lt;I extends DataInput &amp; Closeable&gt;</code> which says the type parameter <code>I</code> extends both <code>DataInput</code> and <code>Closeable</code>. You can then use this type parameter as argument to the method to indicate the input should extends both <code>DataInput</code> and <code>Closeable</code>.</p>
+
+<h2 id="toc_3">Conclusion</h2>
+
+<p>In this blog post, we showed that intersection types can be convenient in situations where you need “to extend from” two, or more, types in an existing library but you don’t have an existing interface or class to model that. In many cases this is unnecessary. Often introducing new types via an interface or class gives us an explicit name which helps the readability of your code. If the concept and name makes sense then that’s what we would recommend doing. In this case that wasn’t possible and intersection types helped save the day.</p>
+
+<p>If you are interested in improving your Java skills, check out our <a href="http://iteratrlearning.com/javabootcamp">Java Software Development Bootcamp</a></p>
 
                         
                       </div>
@@ -130,7 +197,7 @@ Further underlying the previous point we can define <code>@Transactional(propaga
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2016/2/23</span>
+                    <span class="date">2018/7/7</span>
                     <span>posted in&nbsp;</span> 
           				  
           					    <span class="posted-in"><a href='Java.html'>Java</a></span>
@@ -157,7 +224,7 @@ Further underlying the previous point we can define <code>@Transactional(propaga
 			  </div>
 			  <div class="large-6 columns">
 			<p class="text-right" style="padding-top:25px;">
-			
+			 <a href="Java_30.html">&raquo; Next Page</a> 
 			</p>
 			  </div>
 			</div>
@@ -223,31 +290,31 @@ Further underlying the previous point we can define <code>@Transactional(propaga
 	      
 		      
 			      <li class="post">
-			        <a href="15389311738065.html">重构到更深层的模型</a>
+			        <a href="15459058392039.html">Reliable Domain Events</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389278377243.html">IAM of Google Cloud</a>
+			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389224951575.html">RSocket, a New Application Network Protocol for Reactive Applications, Announced at SpringOne</a>
+			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389220103546.html">如何形象地描述RxJava中的背压和流控机制？</a>
+			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389214670417.html">Modeling Uncertainty with Reactive DDD</a>
+			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
 			      </li>
 		     
 		  

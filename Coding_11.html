@@ -105,171 +105,90 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15342604876749.html">
+                <a class="clearlink" href="15390119272775.html">
                 
-                  <h1>5 Reasons and 101 Bugfixes – Why You Should Use Hibernate 5.3</h1>
+                  <h1>透彻理解Spring事务设计思想之手写实现</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
-                        	<p>Hibernate 5.3 is available for a little more than 3 months now, and last week, the team released the <a href="http://in.relation.to/2018/07/24/hibernate-orm-533-final-out/">3rd maintenance release</a>. So, it’s about time to take a closer look at the new version.</p>
+                        	<blockquote>
+<p>本文由 <a href="http://ksria.com/simpread/">简悦 SimpRead</a> 转码， 原文地址 <a href="https://www.jianshu.com/p/1becdc376f5d">https://www.jianshu.com/p/1becdc376f5d</a></p>
+</blockquote>
 
-<p>In addition to more than 100 bug fixes, Hibernate 5.3 includes a few features and improvements that might motivate you to update your current project.</p>
+<h2 id="toc_0">前言</h2>
 
-<h2 id="toc_0">Improved Memory consumption</h2>
+<p>事务，是描述一组操作的抽象，比如对数据库的一组操作，要么全部成功，要么全部失败。事务具有 4 个特性：Atomicity（原子性），Consistency（一致性），Isolation（隔离性），Durability（持久性）。在实际开发中，我们对事务应用最多就是在数据库操作这一环，特别是 Spring 对数据库事务进行了封装管理。Spring 对事务的支持，确实很强大，但是从本质上来讲：<strong>事务是否生效取决数据库底层是否支持（比如 MySQL 的 MyISAM 引擎就不支持事务，Spring 能奈何！），同时一个事务的多个操作需要在同一个 Connection 上。事务也往往是在业务逻辑层来控制。</strong>本篇博客将通过手写一个 Demo 来分析 Spring 事务底层到底是如何帮助我们轻松完成事务管理的！</p>
 
-<p>Let’s start with probably the best reason to update to Hibernate 5.3: It consumes less memory than the previous versions.</p>
+<h2 id="toc_1">透彻理解 Spring 事务设计思想之手写实现</h2>
 
-<p>The improvement was triggered by an interesting discussion in the <a href="https://discourse.hibernate.org/t/batch-fetch-style-recommendations/631">Hibernate forum</a>. A user reported that he tried to migrate his application from Hibernate 3.6 to 5.3. During the migration, he recognized that the memory consumption of Hibernate’s SessionFactory went up to 950MB.</p>
+<p>先来看一眼工程结构：</p>
 
-<p>The issue was caused by the size and number of <u>EntityLoader</u>s that Hibernate instantiated. It was fixed in 2 steps:</p>
+<p><img src="https://upload-images.jianshu.io/upload_images/4943997-c1c738d59fe7485a.png" alt=""/></p>
 
-<ol>
-<li> <a href="https://hibernate.atlassian.net/browse/HHH-12556">HHH-12556</a> – Similar <u>EntityLoader</u>s now share some internal data structures. This reduced the memory consumption of the application by ~50%.
-The fix was backported to Hibernate 5.2.18. So, if you’re using Hibernate 5.2 and don’t want to upgrade to 5.3, you should at least update to 5.2.18.</li>
-<li> <a href="https://hibernate.atlassian.net/browse/HHH-12558">HHH-12558</a> – Hibernate supports a bunch of different lock modes with specific loaders. In the past, it instantiated all loaders eagerly. Hibernate 5.3 only instantiates the 2 most common ones and loads all others lazily.</li>
-</ol>
+<p><strong>ConnectionHolder</strong></p>
 
-<p>At the end of the discussion, the user who reported the issue wrote that the improved Hibernate version only used ~ 250MB. So, for his application, these two changes reduced the memory consumption by ~70%.</p>
+<p><img src="https://upload-images.jianshu.io/upload_images/4943997-e2342d24e2e84736.png" alt=""/></p>
 
-<p>I obviously can’t promise that it will be equally effective for your project. However, the reported improvement is so enormous that you should at least give it a try.</p>
+<blockquote>
+<p><strong>在 Spring 中，有时候我们是不是要配置多个数据源 DataSource？很显然，Spring 需要通过 DataSource 来得到操作数据库的管道 Connection，这有点类似于 JNDI 查找。</strong></p>
 
-<h2 id="toc_1">JPA 2.2 compliance</h2>
+<p><strong>这里通过 ConnectionHolder 类来完成这个过程，需要思考的是在多线程下，这显然是存在问题的。为避免多线程问题，难道我们采用线程安全的 Map，比如 ConcurrentHashMap，其实我们真正的目的是什么？是保证一个线程下，一个事务的多个操作拿到的是一个 Connection，显然使用 ConcurrentHashMap 根本无法保证！</strong></p>
 
-<p>Hibernate 5.3.0 is the first version that’s fully compliant with JPA 2.2. However, because the support for all the interesting features was already added in Hibernate 5.0, 5.1 and 5.2, and I already wrote extensive tutorials about all of them, I will not dive any deeper into this topic.</p>
+<p><strong>Spring 很聪明，她提供了一种思路，来解决，看下面的代码！</strong></p>
+</blockquote>
 
-<p>If you’re not already familiar with JPA 2.2, you can read more about it in the following articles:</p>
+<p><strong>SingleThreadConnectionHolder</strong></p>
 
-<ul>
-<li>  <a href="https://www.thoughts-on-java.org/map-date-time-api-jpa-2-2/">How To Map The Date And Time API with JPA 2.2</a></li>
-<li>  <a href="https://www.thoughts-on-java.org/get-query-results-stream-hibernate-5/">How to get query results as a Stream with Hibernate 5.2</a> (please note that Hibernate now also offers the <u>getResultStream</u> method)</li>
-<li>  <a href="https://www.thoughts-on-java.org/jpa-2-2s-new-stream-method-and-how-you-should-not-use-it/">JPA 2.2’s new getResultStream() method and how you should NOT use it</a></li>
-<li>  <a href="https://www.thoughts-on-java.org/jpa-2-2-repeatable-annotations/">JPA 2.2 Introduces @Repeatable Annotations</a></li>
-</ul>
+<p><img src="https://upload-images.jianshu.io/upload_images/4943997-fdec898f986f367d.png" alt=""/></p>
 
-<h2 id="toc_2">Small Improvements</h2>
+<blockquote>
+<p><strong>本来线程不安全的，通过 ThreadLocal 这么封装一下，立刻就变成了线程的局部变量，不仅仅安全了，还保证了一个线程下面的操作拿到的 Connection 是同一个对象！这种思想，确实非常巧妙，这也是无锁编程思想的一种方式！</strong></p>
+</blockquote>
 
-<p>Learn more about primary keys<meta itemprop="thumbnailUrl" content="https://www.thoughts-on-java.org/wp-content/plugins/wp-youtube-lyte/lyteThumbs.php?origThumbUrl=%2F%2Fi.ytimg.com%2Fvi%2Fqn9SbW44rQ8%2Fmaxresdefault.jpg"><meta itemprop="embedURL" content="https://www.youtube.com/embed/qn9SbW44rQ8"><meta itemprop="uploadDate" content=""></p>
+<p><strong>TransactionManager</strong></p>
 
-<p><img src="https://i.ytimg.com/vi/qn9SbW44rQ8/0.jpg" alt=""/><br/>
-Watch this video on YouTube<meta itemprop="description" content="">](<a href="https://youtu.be/qn9SbW44rQ8">https://youtu.be/qn9SbW44rQ8</a>)</p>
+<p><img src="https://upload-images.jianshu.io/upload_images/4943997-6b1d06cb6e4c36f4.png" alt=""/></p>
 
-<p><a href="https://youtu.be/qn9SbW44rQ8"></a><a href="http://bit.ly/2cUsid8">Follow me on YouTube</a> to not miss any new videos.</p>
+<blockquote>
+<p><strong>TransactionManager，这个我们经常在 Spring 里面进行配置吧，事务大管家！</strong></p>
+</blockquote>
 
-<h3 id="toc_3">Implicit ID generator definitions</h3>
+<p><strong>UserAccountDao、UserOrderDao</strong></p>
 
-<p>If you <a href="https://www.thoughts-on-java.org/jpa-generate-primary-keys/">generate your primary key values</a>, you’re probably aware of Hibernate’s <u>@SequenceGenerator</u> and <u>@TableGenerator</u> annotations. You can use them to define which sequence or table Hibernate shall use to generate the primary key value.</p>
+<p><img src="https://upload-images.jianshu.io/upload_images/4943997-7a4c3d78b64b1b41.png" alt=""/><img src="https://upload-images.jianshu.io/upload_images/4943997-51bd4645e182465f.png" alt=""/></p>
 
-<p>Here is a typical example of a primary key mapping that tells Hibernate to use the database sequence <u>author</u>seq_ to generate the unique primary key values.</p>
+<blockquote>
+<p><strong>这里通过这 2 个 DAO，想模拟一个事务中账户购买、下单 2 个操作。</strong></p>
+</blockquote>
 
-<pre><code class="language-java">@Entity
-public class Author {
- 
-    @Id
-    @GeneratedValue(strategy = GenerationType.SEQUENCE, generator = &quot;author_seq&quot;)
-    @SequenceGenerator(name=&quot;author_seq&quot;, sequenceName = &quot;author_seq&quot;)
-    private Long id;
- 
-    ...
-}
-</code></pre>
+<p><strong>UserService</strong></p>
 
-<p>The mapping definition consists of 2 parts:</p>
+<p><img src="https://upload-images.jianshu.io/upload_images/4943997-cb641f0ea8e402fa.png" alt=""/></p>
 
-<ol>
-<li> The <u>@GeneratedValue</u> annotation defines which generation strategy Hibernate shall use and references a custom generator.</li>
-<li> The <u>@SquenceGenerator</u> annotation specifies the generator and tells Hibernate the name of the sequence you want to use.</li>
-</ol>
+<blockquote>
+<p><strong>到这里，可以清晰的看到 Spring 事务管理的一个缩影了吧！</strong></p>
+</blockquote>
 
-<p>As you can see in the code snippet, I use the same name for the generator and the database sequence. That’s a pretty common and verbose mapping.</p>
+<p><strong>Test</strong></p>
 
-<p>If your mapping looks the same, I have good news for you: You no longer need to define the generator if your database sequence or table has the same name as your <u>@SequenceGenerator</u> or <u>@TableGenerator</u>.</p>
+<p><img src="https://upload-images.jianshu.io/upload_images/4943997-b701b107dc2c24db.png" alt=""/></p>
 
-<p>That enables me to shorten the previous mapping and to remove the <u>@SequenceGenerator</u> definition.</p>
+<blockquote>
+<p><strong>这里，主要是模拟 Spring 的注入以及多用户并发请求。</strong></p>
+</blockquote>
 
-<pre><code class="language-java">@Entity
-public class Author {
- 
-    @Id
-    @GeneratedValue(strategy = GenerationType.SEQUENCE, generator = &quot;author_seq&quot;)
-    private Long id;
- 
-    ...
-}
-</code></pre>
+<p><strong>运行结果</strong></p>
 
-<h3 id="toc_4">Support for MySQL 8 SKIP LOCKED and NOWAIT</h3>
+<p><img src="https://upload-images.jianshu.io/upload_images/4943997-e11ff5aea23d1ffb.png" alt=""/></p>
 
-<p>MySQL 8.0.1 added the SKIP LOCKED and NOWAIT feature to provide different options to handle locked rows during read-operations. The MySQL Server team explained them in great detail on their blog: <a href="https://mysqlserverteam.com/mysql-8-0-1-using-skip-locked-and-nowait-to-handle-hot-rows/">MySQL 8.0.1: Using SKIP LOCKED and NOWAIT to handle hot rows.</a></p>
+<blockquote>
+<p><strong>你可以发现，一个线程中的一个事务的多个操作，使用的是同一个 Connection！</strong></p>
+</blockquote>
 
-<p>Here’s a quick description of both features:</p>
+<p><strong>好了，到这里，你是否能对 Spring 实现事务的思想有所了解呢？</strong></p>
 
-<ul>
-<li>  SKIP LOCKED enables you to perform a non-deterministic read that skips all locked rows. That means that locked rows are missing in your result set.</li>
-<li>  If you require a deterministic read but don’t want to wait for the locks to be released, you can use the NOWAIT feature. It causes your query to fail immediately if any records in your result set are locked.</li>
-</ul>
-
-<p>The <u>MySQL8Dialect</u> included in Hibernate 5.3 supports both these features so that you can use them in your queries.</p>
-
-<p>Learn more about AttributeConverter<meta itemprop="thumbnailUrl" content="https://www.thoughts-on-java.org/wp-content/plugins/wp-youtube-lyte/lyteThumbs.php?origThumbUrl=%2F%2Fi.ytimg.com%2Fvi%2FTIeeRif4ocg%2Fmaxresdefault.jpg"><meta itemprop="embedURL" content="https://www.youtube.com/embed/TIeeRif4ocg"><meta itemprop="uploadDate" content=""></p>
-
-<p><img src="https://i.ytimg.com/vi/TIeeRif4ocg/0.jpg" alt=""/><br/>
-Watch this video on YouTube<meta itemprop="description" content="">](<a href="https://youtu.be/TIeeRif4ocg">https://youtu.be/TIeeRif4ocg</a>)</p>
-
-<p><a href="https://youtu.be/TIeeRif4ocg"></a><a href="http://bit.ly/2cUsid8">Follow me on YouTube</a> to not miss any new videos.</p>
-
-<h3 id="toc_5">Apply AttributeConverter when calling a function</h3>
-
-<p><a href="https://www.thoughts-on-java.org/jpa-21-how-to-implement-type-converter/">AttributeConverters</a> provide a standardized, easy way to define the mapping of a Java type. You can either use them to add support for unsupported classes or to customize the <a href="https://www.thoughts-on-java.org/jpa-21-type-converter-better-way-to/">mapping of an already supported Java type</a>.</p>
-
-<p>The following code snippet shows an example from my <a href="https://www.thoughts-on-java.org/jpa-tips-map-duration-attribute/">JPA Tip: How to map a Duration attribute</a>. JPA 2.2 doesn’t provide a mapping for _java.time.Duration_ objects. If you want to map such an object, you can use this <u>AttributeConverter</u> to map it to a <u>Long</u>.</p>
-
-<pre><code class="language-java">@Converter(autoApply = true)
-public class DurationConverter implements AttributeConverter&lt;Duration, Long&gt; {
-     
-    Logger log = Logger.getLogger(DurationConverter.class.getSimpleName());
- 
-    @Override
-    public Long convertToDatabaseColumn(Duration attribute) {
-        log.info(&quot;Convert to Long&quot;);
-        return attribute.toNanos();
-    }
- 
-    @Override
-    public Duration convertToEntityAttribute(Long duration) {
-        log.info(&quot;Convert to Duration&quot;);
-        return Duration.of(duration, ChronoUnit.NANOS);
-    }
-}
-</code></pre>
-
-<p>After you applied the AttributeConverter to an attribute or automatically applied them to all attributes of a specific type, it gets transparently used:</p>
-
-<ul>
-<li>  during all lifecycle state transitions,</li>
-<li>  to map the result of a query and</li>
-<li>  when used in path expressions in a <a href="http://JPQL">JPQL</a> or CriteriaQuery.</li>
-</ul>
-
-<p>However, for whatever reason, the usage of converted attribute values as function parameters is explicitly undefined.</p>
-
-<p>Previous Hibernate versions didn’t convert the attribute value if you referenced it as a function parameter. This changed with Hibernate 5.3.2. It now converts the attribute value before it provides it as a function parameter.</p>
-
-<h2 id="toc_6">Support for Java 9 and preparations for Java 11</h2>
-
-<p>Beginning with Hibernate 5.3.0, all Hibernate modules specify a <a href="https://blog.codefx.org/java/java-module-system-tutorial/">Java 9 module</a> name following the pattern _org.hibernate.orm.${module-name}_, e.g., the hibernate-core module defines the name _org.hibernate.orm.core._</p>
-
-<p>The Hibernate team also updated the dependencies, prepared the build process and run their test suite with the latest JDK 11 build. So, we can hope for a smooth transition to JDK11.</p>
-
-<h2 id="toc_7">Conclusion</h2>
-
-<p>Should you update to Hibernate 5.3?</p>
-
-<p>You probably already know my answer. It’s a clear yes! Especially the improved memory consumption is a great reason to do the update.</p>
-
-<p>However, please keep in mind that every update has its risks and that you obviously shouldn’t update any project dependency without testing it carefully.</p>
-
-<p>So, what about you? Did you already update your application to use Hibernate 5.3 or will you update it in the near future?</p>
+<p><strong>晚安，早点睡觉，明天继续，O(∩_∩)O 哈哈~</strong></p>
 
                         
                       </div>
@@ -278,10 +197,10 @@ public class DurationConverter implements AttributeConverter&lt;Duration, Long&g
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/8/14</span>
+                    <span class="date">2018/10/8</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Java.html'>Java</a></span>
+          					    <span class="posted-in"><a href='Spring.html'>Spring</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -371,31 +290,31 @@ public class DurationConverter implements AttributeConverter&lt;Duration, Long&g
 	      
 		      
 			      <li class="post">
-			        <a href="15389311738065.html">重构到更深层的模型</a>
+			        <a href="15459058392039.html">Reliable Domain Events</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389278377243.html">IAM of Google Cloud</a>
+			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389224951575.html">RSocket, a New Application Network Protocol for Reactive Applications, Announced at SpringOne</a>
+			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389220103546.html">如何形象地描述RxJava中的背压和流控机制？</a>
+			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389214670417.html">Modeling Uncertainty with Reactive DDD</a>
+			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
 			      </li>
 		     
 		  

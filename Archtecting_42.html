@@ -105,190 +105,268 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15281296238206.html">
+                <a class="clearlink" href="15305091301357.html">
                 
-                  <h1>SOFABoot 类隔离原理剖析</h1>
+                  <h1>为你解读 SOFA-DTX 分布式事务的设计演进路线</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p>林小树 <a href="https://zhuanlan.zhihu.com/p/37665305">https://zhuanlan.zhihu.com/p/37665305</a></p>
+<p><a href="https://zhuanlan.zhihu.com/p/38555862">https://zhuanlan.zhihu.com/p/38555862</a></p>
 </blockquote>
 
-<p><strong>原创声明</strong>：本文系作者原创，谢绝个人、媒体、公众号或网站未经授权转载，违者追究其法律责任。</p>
+<p>随着互联网技术快速发展，数据规模增大，采用分布式数据库或者跨多个数据库的分布式微服务应用在中大规模企业普遍存在，而由于网络、机器等不可靠因素，数据一致性的问题很容易出现，与可扩展性、高可用容灾等要求并肩成为金融 IT 架构支撑业务转型升级的最大挑战之一。</p>
 
-<blockquote>
-<p>SOFABoot 是蚂蚁金服中间件团队开源的基于 Spring Boot 的一个开发框架，其在 Spring Boot 基础能力之上，增加了类隔离能力，以更好地解决随着工程应用变得臃肿庞大后带来的包冲突问题。类隔离能力天生带来模块化能力，同样给协作开发带来便利。<br/>
-SOFABoot 的类隔离能力借助单独的组件 SOFAArk 实现，遵循 Spring Boot 依赖即服务的思想，只要工程中引入了 SOFAArk 组件依赖，类隔离能力即生效。<br/>
-在上一篇文章 <a href="https://zhuanlan.zhihu.com/p/36909393">《在 Spring Boot 中集成 SOFABoot 类隔离能力》</a>中，我们详细介绍了 SOFABoot 类隔离能力的使用背景及其使用方式。本文将介绍 SOFABoot 类隔离组件 SOFAArk 的实现原理。</p>
-</blockquote>
+<p>在蚂蚁金服核心系统提出微服务化时，曾遇到了非常大的技术难题。首先是在服务拆分以后，面临跨服务的一致性问题；其次，支付宝当时的峰值交易量已经非常高了，在解决一致性问题的同时，还需要兼顾性能。</p>
 
-<h2 id="toc_0"><strong>理解 SOFAArk 三要素</strong></h2>
+<p>在当时，业界常用的分布式事务解决方案，通常能够实现跨服务一致性，但在热点数据的处理上，难以满足性能需求。</p>
 
-<p>SOFAArk 类隔离框架定义了三个概念，Ark Container，Ark Plugin，Ark Biz。</p>
+<p>因此，蚂蚁金服微服务化过程中急需一种即能保证一致性，又能保证高性能的方案。当时经过一系列调研和讨论，最终选择了以 BASE 最终一致性思想为基础，在业务层实现两阶段提交的 TCC 分布式事务解决方案，该方案既能保证跨服务的最终一致，又能通过业务灵活加锁的方式大幅减少资源层加锁时间，高效处理热点问题。</p>
 
-<p>在介绍这三个主角之前，我们先来介绍另一个管家：<strong>Ark 包</strong>。我们都知道一个标准的 Spring Boot 应用可以借助 Spring 官方提供的打包插件：</p>
+<p>随着蚂蚁金服业务不断丰富，业务逻辑越来越复杂，同时蚂蚁金融云上客户也越来越多，对分布式事务解决方案（简称 DTX，Distributed Transaction-eXtended）也不只是追求极限性能，也对接入便捷性、实时一致性有了要求。</p>
 
-<pre><code>&lt;plugin&gt;
-    &lt;groupId&gt;org.springframework.boot&lt;/groupId&gt;
-    &lt;artifactId&gt;spring-boot-maven-plugin&lt;/artifactId&gt;
-&lt;/plugin&gt;
+<p>这篇文章将基于分布式事务在支付宝 / 蚂蚁金服核心金融场景下的演进路线，分享介绍其在各阶段的关键设计考量和发展思路。</p>
 
-</code></pre>
+<p>一. 分布式事务在蚂蚁金服的应用背景</p>
 
-<p>将应用打包成一个可执行 FatJar。相对应的，Ark 包则是 SOFABoot 官方提供的打包插件：</p>
+<p>1.1 支付宝 SOA 架构演进</p>
 
-<pre><code>&lt;plugin&gt;
-    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
-    &lt;artifactId&gt;sofa-ark-maven-plugin&lt;/artifactId&gt;
-&lt;/plugin&gt;
+<p>最初的支付宝系统架构非常简单，是一个典型的 Web 系统，交易、支付、账务系统是没有分开的，全部集中在一个大工程里，底层用 DB 存储，Web 服务使用 Spring 等框架开发，最上层使用 LB 转发用户流量。</p>
 
-</code></pre>
+<p><img src="https://pic1.zhimg.com/v2-8bde95a7a4b66c31e6408bd42e61c34e_b.jpg" alt=""/><img src="https://pic1.zhimg.com/v2-8bde95a7a4b66c31e6408bd42e61c34e_r.jpg" alt=""/></p>
 
-<p>将应用打包成一个具有类隔离能力的可执行 FatJar，称之为 Ark 包。下图是粗略地对比两者的目录结构差别：</p>
+<p>随着代码规模和业务逻辑复杂度的增长，将所有的业务模块放在一个 Web 服务内的缺点日益凸显。因此推动了服务模块化拆分，演进成 SOA 架构，很好地解决了应用的伸缩性问题。</p>
 
-<p><img src="https://pic3.zhimg.com/v2-096b7865cea9b432d6dee8990d2b2dc1_b.jpg" alt=""/><img src="https://pic3.zhimg.com/v2-096b7865cea9b432d6dee8990d2b2dc1_r.jpg" alt=""/></p>
+<p>在这个架构中，交易系统、支付系统、账务系统分别独立出来了，它们之间的调用靠 RPC，除了服务模块化拆分，还有数据库的垂直拆分，根据业务系统功能，将数据库拆分为多个，每个系统使用独立的数据库。</p>
 
-<p>可以看到 Ark 包作为应用部署包的分发格式，它包含有 Ark Container，Ark Plugin 和 Ark Biz 三种格式模块。这里我们不对 Ark 包或者其他格式模块的目录结构作分析，感兴趣的同学可以点开文末附上的相关链接。我们重点介绍这三个角色的功能。</p>
+<p><img src="https://pic4.zhimg.com/v2-956a723f67f42828d6ee0b4a77dfcecb_b.jpg" alt=""/><img src="https://pic4.zhimg.com/v2-956a723f67f42828d6ee0b4a77dfcecb_r.jpg" alt=""/></p>
 
-<ul>
-<li>  Ark Container: Ark 容器，是组件 SOFAArk 的核心，运行 Ark 包时，Ark 容器会最先启动，负责应用运行时的管理，主要包括构建 Ark Plugin 和 Ark Biz 的类导入导出关系表、启动并初始化 Ark Plugin 和 Ark Biz、管理 Ark Plugin 服务的发布和引用等等。</li>
-<li>  Ark Plugin: SOFAArk 定义的一种模块格式，由若干个 Jar 包组成的一个 FatJar，开发人员可以借助官方提供的 maven 打包插件将若干 Jar 包打包成一个 Ark Plugin 供应用依赖。运行时，由独立的类加载器加载，因此有隔离需求的 Jar 包建议打包成 Ark Plugin 供应用依赖。</li>
-<li>  Ark Biz: SOFAArk 定义的一种模块格式，是应用及其依赖的所有三方包组成的一个 FatJar，需要注意的是，Ark Biz 不会包含应用依赖的 Ark Plugin。运行时，Ark Biz 由独立的类加载器加载，借助类导入导出关系表，Ark Biz 可以使用 Ark Plugin 的导出类和资源。</li>
-</ul>
+<p>1.2 数据一致性问题</p>
 
-<h2 id="toc_1"><strong>SOFAArk 运行时隔离</strong></h2>
+<p>数据垂直拆分后，减少了单库的性能瓶颈，但也带来了数据一致性的问题。如下图所示：</p>
 
-<p>根据上一节的描述可以知道 SOFABoot 类隔离关键是理解 SOFAArk 定义的三个概念，Ark Container，Ark Plugin 和 Ark Biz。下图表示的是应用启动后，运行时 Ark Container，Ark Plugin，Ark Biz 的逻辑分层图：</p>
+<p><img src="https://pic3.zhimg.com/v2-b925a499a03d44bea0c175acf16a546b_b.jpg" alt=""/><img src="https://pic3.zhimg.com/v2-b925a499a03d44bea0c175acf16a546b_r.jpg" alt=""/></p>
 
-<p><img src="https://pic3.zhimg.com/v2-27569011d5bddb7723b45797dc66758e_b.jpg" alt=""/><img src="https://pic3.zhimg.com/v2-27569011d5bddb7723b45797dc66758e_r.jpg" alt=""/></p>
+<p>一笔转账业务需要跨交易、支付、账务三个系统才能完成整个流程，并且要求这三个系统要么一起成功，要么一起失败。如果有的成功，有的失败，就有可能造成数据不一致，那么这个业务行为肯定不会被用户所理解。所以，我们系统面临的问题就是 SOA 架构下的数据一致性。</p>
 
-<p>我们将先以 Ark Plugin 入手来介绍 SOFABoot 类隔离的实现原理。</p>
+<p>二. 关键设计考量：金融级一致性要求与海量并发处理能力</p>
 
-<h2 id="toc_2"><strong>Ark Plugin 隔离</strong></h2>
+<p>考虑到在解决一致性问题的同时，还要兼顾海量并发处理能力，蚂蚁金服内部结合 BASE 理论的思想，选择在业务层实现 2PC（两阶段事务提交）的方式来解决该问题。</p>
 
-<p>开发者借助 SOFABoot 官方提供的插件：</p>
+<p>BASE 理论是指 BA（Basic Availability，基本业务可用性）；S（Soft state，柔性状态）；E（Eventual consistency，最终一致性）。该理论认为为了可用性、性能与降级服务的需要，可以适当降低一点一致性的要求，即 “基本可用，最终一致”。</p>
 
-<pre><code>&lt;plugin&gt;
-    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
-    &lt;artifactId&gt;sofa-ark-plugin-maven-plugin&lt;/artifactId&gt;
-&lt;/plugin&gt;
+<p>一般来讲，在传统的单机数据库或者集中式存储数据库里，对于一致性的要求是实时一致；而对于分布式系统，服务与服务之间已经实现了功能的划分，逻辑的解耦，也就更容易弱化一致性，允许处理过程中，数据的短暂不一致，只需要保证数据最终达到一致。</p>
 
-</code></pre>
+<p>2.1 分布式金融核心的零差错容忍保证：TCC 模型</p>
 
-<p>可以将 Java 模块打包成一个 Ark Plugin，这里我们不讨论该打包插件的配置参数和使用方式，感兴趣的同学可以点开文末附上的相关链接以及学习 SOFABoot 类隔离能力使用篇。只需要知道，Ark Plugin 主要包含元信息有：插件启动器、导出类、导入类、导出资源、导入资源、优先级等，这些元信息保存在 Ark Plugin 中的 META-INF/MANIFEST.MF 中，一份典型的 MANIFEST.MF 文件样式如下：</p>
+<p>如本文开篇所述，蚂蚁金服大部分系统的分布式事务解决方案以 BASE 最终一致性思想为基础，在业务层实现两阶段提交的 TCC（Try-Confirm-Cancel）分布式事务解决方案，以确保在一致性问题的保障和性能方面达到最佳平衡。</p>
 
-<pre><code>Manifest-Version: 1.0
-groupId: com.alipay.sofa
-artifactId: sample-ark-plugin
-version: 0.3.0-SNAPSHOT
-priority: 1000
-pluginName: sample-ark-plugin
-activator: com.alipay.sofa.ark.sample.activator.SamplePluginActivator
-import-packages: 
-import-classes: 
-import-resources: 
-export-packages: com.alipay.sofa.ark.sample.common.*,com.alipay.sofa.ark.sample
-export-classes: com.alipay.sofa.ark.sample.facade.SamplePluginService
-export-resources: Sample_Resource_Exported
+<p>TCC 分布式事务模型包括三部分，如下所示</p>
 
-</code></pre>
+<p>主业务服务：主业务服务为整个业务活动的发起方，服务的编排者，负责发起并完成整个业务活动。</p>
 
-<p>在上面我们提到，运行 Ark 包时，类隔离容器 Ark Container 会最先启动，然后 Ark Container 会接管整个应用的启动过程。针对 Ark Plugin 处理逻辑如下：</p>
+<p>从业务服务：从业务服务是整个业务活动的参与方，负责提供 TCC 业务操作供主业务服务调用</p>
 
-<ul>
-<li>  首先解析 Ark 包中引入的所有 Ark Plugin，读取插件元信息，构建类 / 资源导入导出关系索引表。</li>
-<li>  提前生成所有插件类加载器，每个 Ark Plugin 都使用独立的类加载器，管理插件类加载逻辑，借助第一步生成的类导入导出关系表，突破 Java 原生的双亲委派模型，可以委托其他插件加载所需类，构建一个类 OSGi 的网状类加载模型。</li>
-<li>  根据插件优先级，依次调用插件启动器。在插件启动器中，插件开发者可以向容器注册服务以方便其他插件引用，也可以引用其他插件发布的服务，及插件启动所需的初始化操作。</li>
-</ul>
+<p>初步操作 Try：完成所有业务检查，预留必须的业务资源。</p>
 
-<p>需要明确一点，为了让类加载模型足够简单，Ark 容器在启动任何插件前，会把所有的插件类加载器提前构建完毕。Ark Plugin 可以相互委托加载，插件优先级只是影响插件的启动顺序，而且也不强制要求每个 Ark Plugin 都要有启动器。</p>
+<p>确认操作 Confirm：真正执行的业务逻辑，不作任何业务检查，只使用 Try 阶段预留的业务资源。因此，只要 Try 操作成功，Confirm 必须能成功。另外，Confirm 操作需满足幂等性，保证一笔分布式事务有且只能成功一次。</p>
 
-<p>启动完所有插件后，Ark Container 则开始负责启动 Ark Biz 模块。</p>
+<p>取消操作 Cancel：释放 Try 阶段预留的业务资源。同样的，Cancel 操作也需要满足幂等性。</p>
 
-<h2 id="toc_3"><strong>Ark Biz 隔离</strong></h2>
+<p>业务活动管理器：业务活动管理器管理控制整个业务活动，包括记录维护 TCC 全局事务的事务状态和每个从业务服务的子事务状态，并在业务活动提交时调用所有从业务服务的 Confirm 操作，在业务活动取消时调用所有从业务服务的 Cancel 操作。</p>
 
-<p>Ark Container 在完成 Ark Plugin 的隔离和启动后，则开始准备 Ark Biz 的隔离和启动。</p>
+<p><img src="https://pic2.zhimg.com/v2-73b537ae9289f0953a5889d25b235a50_b.jpg" alt=""/><img src="https://pic2.zhimg.com/v2-73b537ae9289f0953a5889d25b235a50_r.jpg" alt=""/></p>
 
-<p>在上文中提到，应用打成 Ark 包后，Ark 包会包含 Ark Plugin 模块和 Ark Biz 模块。实际上 Ark Biz 其实就是应用及其所有的三方依赖打成的 FatJar 包，Ark Biz 不会包含应用引入的 Ark Plugin。开发者借助 SOFABoot 官方提供的插件：</p>
+<p>2.1.1 TCC 与 XA 对比 --- 并发性优势</p>
 
-<pre><code>&lt;plugin&gt;
-    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
-    &lt;artifactId&gt;sofa-ark-maven-plugin&lt;/artifactId&gt;
-&lt;/plugin&gt;
+<p>TCC 把两阶段拆分成了两个独立的阶段，通过资源业务锁定的方式进行关联。资源业务锁定方式的好处在于，既不会阻塞其他事务在第一阶段对于相同资源的继续使用，也不会影响本事务第二阶段的正确执行。</p>
 
-</code></pre>
+<p><img src="https://pic2.zhimg.com/v2-7eceb7a07fa90e54b4690615077d9af5_b.jpg" alt=""/><img src="https://pic2.zhimg.com/v2-7eceb7a07fa90e54b4690615077d9af5_r.jpg" alt=""/></p>
 
-<p>可以将 Java（Spring Boot） 应用打包成一个 Ark Biz，这里我们不讨论该打包插件的配置参数和使用方式，感兴趣的同学可以点开文末附上的相关链接以及学习 SOFABoot 类隔离能力使用篇。只需要知道，Ark Biz 主要包含元信息有：应用启动入口、禁止导入类、禁止导入资源等。这些元信息保存在 Ark Biz 中的 META-INF/MANIFEST.MF 中，一份典型的 MANIFEST.MF 文件样式如下：</p>
+<p>XA 模型的并发事务</p>
 
-<pre><code>Manifest-Version: 1.0
-Archiver-Version: Plexus Archiver
-Created-By: Apache Maven 3.2.5
-Build-Jdk: 1.8.0_101
-Built-By: qilong.zql
-Ark-Biz-Name: sofa-ark-sample-springboot-ark
-deny-import-resources:
-deny-import-packages:
-deny-import-classes:
-Main-Class: com.alipay.sofa.ark.sample.springbootdemo.SpringbootDemoApplication
+<p><img src="https://pic3.zhimg.com/v2-7d58d18b759ea7a66b908bf8a95de43a_b.jpg" alt=""/><img src="https://pic3.zhimg.com/v2-7d58d18b759ea7a66b908bf8a95de43a_r.jpg" alt=""/></p>
 
-</code></pre>
+<p>TCC 模型的并发事务</p>
 
-<p>Ark Biz 和 Ark Plugin 有很大的不同，最明显的则是 Ark Biz 单向依赖 Ark Plugin，即 Ark Biz 只能单向委托 Ark Plugin 加载类和资源，反之则不可以。实际上在运行时，Ark Biz 是运行在 Ark Plugin 之上，Ark Container 也是先启动所有 Ark Plugin 然后启动 Ark Biz。默认情况下，Ark Plugin 导出的所有类和资源都能被 Ark Biz 委托加载到，为了方便应用开发者能够自主控制类加载逻辑，允许在打包插件中配置禁止导入类和禁止导入资源，如此，对于配置的类和资源， Ark Biz 能够优先加载内部包含的类，而不会委托给 Ark Plugin 加载。Ark Container 针对 Ark Biz 处理逻辑如下：</p>
+<p>从上面的对比可以发现，TCC 模型相比 XA 模型进一步减少了资源锁的持有时间。XA 模型下，在 Prepare 阶段是不会把事务 1 所持有的锁资源释放掉的，如果事务 2 和事务 1 争抢同一个资源，事务 2 必须等事务 1 结束之后才能使用该资源。</p>
 
-<ul>
-<li>  首先解析 Ark 包中 Ark Biz 模块，读取元信息，构建类 / 资源导入导出关系索引表。</li>
-<li>  生成 Ark Biz 类加载器，管理 Ark Biz 类加载逻辑，借助第一步生成的类导入导出关系表，突破 Java 原生的双亲委派模型，可以委托 Ark Plugin 加载所需类和资源。</li>
-<li>  调用应用启动入口，启动应用。</li>
-</ul>
+<p>而在 TCC 里，因为事务 1 在 Try 阶段已经提交了，那么事务 2 可以获得互斥资源，不必再等待事务 1 的 Confirm 或 Cancel 阶段执行完。也就是说，事务 2 的 Try 阶段可以和事务 1 的 Confirm 或 Cancel 阶段并行执行，从而获得了一个比较大的并发性能提升。</p>
 
-<p>如此，Ark 包即完成整个启动过程。</p>
+<p>2.2 保证大规模交易下的并发性能：极致性能优化</p>
 
-<h2 id="toc_4"><strong>和 OSGi 对比</strong></h2>
+<p>2010 年开始，每年天猫双十一大促的峰值交易量成倍增加，如下图所示：</p>
 
-<p>作为开源界早负盛名的动态模块系统，基于 OSGi 规范的 Equinox、Felix 等同样具备类隔离能力，然而他们更多强调的是一种编程模型，面向模块化开发，有一整套模块生命周期的管理，定义模块通信机制以及复杂的类加载模型。作为专注于解决依赖冲突的隔离框架，SOFAArk 专注于类隔离，简化了类加载模型，因此显得更加轻量。</p>
+<p><img src="https://pic2.zhimg.com/v2-2ccc1a3cb10a642c9017008a058b4a48_b.jpg" alt=""/><img src="https://pic2.zhimg.com/v2-2ccc1a3cb10a642c9017008a058b4a48_r.jpg" alt=""/></p>
 
-<p>其次在 OSGi 规范中，所有的模块定义成 Bundle 形式，作为应用开发者，他需要了解 OSGi 背后的工作原理，对开发者要求比较高。在 SOFAArk 中，定义了两层模块类型，Ark Plugin 和 Ark Biz，应用开发者只需要添加隔离的 Ark Plugin 依赖，对本身的开发没有任何影响，基本没有开发门槛。</p>
+<p>折线上的点代表着每一年的交易峰值（TPS）。前面讲过，每次分布式事务需要协调多个参与方，因此，每年交易峰值乘以一个倍数才是分布式事务框架要协调最终达到一致性状态的峰值分支事务数量。事实上，对分布式事务服务来说，2017 年已经达到每秒百万级水平。</p>
 
-<h2 id="toc_5"><strong>正在做的事</strong></h2>
+<p>回顾历年大促，2013 年对支付宝的交易处理是对我们挑战很大的一年，2013 年双 11 提出的峰值目标，按照当时大促准备的计算和存储资源，是无法完成的，怎么办？</p>
 
-<p>全文读下来，你可能会产生这样的一个疑惑：如果在应用中引入其他应用打包的 Ark Biz 会如何呢？</p>
+<p>只能选择继续优化事务框架，让它尽量少消耗资源，并去获得一个更大的性能提升。我们根据 TCC 模型的特点以及日常开发时积累的经验，针对性能问题，做了以下两类优化。</p>
 
-<p>目前 SOFAArk 是可以启动多个 Ark Biz 的，比较遗憾的是，现在 Ark Biz 之间没法做到服务通信。如果你之前读完过上一篇 SOFABoot 类隔离使用篇及这篇原理篇，你也许会发现，虽然 SOFAArk 是一个纯粹的类隔离框架，但是基于 SOFAArk 之上，可以开发各具功能特色的 Ark Plugin，补充框架能力，供应用开发者按需依赖使用，比如已经推出的 SOFARPC Ark Plugin。回到上面的问题，为了解决多个 Ark Biz 合并部署的问题，我们正在开发一个新的 Ark Plugin，Jarslink2.0。</p>
+<p>2.2.1 极致性能优化之同库模式</p>
 
-<p>在蚂蚁内部，多个应用合并部署在同一个 JVM 之上，是一件常见的事情。这样带来的主要优势如下：</p>
+<p>之前的业务活动管理器是一个单独的服务，每次启动业务活动、登记业务操作、提交或回滚业务活动等操作都需要与业务活动管理器交互，并且交互次数与参与者个数成正相关。</p>
 
-<ul>
-<li>  无关应用合并部署：有些应用在独立部署时，相互之间没有服务依赖，而且这些应用承担业务体量都偏小，单独占有一台物理机部署比较浪费资源。这些应用合并部署，能够节省成本。</li>
-<li>  相关应用合并部署：多个应用之间存在服务依赖，独立部署时，各应用之间使用 RPC 调用，虽然使用了分布式架构，稳定性高，但依然存在网络抖动导致的延时性问题。这些应用合并部署，RPC 调用转为 JVM 内部调用，缩减调用开销。</li>
-</ul>
+<p>因此，为了追求极限性能，将业务活动管理器的远程存储替换成本地存储，如下所示：</p>
 
-<p>当然，作为蚂蚁内部非常重要的一项技术创新，合并部署在特定的业务背景下有着更为重要的意义，也远不止上面提到的两点优势，比如故障的隔离等等。</p>
+<p><img src="https://pic3.zhimg.com/v2-64df2acadcd998d9625f4a89e9f31b46_b.jpg" alt=""/><img src="https://pic3.zhimg.com/v2-64df2acadcd998d9625f4a89e9f31b46_r.jpg" alt=""/></p>
 
-<p>说回到 Jarslink2.0，这个 SOFABoot 官方开发的 Ark Plugin，主要是为了解决多个 Ark Biz 运行时管理问题。我们知道，每个 Java(Spring Boot) 应用，都可以通过我们的 maven 插件打包成 Ark Biz 供其他应用依赖。目前 SOFAArk 框架只能做到隔离 Ark Biz，作为框架能力的补充，Jarslink2.0 插件专门管理多个 Ark Biz 的运行时。这里默认每个 Ark Biz 都是一个 SOAFBoot/Spring Boot 工程，Jarslink2.0 提供的能力如下：</p>
+<p>减少了 RPC 的调用，同时还会做一些减少存储次数的优化，从而获得性能收益。</p>
 
-<ul>
-<li>  动态安装、卸载 Ark Biz。</li>
-<li>  Ark Biz 之间使用注解和 xml 两种形式发布和引用 jvm 服务，解决多 Ark Biz 服务依赖问题。</li>
-<li>  Ark Biz 如果使用了 SOFARPC 能力，可以自动完成 RPC 转 JVM 内部调用。</li>
-</ul>
+<p>通过这种方式，减少 RPC 调用耗时，大幅降低事务执行时间。同时还针对支付、账务等访问频繁的特殊从业务服务，优化处理过程，不再创建单独的分支事务记录，而是将这个信息与主事务记录合并，在创建主事务记录的同时，记录分支事务，最大程度减少与数据库的交互次数，从而获得更高的性能收益。</p>
 
-<p>在这里特别感谢方腾飞， 蚂蚁内部花名 @清英 ，也是我们熟知的并发编程网 (<a href="https://link.zhihu.com/?target=http%3A//ifeve.com/">http://ifeve.com/</a>)创始人。清英在蚂蚁内部开发的 Jarslink1.0 在网商银行已经落地使用很长一段时间，Jarslink2.0 是在 Jarslink1.0 基础之上，结合 SOFABoot 类隔离框架，提供了更加通用的应用 (模块) 隔离和通信的实现方案，敬请期待！</p>
+<p>下面是同库模式优化前后的时序图对比：</p>
 
-<h2 id="toc_6">欢迎微博关注 @SOFAStack 与我们互动，相关传送门：</h2>
+<p><img src="https://pic4.zhimg.com/v2-3aa97079171d9a96d2f2ed0d7304ad6d_b.jpg" alt=""/><img src="https://pic4.zhimg.com/v2-3aa97079171d9a96d2f2ed0d7304ad6d_r.jpg" alt=""/></p>
 
-<ul>
-<li>  Ark 包目录结构及其打包插件的使用
-<a href="https://link.zhihu.com/?target=https%3A//alipay.github.io/sofastack.github.io/docs/ark-jar.html">https://alipay.github.io/sofastack.github.io/docs/ark-jar.html</a></li>
-<li>  Ark Plugin 目录结构及其打包插件的使用
-<a href="https://link.zhihu.com/?target=https%3A//alipay.github.io/sofastack.github.io/docs/ark-plugin.html">https://alipay.github.io/sofastack.github.io/docs/ark-plugin.html</a></li>
-<li>  Ark Biz 目录结构及其打包插件的使用
-<a href="https://link.zhihu.com/?target=https%3A//alipay.github.io/sofastack.github.io/docs/ark-biz.html">https://alipay.github.io/sofastack.github.io/docs/ark-biz.html</a></li>
-<li>  Ark Plugin 的工程示例
-<a href="https://link.zhihu.com/?target=https%3A//github.com/alipay/sofa-ark/tree/master/sofa-ark-samples/sample-ark-plugin">https://github.com/alipay/sofa-ark/tree/master/sofa-ark-samples/sample-ark-plugin</a></li>
-<li>  Spring Boot <a href="https://link.zhihu.com/?target=https%3A//github.com/alipay/sofa-ark/tree/master/sofa-ark-samples/sample-springboot-ark">https://github.com/alipay/sofa-ark/tree/master/sofa-ark-samples/sample-springboot-ark</a></li>
-</ul>
+<p>优化前时序图</p>
+
+<p><img src="https://pic1.zhimg.com/v2-827a51fa6402cd018c0f3f18490e4fa1_b.jpg" alt=""/><img src="https://pic1.zhimg.com/v2-827a51fa6402cd018c0f3f18490e4fa1_r.jpg" alt=""/></p>
+
+<p>优化后时序图</p>
+
+<p>其中，绿色方块表示本地数据库访问。可以发现，优化后减少了：(2+n) 次 PRC 延迟 + 1 次数据库访问延迟（n 表示参与者个数）。</p>
+
+<p>2.2.2 极致性能优化之异步化</p>
+
+<p>从理论上来说，只要业务允许，事务的第二阶段什么时候执行都可以，因此资源已经被业务锁定，不会有其他事务动用该事务锁定的资源。如下图所示：</p>
+
+<p><img src="https://pic3.zhimg.com/v2-3969704ec1c5faa8c05d9accfcda539f_b.jpg" alt=""/><img src="https://pic3.zhimg.com/v2-3969704ec1c5faa8c05d9accfcda539f_r.jpg" alt=""/></p>
+
+<p>这就是 TCC 分布式事务模型的二阶段异步化功能，各从业务服务的第一阶段执行成功以后，主业务服务就可以提交完成，框架会保证正确记录事务状态，然后再由框架异步的执行各从业务服务的第二阶段，从而比较完整的诠释最终一致性。</p>
+
+<p>大促的尖峰时刻是从零点开始的几十秒或一分钟之内，在这个时刻的交易，我们会把二阶段的操作从同步转成异步，在冲高的那一刻，二阶段就停止了，一阶段正常扣款，等着交易零点三十分或者夜里一点开始回落的时候，我们才开始打开二阶段，集中做二阶段的动作。</p>
+
+<p>优化后，Confirm 阶段在空闲时段异步执行：</p>
+
+<p>假设 Confirm 阶段与 Try 阶段耗时相同，单个事务耗时减少 50%</p>
+
+<p>数据库资源消耗减少 50%</p>
+
+<p>三. 关键设计考量：无侵入自动化的接入体验</p>
+
+<p>众所周知，蚂蚁金服在近几年除了支付业务以外，还发展出了很多复杂的金融业务，比如财富、保险、银行等。同时，在 2014 年蚂蚁金服全面开启了金融云时代，也会对外赋能合作方和客户。在这些新的场景下面，分布式事务产品面临新的挑战，客户的性能需求可能不像蚂蚁金服内部要求那么高，而是更关注接入的便利性和通用性，要求简单易用，对业务代码无侵入。因此，分布式事务产品开始全面升级，满足更多客户对云端产品的需求。</p>
+
+<p>3.1 框架托管 FMT（Framework-managed transactions）模型</p>
+
+<p>TCC 模型作用于业务层，负责协调从业务服务的最终一致性。所有被纳入到分布式事务的从业务服务，需要为框架提供 Try、Confirm、Cancel 三个方法，并且需要满足幂等性。由于方法实现和要满足的约束条件都需要业务方提供，这无疑就大大提高了接入门槛。所以我们在 TCC 模型上继续往前推进发展，提出了 FMT 模型来解决接入便捷性的问题。</p>
+
+<p>FMT 分布式事务模型与 TCC 模型类似，也同样包含主业务服务、从业务服务、业务活动管理器，如下所示：</p>
+
+<p><img src="https://pic4.zhimg.com/v2-a05257b3a2ccafa01ab229b5931483e1_b.jpg" alt=""/><img src="https://pic4.zhimg.com/v2-a05257b3a2ccafa01ab229b5931483e1_r.jpg" alt=""/></p>
+
+<p>不同的是，从业务服务不再需要提供 Try、Confirm、Cancel 三个方法，而是直接按照 JDBC 标准，通过托管框架与底层数据库交互，就像使用普通数据源一样。托管框架对业务来说是透明的，主要负责解析 SQL 语义，自动生成两阶段操作。</p>
+
+<p>3.2 FMT 模型实现原理</p>
+
+<p>托管框架的两阶段操作如下图所示：</p>
+
+<p><img src="https://pic3.zhimg.com/v2-4be2be6a76eea9deb9de7fad2f9b3da7_b.jpg" alt=""/><img src="https://pic3.zhimg.com/v2-4be2be6a76eea9deb9de7fad2f9b3da7_r.jpg" alt=""/></p>
+
+<p>FMT 框架要求从业务服务只需要正常执行 SQL 操作就可以了，框架会把业务的本地事务操作作为第一阶段。在第一阶段，框架会拦截用户 SQL，解析 SQL 语义，然后把业务 SQL 涉及数据执行前后的状态保存下来，即数据快照，这个就相当于在逻辑上完成了数据库内的 undo 和 redo 操作。在第二阶段，如果这个事务要提交，那么框架直接把快照数据删除就可以了，因为第一阶段的正常操作已经执行完成。如果该事务要回滚，那么会先校验脏写，根据第一阶段保存的执行后的快照，检查在本事务执行过程中，数据有没有被其他操作修改，如果没有，则把数据执行前的快照拿出来，完成回滚操作。</p>
+
+<p>3.3 一阶段示例</p>
+
+<p><img src="https://pic2.zhimg.com/v2-f2fcdf17b468a5b6b4527561d5a089a2_b.jpg" alt=""/><img src="https://pic2.zhimg.com/v2-f2fcdf17b468a5b6b4527561d5a089a2_r.jpg" alt=""/></p>
+
+<p>举个例子，上图左边这张表有两列，一列是账号，另一列是金额。这时如果要针对该账户执行一条 update 操作，框架会怎么做呢？</p>
+
+<p>在 update 之前，会先把账户的金额保存下来，执行 update 操作，然后把执行之后的金额保存下来。因为在二阶段有可能会是回滚操作，回滚的时候如果想把执行之前的数据覆盖回去的话，必须要保证在覆盖的那个时刻，这些行上面的数据没有被别人变更过，所以最后会加一个逻辑行锁，这个就是金融系统的特性需求。</p>
+
+<p>3.4 与数据访问代理集成</p>
+
+<p>为了更加简化云上用户接入，我们继续和内部产品数据访问代理 DBP 合作集成，如下所示：</p>
+
+<p><img src="https://pic2.zhimg.com/v2-8e59caf0ed466f792e26c3a90ad6b1af_b.jpg" alt=""/><img src="https://pic2.zhimg.com/v2-8e59caf0ed466f792e26c3a90ad6b1af_r.jpg" alt=""/></p>
+
+<p>分布式事务产品框架可以认为是被集成在数据访问代理里，当进行一个事务时，上层业务方对于底下的分布式事务和本地事务是一视同仁的，通过数据代理看一个事务，并执行 SQL。如果是分布式事务，数据访问代理会通知框架去执行前面提到的一系列保证事务的操作，以保证数据的最终一致。</p>
+
+<p>四. 关键设计考量：数据实时一致性、通用性、性能</p>
+
+<p>4.1 XA 模型</p>
+
+<p>TCC 和 FMT 两个模型都是在最佳实践上追求数据的最终一致性，而不是实时一致性。</p>
+
+<p>我们分析了金融云上的客户发现，如果把业务模型假定成数据最终一致性，那么依然有很多金融客户不得不做出很大的妥协和变更，尤其是原有的业务组织模型和业务逻辑实现。而且这种妥协和调整的工作量是很大的，门槛也是非常高的。</p>
+
+<p>所以我们基于标准 XA 做了一个 XA 模型来满足客户对数据实时一致性的需求。</p>
+
+<p><img src="https://pic4.zhimg.com/v2-47fffddf10fdd7030aff063ed74bbdd8_b.jpg" alt=""/><img src="https://pic4.zhimg.com/v2-47fffddf10fdd7030aff063ed74bbdd8_r.jpg" alt=""/></p>
+
+<p>原生 XA 协议提出至今，大概有 10-20 的时间了，但是在工业界应用的历史和案子都很少。为什么会这样呢？我们认为最重要的一点就是在追求数据实时一致性的同时，性能损失太大了。主要有两个比较方面的性能损失，一个是读和写之间的冲突，另一个是写与写之间的冲突。</p>
+
+<p>4.2 标准 XA 问题分析</p>
+
+<p>了解数据库内核的人都清楚，数据库内部解决写和非加锁读的冲突是通过 MVCC 机制来实现的。假如说最新的数据块在更新的同时，你的读是可以读正在更新的数据块的上一个快照。但是在分布式架构下，单机 MVCC 机制并不能满足数据实时性一致性要求。</p>
+
+<p>依然是转账业务场景，A 账户给 B 账务转账 10 块钱。但是 A 账户和 B 账户分别在两个数据库分片 DB1 和 DB2 上。其操作执行过程如下所以：</p>
+
+<p><img src="https://pic1.zhimg.com/v2-65d2534c42e3f606ebc53fe4f7f7ac56_b.jpg" alt=""/><img src="https://pic1.zhimg.com/v2-65d2534c42e3f606ebc53fe4f7f7ac56_r.jpg" alt=""/></p>
+
+<p>如上图所示，DB1 的本地子事务已经提交完毕，但是 DB2 的本地子事务还没提交，这个时候只能读到 DB1 上子事务执行的内容，读不到 DB2 上的子事务。也就是说，虽然在单个 DB 上的本地事务是实时一致的，但是从全局来看，一个全局事务执行过程的中间状态被观察到了，全局实时一致性就被破坏了。</p>
+
+<p>但是原生的 XA 协议没有规定快照读这个概念，也就没有定义怎么实现全局实时一致性。最简单的做法就是使用串行化的隔离级别，即使是快照读也需要转换为加锁读，从而来保证分布式事务的实时一致性。</p>
+
+<p>当然，由于串行化隔离级别的性能较差，很多分布式数据库都自己实现了分布式 MVCC 机制来提供全局的实时一致性读。一个基本思路是用一个集中式或者逻辑上单调递增的东西来控制生成全局快照（Snapshot），每个事务或者每条 SQL 执行时都去获取一次，从而实现不同隔离级别下的全局一致性, 如下图所示：</p>
+
+<p><img src="https://pic4.zhimg.com/v2-939d9e37a64f3b76e969de757b49cae6_b.jpg" alt=""/><img src="https://pic4.zhimg.com/v2-939d9e37a64f3b76e969de757b49cae6_r.jpg" alt=""/></p>
+
+<p>在 DB1 的本地子事务已经提交完毕，DB2 的本地子事务还没提交的中间状态，其他并发事务只能看到该事务执行之前的快照。</p>
+
+<p>我们的分布式事务产品同样实现了分布式 MVCC 机制，从而在保证实时一致性的同时，最大程度的保证读写并发性能。</p>
+
+<p>4.3 并发写优化 --- 与 OB 深度定制 commit 延迟优化</p>
+
+<p>除了实现分布式 MVCC 保证并发读写性能外，我们还与自研数据库 OceanBase 深度定制优化并发写，进一步提升产品性能，共同打造实时数据一致性的整体解决方案。</p>
+
+<p>传统标准的二阶段提交过程如下：</p>
+
+<p><img src="https://pic3.zhimg.com/v2-e0461f9c9638d957278eb36c25ae223b_b.jpg" alt=""/><img src="https://pic3.zhimg.com/v2-e0461f9c9638d957278eb36c25ae223b_r.jpg" alt=""/></p>
+
+<p>其中，绿色方块表示持久化日志，黄色方块表示事务提交。从图中可以看到，单次 Commit 操作需要有 3 次日志延迟、1 次事务延迟以及 2 次 RPC 延迟。</p>
+
+<p>OceanBase 内部实现 XA 协议的时候，会在和协调者交互的时候附带一些信息，并且在 Commit 时落盘，减少 Commit 过程中涉及到的 RPC 和落盘的操作，以达到减少用户 Commit 时间的效果。</p>
+
+<p>优化后时序图如下：</p>
+
+<p><img src="https://pic4.zhimg.com/v2-ffae4cd35743026769049a853f7bffb9_b.jpg" alt=""/><img src="https://pic4.zhimg.com/v2-ffae4cd35743026769049a853f7bffb9_r.jpg" alt=""/></p>
+
+<p>虽然在 Commit 操作之后，还有 Clear 操作，但是在执行 Clear 时，用户的 Commit 请求已经返回了，所以并不影响用户感知的 Commit 请求延迟。因此，从用户感知的角度来说，单次 Commit 操作实际上只需要 1 次日志延迟、1 次事务延迟 以及 2 次 RPC 延迟。</p>
+
+<p>通过以上优化，两阶段提交与普通提交的落盘次数和 RPC 次数是相同的，也就是说耗时和普通提交相差无几，写和写之间的冲突所带来的额外性能消耗将被降低很大一部分。</p>
+
+<p><img src="https://pic4.zhimg.com/v2-ac1d1499886db3fc4a87ab00b2659785_b.jpg" alt=""/><img src="https://pic4.zhimg.com/v2-ac1d1499886db3fc4a87ab00b2659785_r.jpg" alt=""/></p>
+
+<p>五. 总结</p>
+
+<p>总结关于分布式事务服务的关键设计考量，首先为了保障支付业务的核心需求，保障分布式环境下交易一致性的问题，我们基于 BASE 思想，在业务层实现了 TCC 模型，并且为了业务发展的需求，优化了其工程实践，实现海量并发处理能力，让它的性能可以达到比业界其它产品高很多的状态。</p>
+
+<p>其次，因为上层业务系统的复杂、业务种类的丰富等等业务需求，对分布式事务解决方案提出了全新的要求，所以我们在 TCC 模型基础上又加入了框架托管（FMT）模型，其简单易用，对业务无侵入的特点，可以较好的解决金融云场景下接入便捷性问题。</p>
+
+<p>最后，我们对数据实时一致性、通用性、性能再思考，与自研数据库 OceanBase 深度定制，推出 XA 模型，共同打造实时数据一致性的整体分布式事务解决方案。</p>
+
+<p>六. 了解更多：金融级云原生架构解决方案 SOFA</p>
+
+<p>通过十多年的探索与实践，我们积累了大量的架构设计原则、最佳实践和产品服务案例，并构建了一整套金融级云原生架构解决方案，这套架构叫做 SOFA（Scalable Open Financial Architecture，分布式事务 DTX 亦是其重要的组成部分），源自蚂蚁内部分布式架构实践，是一整套完整的金融级中间件产品技术和演进式架构转型服务体系，已经向国内金融机构开放，提供了完整的金融 IT 基础架构转型量身打造的技术平台和可落地路径，使业务应用能专注需求作敏捷交付，又能同时原生地拥有金融级的高可用、一致性特性和互联网的海量并发、弹性伸缩等云原生基础架构能力。</p>
+
+<p>蚂蚁金服期望通过逐步向社区（链接如下）：</p>
+
+<p><a href="https://link.zhihu.com/?target=https%3A//github.com/alipay">https://github.com/alipay</a></p>
+
+<p>开源 SOFA 体系内的各个组件，帮助大家更加敏捷稳妥地实现金融级云原生架构。我们也非常欢迎来自技术社区和各行业的伙伴能够参与共同探讨、交流和共建，使其更加完善和稳固，满足更多金融级架构转型升级的需求。</p>
+
+<p>可在这里申请公测：<a href="%5B%E8%9A%82%E8%9A%81%E9%87%91%E8%9E%8D%E4%BA%91%20-%20DTX%5D(https://link.zhihu.com/?target=https%3A//www.cloud.alipay.com/products/DTX)">蚂蚁金融云 - DTX</a></p>
+
+<p>写下你的评论...</p>
+
+<p>能否举一个 “锁定资源” 的实际例子？</p>
+
+<p>数据库的锁定资源大家应该都明白，就不举例了。业务层锁定资源，比如，你的账务有 100 块钱，现在你同时购买 2 个 100 块的东西，即两个并发交易请求，先到的请求就需要把这个 100 块锁定住，不让后来的请求使用。那怎么锁定住呢？比如，最简单的直接扣除余额；或者优雅点，扣除余额的同时，增加冻结金额，后来的请求可以使用余额，但不能使用该冻结金额</p>
+
+<p>是指比如，增加一列 frozen_amount，先把钱挪到冻结这列上，然后再做处理的意思吧。</p>
 
                         
                       </div>
@@ -297,10 +375,10 @@ Main-Class: com.alipay.sofa.ark.sample.springbootdemo.SpringbootDemoApplication
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/6/5</span>
+                    <span class="date">2018/7/2</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Microservice.html'>Microservice</a></span>
+          					    <span class="posted-in"><a href='DTx.html'>DTx</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -390,31 +468,31 @@ Main-Class: com.alipay.sofa.ark.sample.springbootdemo.SpringbootDemoApplication
 	      
 		      
 			      <li class="post">
-			        <a href="15389311738065.html">重构到更深层的模型</a>
+			        <a href="15459058392039.html">Reliable Domain Events</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389278377243.html">IAM of Google Cloud</a>
+			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389224951575.html">RSocket, a New Application Network Protocol for Reactive Applications, Announced at SpringOne</a>
+			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389220103546.html">如何形象地描述RxJava中的背压和流控机制？</a>
+			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389214670417.html">Modeling Uncertainty with Reactive DDD</a>
+			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
 			      </li>
 		     
 		  

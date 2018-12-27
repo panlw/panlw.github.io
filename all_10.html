@@ -105,320 +105,145 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15382134789865.html">
+                <a class="clearlink" href="15431218451169.html">
                 
-                  <h1>How to install Tomcat 8.5 on CentOS 7</h1>
+                  <h1>DAGOR：微信微服务过载控制系统</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
-                        	<pre><code>MARCH 31, 2018
-</code></pre>
+                        	<blockquote>
+<p><a href="https://www.infoq.cn/article/bAveV*B7GTH123tLwyDR">https://www.infoq.cn/article/bAveV*B7GTH123tLwyDR</a></p>
 
-<blockquote>
-<p><a href="https://linuxize.com/post/how-to-install-tomcat-8-5-on-centos-7/">https://linuxize.com/post/how-to-install-tomcat-8-5-on-centos-7/</a></p>
+<p>论文导读《Overload control for scaling WeChat microservices》</p>
 </blockquote>
 
-<p>This tutorial shows you how to install Tomcat 8.5 on CentOS 7. Tomcat is an open source implementation of the Java Servlet, JavaServer Pages, Java Expression Language and Java WebSocket technologies.</p>
+<p>喜欢这篇论文有两个理由。首先，我们对微信的后端已经有了一些见解，其次，作者分享了已经在微信生产环境中运行了五年的过载控制系统 DAGOR 的设计方案。这个系统的设计专门考虑到了微服务架构的特殊性。如果你希望为自己的微服务制定策略，那么你就很有必要看看这篇文章。</p>
 
-<h2 id="toc_0"><a href="/post/how-to-install-tomcat-8-5-on-centos-7/#prerequisites">Prerequisites</a></h2>
+<h2 id="toc_0">微信</h2>
 
-<p>Before starting with this tutorial, make sure you are logged into your server with a user account with sudo privileges or with the root user. It is best practice to run administrative commands as sudo user instead of root, if you don’t have a sudo user on your system you can create one by following <a href="/post/create-a-sudo-user-on-centos/">these instructions</a>.</p>
+<p>此时的微信后端由 3000 多个移动服务组成，包括即时消息、社交网络、移动支付和第三方授权。平台每天的外部请求达到了 10<sup>10</sup> 到 10<sup>11</sup> 个。每个这样的请求都可以触发更多内部的微服务请求，从整体来看，微信后端需要每秒处理数亿个请求。</p>
 
-<h2 id="toc_1"><a href="/post/how-to-install-tomcat-8-5-on-centos-7/#install-openjdk">Install OpenJDK</a></h2>
+<blockquote>
+<p>微信微服务系统的 3000 多项服务运行在 20,000 多台机器上，随着微信的广泛普及，这些数字在不断增加… 随着微信的不断发展，微服务系统一直在快速进行服务更新迭代。从 2018 年的 3 月到 5 月，微信微服务系统平均每天发生近千次的变更。</p>
+</blockquote>
 
-<p>Tomcat 8.5 requires Java SE 7 or later. In this tutorial we will install OpenJDK, the open source implementation of the Java Platform which is the default Java development and runtime in CentOS 7.</p>
+<p>微信将微服务分为 “入门跳板” 服务（接收外部请求的前端服务）、“共享跳板”服务（中间层协调服务）和“基本服务”（不再向其他服务发出请求的服务，也就是充当请求的接收器）。</p>
 
-<p>The installation is simple and straight forward:</p>
+<p><img src="https://static001.geekbang.org/resource/image/0a/cb/0a8bf3edf8d6522c66d8eaf8ecdaf5cb.jpeg" alt=""/></p>
 
-<pre><code>sudo yum install java-1.8.0-openjdk-devel
-</code></pre>
+<p>在典型的一天，峰值请求率约为日常平均值的 3 倍。在一年中的某些时候（例如中国农历新年期间），峰值工作负载可以上升到日常平均值的 10 倍。</p>
 
-<p>Copy</p>
+<h2 id="toc_1">基于大规模微服务平台的过载控制挑战</h2>
 
-<p>If you want to install Oracle Java instead of OpenJDK please check <a href="/post/install-java-on-centos-7/">this guide</a>.</p>
+<blockquote>
+<p>过载控制对于大规模在线应用程序来说至关重要，这些应用程序需要在不可预测的负载激增的情况下实现 24×7 服务可用性。</p>
+</blockquote>
 
-<h2 id="toc_2"><a href="/post/how-to-install-tomcat-8-5-on-centos-7/#create-tomcat-system-user">Create Tomcat system user</a></h2>
+<p>传统的过载控制机制是为具有少量服务组件、相对狭窄的 “前门” 和普通依赖关系的系统而设计的。</p>
 
-<p>Running Tomcat as a root user is a security risk and is not recommended. Instead we will create a new system user and group with home directory <code>/opt/tomcat</code> that will run the Tomcat service:</p>
+<blockquote>
+<p>现代在线服务在架构和依赖性方面正变得越来越复杂，远远超出了传统过载控制的设计目标。</p>
+</blockquote>
 
-<pre><code>sudo useradd -m -U -d /opt/tomcat -s /bin/false tomcat
-</code></pre>
+<ul>
+<li>  由于发送到微信后端的服务请求没有单一的入口点，因此传统的全局入口点（网关）集中负载监控方法并不适用。</li>
+<li>  特定请求的服务调用图可能依赖于特定于请求的数据和服务参数，即使对于相同类型的请求也是如此。因此，当特定服务出现过载时，很难确定应该限制哪些类型的请求以缓解这种情况。</li>
+<li>  过多的请求中止浪费了计算资源，并由于高延迟而影响了用户体验。</li>
+<li>  由于服务 DAG 极其复杂，而且在不断演化，导致有效的跨服务协调的维护成本和系统开销过高。</li>
+</ul>
 
-<p>Copy</p>
+<p>由于一个服务可能会向它所依赖的服务发出多个请求，并且还可能向多个后端服务发出请求，因此我们必须特别注意过载控制。作者发明了一个术语，叫作后续过载，用于描述调用多个过载服务或多次调用单个过载服务的情况。</p>
 
-<h2 id="toc_3"><a href="/post/how-to-install-tomcat-8-5-on-centos-7/#download-tomcat">Download Tomcat</a></h2>
+<blockquote>
+<p>后续过载给有效的过载控制带来了挑战。当服务过载时随机执行减载可以让系统维持饱和的吞吐量。但后续过载可能会超预期大大降低系统吞吐量…</p>
+</blockquote>
 
-<p>We will download the latest version of Tomcat 8.5.x from the <a href="https://tomcat.apache.org/download-80.cgi">Tomcat downloads page</a>. At the time of writing, the latest version is 8.5.33. Before continuing with the next step you should check the download page for any new version.</p>
+<p>试想一个简单的场景，其中服务 A 两次调用服务 B，如果 B 开始拒绝一半传入的请求，那么 A 的成功概率就降到了 0.25。</p>
 
-<p>Change to the <code>/tmp</code> directory and use <code>wget</code> to download the zip file:</p>
+<h2 id="toc_2">DAGOR 概览</h2>
 
-<pre><code>cd /tmp
-wget http://www-us.apache.org/dist/tomcat/tomcat-8/v8.5.33/bin/apache-tomcat-8.5.33.zip
-</code></pre>
+<p>微信的过载控制系统叫作 DAGOR。它旨在为所有服务提供过载控制，因此具有服务无关性。由于集中式全局协调成本过高，因此过载控制是以单台机器的粒度运行的。不过，它使用了一种用于处理后续过载所需的轻量级机器间协作协议。最后，当发生过载不得不进行减载时，DAGOR 应该尽可能维持服务的成功率，并尽量减少在失败的服务任务上花费过多的计算资源（例如 CPU、I/O）。</p>
 
-<p><span class="code-copy button main small" data-clipboard-text="cd /tmp<br/>
-wget http://www-us.apache.org/dist/tomcat/tomcat-8/v8.5.33/bin/apache-tomcat-8.5.33.zip">Copy</p>
+<p>我们需要完成两个基本的任务：过载检测，并在检测到过载之后决定如何处理它。</p>
 
-<p>Once the download is completed, extract the zip file and move it to the <code>/opt/tomcat</code> directory:</p>
+<h3 id="toc_3">过载检测</h3>
 
-<pre><code>unzip apache-tomcat-*.zip
-sudo mkdir -p /opt/tomcat
-sudo mv apache-tomcat-8.5.33 /opt/tomcat/
-</code></pre>
+<p>对于过载检测，DAGOR 使用了待处理队列中的请求的平均等待时间（即排队时间）。排队时间可以抵消调用图中较低的延迟所带来的影响（与请求处理时间相比）。即使本地服务器本身没有过载，请求处理时间也会增加。DAGOR 使用基于窗口的监控，每个窗口是一秒钟，或者 2000 个请求，以先达到者为准。</p>
 
-<p><span class="code-copy button main small" data-clipboard-text="unzip apache-tomcat-*.zip<br/>
-sudo mkdir -p /opt/tomcat<br/>
-sudo mv apache-tomcat-8.5.33 /opt/tomcat/">Copy</p>
+<blockquote>
+<p>对于过载检测，假设 WeChat 中每个服务任务的默认超时为 500 毫秒，那么用于表示服务器过载的平均请求排队时间的阈值被设置为 20 毫秒。这种配置已经在微信业务系统中应用了五年多，微信业务活动的稳健性已经证实了这种配置的有效性。</p>
+</blockquote>
 
-<p>Because Tomcat 8.5 is updated frequently to have more control over versions and updates, we will create a symbolic link <code>latest</code> which will point to the Tomcat installation directory:</p>
+<h3 id="toc_4">准入控制</h3>
 
-<pre><code>sudo ln -s /opt/tomcat/apache-tomcat-8.5.33 /opt/tomcat/latest
-</code></pre>
+<p>一旦检测到过载，我们就必须决定如何处理它，或者直接丢弃某些请求。我们发现，并非所有的请求都是平等的：</p>
 
-<p>Copy</p>
+<blockquote>
+<p>微信的操作日志显示，当微信支付和即时消息遇到服务不可用时，用户针对微信支付服务的投诉是针对即时消息服务的 100 倍。</p>
+</blockquote>
 
-<p>The tomcat user that we previously set up needs to have access to the tomcat directory, so we will change the directory ownership to user and group tomcat:</p>
+<p>为了以服务无关的方式处理这个问题，每个请求在首次进入系统时都会被赋予业务优先级。这个优先级会随所有下游请求一起流动。用户请求的业务优先级由请求的操作类型来决定。虽然有数百个入口点，但只有几十个具有显式优先级，其他入口点具有默认（较低）优先级。优先级保留在复制的哈希表中。</p>
 
-<pre><code>sudo chown -R tomcat: /opt/tomcat
-</code></pre>
+<p><img src="https://static001.geekbang.org/resource/image/bc/4c/bc4b78e56b4a92639ce10fd396d4024c.jpeg" alt=""/></p>
 
-<p>Copy</p>
+<p>当过载控制被设置为业务优先级 n 时，将删除所有级别为 n + 1 的请求。这对于混合工作负载来说非常有效，但是假设我们有大量的付款请求，所有这些请求都具有相同的优先级（例如 p）。系统将出现过载，这个时候将过载阈值降至 p-1。一旦过载消失，过载阈值再次增加到 p，于是我们又处于过载状态。要在相同优先级的请求发生过载时避免这种翻转，我们需要比业务优先级更细粒度的控制级别。</p>
 
-<p>and we will also make the scripts inside <code>bin</code> directory executable:</p>
+<p>微信提供了一个很好的解决方案，它增加了基于用户 ID 的第二层准入控制。</p>
 
-<pre><code>sudo chmod +x /opt/tomcat/latest/bin/*.sh
-</code></pre>
+<blockquote>
+<p>入口服务通过以用户 ID 作为参数的哈希函数来动态生成用户优先级。每个入口服务每小时更改其哈希函数。因此，来自同一用户的请求很可能在一小时内被分配了相同的用户优先级，但在几小时内被分配了不同的用户优先级。</p>
+</blockquote>
 
-<p>Copy<small class="text-grey"><small>Advertisement</small></small></p>
+<p>这提供了一种公平性，同时还在相对长的时间段内为个人用户提供一致的体验。它还有助于解决后续过载问题，因为具有高优先级的用户请求更有可能在整个调用图中得到处理。</p>
 
-<h2 id="toc_4"><a href="/post/how-to-install-tomcat-8-5-on-centos-7/#create-a-systemd-unit-file">Create a systemd unit file</a></h2>
+<p>通过组合业务优先级和用户优先级，可以为每个业务优先级提供 128 个用户优先级准入级别。</p>
 
-<p>To run Tomcat as a service we will create a <code>tomcat.service</code> unit file in the <code>/etc/systemd/system/</code> directory with the following contents:</p>
+<p><img src="https://static001.geekbang.org/resource/image/81/eb/81479fb13d05e85029328fa5c103c2eb.jpeg" alt=""/></p>
 
-<p>/etc/systemd/system/tomcat.service</p>
+<blockquote>
+<p>由于每个业务优先级的准入级别具有 128 个用户优先级，因此复合准入级别数量可以达到数万。复合准入级别的调整是按照用户优先级的颗粒进行的。</p>
+</blockquote>
 
-<pre><code>[Unit]
-Description=Tomcat 8.5 servlet container
-After=network.target
+<p>这里有个有趣的问题，为什么使用会话 ID 代替用户 ID 就不起作用：在遇到糟糕的服务时，这样会导致用户登录登出，那么在过载问题之上又会多出来一个用户登录问题！</p>
 
-[Service]
-Type=forking
+<p>DAGOR 为每个服务器维护一个请求的直方图，用于跟踪超过准入优先级的请求的大致分布情况。当在窗口期间检测到过载时，DAGOR 移动到第一个桶，将使预期负载减少 5％。如果没有发生过载，它会移动到第一个桶，将使预期负载增加 1％。</p>
 
-User=tomcat
-Group=tomcat
+<p>服务器将准入优先级嵌入到发送给上游服务器的每个响应消息中。通过这种方式，上游服务器获知下游服务的当前准入控制设置，可以在发送请求之前对请求执行本地准入控制。</p>
 
-Environment=&quot;JAVA_HOME=/usr/lib/jvm/jre&quot;
-Environment=&quot;JAVA_OPTS=-Djava.security.egd=file:///dev/urandom&quot;
+<p>DAGOR 过载控制系统的端到端视图如下所示：</p>
 
-Environment=&quot;CATALINA_BASE=/opt/tomcat/latest&quot;
-Environment=&quot;CATALINA_HOME=/opt/tomcat/latest&quot;
-Environment=&quot;CATALINA_PID=/opt/tomcat/latest/temp/tomcat.pid&quot;
-Environment=&quot;CATALINA_OPTS=-Xms512M -Xmx1024M -server -XX:+UseParallelGC&quot;
+<p><img src="https://static001.geekbang.org/resource/image/f1/7d/f1a8fe2308f879035cc7fed07705497d.jpeg" alt=""/></p>
 
-ExecStart=/opt/tomcat/latest/bin/startup.sh
-ExecStop=/opt/tomcat/latest/bin/shutdown.sh
+<h2 id="toc_5">实验</h2>
 
-[Install]
-WantedBy=multi-user.target
-</code></pre>
+<p>DAGOR 在微信的生产环境已经运作五年了，这是对它的设计可行性的最好证明。但我们并没有为学术论文提供必要的图表，所以我们进行了一组模拟实验。下面的图表突出显示了基于排队时间而非响应时间的过载控制的好处。在发生后续过载的情况下，这些好处最为明显（图 (b)）。</p>
 
-<p>&lt;span class=&quot;code-copy button main small&quot; data-clipboard-text=&quot;[Unit]<br/>
-Description=Tomcat 8.5 servlet container<br/>
-After=network.target</p>
+<p><img src="https://static001.geekbang.org/resource/image/57/a8/578fd9b784abfe540ae573ea5c0f3ea8.jpeg" alt=""/></p>
 
-<p>[Service]<br/>
-Type=forking</p>
+<p>与 CoDel 和 SEDA 相比，在进行一次后续调用时，DAGOR 的请求成功率提高了 50％，随后出现过载。后续请求数量越多，好处就越大：</p>
 
-<p>User=tomcat<br/>
-Group=tomcat</p>
+<p><img src="https://static001.geekbang.org/resource/image/0d/08/0d1dc62116c14ea4bcdc542319ee6308.jpeg" alt=""/></p>
 
-<p>Environment=&quot;JAVA_HOME=/usr/lib/jvm/jre&quot;<br/>
-Environment=&quot;JAVA_OPTS=-Djava.security.egd=file:///dev/urandom&quot;</p>
+<p>最后，在公平性方面，CoDel 在压力下更倾向于使用较小的扇出服务，而 DAGOR 在各种请求中表现出大致相同的成功率。</p>
 
-<p>Environment=&quot;CATALINA_BASE=/opt/tomcat/latest&quot;<br/>
-Environment=&quot;CATALINA_HOME=/opt/tomcat/latest&quot;<br/>
-Environment=&quot;CATALINA_PID=/opt/tomcat/latest/temp/tomcat.pid&quot;<br/>
-Environment=&quot;CATALINA_OPTS=-Xms512M -Xmx1024M -server -XX:+UseParallelGC&quot;</p>
+<p><img src="https://static001.geekbang.org/resource/image/c1/ef/c10084f90897f17fdf95dbac3318d7ef.jpeg" alt=""/></p>
 
-<p>ExecStart=/opt/tomcat/latest/bin/startup.sh<br/>
-ExecStop=/opt/tomcat/latest/bin/shutdown.sh</p>
+<h2 id="toc_6">三个经验教训</h2>
 
-<p>[Install]<br/>
-WantedBy=multi-user.target&quot;&gt;Copy</p>
+<p>即使你不使用 DAGOR，作者还是为你总结了三个宝贵的经验教训：</p>
 
-<p>Notify systemd that we created a new unit file and start the Tomcat service by executing:</p>
+<ul>
+<li>  大规模微服务架构中的过载控制必须在每个服务中实现分散和自治；</li>
+<li>  过载控制应该要考虑到各种反馈机制（例如 DAGOR 的协作准入控制），而不是仅仅依赖于开环启发式；</li>
+<li>  应该通过分析实际工作负载来了解过载控制设计。</li>
+</ul>
 
-<pre><code>sudo systemctl daemon-reload
-sudo systemctl start tomcat
-</code></pre>
+<p>论文地址：<a href="https://www.cs.columbia.edu/%7Eruigu/papers/socc18-final100.pdf">https://www.cs.columbia.edu/~ruigu/papers/socc18-final100.pdf</a></p>
 
-<p><span class="code-copy button main small" data-clipboard-text="sudo systemctl daemon-reload<br/>
-sudo systemctl start tomcat">Copy</p>
+<p>关于微信的微服务架构，微信后台基础架构负责人许家滔曾在 2016 年 ArchSummit 北京站做过分享，想要进一步了解可以查看我们整理的<a href="https://mp.weixin.qq.com/s?__biz=MjM5MDE0Mjc4MA==&amp;mid=2650997325&amp;idx=1&amp;sn=04bf17ba4ee4d506483b0ccda4a8d123&amp;chksm=bdbefa1e8ac97308a9ccb7b93ac4d479fc2b5e81518a95390374b7be42b9af9a082985f0cc5c&amp;scene=27#wechat_redirect">文章</a>。</p>
 
-<p>You can check the service status with the following command:</p>
-
-<pre><code>sudo systemctl status tomcat
-</code></pre>
-
-<p>Copy</p>
-
-<pre><code> tomcat.service - Tomcat 8.5 servlet container
-   Loaded: loaded (/etc/systemd/system/tomcat.service; disabled; vendor preset: disabled)
-   Active: active (running) since Sat 2018-03-31 16:30:48 UTC; 3s ago
-  Process: 23826 ExecStart=/opt/tomcat/latest/bin/startup.sh (code=exited, status=0/SUCCESS)
- Main PID: 23833 (java)
-   CGroup: /system.slice/tomcat.service
-           └─23833 /usr/lib/jvm/jre/bin/java -Djava.util.logging.config.file=/opt/tomcat/latest/conf/logging.properties -Djava.util.logging.manager=org.apache.juli.ClassLoaderLogManager -Djava.security.egd=fi...
-</code></pre>
-
-<p><span class="code-copy button main small" data-clipboard-text=" tomcat.service - Tomcat 8.5 servlet container<br/>
-   Loaded: loaded (/etc/systemd/system/tomcat.service; disabled; vendor preset: disabled)<br/>
-   Active: active (running) since Sat 2018-03-31 16:30:48 UTC; 3s ago<br/>
-  Process: 23826 ExecStart=/opt/tomcat/latest/bin/startup.sh (code=exited, status=0/SUCCESS)<br/>
- Main PID: 23833 (java)<br/>
-   CGroup: /system.slice/tomcat.service<br/>
-           └─23833 /usr/lib/jvm/jre/bin/java -Djava.util.logging.config.file=/opt/tomcat/latest/conf/logging.properties -Djava.util.logging.manager=org.apache.juli.ClassLoaderLogManager -Djava.security.egd=fi...">Copy</p>
-
-<p>and if there are no errors you can enable the Tomcat service to be automatically started at boot time:</p>
-
-<pre><code>sudo systemctl enable tomcat
-</code></pre>
-
-<p>Copy</p>
-
-<h2 id="toc_5"><a href="/post/how-to-install-tomcat-8-5-on-centos-7/#adjust-the-firewall">Adjust the Firewall</a></h2>
-
-<p>If your server is <a href="/post/how-to-setup-a-firewall-with-firewalld-on-centos-7/">protected by a firewall</a> and you want to access the tomcat interface from the outside of the local network you also need to open port <code>8080</code>.</p>
-
-<p>Use the following commands to open the necessary port:</p>
-
-<pre><code>sudo firewall-cmd --zone=public --permanent --add-port=8080/tcp
-sudo firewall-cmd --reload
-</code></pre>
-
-<p><span class="code-copy button main small" data-clipboard-text="sudo firewall-cmd --zone=public --permanent --add-port=8080/tcp<br/>
-sudo firewall-cmd --reload">Copy</p>
-
-<p>In most cases, when running Tomcat in a production environment you will use a load balancer or reverse proxy and it’s a best practice to allow access to port 8080 only to your internal network.</p>
-
-<h2 id="toc_6"><a href="/post/how-to-install-tomcat-8-5-on-centos-7/#configure-tomcat-web-management-interface">Configure Tomcat Web Management Interface</a></h2>
-
-<p>At this point Tomcat is installed and we can access it with a web browser on port <code>8080</code>, but we can not access the web management interface because we have not created a user yet.</p>
-
-<p>Tomcat users and their roles are defined in the <code>tomcat-users.xml</code> file.</p>
-
-<p>If you open the file you will notice that it is filled with comments and examples describing how to configure the file.</p>
-
-<pre><code>sudo vim /opt/tomcat/latest/conf/tomcat-users.xml
-</code></pre>
-
-<p>Copy</p>
-
-<p>To add a new user who will be able to access the tomcat web interface (manager-gui and admin-gui) we need to define the user in <code>tomcat-users.xml</code> file as shown bellow. Make sure you change the username and password to something more secure:</p>
-
-<p>/opt/tomcat/latest/conf/tomcat-users.xml</p>
-
-<pre><code>&lt;tomcat-users&gt;
-&lt;!--
-    Comments
---&gt;
-   &lt;role role/&gt;
-   &lt;role role/&gt;
-   &lt;user user/&gt;
-&lt;/tomcat-users&gt;
-</code></pre>
-
-<p><span class="code-copy button main small" data-clipboard-text="<tomcat-users><br/>
-&lt;!--<br/>
-    Comments<br/>
---&gt;<br/>
-   <role rolename=&quot;admin-gui&quot;>Copy</p>
-
-<p>By default Tomcat web management interface is configured to allow access only from the localhost. If you want to be able to access the web interface from a remote IP or from anywhere which is not recommended because it is a security risk you can open the following files and make the following changes.</p>
-
-<p>If you need to access the web interface from anywhere open the following files and comment or remove the lines highlighted in yellow:</p>
-
-<p>/opt/tomcat/latest/webapps/manager/META-INF/context.xml</p>
-
-<pre><code>&lt;Context antiResourceLocking=&quot;false&quot; privileged=&quot;true&quot; &gt;
-&lt;!--
-  &lt;Valve class
-         allow=&quot;127\.\d+\.\d+\.\d+|::1|0:0:0:0:0:0:0:1&quot; /&gt;
---&gt;
-&lt;/Context&gt;
-</code></pre>
-
-<p><span class="code-copy button main small" data-clipboard-text="<Context antiResourceLocking=&quot;false&quot; privileged=&quot;true&quot; ><br/>
-&lt;!--<br/>
-  <Valve className=&quot;org.apache.catalina.valves.RemoteAddrValve&quot;<br/>
-         allow=&quot;127\.\d+\.\d+\.\d+|::1|0:0:0:0:0:0:0:1&quot; >Copy/opt/tomcat/latest/webapps/host-manager/META-INF/context.xml</p>
-
-<pre><code>&lt;Context antiResourceLocking=&quot;false&quot; privileged=&quot;true&quot; &gt;
-&lt;!--
-  &lt;Valve class
-         allow=&quot;127\.\d+\.\d+\.\d+|::1|0:0:0:0:0:0:0:1&quot; /&gt;
---&gt;
-&lt;/Context&gt;
-</code></pre>
-
-<p><span class="code-copy button main small" data-clipboard-text="<Context antiResourceLocking=&quot;false&quot; privileged=&quot;true&quot; ><br/>
-&lt;!--<br/>
-  <Valve className=&quot;org.apache.catalina.valves.RemoteAddrValve&quot;<br/>
-         allow=&quot;127\.\d+\.\d+\.\d+|::1|0:0:0:0:0:0:0:1&quot; >Copy</p>
-
-<p>If you need to access the web interface only from a specific IP, instead of commenting the blocks add your public IP to the list. Let’s say your public IP is <code>41.41.41.41</code> and you want to allow access only from that IP:</p>
-
-<p>/opt/tomcat/latest/webapps/manager/META-INF/context.xml</p>
-
-<pre><code>&lt;Context antiResourceLocking=&quot;false&quot; privileged=&quot;true&quot; &gt;
-  &lt;Valve class
-         allow=&quot;127\.\d+\.\d+\.\d+|::1|0:0:0:0:0:0:0:1|41.41.41.41&quot; /&gt;
-&lt;/Context&gt;
-</code></pre>
-
-<p><span class="code-copy button main small" data-clipboard-text="<Context antiResourceLocking=&quot;false&quot; privileged=&quot;true&quot; ><br/>
-  <Valve className=&quot;org.apache.catalina.valves.RemoteAddrValve&quot;<br/>
-         allow=&quot;127\.\d+\.\d+\.\d+|::1|0:0:0:0:0:0:0:1|41.41.41.41&quot; >Copy/opt/tomcat/latest/webapps/host-manager/META-INF/context.xml</p>
-
-<pre><code>&lt;Context antiResourceLocking=&quot;false&quot; privileged=&quot;true&quot; &gt;
-  &lt;Valve class
-         allow=&quot;127\.\d+\.\d+\.\d+|::1|0:0:0:0:0:0:0:1|41.41.41.41&quot; /&gt;
-&lt;/Context&gt;
-</code></pre>
-
-<p><span class="code-copy button main small" data-clipboard-text="<Context antiResourceLocking=&quot;false&quot; privileged=&quot;true&quot; ><br/>
-  <Valve className=&quot;org.apache.catalina.valves.RemoteAddrValve&quot;<br/>
-         allow=&quot;127\.\d+\.\d+\.\d+|::1|0:0:0:0:0:0:0:1|41.41.41.41&quot; >Copy</p>
-
-<p>The list of allowed IP addresses is a list separated with vertical bar <code>|</code>. You can add single IP addresses or use a regular expressions.</p>
-
-<p>Restart the Tomcat service for changes to take effect:</p>
-
-<pre><code>sudo systemctl restart tomcat
-</code></pre>
-
-<p>Copy</p>
-
-<h2 id="toc_7"><a href="/post/how-to-install-tomcat-8-5-on-centos-7/#test-the-installation">Test the Installation</a></h2>
-
-<p>Open your browser and type: <code>http://&lt;your_domain_or_IP_address&gt;:8080</code></p>
-
-<p>Upon successful installation, a screen similar to the following will appear:</p>
-
-<p><img src="https://linuxize.com/post/how-to-install-tomcat-8-5-on-centos-7/tomcat-home.jpg" alt=""/></p>
-
-<p>Tomcat web application manager dashboard is available at <code>http://&lt;your_domain_or_IP_address&gt;:8080/manager/html</code>. From here you can deploy, undeploy, start, stop and reload your applications.</p>
-
-<p><img src="https://linuxize.com/post/how-to-install-tomcat-8-5-on-centos-7/tomcat-manager.jpg" alt=""/></p>
-
-<p>Tomcat virtual host manager dashboard is available at <code>http://&lt;your_domain_or_IP_address&gt;:8080/host-manager/html</code>. From here you can create, delete and manage Tomcat virtual hosts.</p>
-
-<p><img src="https://linuxize.com/post/how-to-install-tomcat-8-5-on-centos-7/tomcat-host-manager.jpg" alt=""/></p>
-
-<h2 id="toc_8"><a href="/post/how-to-install-tomcat-8-5-on-centos-7/#conclusion">Conclusion</a></h2>
-
-<p>You have successfully installed Tomcat 8.5 on your CentOS 7 system and learned how to access the Tomcat management interface. You can now visit the official <a href="https://tomcat.apache.org/tomcat-8.5-doc/index.html">Apache Tomcat 8 Documentation</a> and learn more about the Apache Tomcat features.</p>
+<p>英文原文：<a href="https://blog.acolyer.org/2018/11/16/overload-control-for-scaling-wechat-microservices/">https://blog.acolyer.org/2018/11/16/overload-control-for-scaling-wechat-microservices/</a></p>
 
                         
                       </div>
@@ -427,10 +252,10 @@ sudo firewall-cmd --reload">Copy</p>
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/9/29</span>
+                    <span class="date">2018/11/25</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Container.html'>Container</a></span>
+          					    <span class="posted-in"><a href='Orchestrator-1.html'>Orchestrator</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -520,31 +345,31 @@ sudo firewall-cmd --reload">Copy</p>
 	      
 		      
 			      <li class="post">
-			        <a href="15389311738065.html">重构到更深层的模型</a>
+			        <a href="15459058392039.html">Reliable Domain Events</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389278377243.html">IAM of Google Cloud</a>
+			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389224951575.html">RSocket, a New Application Network Protocol for Reactive Applications, Announced at SpringOne</a>
+			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389220103546.html">如何形象地描述RxJava中的背压和流控机制？</a>
+			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389214670417.html">Modeling Uncertainty with Reactive DDD</a>
+			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
 			      </li>
 		     
 		  

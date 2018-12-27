@@ -105,443 +105,619 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15290784953983.html">
+                <a class="clearlink" href="15316428277028.html">
                 
-                  <h1>swoole 协程初体验</h1>
+                  <h1>从 React Native 到微服务，落地一个全栈解决方案</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://www.jianshu.com/p/745b0b3ffae7">https://www.jianshu.com/p/745b0b3ffae7</a><br/>
-2018-5-30 14:31:38</p>
+<p><a href="https://github.com/lvwangbeta/Poplar/blob/master/doc/poplar-dev-guide.md">https://github.com/lvwangbeta/Poplar/blob/master/doc/poplar-dev-guide.md</a></p>
 </blockquote>
 
-<p>折腾 swoole 协程有一段时间了, 总结一篇入门贴, 希望对新手有帮助.</p>
+<p><a href="https://github.com/lvwangbeta/Poplar">Poplar</a> 是一个社交主题的内容社区，但自身并不做社区，旨在提供可快速二次开发的开源基础套件。前端基于React Native与Redux构建，后端由Spring Boot、Dubbo、Zookeeper组成微服务对外提供一致的API访问。</p>
 
-<p>内容概览:</p>
+<h2 id="toc_0">前端 React Native &amp; Redux</h2>
 
-<ul>
-<li>  协程的执行顺序: 初窥 swoole 中协程的调度</li>
-<li>  协程为什么快: 减少 IO 阻塞带来的性能损耗</li>
-<li>  swoole 协程和 go 协程对比: 单进程 vs 多线程</li>
-</ul>
+<p><img src="https://github.com/lvwangbeta/Poplar/raw/master/doc/imgs/show.png" alt="framework"/></p>
 
-<h2 id="toc_0">协程的执行顺序</h2>
+<p>React Native虽然提供跨平台解决方案，但并未在性能与开发效率上做出过度妥协，尤其是对于有JS与CSS基础的开发人员入手不会很难，不过JSX语法糖需要一定的适应时间，至于DOM结构与样式和JS处理写在一起是否喜欢就见仁见智了，可这也是一个强迫你去模块化解耦的比较好的方式。由于React组件的数据流是单向的，因此会引入一个很麻烦的问题，组件之间很难高效通信，尤其是两个层级很深的兄弟节点之间通信变得异常复杂，对上游所有父节点造成传递污染，维护成本极高。为此Poplar引入了Redux架构，统一管理应用状态。</p>
 
-<p>先来看看基础的例子:</p>
+<h3 id="toc_1">模块化</h3>
 
-<pre><code class="language-go">go(function () {
-    echo &quot;hello go1 \n&quot;;
-});
+<p><img src="https://github.com/lvwangbeta/Poplar/raw/master/doc/imgs/front-framework.png" alt="framework"/></p>
 
-echo &quot;hello main \n&quot;;
+<p>APP由5个基础页面构成，分别是Feed信息流主页(MainPage)、探索发现页面(ExplorePage)、我的账户详情页(MinePage)、状态创建于发送页(NewFeed)、登录注册页面(LoginRegPage)等。页面又由基础组件组成，如Feed列表、Feed详情、评论、标签、相册等等。如果与服务器交互，则统一交由API层处理。</p>
 
-go(function () {
-    echo &quot;hello go2 \n&quot;;
-});
+<p><img src="https://github.com/lvwangbeta/Poplar/raw/master/doc/imgs/pages.png" alt="framework"/></p>
 
+<p>页面底部由<code>TabNavigator</code>包含5个<code>TabNavigator.Item</code>构成，分别对应基础页面，如果用户未登录，则在点击主页或新增Tab时呼出登录注册页面。</p>
+
+<h3 id="toc_2">Redux</h3>
+
+<p>引入Redux并不是赶潮流，而且早在2014年就已经提出了Flux的概念。使用Redux主要是不得不用了，Poplar组件结构并非特别复杂，但嵌套关系较多，而且需要同时支持登录与非登录情况的信息流访问，这就需要一个统一的状态管理器来协调组件之间的通信和状态更新，而Redux很好的解决了这个问题。</p>
+
+<p>这里不枯燥的讲解Redux的架构模型了，而是以Poplar中的登录状态为例来简单说下Redux在Poplar项目中是如何使用的。</p>
+
+<p>Poplar使用React-Redux库，一个将Redux架构在React的实现。</p>
+
+<h4 id="toc_3">1. 场景描述</h4>
+
+<p>在未登录情况下，如果用户点击Feed流页面会弹出登录/注册页面，登录或注册成功之后页面收回，同时刷新出信息流内容。下图中的App组件是登录页面和信息流主页兄弟节点的共同父组件。</p>
+
+<p><img src="https://github.com/lvwangbeta/Poplar/raw/master/doc/imgs/without_redux.png" alt="framework"/></p>
+
+<p>这个需求看似简单，但如果没有Redux，在React中实现起来会很蹩脚而且会冗余很多无用代码调用。</p>
+
+<p>首先我们看下在没有Redux的情况下是如何实现这一业务流程的？</p>
+
+<p>在点击Tabbar的第一个Item也就是信息流页签时，要做用户是否登录检查，这个检查可以通过查看应用是否本地化存储了token或其他验签方式验证，如果未登录，需要主动更新App组件的state状态，同时将这个状态修改通过props的方式传递给LoginPage，LoginPage得知有新的props传入后更新自己的state:{visible:true}来呼出自己，如果客户输入登录信息并且登录成功，则需要将LoginPage的state设置为{visible:false}来隐藏自己，同时回调App传给它的回调函数来告诉父附件用户已经登录成功，我们算一下这仅仅是两个组件之间的通信就要消耗1个props变量1个props回调函数和2个state更新，到这里只是完成了LoginPage通知App组件目前应用应该处于已登录状态，但是还没有刷新出用户的Feed流，因为此时MainPage还不知道用户已登录，需要App父组件来告知它已登录请刷新，可怎样通知呢？React是数据流单向的，要想让下层组件更新只能传递变化的props属性，这样就又多了一个props属性的开销，MainPage更新关联的state同时刷新自己获取Feed流，这才最终完成了一次登录后的MainPage信息展示。通过上面的分析可以看出Poplar在由未登录到登录的状态转变时冗余了很多但是又没法避免的参数传递，因为兄弟节点LoginPage与MainPage之间无法简单的完成通信告知彼此的状态，就需要App父组件这个桥梁来先向上再向下的传递消息。</p>
+
+<p>再来看下引入Redux之后是如何完成这一同样的过程的：</p>
+
+<p>还是在未登录情况下点击主页，此时Poplar由于Redux的引入已经为应用初始了全局登录状态{status: &#39;NOT_LOGGED_IN&#39;}，当用户登录成功之后会将该状态更新为{status: &#39;LOGGED_IN&#39;}，同时LoginPage与此状态进行了绑定，Redux会第一时间通知其更新组件自己的状态为{visible:false}。与此同时App也绑定了这个由Redux管理的全局状态，因此也同样可以获得{status: &#39;LOGGED_IN&#39;}的通知，这样就可以很简单的在客户登录之后隐藏LoginPage显示MainPage，是不是很简单也很神奇，完全不用依赖参数的层层传递，组件想要获得哪个全局状态就与其关联就好，Redux会第一时间通知你。</p>
+
+<h4 id="toc_4">2. 实现</h4>
+
+<p>以实际的代码为例来讲解下次场景的React-Redux实现：</p>
+
+<h5 id="toc_5">connect</h5>
+
+<p>在App组件中，通过connect方法将UI组件生成Redux容器组件，可以理解为架起了UI组件与Redux沟通的桥梁，将store于组件关联在一起。</p>
+
+<pre><code class="language-js">import {showLoginPage, isLogin} from  &#39;./actions/loginAction&#39;;
+import {showNewFeedPage} from &#39;./actions/NewFeedAction&#39;;
+
+export default connect((state) =&gt; ({
+  status: state.isLogin.status, //登录状态
+  loginPageVisible: state.showLoginPage.loginPageVisible
+}), (dispatch) =&gt; ({
+  isLogin: () =&gt; dispatch(isLogin()),
+  showLoginPage: () =&gt; dispatch(showLoginPage()),
+  showNewFeedPage: () =&gt; dispatch(showNewFeedPage()),
+}))(App)
 </code></pre>
 
-<p><code>go()</code> 是 <code>\Co::create()</code> 的缩写, 用来创建一个协程, 接受 callback 作为参数, callback 中的代码, 会在这个新建的协程中执行.</p>
+<p>connect方法的第一个参数是<code>mapStateToProps</code>函数，建立一个store中的数据到UI组件props对象的映射关系，只要store更新了就会调用<code>mapStateToProps</code>方法，<code>mapStateToProps</code>返回一个对象，是一个UI组件props与store数据的映射。上面代码中，<code>mapStateToProps</code>接收state作为参数，返回一个UI组件登陆状态与store中state的登陆状态的映射关系以及一个登陆页面是否显示的映射关系。这样App组件状态就与Redux的store关联上了。</p>
 
-<p><strong>备注</strong>: <code>\Swoole\Coroutine</code> 可以简写为 <code>\Co</code></p>
+<p>第二个参数<code>mapDispatchToProps</code>函数允许将action作为props绑定到组件上，返回一个UI组件props与Redux action的映射关系，上面代码中App组件的<code>isLogin</code> <code>showLoginPage</code> <code>showNewFeedPage</code>props与Redux的action建立了映射关系。调用isLogin实际调用的是Redux中的<code>store.dispatch(isLogin)</code> action，dispatch完成对action到reducer的分发。</p>
 
-<p>上面的代码执行结果:</p>
+<h5 id="toc_6">Provider</h5>
 
-<pre><code class="language-sh">root@b98940b00a9b /v/w/c/p/swoole# php co.php
-hello go1
-hello main
-hello go2
-</code></pre>
+<p>connect中的state是如何传递进去的呢？React-Redux 提供<code>Provider</code>组件，可以让容器组件拿到<code>state</code></p>
 
-<p>执行结果和我们平时写代码的顺序, 好像没啥区别. 实际执行过程:</p>
+<pre><code class="language-js">import React, { Component } from &#39;react&#39;;
+import { Provider } from &#39;react-redux&#39;;
+import configureStore from &#39;./src/store/index&#39;;
 
-<ul>
-<li>  运行此段代码, <strong>系统启动一个新进程</strong></li>
-<li>  遇到 <code>go()</code>, 当前进程中生成一个协程, 协程中输出 <code>heelo go1</code>, 协程退出</li>
-<li>  进程继续向下执行代码, 输出 <code>hello main</code></li>
-<li>  再生成一个协程, 协程中输出 <code>heelo go2</code>, 协程退出</li>
-</ul>
+const store = configureStore();
 
-<p><strong>运行此段代码, 系统启动一个新进程</strong>. 如果不理解这句话, 你可以使用如下代码:</p>
-
-<pre><code class="language-php">// co.php
-&lt;?php
-
-sleep(100);
-
-</code></pre>
-
-<p>执行并使用 <code>ps aux</code> 查看系统中的进程:</p>
-
-<pre><code class="language-sh">root@b98940b00a9b /v/w/c/p/swoole# php co.php &amp;
-⏎
-root@b98940b00a9b /v/w/c/p/swoole# ps aux
-PID   USER     TIME   COMMAND
-    1 root       0:00 php -a
-   10 root       0:00 sh
-   19 root       0:01 fish
-  749 root       0:00 php co.php
-  760 root       0:00 ps aux
-⏎
-
-</code></pre>
-
-<p>我们来稍微改一改, 体验协程的调度:</p>
-
-<pre><code class="language-go">use Co;
-
-go(function () {
-    Co::sleep(1); // 只新增了一行代码
-    echo &quot;hello go1 \n&quot;;
-});
-
-echo &quot;hello main \n&quot;;
-
-go(function () {
-    echo &quot;hello go2 \n&quot;;
-});
-
-</code></pre>
-
-<p><code>\Co::sleep()</code> 函数功能和 <code>sleep()</code> 差不多, 但是它模拟的是 <strong>IO 等待</strong> (IO 后面会细讲). 执行的结果如下:</p>
-
-<pre><code>root@b98940b00a9b /v/w/c/p/swoole# php co.php
-hello main
-hello go2
-hello go1
-
-</code></pre>
-
-<p>怎么不是顺序执行的呢? 实际执行过程:</p>
-
-<ul>
-<li>  运行此段代码, 系统启动一个新进程</li>
-<li>  遇到 <code>go()</code>, 当前进程中生成一个协程</li>
-<li>  协程中遇到 <strong>IO 阻塞</strong> (这里是 <code>Co::sleep()</code> 模拟出的 <strong>IO 等待</strong>), <strong>协程让出控制, 进入协程调度队列</strong></li>
-<li>  进程继续向下执行, 输出 <code>hello main</code></li>
-<li>  执行下一个协程, 输出 <code>hello go2</code></li>
-<li>  之前的协程准备就绪, 继续执行, 输出 <code>hello go1</code></li>
-</ul>
-
-<p>到这里, 已经可以看到 swoole 中 <strong>协程与进程的关系</strong>, 以及 <strong>协程的调度</strong>, 我们再改一改刚才的程序:</p>
-
-<pre><code class="language-go">go(function () {
-    Co::sleep(1);
-    echo &quot;hello go1 \n&quot;;
-});
-
-echo &quot;hello main \n&quot;;
-
-go(function () {
-    Co::sleep(1);
-    echo &quot;hello go2 \n&quot;;
-});
-
-</code></pre>
-
-<p>我想你已经知道输出是什么样子了:</p>
-
-<pre><code class="language-sh">root@b98940b00a9b /v/w/c/p/swoole# php co.php
-hello main
-hello go1
-hello go2
-⏎
-
-</code></pre>
-
-<h2 id="toc_1">协程快在哪? 减少 IO 阻塞导致的性能损失</h2>
-
-<p>大家可能听到使用协程的最多的理由, 可能就是 <strong>协程快</strong>. 那看起来和平时写得差不多的代码, 为什么就要快一些呢? 一个常见的理由是, <strong>可以创建很多个协程来执行任务, 所以快</strong>. 这种说法是对的, 不过还停留在表面.</p>
-
-<p>首先, 一般的计算机任务分为 2 种:</p>
-
-<ul>
-<li>  CPU 密集型, 比如加减乘除等科学计算</li>
-<li>  IO 密集型, 比如网络请求, 文件读写等</li>
-</ul>
-
-<p>其次, 高性能相关的 2 个概念:</p>
-
-<ul>
-<li>  并行: 同一个时刻, 同一个 CPU 只能执行同一个任务, 要同时执行多个任务, 就需要有多个 CPU 才行</li>
-<li>  并发: 由于 CPU 切换任务非常快, 快到人类可以感知的极限, 就会有很多任务 <strong>同时执行</strong> 的错觉</li>
-</ul>
-
-<p>了解了这些, 我们再来看协程, 协程适合的是 <strong>IO 密集型</strong> 应用, 因为协程在 <strong>IO 阻塞</strong> 时会自动调度, 减少 IO 阻塞导致的时间损失.</p>
-
-<p>我们可以对比下面三段代码:</p>
-
-<ul>
-<li>  普通版: 执行 4 个任务</li>
-</ul>
-
-<pre><code class="language-php">$n = 4;
-for ($i = 0; $i &lt; $n; $i++) {
-    sleep(1);
-    echo microtime(true) . &quot;: hello $i \n&quot;;
-};
-echo &quot;hello main \n&quot;;
-
-</code></pre>
-
-<pre><code class="language-sh">root@b98940b00a9b /v/w/c/p/swoole# time php co.php
-1528965075.4608: hello 0
-1528965076.461: hello 1
-1528965077.4613: hello 2
-1528965078.4616: hello 3
-hello main
-real    0m 4.02s
-user    0m 0.01s
-sys     0m 0.00s
-⏎
-
-</code></pre>
-
-<ul>
-<li>  单个协程版:</li>
-</ul>
-
-<pre><code class="language-php">$n = 4;
-go(function () use ($n) {
-    for ($i = 0; $i &lt; $n; $i++) {
-        Co::sleep(1);
-        echo microtime(true) . &quot;: hello $i \n&quot;;
-    };
-});
-echo &quot;hello main \n&quot;;
-
-</code></pre>
-
-<pre><code>root@b98940b00a9b /v/w/c/p/swoole# time php co.php
-hello main
-1528965150.4834: hello 0
-1528965151.4846: hello 1
-1528965152.4859: hello 2
-1528965153.4872: hello 3
-real    0m 4.03s
-user    0m 0.00s
-sys     0m 0.02s
-⏎
-
-</code></pre>
-
-<ul>
-<li>  多协程版: <strong>见证奇迹的时刻</strong></li>
-</ul>
-
-<pre><code class="language-php">$n = 4;
-for ($i = 0; $i &lt; $n; $i++) {
-    go(function () use ($i) {
-        Co::sleep(1);
-        echo microtime(true) . &quot;: hello $i \n&quot;;
-    });
-};
-echo &quot;hello main \n&quot;;
-
-</code></pre>
-
-<pre><code class="language-sh">root@b98940b00a9b /v/w/c/p/swoole# time php co.php
-hello main
-1528965245.5491: hello 0
-1528965245.5498: hello 3
-1528965245.5502: hello 2
-1528965245.5506: hello 1
-real    0m 1.02s
-user    0m 0.01s
-sys     0m 0.00s
-⏎
-
-</code></pre>
-
-<p>为什么时间有这么大的差异呢:</p>
-
-<ul>
-<li>  普通写法, 会遇到 <strong>IO 阻塞</strong> 导致的性能损失</li>
-<li>  单协程: 尽管 IO 阻塞 引发了协程调度, 但当前只有一个协程, 调度之后还是执行当前协程</li>
-<li>  多协程: 真正发挥出了协程的优势, 遇到 IO 阻塞 时发生调度, IO 就绪时恢复运行</li>
-</ul>
-
-<p>我们将多协程版稍微修改一下:</p>
-
-<ul>
-<li>  多协程版 2: CPU 密集型</li>
-</ul>
-
-<pre><code class="language-php">$n = 4;
-for ($i = 0; $i &lt; $n; $i++) {
-    go(function () use ($i) {
-        // Co::sleep(1);
-        sleep(1);
-        echo microtime(true) . &quot;: hello $i \n&quot;;
-    });
-};
-echo &quot;hello main \n&quot;;
-
-</code></pre>
-
-<pre><code class="language-sh">root@b98940b00a9b /v/w/c/p/swoole# time php co.php
-1528965743.4327: hello 0
-1528965744.4331: hello 1
-1528965745.4337: hello 2
-1528965746.4342: hello 3
-hello main
-real    0m 4.02s
-user    0m 0.01s
-sys     0m 0.00s
-⏎
-
-</code></pre>
-
-<p>只是将 <code>Co::sleep()</code> 改成了 <code>sleep()</code>, 时间又和普通版差不多了. 因为:</p>
-
-<ul>
-<li>  <code>sleep()</code> 可以看做是 CPU 密集型任务, 不会引起协程的调度</li>
-<li>  <code>Co::sleep()</code> 模拟的是 IO 密集型任务, 会引发协程的调度</li>
-</ul>
-
-<p><strong>这也是为什么, 协程适合 IO 密集型 的应用.</strong></p>
-
-<p>再来一组对比的例子: 使用 redis</p>
-
-<pre><code class="language-php">// 同步版, redis使用时会有 IO 阻塞
-$cnt = 2000;
-for ($i = 0; $i &lt; $cnt; $i++) {
-    $redis = new \Redis();
-    $redis-&gt;connect(&#39;redis&#39;);
-    $redis-&gt;auth(&#39;123&#39;);
-    $key = $redis-&gt;get(&#39;key&#39;);
+export default class Root extends Component {
+  render() {
+    return (
+      &lt;Provider store={store}&gt;
+        &lt;Main /&gt;
+      &lt;/Provider&gt;
+    )
+  }
 }
+</code></pre>
 
-// 单协程版: 只有一个协程, 并没有使用到协程调度减少 IO 阻塞
-go(function () use ($cnt) {
-    for ($i = 0; $i &lt; $cnt; $i++) {
-        $redis = new Co\Redis();
-        $redis-&gt;connect(&#39;redis&#39;, 6379);
-        $redis-&gt;auth(&#39;123&#39;);
-        $redis-&gt;get(&#39;key&#39;);
+<p>上面代码中，<code>Provider</code>在根组件外面包了一层，这样一来，<code>App</code>的所有子组件就默认都可以拿到<code>state</code>了。</p>
+
+<h5 id="toc_7">Action &amp; Reducer</h5>
+
+<p>组件与Redux全局状态的关联已经搞定了，可如何实现状态的流转呢？登录状态是如何扩散到整个应用的呢？</p>
+
+<p>这里就需要Redux中的Action和Reducer了，Action负责接收UI组件的事件，Reducer负责响应Action，返回新的store，触发与store关联的UI组件更新。</p>
+
+<pre><code class="language-js">export default connect((state) =&gt; ({
+  loginPageVisible: state.showLoginPage.loginPageVisible,
+}), (dispatch) =&gt; ({
+  isLogin: () =&gt; dispatch(isLogin()),
+  showLoginPage: (flag) =&gt; dispatch(showLoginPage(flag)),
+  showRegPage: (flag) =&gt; dispatch(showRegPage(flag)),
+}))(LoginPage)
+
+this.props.showLoginPage(false);
+this.props.isLogin();
+</code></pre>
+
+<p>在这个登录场景中，如上代码，LoginPage将自己的props与store和action绑定，如果登录成功，调用<code>showLoginPage(false)</code>action来隐藏自身，Reducer收到这个dispatch过来的action更新store状态：</p>
+
+<pre><code class="language-js">//Action
+export function showLoginPage(flag=true) {
+  if(flag == true) {
+    return {
+      type: &#39;LOGIN_PAGE_VISIBLE&#39;
     }
-});
-
-// 多协程版, 真正使用到协程调度带来的 IO 阻塞时的调度
-for ($i = 0; $i &lt; $cnt; $i++) {
-    go(function () {
-        $redis = new Co\Redis();
-        $redis-&gt;connect(&#39;redis&#39;, 6379);
-        $redis-&gt;auth(&#39;123&#39;);
-        $redis-&gt;get(&#39;key&#39;);
-    });
+  } else {
+    return {
+      type: &#39;LOGIN_PAGE_INVISIBLE&#39;
+    }
+  }
 }
 
+//Reducer
+export function showLoginPage(state=pageState, action) {
+  switch (action.type) {
+    case &#39;LOGIN_PAGE_VISIBLE&#39;:
+      return {
+        ...state,
+        loginPageVisible: true,
+      }
+      break;
+    case &#39;LOGIN_PAGE_INVISIBLE&#39;:
+      return {
+        ...state,
+        loginPageVisible: false,
+      }
+      break;
+    default:
+      return state;
+  }
+}
 </code></pre>
 
-<p>性能对比:</p>
+<p>同时调用isLogin这个action更新应用的全局状态为已登录：</p>
 
-<pre><code class="language-sh"># 多协程版
-root@0124f915c976 /v/w/c/p/swoole# time php co.php
-real    0m 0.54s
-user    0m 0.04s
-sys     0m 0.23s
-⏎
-
-# 同步版
-root@0124f915c976 /v/w/c/p/swoole# time php co.php
-real    0m 1.48s
-user    0m 0.17s
-sys     0m 0.57s
-⏎
-
-</code></pre>
-
-<h2 id="toc_2">swoole 协程和 go 协程对比: 单进程 vs 多线程</h2>
-
-<p>接触过 go 协程的 coder, 初始接触 swoole 的协程会有点 <strong>懵</strong>, 比如对比下面的代码:</p>
-
-<pre><code class="language-go">package main
-
-import (
-    &quot;fmt&quot;
-    &quot;time&quot;
-)
-
-func main() {
-    go func() {
-        fmt.Println(&quot;hello go&quot;)
-    }()
-
-    fmt.Println(&quot;hello main&quot;)
-
-    time.Sleep(time.Second)
+<pre><code class="language-js">//Action
+export function isLogin() {
+  return dispatch =&gt; {
+      Secret.isLogin((result, token) =&gt; {
+        if(result) {
+          dispatch({
+            type: &#39;LOGGED_IN&#39;,
+          });
+        } else {
+          dispatch({
+            type: &#39;NOT_LOGGED_IN&#39;,
+          });
+        }
+      });
+  }
 }
 
+//Reducer
+export function isLogin(state=loginStatus, action) {
+    switch (action.type) {
+      case &#39;LOGGED_IN&#39;:
+        return {
+          ...state,
+          status: &#39;LOGGED_IN&#39;,
+        }
+        break;
+      case &#39;NOT_LOGGED_IN&#39;:
+        return {
+          ...state,
+          status: &#39;NOT_LOGGED_IN&#39;,
+        }
+        break;
+      default:
+        return state;
+    }
+}
 </code></pre>
 
-<pre><code class="language-sh">&gt; 14:11 src $ go run test.go
-hello main
-hello go
+<p>App组件由于已经关联了这个全局的登录状态，在reducer更新了此状态之后，App也会收到该更新，进而重新渲染自己，此时MainPage就会渲染出来了：</p>
+
+<pre><code class="language-js">const {status} = this.props;
+return (
+  &lt;TabNavigator&gt;
+    &lt;TabNavigator.Item
+      selected={this.state.selectedTab === &#39;mainTab&#39;}
+      renderIcon={() =&gt; &lt;Image style={styles.icon} 
+                         source={require(&#39;./imgs/icons/home.png&#39;)} /&gt;}
+      renderSelectedIcon={() =&gt; &lt;Image style={styles.icon} 
+                          source={require(&#39;./imgs/icons/home_selected.png&#39;)} /&gt;}
+      onPress={() =&gt; {
+                      this.setState({ selectedTab: &#39;mainTab&#39; });
+                      if(status == &#39;NOT_LOGGED_IN&#39;) {
+                        showLoginPage();
+                      }
+                  }
+               }
+    &gt;
+    //全局状态已由NOT_LOGGED_IN变为LOGGED_IN
+      {status == &#39;NOT_LOGGED_IN&#39;?&lt;LoginPage {...this.props}/&gt;:&lt;MainPage {...this.props}/&gt;}
+</code></pre>
+
+<hr/>
+
+<h2 id="toc_8">后端微服务架构</h2>
+
+<p><img src="https://github.com/lvwangbeta/Poplar/raw/master/doc/imgs/ms-architecture.png" alt="framework"/></p>
+
+<h3 id="toc_9">项目构建 &amp; 开发</h3>
+
+<h4 id="toc_10">1. 项目结构</h4>
+
+<p><img src="https://github.com/lvwangbeta/Poplar/raw/master/doc/imgs/project.png" alt="project"/>  </p>
+
+<ul>
+<li>poplar作为一个整体Maven项目，顶层不具备业务功能也不包含代码，对下层提供基础的pom依赖导入<br/></li>
+<li>poplar-api有着两重身份：API网关接收渠道层请求路由转发、作为微服务消费者组织提供者服务调用完成服务串联<br/></li>
+<li>poplar-user-service: 微服务提供者，提供注册、登录、用户管理等服务<br/></li>
+<li>poplar-feed-service: 微服务提供者，提供feed创建、生成信息流等服务<br/></li>
+<li>poplar-notice-service: 微服务提供者， 提供通知消息服务<br/></li>
+</ul>
+
+<p>每个子项目以 Module 方式单独创建<br/><br/>
+<img src="https://github.com/lvwangbeta/Poplar/raw/master/doc/imgs/module.png" alt="module"/></p>
+
+<h4 id="toc_11">2. Maven聚合项目</h4>
+
+<p>Poplar 由多个服务提供者、消费者和公共组件构成，他们之间的依赖关系既有关联关系又有父子从属关系，<br/>
+为了简化配置也便于统一构建，需要建立合理的依赖。服务的提供者主要是Spring Boot项目，兼有数据库访问等依赖；服务的消费者同样是是Spring Boot项目，但由于是API层，需要对外提供接口，所以需要支持Controller；<br/>
+服务消费者、提供者通过Dubbo完成调用，这也需要共用的Dubbo组件，所以我们可以发现消费者、提供者共同依赖Spring Boot以及Dubbo，抽离出一个parent的pom即可，定义公共的父组件：</p>
+
+<pre><code class="language-xml">&lt;groupId&gt;com.lvwangbeta&lt;/groupId&gt;
+&lt;artifactId&gt;poplar&lt;/artifactId&gt;
+&lt;version&gt;0.0.1-SNAPSHOT&lt;/version&gt;
+&lt;packaging&gt;pom&lt;/packaging&gt;
+
+&lt;name&gt;poplar&lt;/name&gt;
+&lt;description&gt;Poplar&lt;/description&gt;
+&lt;dependencies&gt;
+    &lt;dependency&gt;
+        &lt;groupId&gt;org.springframework.boot&lt;/groupId&gt;
+        &lt;artifactId&gt;spring-boot-starter-data-redis&lt;/artifactId&gt;
+    &lt;/dependency&gt;
+    &lt;dependency&gt;
+        &lt;groupId&gt;org.springframework.boot&lt;/groupId&gt;
+        &lt;artifactId&gt;spring-boot-starter-jdbc&lt;/artifactId&gt;
+    &lt;/dependency&gt;
+    &lt;dependency&gt;
+        &lt;groupId&gt;org.springframework.boot&lt;/groupId&gt;
+        &lt;artifactId&gt;spring-boot-starter-web&lt;/artifactId&gt;
+    &lt;/dependency&gt;    
+    ...
+&lt;/dependencies&gt;
+</code></pre>
+
+<p>Poplar父组件除了引入公共的构建包之外，还需要声明其包含的子组件，这样做的原因是在Poplar顶层构建的时候Maven可以在反应堆计算出各模块之间的依赖关系和构建顺序。我们引入服务提供者和消费者：</p>
+
+<pre><code class="language-xml"> &lt;modules&gt;
+    &lt;module&gt;poplar-common&lt;/module&gt;
+    &lt;module&gt;poplar-api&lt;/module&gt;
+    &lt;module&gt;poplar-feed-service&lt;/module&gt;
+    &lt;module&gt;poplar-user-service&lt;/module&gt;
+&lt;/modules&gt;
+</code></pre>
+
+<p>子组件的pom结构就变的简单许多了，指定parent即可，pom源为父组件的相对路径</p>
+
+<pre><code class="language-xml">&lt;groupId&gt;com.lvwangbeta&lt;/groupId&gt;
+&lt;artifactId&gt;poplar-api&lt;/artifactId&gt;
+&lt;version&gt;0.0.1-SNAPSHOT&lt;/version&gt;
+&lt;packaging&gt;war&lt;/packaging&gt;
+
+&lt;name&gt;poplar-api&lt;/name&gt;
+&lt;description&gt;poplar api&lt;/description&gt;
+
+&lt;parent&gt;
+    &lt;groupId&gt;com.lvwangbeta&lt;/groupId&gt;
+    &lt;artifactId&gt;poplar&lt;/artifactId&gt;
+    &lt;version&gt;0.0.1-SNAPSHOT&lt;/version&gt;
+    &lt;relativePath&gt;../pom.xml&lt;/relativePath&gt; &lt;!-- lookup parent from repository --&gt;
+&lt;/parent&gt;   
+</code></pre>
+
+<p>还有一个公共构建包我们并没有说，它主要包含了消费者、提供者共用的接口、model、Utils方法等，不需要依赖Spring也没有数据库访问的需求，这是一个被其他项目引用的公共组件，我们把它声明为一个package方式为jar的本地包即可，不需要依赖parent：</p>
+
+<pre><code class="language-xml">&lt;groupId&gt;com.lvwangbeta&lt;/groupId&gt;
+&lt;artifactId&gt;poplar-common&lt;/artifactId&gt;
+&lt;version&gt;0.0.1-SNAPSHOT&lt;/version&gt;
+&lt;packaging&gt;jar&lt;/packaging&gt;
+</code></pre>
+
+<p>在项目整体打包的时候，Maven会计算出其他子项目依赖了这个本地jar包就会优先将其打入本地Maven库。<br/>
+在Poplar项目根目录执行<code>mvn clean install</code>查看构建顺序，可以看到各子项目并不是按照我们在Poplar-pom中定义的那样顺序执行的，而是Maven反应堆计算各模块的先后依赖来执行构建，先构建公共依赖common包然后构建poplar，最后构建各消费者、提供者。</p>
+
+<pre><code class="language-log">[INFO] Reactor Summary:   
+[INFO]    
+[INFO] poplar-common ...................................... SUCCESS [  3.341 s]   
+[INFO] poplar ............................................. SUCCESS [  3.034 s]   
+[INFO] poplar-api ......................................... SUCCESS [ 25.028 s]   
+[INFO] poplar-feed-service ................................ SUCCESS [  6.451 s]   
+[INFO] poplar-user-service ................................ SUCCESS [  8.056 s]   
+[INFO] ------------------------------------------------------------------------    
+</code></pre>
+
+<p>如果我们只修改了某几个子项目，并不需要全量构建，只需要用Maven的-pl选项指定项目同时-am构建其依赖的模块即可，我们尝试单独构建<code>poplar-api</code>这个项目，其依赖于<code>poplar-common</code>和<code>poplar</code>:</p>
+
+<pre><code class="language-sh">mvn clean install -pl poplar-api -am  
+</code></pre>
+
+<p>执行构建发现Maven将<code>poplar-api</code>依赖的<code>poplar-common</code>和<code>poplar</code>优先构建之后再构建自己：</p>
+
+<pre><code class="language-log">[INFO] Reactor Summary:   
+[INFO] 
+[INFO] poplar-common ...................................... SUCCESS [  2.536 s]  
+[INFO] poplar ............................................. SUCCESS [  1.756 s]   
+[INFO] poplar-api ......................................... SUCCESS [ 28.101 s]    
+[INFO] ------------------------------------------------------------------------    
+[INFO] BUILD SUCCESS    
+</code></pre>
+
+<h4 id="toc_12">3. Dubbo &amp; Zookeeper</h4>
+
+<p>上面所述的服务提供者和消费者依托于Dubbo实现远程调用，但还需要一个注册中心，来完成服务提供者的注册、通知服务消费者的任务，Zookeeper就是一种注册中心的实现，poplar使用Zookeeper作为注册中心。  </p>
+
+<h5 id="toc_13">3.1 Zookeeper安装</h5>
+
+<p>下载解压Zookeeper文件</p>
+
+<pre><code class="language-sh">$ cd zookeeper-3.4.6  
+$ mkdir data  
+</code></pre>
+
+<p>创建配置文件 </p>
+
+<pre><code class="language-sh">$ vim conf/zoo.cfg
+
+tickTime = 2000
+dataDir = /path/to/zookeeper/data
+clientPort = 2181
+initLimit = 5
+syncLimit = 2
+</code></pre>
+
+<p>启动</p>
+
+<pre><code class="language-sh">$ bin/zkServer.sh start
+</code></pre>
+
+<p>停止 </p>
+
+<pre><code class="language-sh">$ bin/zkServer.sh stop 
+</code></pre>
+
+<h5 id="toc_14">3.2 Dubbo admin</h5>
+
+<p>Dubbo管理控制台安装 </p>
+
+<pre><code class="language-sh">git clone https://github.com/apache/incubator-dubbo-ops
+cd incubator-dubbo-ops &amp;&amp; mvn package  
+</code></pre>
+
+<p>然后就可以在target目录下看到打包好的war包了，将其解压到tomcat <code>webapps/ROOT</code>目录下（ROOT目录内容要提前清空），可以查看下解压后的<code>dubbo.properties</code>文件，指定了注册中心Zookeeper的IP和端口  </p>
+
+<pre><code class="language-properties">dubbo.registry.address=zookeeper://127.0.0.1:2181
+dubbo.admin.root.password=root
+dubbo.admin.guest.password=guest
+</code></pre>
+
+<p>启动tomcat</p>
+
+<pre><code class="language-sh">./bin/startup.sh  
+</code></pre>
+
+<p>访问 </p>
+
+<pre><code class="language-sh">http://127.0.0.1:8080/   
+</code></pre>
+
+<p>这样Dubbo就完成了对注册中心的监控设置  </p>
+
+<p><img src="https://github.com/lvwangbeta/Poplar/raw/master/doc/imgs/dubbo-admin.png" alt="dubbo-admin"/> </p>
+
+<h4 id="toc_15">4. 开发</h4>
+
+<p>微服务的提供者和消费者开发模式与以往的单体架构应用虽有不同，但逻辑关系大同小异，只是引入了注册中心需要消费者和提供者配合实现一次请求，这就必然需要在两者之间协商接口和模型，保证调用的可用。  </p>
+
+<p>文档以用户注册为例展示从渠道调用到服务提供者、消费者和公共模块发布的完整开发流程。</p>
+
+<h5 id="toc_16">4.1 公共</h5>
+
+<p>poplar-common作为公共模块定义了消费者和提供者都依赖的接口和模型， 微服务发布时才可以被正常访问到<br/><br/>
+定义用户服务接口  </p>
+
+<pre><code class="language-java">public interface UserService {
+    String register(String username, String email, String password);
+}
+</code></pre>
+
+<h5 id="toc_17">4.2 服务提供者</h5>
+
+<p><code>UserServiceImpl</code>实现了poplar-common中定义的<code>UserService</code>接口</p>
+
+<pre><code class="language-java">@Service
+public class UserServiceImpl implements UserService {
+
+    @Autowired
+    @Qualifier(&quot;userDao&quot;)
+    private UserDAO userDao;
+
+    public String register(String username, String email, String password){
+        if(email == null || email.length() &lt;= 0)
+            return Property.ERROR_EMAIL_EMPTY;
+
+        if(!ValidateEmail(email))
+            return Property.ERROR_EMAIL_FORMAT;
+        ...
+    }
+</code></pre>
+
+<p>可以看到这就是单纯的Spring Boot <code>Service</code>写法，但是<code>@Service</code>注解一定要引入Dubbo包下的，才可以让Dubbo扫描到该Service完成向Zookeeper注册：</p>
+
+<pre><code class="language-properties">dubbo.scan.basePackages = com.lvwangbeta.poplar.user.service
+
+dubbo.application.id=poplar-user-service
+dubbo.application.name=poplar-user-service
+
+dubbo.registry.address=zookeeper://127.0.0.1:2181
+
+dubbo.protocol.id=dubbo
+dubbo.protocol.name=dubbo
+dubbo.protocol.port=9001
+</code></pre>
+
+<h5 id="toc_18">4.3 服务消费者</h5>
+
+<p>前面已经说过，poplar-api作为API网关的同时还是服务消费者，组织提供者调用关系，完成请求链路。  </p>
+
+<p>API层使用<code>@Reference</code>注解来向注册中心请求服务，通过定义在poplar-common模块中的UserService接口实现与服务提供者RPC通信  </p>
+
+<pre><code class="language-java">@RestController
+@RequestMapping(&quot;/user&quot;)
+public class UserController {
+
+    @Reference
+    private UserService userService;
+
+    @ResponseBody
+    @RequestMapping(&quot;/register&quot;)
+    public Message register(String username, String email, String password) {
+        Message message = new Message();
+        String errno = userService.register(username, email, password);
+        message.setErrno(errno);
+        return message;
+    }
+} 
+</code></pre>
+
+<p><code>application.properties</code>配置</p>
+
+<pre><code class="language-properties">dubbo.scan.basePackages = com.lvwangbeta.poplar.api.controller
+
+dubbo.application.id=poplar-api
+dubbo.application.name=poplar-api
+
+dubbo.registry.address=zookeeper://127.0.0.1:2181 
+</code></pre>
+
+<h4 id="toc_19">5.服务Docker化</h4>
+
+<p>如果以上步骤都已做完，一个完整的微服务架构基本已搭建完成，可以开始coding业务代码了，为什么还要再做Docker化改造？首先随着业务的复杂度增高，可能会引入新的微服务模块，在开发新模块的同时提供一个稳定的外围环境还是很有必要的，如果测试环境不理想，可以自己启动必要的docker容器，节省编译时间；另外减少环境迁移带来的程序运行稳定性问题，便于测试、部署，为持续集成提供更便捷、高效的部署方式。</p>
+
+<p>在poplar根目录执行 <code>build.sh</code> 可实现poplar包含的所有微服务模块的Docker化和一键启动：</p>
+
+<pre><code class="language-sh">cd poplar &amp;&amp; ./build.sh
+</code></pre>
+
+<p>如果你有耐心，可看下如下两个小章节，是如何实现的</p>
+
+<h5 id="toc_20">5.1 构建镜像</h5>
+
+<p>Poplar采用了将各微服务与数据库、注册中心单独Docker化的部署模式，其中<code>poplar-dubbo-admin</code>是dubbo管理控制台，<code>poplar-api</code> <code>poplar-tag-service</code> <code>poplar-action-service</code> <code>poplar-feed-service</code> <code>poplar-user-service</code>是具体的服务化业务层模块，<code>poplar-redis</code>  <code>poplar-mysql</code>提供缓存与持久化数据支持，<code>poplar-zookeeper</code>为Zookeeper注册中心</p>
+
+<pre><code class="language-sh">poplar-dubbo-admin
+poplar-api
+poplar-tag-service
+poplar-action-service
+poplar-feed-service
+poplar-user-service
+poplar-redis
+poplar-mysql
+poplar-zookeeper
+</code></pre>
+
+<p><code>poplar-api</code> <code>poplar-tag-service</code> <code>poplar-action-service</code> <code>poplar-feed-service</code> <code>poplar-user-service</code>业务层模块可以在<code>pom.xml</code>中配置<code>docker-maven-plugin</code>插件构建，在configuration中指定工作目录、基础镜像等信息可省去Dockerfile：</p>
+
+<pre><code class="language-xml">&lt;plugin&gt;
+    &lt;groupId&gt;com.spotify&lt;/groupId&gt;
+    &lt;artifactId&gt;docker-maven-plugin&lt;/artifactId&gt;
+    &lt;version&gt;1.0.0&lt;/version&gt;
+    &lt;configuration&gt;
+        &lt;imageName&gt;lvwangbeta/poplar&lt;/imageName&gt;
+        &lt;baseImage&gt;java&lt;/baseImage&gt;
+        &lt;maintainer&gt;lvwangbeta lvwangbeta@163.com&lt;/maintainer&gt;
+        &lt;workdir&gt;/poplardir&lt;/workdir&gt;
+        &lt;cmd&gt;[&quot;java&quot;, &quot;-version&quot;]&lt;/cmd&gt;
+        &lt;entryPoint&gt;[&quot;java&quot;, &quot;-jar&quot;, &quot;${project.build.finalName}.jar&quot;]&lt;/entryPoint&gt;
+        &lt;skipDockerBuild&gt;false&lt;/skipDockerBuild&gt;
+        &lt;resources&gt;
+            &lt;resource&gt;
+                &lt;targetPath&gt;/poplardir&lt;/targetPath&gt;
+                &lt;directory&gt;${project.build.directory}&lt;/directory&gt;
+                &lt;include&gt;${project.build.finalName}.jar&lt;/include&gt;
+            &lt;/resource&gt;
+        &lt;/resources&gt;
+    &lt;/configuration&gt;
+&lt;/plugin&gt;
+</code></pre>
+
+<p>如果想让某个子项目不执行docker构建，可设置子项目pom.xml的<code>skipDockerBuild</code>为<code>true</code>，如<code>poplar-common</code>为公共依赖包，不需要单独打包成独立镜像:</p>
+
+<pre><code class="language-xml">&lt;skipDockerBuild&gt;true&lt;/skipDockerBuild&gt;
+</code></pre>
+
+<p>在poplar项目根目录执行如下命令，完成整个项目的业务层构建：</p>
+
+<pre><code class="language-sh">mvn package -Pdocker  -Dmaven.test.skip=true docker:build
+</code></pre>
+
+<pre><code class="language-log">[INFO] Building image lvwangbeta/poplar-user-service
+Step 1/6 : FROM java
+ ---&gt; d23bdf5b1b1b
+Step 2/6 : MAINTAINER lvwangbeta lvwangbeta@163.com
+ ---&gt; Running in b7af524b49fb
+ ---&gt; 58796b8e728d
+Removing intermediate container b7af524b49fb
+Step 3/6 : WORKDIR /poplardir
+ ---&gt; e7b04b310ab4
+Removing intermediate container 2206d7c78f6b
+Step 4/6 : ADD /poplardir/poplar-user-service-2.0.0.jar /poplardir/
+ ---&gt; 254f7eca9e94
+Step 5/6 : ENTRYPOINT java -jar poplar-user-service-2.0.0.jar
+ ---&gt; Running in f933f1f8f3b6
+ ---&gt; ce512833c792
+Removing intermediate container f933f1f8f3b6
+Step 6/6 : CMD java -version
+ ---&gt; Running in 31f52e7e31dd
+ ---&gt; f6587d37eb4d
+Removing intermediate container 31f52e7e31dd
+ProgressMessage{id=null, status=null, stream=null, error=null, progress=null, progressDetail=null}
+Successfully built f6587d37eb4d
+Successfully tagged lvwangbeta/poplar-user-service:latest
+[INFO] Built lvwangbeta/poplar-user-service
+[INFO] ------------------------------------------------------------------------
+[INFO] BUILD SUCCESS
+[INFO] ------------------------------------------------------------------------ 
+</code></pre>
+
+<h5 id="toc_21">5.2  启动运行容器</h5>
+
+<p>由于poplar包含的容器过多，在此为其创建自定义网络<code>poplar-netwotk</code></p>
+
+<pre><code class="language-sh">docker network create --subnet=172.18.0.0/16 poplar-network
+</code></pre>
+
+<p>运行以上构建的镜像的容器，同时为其分配同网段IP</p>
+
+<p>启动Zookeeper注册中心</p>
+
+<pre><code class="language-sh">docker run --name poplar-zookeeper --restart always -d  --net poplar-network --ip 172.18.0.6  zookeeper 
+</code></pre>
+
+<p>启动MySQL</p>
+
+<pre><code class="language-sh">docker run --net poplar-network --ip 172.18.0.8  --name poplar-mysql -p 3307:3306 -e MYSQL_ROOT_PASSWORD=123456 -d  lvwangbeta/poplar-mysql
 
 </code></pre>
 
-<p>刚写 go 协程的 coder, 在写这个代码的时候会被告知不要忘了 <code>time.Sleep(time.Second)</code>, 否则看不到输出 <code>hello go</code>, 其次, <code>hello go</code> 与 <code>hello main</code> 的顺序也和 swoole 中的协程不一样.</p>
+<p>启动Redis</p>
 
-<p>原因就在于 swoole 和 go 中, <strong>实现协程调度的模型不同</strong>.</p>
+<pre><code class="language-sh">docker run --net poplar-network --ip 172.18.0.9 --name poplar-redis -p 6380:6379 -d redis
+</code></pre>
 
-<p>上面 go 代码的执行过程:</p>
+<p>启动业务服务</p>
 
-<ul>
-<li>  运行 go 代码, 系统启动一个新进程</li>
-<li>  查找 <code>package main</code>, 然后执行其中的 <code>func mian()</code></li>
-<li>  <strong>遇到协程, 交给协程调度器执行</strong></li>
-<li>  继续向下执行, 输出 <code>hello main</code></li>
-<li>  如果不添加 <code>time.Sleep(time.Second)</code>, main 函数执行完, 程序结束, 进程退出, 导致调度中的协程也终止</li>
-</ul>
+<pre><code class="language-sh">docker run --net poplar-network --ip 172.18.0.2 --name=poplar-user-service -p 8082:8082 -t lvwangbeta/poplar-user-service
 
-<p>go 中的协程, 使用的 MPG 模型:</p>
+docker run --net poplar-network --ip 172.18.0.3 --name=poplar-feed-service -p 8083:8083 -t lvwangbeta/poplar-feed-service
 
-<ul>
-<li>  M 指的是 Machine, 一个 M 直接关联了一个内核线程</li>
-<li>  P 指的是 processor, 代表了 M 所需的上下文环境, 也是处理用户级代码逻辑的处理器</li>
-<li>  G 指的是 Goroutine, 其实本质上也是一种轻量级的线程</li>
-</ul>
+docker run --net poplar-network --ip 172.18.0.4 --name=poplar-action-service -p 8084:8084 -t lvwangbeta/poplar-action-service
 
-<p><img src="https://upload-images.jianshu.io/upload_images/567399-d400f4b192f3dc48.png" alt=""/></p>
+docker run --net poplar-network --ip 172.18.0.10 --name=poplar-api -p 8080:8080 -t lvwangbeta/poplar-api
 
-<p>而 swoole 中的协程调度使用 <strong>单进程模型</strong>, 所有协程都是在当前进程中进行调度, 单进程的好处也很明显 -- <strong>简单 / 不用加锁 / 性能也高</strong>.</p>
+</code></pre>
 
-<p>无论是 go 的 MPG 模型, 还是 swoole 的 单进程模型, 都是对 CSP 理论 的实现.</p>
+<p><img src="https://github.com/lvwangbeta/Poplar/raw/master/doc/imgs/dockerps.png" alt="dockerps"/></p>
 
-<blockquote>
-<p>CSP 通信方式, 在 1985 年时的论文就已经有了, 做理论研究的人, 如果没有能提前几年, 十几年甚至几十年的大胆假设, 可能很难提高了.</p>
-</blockquote>
-
-<h2 id="toc_3">写在最后</h2>
-
-<p>今天从 <code>go()</code> 出发, 得以一瞥协程世界, 协程的世界里还有很多很有意思的东西, 需要我们去发现. 比如:</p>
-
-<ul>
-<li>  我们普通版的代码是当前进程里执行的, 只是单个进程, 可我们现在可能有了很多协程, 会不会有什么奇遇呢?</li>
-</ul>
-
-<p>还有一个细节: swoole 中有 <code>Co::sleep()</code> 和 <code>sleep()</code> 2 个方法的, 而 go 中只有 <code>time.Sleep()</code> 一个方法?</p>
-
-<p>这是 swoole 协程需要经历的一个阶段 (毕竟 go 快 10 年了), 还不够 <strong>智能的判断 IO 阻塞</strong>, 所以上面也使用了相应的协程版 redis <code>co\Redis()</code> -- 你得使用配套协程版, 才能达到协程调度的效果.</p>
-
-<p>如果对协程的发展阶段感兴趣, 可以阅读下面这篇文章:</p>
-
-<ul>
-<li>  <a href="https://my.oschina.net/yyzybb/blog/1817226">Why c++ coroutine？Why libgo？</a>: 关于协程全景式的概述的, 推荐花时间读一读</li>
-</ul>
-
-<p>想解锁 swoole 协程的更多姿势:</p>
-
-<ul>
-<li>  <a href="https://segmentfault.com/a/1190000013239349">Swoole 2.1 正式版发布，协程 + 通道带来全新的 PHP 编程模式</a></li>
-<li>  <a href="https://segmentfault.com/a/1190000015291606">Swoole 4.0 正式版，面向生产环境的 PHP 协程引擎</a></li>
-<li>  <a href="https://github.com/ThinkDevelopers/PHPConChina/blob/master/PHPCON2018/Swoole4-%E5%85%A8%E6%96%B0%E7%9A%84PHP%E7%BC%96%E7%A8%8B%E6%A8%A1%E5%BC%8F_%E9%9F%A9%E5%A4%A9%E5%B3%B0_PHPCON2018.pdf">Swoole4 - 全新的 PHP 编程模式_韩天峰_PHPCON2018</a></li>
-</ul>
-
-<p>最后, <a href="https://gitee.com/daydaygo/coding/blob/master/php/swoole/co.php">本期示例代码可以从我的开源项目中获取, 请享用</a></p>
+<p>至此，poplar项目的后端已完整的构建和启动，对外提供服务，客户端（无论是Web还是App）看到只有一个统一的API。</p>
 
                         
                       </div>
@@ -550,10 +726,10 @@ hello go
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/6/16</span>
+                    <span class="date">2018/7/15</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Cocurrency.html'>Cocurrency</a></span>
+          					    <span class="posted-in"><a href='Microservice.html'>Microservice</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -643,31 +819,31 @@ hello go
 	      
 		      
 			      <li class="post">
-			        <a href="15389311738065.html">重构到更深层的模型</a>
+			        <a href="15459058392039.html">Reliable Domain Events</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389278377243.html">IAM of Google Cloud</a>
+			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389224951575.html">RSocket, a New Application Network Protocol for Reactive Applications, Announced at SpringOne</a>
+			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389220103546.html">如何形象地描述RxJava中的背压和流控机制？</a>
+			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389214670417.html">Modeling Uncertainty with Reactive DDD</a>
+			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
 			      </li>
 		     
 		  

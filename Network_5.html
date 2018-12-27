@@ -105,452 +105,374 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15301811361753.html">
+                <a class="clearlink" href="15301811967181.html">
                 
-                  <h1>架构设计：负载均衡层设计方案（5）——LVS单节点安装</h1>
+                  <h1>架构设计：负载均衡层设计方案（6）——Nginx + Keepalived构建高可用的负载层</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://blog.csdn.net/yinwenjie/article/details/47010569">https://blog.csdn.net/yinwenjie/article/details/47010569</a></p>
+<p><a href="https://blog.csdn.net/yinwenjie/article/details/47130609">https://blog.csdn.net/yinwenjie/article/details/47130609</a></p>
 </blockquote>
 
 <h1 id="toc_0"><a></a>1、概述</h1>
 
-<p>上篇文章《架构设计：负载均衡层设计方案（4）——LVS 原理》（<a href="http://blog.csdn.net/yinwenjie/article/details/46845997">http://blog.csdn.net/yinwenjie/article/details/46845997</a>），我们介绍了 LVS 的工作模式，和每一种模式的具体工作过程。这篇文章中，我们将介绍单一 LVS 节点的安装方式。比起上一篇文章，这一片要提到的安装和配置就是非常简单的了，只要您了解原理，实践就是从容的事情。</p>
+<p>前两遍文章中，我们一直在说后文要介绍 Nginx + Keepalived 的搭建方式。这篇文章开始，我们就来兑现前文的承诺，后续的两篇文章我们将介绍 Nginx + Keepalived 和 LVS + Keepalived 搭建高可用的负载层系统。如果你还不了解 Nginx 和 LVS 的相关知识，请参见我之前的两篇文章《架构设计：负载均衡层设计方案（2）——Nginx 安装》（<a href="http://blog.csdn.net/yinwenjie/article/details/46620711">http://blog.csdn.net/yinwenjie/article/details/46620711</a>）、《架构设计：负载均衡层设计方案（4）——LVS 原理》（<a href="http://blog.csdn.net/yinwenjie/article/details/46845997">http://blog.csdn.net/yinwenjie/article/details/46845997</a>）</p>
 
-<p>您可以在您的电脑上使用 VMware 虚拟机，按照下面介绍的过程一步一步实践。我们将采用两台虚拟机，一台作为 LVS 节点，另外一台安装了 Nginx 的服务器作为 Real Server 节点。</p>
+<h1 id="toc_1"><a></a>2、准备工作</h1>
 
-<h1 id="toc_1"><a></a>2、LVS-NAT 模式安装</h1>
+<h2 id="toc_2"><a></a>2.1、准备两台独立工作的 Nginx 系统</h2>
 
-<h2 id="toc_2"><a></a>2.1、准备工作——LVS Server：</h2>
-
-<p>LVS Server：LSV Server 有两张网卡。</p>
+<p>准备两台 Nginx 的主机，如果您不知道为什么需要准备两台，没关系，准备就行。保证两台 Nginx 主机能够被外网访问。在我这里，安装两台 Nginx 的虚拟机 IP 地址分别是：</p>
 
 <ul>
-<li>  eth0：192.168.100.10：这张网卡对应一个封闭的内网，不能访问外网资源，外网也不能直接通过这个 IP 访问这台主机</li>
-<li><p>eth1：192.168.220.100：这张网卡设置的 IP 可以访问外网，也可以被外网访问。eth1 的网关：192.168.220.1。</p>
+<li>  Nginx VM1：192.168.61.129:80</li>
+<li>  Nginx VM2：192.168.61.130:80</li>
+</ul>
 
-<pre><code>以下是设置的eth0    ip信息，
-[root@lvs1 ~]# cat /etc/sysconfig/network-scripts/ifcfg-eth0
-DEVICE=&quot;eth0&quot;
-BOOTPROTO=&quot;static&quot;
-HWADDR=&quot;00:0C:29:3E:4A:4F&quot;
-ONBOOT=&quot;yes&quot;
-TYPE=&quot;Ethernet&quot;
-IPADDR=&quot;192.168.100.10&quot;
-NETMASK=&quot;255.255.255.0&quot;
-====================================
-以下是设置的eth1  ip信息
-[root@lvs1 ~]# cat /etc/sysconfig/network-scripts/ifcfg-eth1
-DEVICE=&quot;eth1&quot;
-BOOTPROTO=&quot;static&quot;
-HWADDR=&quot;00:0C:29:3E:4A:59&quot;
-ONBOOT=&quot;yes&quot;
-TYPE=&quot;Ethernet&quot;
-IPADDR=&quot;192.168.220.100&quot;
-NETMASK=&quot;255.255.255.0&quot;
-GATEWAY=&quot;192.168.220.1&quot;
+<p>访问相关的地址，确保两台 Nginx 都是可用的：</p>
+
+<ul>
+<li><p>VM1：<br/>
+<img src="https://img-blog.csdn.net/20150730141119869" alt=""/></p></li>
+<li><p>VM2：<br/>
+<img src="https://img-blog.csdn.net/20150730141305112" alt=""/></p></li>
+</ul>
+
+<p>Nginx 的安装在我的前文《架构设计：负载均衡层设计方案（2）——Nginx 安装》（<a href="http://blog.csdn.net/yinwenjie/article/details/46620711">http://blog.csdn.net/yinwenjie/article/details/46620711</a>）中已经进行了详细的讲解，所以这里的讲解就一笔带过。</p>
+
+<h2 id="toc_3"><a></a>2.2、再分别独立安装 Keepalived 系统</h2>
+
+<p>我们的目标是 “<strong>在一台工作的 Nginx 崩溃的情况下，系统能够检测到，并自动将请求切换到另外一台备份的 Nginx 服务器上</strong>”。所以，之前安装的两台 Nginx，一台是 Master 服务器是主要的工作服务器，另一台是备份服务器，在 Master 服务器出现问题后，由后者接替其工作。如下图所示（外网的请求使用一个由 keepalived 控制的虚拟的浮动 IP 进行访问）：</p>
+
+<p><img src="https://img-blog.csdn.net/20150730143806220" alt=""/></p>
+
+<ul>
+<li><p>请到 <a href="http://www.keepalived.org">www.keepalived.org</a> 下载 keepalived 的稳定版本，我下载的是 1.2.17 版本。</p></li>
+<li><p>解压，并且安装。注意，我在这里制定了 perfix 参数，指定安装位置，这是为了我自己便于管理。您在安装的时候，可以根据自己的情况来决定是不是加这个参数：</p>
+
+<pre><code>tar -zxvf keepalived-1.2.17.tar.gz
+
+./configure --perfix=/usr/keepalived-1.2.17
+
+make &amp; make install 
+
+</code></pre></li>
+<li><p>如果您不是安装到默认路径，那么为了将 keepalived 做成系统服务，您需要拷贝一些文件到指定的路径下，如下：</p>
+
+<pre><code>cp /usr/keepalived-1.2.17/etc/sysconfig/keepalived  /etc/sysconfig/keepalived
+
+cp /usr/keepalived-1.2.17/sbin/keepalived /usr/sbin/keepalived
+
+cp /usr/keepalived-1.2.17/etc/rc.d/init.d/keepalived  /etc/rc.d/init.d/keepalived
+
+mkdir /etc/keepalived
+
+cp /usr/keepalived-1.2.17/etc/keepalived/keepalived.conf /etc/keepalived/keepalived.conf
+
+</code></pre></li>
+<li><p>然后您可以将 keepalived 做成服务了：</p>
+
+<pre><code>/etc/rc.d/init.d/keepalived
+
+chkconfig keepalived on
 
 </code></pre></li>
 </ul>
 
-<p>记得设置完成后，要重启 network 服务：</p>
+<h1 id="toc_4"><a></a>3、检查 Nginx 状态</h1>
 
-<pre><code>[root@lvs1 ~]# service network restart
+<p>在正式介绍 Nginx + Keepalived 的配置前，我们首先介绍一下如何检查 Nginx 的状态。是的，这是为下一小节做准备。<strong>我们只有能够正确检查 Nginx 的状态，才说得上在 Nginx 节点出现问题的情况下，切换到另一台 Nginx 上接替其工作</strong>。</p>
 
-</code></pre>
-
-<p>ping ping 更健康（说明到外网的网管工作是正常的）：</p>
-
-<pre><code>[root@lvs1 ~]# ping 192.168.220.1
-PING 192.168.220.1 (192.168.220.1) 56(84) bytes of data.
-64 bytes from 192.168.220.1: icmp_seq=1 ttl=128 time=0.447 ms
-64 bytes from 192.168.220.1: icmp_seq=2 ttl=128 time=0.154 ms
-
-</code></pre>
-
-<p>另外还可以通过 route 命令检查：</p>
-
-<pre><code>[root@lvs1 ~]# route
-Kernel IP routing table
-Destination     Gateway         Genmask         Flags Metric Ref    Use Iface
-192.168.100.0   *               255.255.255.0   U     1      0        0 eth0
-192.168.220.0   *               255.255.255.0   U     1      0        0 eth1
-default         192.168.220.1   0.0.0.0         UG    0      0        0 eth1
-
-</code></pre>
-
-<p>注意，route 表中有一项 eth1 的 default 的信息，指向 192.168.220.1。说明路由配置是正确的。</p>
-
-<h2 id="toc_3"><a></a>2.2、准备工作——Real Server：</h2>
-
-<p>Real Server：Real Server 有一张网卡，在一个封闭的内网环境中。</p>
+<p>Nginx 为什么会停止响应呢？在我的工作经验中，无非有以下几种情况：</p>
 
 <ul>
-<li><p>eth0:192.168.100.11：这样 LVS Server 和 Real Server 就组成了一个相对封闭的局域网络。注意按照我们介绍的 NAT 原理，Real Server 的 eth0 的默认网关要设置成 Lvs Server：192.168.100.10.</p></li>
-<li><p>在 Real Server 上运行了一个 Nginx 程序，在 80 端口上。这样以便在后续的过程中，测试 LVS-NAT 的工作是否正常。</p></li>
+<li><p>Nginx 的所有进程被强行终止（或管理进程）。<br/>
+这种情况，是我们需要检查和切换的。无论什么情况下进程被终止了，如果它不能重启，我们就要切换到备机。</p></li>
+<li><p>Nginx 日志盘的挂载点崩溃或者磁盘写满。<br/>
+这个也是我们需要检查和切换的。</p></li>
+<li><p>Nginx 已经达到设置的最大连接数，暂时停止响应。<br/>
+这种情况下，我们不能进行备机切换，因为通过 VIP:192.168.61.100 连接过来的用户请求比较多（在我们优化参数后，可以达到 65535 / 4 的数量），一旦我们进行备机切换，这些用户请求将全部异常。这个问题的解决需要靠增加负载机器，而不是主备切换。</p></li>
+<li><p>Nginx 物理机异常关机。<br/>
+这个肯定是需要进行检查和切换的。</p></li>
 </ul>
 
-<p>以下是设置的 Real Server eth0 的 IP 信息：</p>
+<p>我们来看一段 Linux 脚本：</p>
 
-<pre><code>[root@vm1 ~]# cat /etc/sysconfig/network-scripts/ifcfg-eth0 
-DEVICE=&quot;eth0&quot;
-BOOTPROTO=&quot;static&quot;
-HWADDR=&quot;00:0C:29:45:04:32&quot;
-ONBOOT=&quot;yes&quot;
-TYPE=&quot;Ethernet&quot;
-IPADDR=192.168.100.11
-NETMASK=255.255.255.0
-GATEWAY=&quot;192.168.100.10&quot;
+<pre><code>#!/bin/sh
+if [ $(ps -C nginx --no-header | wc -l) -eq 0 ]; then
+    /usr/nginx-1.6.2/sbin/nginx
+fi
 
-</code></pre>
-
-<p>一定注意 Real Server 的网管要设置到 LVS 的 IP：192.168.100.10。接着，看看 Nginx 是不是工作正常的：</p>
-
-<p><img src="https://img-blog.csdn.net/20150725111742203" alt=""/></p>
-
-<p>当然，同样的 ping ping 更健康：</p>
-
-<pre><code>[root@vm1 ~]# ping 192.168.100.10
-PING 192.168.100.10 (192.168.100.10) 56(84) bytes of data.
-64 bytes from 192.168.100.10: icmp_seq=1 ttl=64 time=0.259 ms
-64 bytes from 192.168.100.10: icmp_seq=2 ttl=64 time=0.215 ms
-64 bytes from 192.168.100.10: icmp_seq=3 ttl=64 time=0.227 ms
+sleep 2
+if [ $(ps -C nginx --no-header | wc -l) -eq 0 ]; then
+    service keepalived stop
+fi
 
 </code></pre>
 
-<p>另外一个检查方式，也可以通过 route 命令：</p>
+<p>我们大致讲解一下 “ps -C nginx –no-header | wc -l” 这个命令：<br/>
+- ps 这个命令用来进行 Linux 中进程相关的查询，-C 意思是按照进程名称进行查询。查询出来后的结果如下：</p>
 
-<pre><code>[root@vm1 ~]# route
-Kernel IP routing table
-Destination     Gateway         Genmask         Flags Metric Ref    Use Iface
-192.168.100.0   *               255.255.255.0   U     1      0        0 eth0
-default         192.168.100.10  0.0.0.0         UG    0      0        0 eth0
-
-</code></pre>
-
-<p>注意，默认的路由指向 192.168.100.10。<br/>
-<strong>完成准备工作后，我们可以开始安装和配置 LVS 了。</strong></p>
-
-<h2 id="toc_4"><a></a>2.3、开始安装和配置 LVS-NAT 模式：</h2>
-
-<p>ipvsadm 是一个 LVS 的管理程序。我们队 LVS 的配置都是通过这个管理程序进行实现的。首先我们要安装 ipvsadm：</p>
-
-<pre><code>yum -y install ipvsadm
+<pre><code>[root@vm2 ~]# ps -C nginx
+  PID TTY          TIME CMD
+ 3374 ?        00:00:00 nginx
+ 3375 ?        00:00:01 nginx
 
 </code></pre>
-
-<p>然后开始配置。首先我们要设置 LVS 机器支持 IP 转发功能。注意默认 IP 转发功能是关闭的，重启机器后，又会关闭：</p>
-
-<pre><code>[root@lvs1 ~]# echo 1 &gt;&gt; /proc/sys/net/ipv4/ip_forward
-
-</code></pre>
-
-<p>然后我们查看一下，是否改写成功：</p>
-
-<pre><code>[root@lvs1 ~]# cat /proc/sys/net/ipv4/ip_forward 
-1
-
-</code></pre>
-
-<p>注意，如果您使用 vim 或者 vi 命令，改写文件，是不会成功的。因为这个文件存在于内存。不在硬盘上。所以只能通过 echo 这样的命令改写。</p>
-
-<p>接下来执行如下的命令：</p>
-
-<pre><code>[root@lvs1 ~]# ipvsadm -At 192.168.220.100:80 -s rr
-[root@lvs1 ~]# ipvsadm -at 192.168.220.100:80 -r 192.168.100.11 -m
-
-</code></pre>
-
-<p>我们来解释一下其中的参数：</p>
-
-<pre><code>-A --add-service 在内核的虚拟服务器表中添加一条新的虚拟服务器记录。也就是增加一台新的虚拟服务器。
--t --tcp-service service-address 说明虚拟服务器提供的是tcp 的服务。
--s --scheduler scheduler 使用的调度算法，可选项包括：rr|wrr|lc|wlc|lblc|lblcr|dh|sh|sed|nq（关于调度算法我们在上篇文章中已经详细介绍了）
--r --real-server server-address 真实的服务器[Real-Server:port]。
--m --masquerading 指定LVS 的工作模式为NAT 模式。
-
-</code></pre>
-
-<p>当然 ipvsadm 还包括很多参数，后面慢慢讲，然后再本文章的最后部分，会给出一个比较完整的参数汇总。最后我们测试一下：</p>
-
-<p><img src="https://img-blog.csdn.net/20150725115900158" alt=""/></p>
-
-<p>我们在相对于 Real Server 的外网，通过 192.168.220.100 的 LVS Server IP 访问到了 Real Server 上的 Nginx 服务。安装和配置成功。</p>
-
-<h2 id="toc_5"><a></a>2.4、关于 iptables 和重启服务的说明</h2>
-
-<p>在配置 LVA-NAT 过程中，建议关闭 LVS 和 Real Server 的防火墙服务。这样可以避免不必要的错误发生，增加一次配置成功的几率。但是正常生产环境中，LVS 的防火墙根据实际情况最好还是要打开。</p>
-
-<p><strong>请注意，刚才使用 ipvsadm 配置的信息，在 LVS 服务器重启后，就会失效。包括 ip_forward 的配置</strong>。所以，最好制作一个脚本文件，并加入到 / etc/profile 中：</p>
-
-<pre><code>vim /usr/lvsshell.sh
-
-#!/bin/bash
-echo 1 &gt; /proc/sys/net/ipv4/ip_forward 
-ipvsadm -C
-ipvsadm -At 192.168.220.100:80 -s rr
-ipvsadm -at 192.168.220.100:80 -r 192.168.100.11 -m
-
-</code></pre>
-
-<h1 id="toc_6"><a></a>3、LVS-DR 模式安装</h1>
-
-<h2 id="toc_7"><a></a>3.1、准备工作——LVS Server</h2>
-
-<p>为了让您了解 LVS 的另外设置方式，本次我们使用 VIP 的方式，而不是两张网卡的方式（当然您也可以用两张网卡的方式）。VIP 的方式是后面我们将讲到的 LVS + Keepalived 组合工作模式的常用方式。所谓 VIP 就死虚拟 IP，是指这个 IP 不会固定捆绑到某一个网卡设备，而是通过 ifconfig 命令绑定，并在 “适当时候” 这种绑定关系会随之变化：</p>
-
-<p>DIP：192.168.220.137<br/>
-VIP：192.168.220.100</p>
-
-<p>首先我们看看在没有设置 VIP 之前，LVS 主机上的 IP 信息：</p>
-
-<pre><code>[root@lvs1 ~]# ifconfig 
-eth1      Link encap:Ethernet  HWaddr 00:0C:29:3E:4A:59  
-          inet addr:192.168.220.137  Bcast:192.168.220.255  Mask:255.255.255.0
-          inet6 addr: fe80::20c:29ff:fe3e:4a59/64 Scope:Link
-          UP BROADCAST RUNNING MULTICAST  MTU:1500  Metric:1
-          RX packets:2612 errors:0 dropped:0 overruns:0 frame:0
-          TX packets:117 errors:0 dropped:0 overruns:0 carrier:0
-          collisions:0 txqueuelen:1000 
-          RX bytes:159165 (155.4 KiB)  TX bytes:8761 (8.5 KiB)
-
-lo        Link encap:Local Loopback  
-          inet addr:127.0.0.1  Mask:255.0.0.0
-          inet6 addr: ::1/128 Scope:Host
-          UP LOOPBACK RUNNING  MTU:16436  Metric:1
-          RX packets:210 errors:0 dropped:0 overruns:0 frame:0
-          TX packets:210 errors:0 dropped:0 overruns:0 carrier:0 
-          collisions:0 txqueuelen:0 
-          RX bytes:16944 (16.5 KiB)  TX bytes:16944 (16.5 KiB)
-
-</code></pre>
-
-<p>然后我们来设置 VIP 信息：</p>
-
-<pre><code>[root@lvs1 ~]# ifconfig eth1:0 192.168.220.100 broadcast 192.168.220.100 netmask 255.255.255.255 up
-[root@lvs1 ~]# route add -host 192.168.220.100 dev eth1:0
-
-</code></pre>
-
-<p>路由表会有新的路由信息：</p>
-
-<pre><code>[root@lvs1 ~]# route
-Kernel IP routing table
-Destination     Gateway         Genmask         Flags Metric Ref    Use Iface
-192.168.220.100 *               255.255.255.255 UH    0      0        0 eth1
-192.168.100.0   *               255.255.255.0   U     1      0        0 eth0
-192.168.220.0   *               255.255.255.0   U     1      0        0 eth1
-default         192.168.220.1   0.0.0.0         UG    0      0        0 eth1
-
-</code></pre>
-
-<p>这时，通过一个外网 IP，可以 ping 通这个 VIP（下面这个 DOS 系统是 VM 的母机）：</p>
-
-<pre><code>C:\Users\yinwenjie&gt;  ping 192.168.220.100
-正在 Ping 192.168.220.100 具有 32 字节的数据:
-来自 192.168.220.100 的回复: 字节=32 时间&lt;1ms TTL=64
-来自 192.168.220.100 的回复: 字节=32 时间&lt;1ms TTL=64
-
-</code></pre>
-
-<p>以上，我们完成了 LVS 主机设置 LVS-DR 工作模式的准备工作。注意：</p>
 
 <ul>
-<li>  <strong>在您设置过程中，防火前最好关闭，但在正式生产环境中，LVS 的防火强最好打开。</strong></li>
-<li>  <strong>VIP 信息在 LVS 主机重启后，会消失。所以您最好将设置 VIP 的命令做成一个脚本。</strong></li>
+<li><p>如果要去掉统计出来的结果表的头部，那么要使用 –no-header 参数，加上参数后，查询结果如下：</p>
+
+<pre><code>[root@vm2 ~]# ps -C nginx  --no-header
+ 3374 ?        00:00:00 nginx
+ 3375 ?        00:00:01 nginx
+
+</code></pre></li>
+<li><p>“|”，这是 Linux 中的管道流命令，将上一个命令的输出结果作为下一个命令的输入。</p></li>
+<li><p>wc 统计命令，-l 参数，代表按行数进行统计。所以整个命令的输出结果为：</p>
+
+<pre><code>[root@vm2 ~]# ps -C nginx --no-header | wc -l
+2
+
+</code></pre></li>
 </ul>
 
-<h2 id="toc_8"><a></a>3.2、准备工作——Real Server</h2>
+<p>清楚了其中最关键的命令，我们再来讲解一下整个脚本的含义：<br/>
+第一个判断说明的是，如果当前 nginx 的进程数量 == 0，那么执行 nginx 的启动命令，试图重新启动 nginx；接下来等待 2 秒（这是为了给 nginx 一定的启动时间），然后再次查看 Nginx 的进程数量，如果仍然 == 0，那么停止这台机器的 keepalived 服务，以便备用的 Keepalived 节点检查到 Keepalived 已经停止这个事件，并将浮动 IP 切换到备用服务器上。</p>
 
-<p>RIP：192.168.220.132</p>
+<p><strong>注意，这段脚本是和我机器上的 Nginx 安装路径、Keepalived 服务的状态有关的，您如果要用的话，请进行相应的更改</strong>。</p>
 
-<p>真实服务器的准备工作，需要保证真实服务器能够访问外网网关，并且保证由 LVS 改写的报文能够被 Real Server 处理（请参见我的上一篇介绍 LVS 原理的博文），这就需要做一个回环 IP。首先我们看看没有开始设置之前的 IP 信息：</p>
+<h1 id="toc_5"><a></a>4、Nginx + Keepalived 最简配置</h1>
 
-<pre><code>[root@localhost ~]# ifconfig 
-eth0      Link encap:Ethernet  HWaddr 00:0C:29:FC:91:FC  
-          inet addr:192.168.220.132  Bcast:192.168.220.255  Mask:255.255.255.0
-          inet6 addr: fe80::20c:29ff:fefc:91fc/64 Scope:Link
-          UP BROADCAST RUNNING MULTICAST  MTU:1500  Metric:1
-          RX packets:2384 errors:0 dropped:0 overruns:0 frame:0
-          TX packets:1564 errors:0 dropped:0 overruns:0 carrier:0
-          collisions:0 txqueuelen:1000 
-          RX bytes:1551652 (1.4 MiB)  TX bytes:144642 (141.2 KiB)
+<h2 id="toc_6"><a></a>4.1、请再次确认前提</h2>
 
-lo        Link encap:Local Loopback  
-          inet addr:127.0.0.1  Mask:255.0.0.0
-          inet6 addr: ::1/128 Scope:Host
-          UP LOOPBACK RUNNING  MTU:65536  Metric:1
-          RX packets:44 errors:0 dropped:0 overruns:0 frame:0
-          TX packets:44 errors:0 dropped:0 overruns:0 carrier:0
-          collisions:0 txqueuelen:0 
-          RX bytes:3361 (3.2 KiB)  TX bytes:3361 (3.2 KiB)
+<p>（首先，为了保证不会出现额外的问题，请首先关闭防火墙，当然正式环境里面，防火墙不能关闭）</p>
 
-</code></pre>
-
-<p>使用 route 命令，查看原始 route 信息：</p>
-
-<pre><code>[root@localhost ~]# route
-Kernel IP routing table
-Destination     Gateway         Genmask         Flags Metric Ref    Use Iface
-192.168.220.0   *               255.255.255.0   U     1      0        0 eth0
-default         192.168.220.1   0.0.0.0         UG    0      0        0 eth0
-
-</code></pre>
-
-<p>另外，这台 Real Server 上有一个 Nginx，以保证我们观测 LVS-DR 的运行情况。我们在外网使用 192.168.220.132 这个 IP，能够访问到 Nginx 的页面：</p>
-
-<p><img src="https://img-blog.csdn.net/20150726085859705" alt=""/></p>
-
-<p>接下来，我们开始设置 Real Server 上的回环 IP，首先关闭这台机器进行 ARP 查询的功能，否则，Real Server 会在路由器或者交换机上去查询 192.168.220.100 这个 IP 对应的 MAC 地址（注意，以下的信息都会被还原）：</p>
-
-<pre><code>echo &quot;1&quot; &gt;/proc/sys/net/ipv4/conf/lo/arp_ignore
-echo &quot;2&quot; &gt;/proc/sys/net/ipv4/conf/lo/arp_announce
-echo &quot;1&quot; &gt;/proc/sys/net/ipv4/conf/all/arp_ignore
-echo &quot;2&quot; &gt;/proc/sys/net/ipv4/conf/all/arp_announce
-
-</code></pre>
-
-<p>然后可以设置回环 IP 了：</p>
-
-<pre><code>[root@vm3 ~]# ifconfig lo:0 192.168.220.100 broadcast 192.168.220.100 netmask 255.255.255.255 up
-[root@vm3 ~]# route add -host 192.168.220.100 dev lo:0
-
-</code></pre>
-
-<p>检查新的路由信息：</p>
-
-<pre><code>[root@vm3 ~]# route 
-Kernel IP routing table
-Destination     Gateway         Genmask         Flags Metric Ref    Use Iface
-192.168.220.100 *               255.255.255.255 UH    0      0        0 lo
-192.168.220.0   *               255.255.255.0   U     1      0        0 eth0
-default         192.168.220.1   0.0.0.0         UG    0      0        0 eth0
-
-</code></pre>
-
-<p>以上设置完成。<strong>完成后，您需要通过 ping 命令，检查一下网关是否可用（最好可以瓶 ping 一下外网的某个地址，例如 163.com）。LVS-DR 模式下，Real Server 是直接向请求方返回结果，所以一定要保证网关时可用的。</strong></p>
-
-<h2 id="toc_9"><a></a>3.3、开始安装和配置 LVS-DR 模式</h2>
-
-<p>在验证了 LVS Server 和 Real Server 都准备好以后，就可以进行 LVS-DR 模式的设置了。LVS 管理软件 ipvsadm 的安装我们就不敷述了，在 LVS-NAT 的小结中有关于 LVS 管理软件安装的介绍。</p>
-
-<pre><code>[root@lvs1 ~]# echo 1 &gt; /proc/sys/net/ipv4/ip_forward
-[root@lvs1 ~]# cat /proc/sys/net/ipv4/ip_forward
-1
-[root@lvs1 ~]# ipvsadm -C
-[root@lvs1 ~]# ipvsadm -At 192.168.220.100:81 -s rr 
-[root@lvs1 ~]# ipvsadm -at 192.168.220.100:81 -r 192.168.220.132 -g
-
-</code></pre>
-
-<p>介绍一下新出现的参数：</p>
+<p>外网进行 Nginx 访问的浮动 IP：192.168.61.100</p>
 
 <ul>
-<li>  -g –gatewaying 指定 LVS 的工作模式为直接路由模式 DR 模式（也是 LVS 默认的模式）</li>
+<li><p>我们将 192.168.61.129 这台服务器上运行的 Nginx 作为主要的 Nginx，其上的 keepalived 服务我们设置成 Master 方式。</p></li>
+<li><p>我们将 192.168.61.129 这台服务器上运行的 Nginx 作为备用的 Nginx 服务，其上的 keepalived 服务我们设置为 Backup 方式。</p></li>
 </ul>
 
-<p>配置完成，是不是很简单。接下来，我们就可以在外网，通过 192.168.220.100 这个 IP 访问 132 这台 Real Server 上的 Nginx 服务了：</p>
+<h2 id="toc_7"><a></a>4.2、正式开始设置</h2>
 
-<p><img src="https://img-blog.csdn.net/20150726091844324" alt=""/></p>
+<p>注意，经过安装，您的 keepalived 配置文件的位置在 “/etc/keepalived/keepalived.conf”（如果没有，请创建一个，但是经过之前的步骤，这个位置肯定是有文件的，如果没有可能是之前您的步骤出现了什么问题）。</p>
 
-<h1 id="toc_10"><a></a>4、LVS-TUN 模式安装</h1>
+<h2 id="toc_8"><a></a>4.2.1、设置 192.168.61.129 上的 MASTER</h2>
 
-<p>LVS-TUN 模式的安装我不打算再花很大的篇幅讲了，在您通过上一篇文章了解了 DR 和 TUN 的不同以后，其配置的过程都是差不多的，只不过一个可以跨越子网，一个不能。所以 LVS-TUN 模式的安装和配置请首先参考 LVS-DR 模式。</p>
+<p>我们先来看看 192.168.61.129 上的原始 ip 信息：</p>
 
-<h1 id="toc_11"><a></a>5、IPVSADM 参数汇总</h1>
+<p><img src="https://img-blog.csdn.net/20150730181017823" alt=""/></p>
 
-<p>-A –add-service 在内核的虚拟服务器表中添加一条新的虚拟服务器记录。也就是增加一台新的虚拟服务器。</p>
+<p>注意，这个 129 机器上的网卡设备号是 eth1，而不是 eth0，这个参数我们将在配置 keepalived 的时候使用到。</p>
 
-<p>-E –edit-service 编辑内核虚拟服务器表中的一条虚拟服务器记录。</p>
+<p>下面是 129 上 keepalived 的最简配置：</p>
 
-<p>-D –delete-service 删除内核虚拟服务器表中的一条虚拟服务器记录。</p>
+<pre><code>! Configuration File for keepalived
+# global setting , notify email setting
+global_defs {
+   #存在于同一个网段中，一组keepalived的各个节点都有不同的名字
+   #在全局设置中，我们还可以设置管理员的email信息等。
+   router_id LVS_V1
+}
 
-<p>-C –clear 清除内核虚拟服务器表中的所有记录。</p>
+#这个是我们在上一小结讲到的nginx检查脚本，我们保存在这个文件中（注意文件权限）
+vrrp_script chknginx {
+    script &quot;/usr/keepalived-1.2.17/bin/checknginx.sh&quot;
+    #每10秒钟，检查一次
+    interval 10
+}
 
-<p>-R –restore 恢复虚拟服务器规则</p>
+#keepalived实例设置，是最重要的设置信息
+vrrp_instance VI_1 {
+    #state状态MASTER表示是主要工作节点。
+    #一个keepalived组中，最多只有一个MASTER节点，当然也可以没有
+    state MASTER
+    #实例所绑定的网卡设备，我的网卡设备是eth1。您按照您自己的来
+    interface eth1
+    #同一个keepalived组，节点的设置必须一样，这样才会被识别
+    virtual_router_id 52
+    #节点优先级，BACKUP的优先级一定要比MASTER的优先级低
+    priority 100
+    #组播信息发送间隔，两个节点设置必须一样
+    advert_int 1
+    #实际的eth1上的固定ip地址
+    mcast_src_ip=192.168.61.129
+    #验证信息，只有验证信息相同，才能被加入到一个组中。
+    authentication {
+        auth_type PASS
+        auth_pass 1111
+    }
+    #虚拟地址和绑定的端口，如果有多个，就绑定多个
+    #dev 是指定浮动IP要绑定的网卡设备号
+    virtual_ipaddress {
+        192.168.61.100 dev eth1
+    }
 
-<p>-S –save 保存虚拟服务器规则，输出为 - R 选项可读的格式</p>
+    #设置的检查脚本
+    #关联上方的“vrrp_script chknginx”
+    track_script {
+        chknginx
+    }
+}
 
-<p>-a –add-server 在内核虚拟服务器表的一条记录里添加一条新的真实服务器记录。也就是在一个虚拟服务器中增加一台新的真实服务器</p>
+</code></pre>
 
-<p>-e –edit-server 编辑一条虚拟服务器记录中的某条真实服务器记录</p>
+<h2 id="toc_9"><a></a>4.2.2、设置 192.168.61.130 上的 BACKUP</h2>
 
-<p>-d –delete-server 删除一条虚拟服务器记录中的某条真实服务器记录</p>
+<p>再来看看 192.168.61.130 这个备用节点上 keepalived 的设置：</p>
 
-<p>-L –list 显示内核虚拟服务器表</p>
+<pre><code>! Configuration File for keepalived
+# global setting , notify email setting
+global_defs {
+   #这里和master节点不同
+   router_id LVS_V2
+}
 
-<p>-Z –zero 虚拟服务表计数器清零（清空当前的连接数量等）</p>
+#check nginx
+vrrp_script chknginx {
+    script &quot;/usr/keepalived-1.2.17/bin/checknginx.sh&quot;
+    interval 10
+}
 
-<p>–set tcp tcpfin udp 设置连接超时值</p>
+# instance setting
+vrrp_instance VI_1 {
+    # 这里和Master节点不一样
+    state BACKUP
+    interface eth1
+    # 这里一定是一样的
+    virtual_router_id 52
+    # 这里的优先级比Master节点低
+    priority 99
+    advert_int 1
+    # 这里和Master节点不一样
+    mcast_src_ip=192.168.61.130
+    authentication {
+        auth_type PASS
+        auth_pass 1111
+    }
+    virtual_ipaddress {
+        192.168.61.100 dev eth1
+    }
 
-<p>–start-daemon 启动同步守护进程。他后面可以是 master 或 backup，用来说明 LVS Router 是 master 或是 backup。在这个功能上也可以采用 keepalived 的 VRRP 功能。</p>
+    track_script {
+        chknginx
+    }
+}
 
-<p>–stop-daemon 停止同步守护进程</p>
+</code></pre>
 
-<p>-t –tcp-service service-address 说明虚拟服务器提供的是 tcp 的服务 [vip:port] or [real-server-ip:port]</p>
+<h2 id="toc_10"><a></a>4.3、启动主节点和备用节点</h2>
 
-<p>-u –udp-service service-address 说明虚拟服务器提供的是 udp 的服务 [vip:port] or [real-server-ip:port]</p>
-
-<p>-f –fwmark-service fwmark 说明是经过 iptables 标记过的服务类型。</p>
-
-<p>-s –scheduler scheduler 使用的调度算法，选项：rr|wrr|lc|wlc|lblc|lblcr|dh|sh|sed|nq, 默认的调度算法是： wlc.</p>
-
-<p>-p –persistent [timeout] 持久稳固的服务。这个选项的意思是来自同一个客户的多次请求，将被同一台真实的服务器处理。timeout 的默认值为 300 秒。</p>
-
-<p>-M –netmask netmask persistent granularity mask</p>
-
-<p>-r –real-server server-address 真实的服务器 [Real-Server:port]</p>
-
-<p>-g –gatewaying 指定 LVS 的工作模式为直接路由模式 DR 模式（也是 LVS 默认的模式）</p>
-
-<p>-i –ipip 指定 LVS 的工作模式为隧道模式</p>
-
-<p>-m –masquerading 指定 LVS 的工作模式为 NAT 模式</p>
-
-<p>-w –weight weight 真实服务器的权值</p>
-
-<p>–mcast-interface interface 指定组播的同步接口</p>
-
-<p>-c</p>
-
-<p>–connection 显示 LVS 目前的连接 如：ipvsadm -L -c</p>
-
-<p>–timeout 显示 tcp tcpfin udp 的 timeout 值 如：ipvsadm -L –timeout</p>
-
-<p>–daemon 显示同步守护进程状态</p>
-
-<p>–stats 显示统计信息</p>
-
-<p>–rate 显示速率信息</p>
-
-<p>–sort 对虚拟服务器和真实服务器排序输出</p>
-
-<p>–numeric -n 输出 IP 地址和端口的数字形式</p>
-
-<p>好吧，这个就是我网上抄的。</p>
-
-<h1 id="toc_12"><a></a>6、后文介绍</h1>
-
-<p><strong>LVS 的设置实际上没有什么难度，充其量是一个高级玩意儿，是解决特定问题的特定方法</strong>。您需要的基础知识涉及到 IP 协议、子网分割、IP 映射、Linux 脚本等基本知识。打通任督二脉才是您的根本。</p>
-
-<p>LVS 的设置过程中肯定会遇到实际问题，特别是您头几次配置。别慌，别怕，透过现象猜测本质，一个一个的解决问题。就我的经验总结，无非几种问题分类：</p>
+<p>以上配置中请注意几个关键点：</p>
 
 <ul>
-<li>  网关不通</li>
-<li>  回环 IP 设置问题</li>
-<li>  防火墙问题</li>
-<li>  VIP 设置问题</li>
-<li>  网段或者子网问题</li>
+<li>  注意 nginx 状态检查的脚本的位置，根据自己创建文件的位置不一样，脚本检查的指定位置也不一样</li>
+<li>  注意优先级，MASTER 节点的优先级一定要高于所有的 BACKUP 节点。</li>
+<li>  <strong>注意局域网的组播地址，一定要可用</strong>。局域网内所有 keepalived 节点都是利用组播方式寻找对方。</li>
+<li>  谁说 BACKUP 节点只能有一个！？</li>
+<li>  最后，keepalived 一定要注册成服务形式，您可以想象上面所有脚本、配置、命令如果重启后再来一次，会是什么情况。</li>
 </ul>
 
-<p>通过包括这篇博客在内的这几篇文章，您已经分别了解了 Nginx、LVS 的功能、原理、特 点和工作模式。后面一篇文章，我们将把这些负载层的技术混合在一起，介绍 Nginx + Keepalived、LVS + Keepalived、LVS + Keepalived + Nginx 的安装和配置方式。</p>
+<p>接下来，我们要开始启动 Master 节点和 Backup 节点了，为了准确的查看日志状态，您需要观察系统日志。系统日志所在的位置：</p>
 
-<p>（本人这个月 “持之以恒” 奖已经拿到了，笑一个：哈哈哈）</p>
+<pre><code>tail -f /var/log/messages
 
-<p>补充一下：由于工作的原因，期间可能还会推出一篇关于 Apache Camel 的文章，就算提前进入业务通信层的讨论吧。不过这个看当时的时间安排。目前情况下还是以负载均衡层的讨论为主线。</p>
+</code></pre>
+
+<p>先启动 Master 节点：</p>
+
+<pre><code>service keepalived start
+
+</code></pre>
+
+<p>再启动 Backup 节点：</p>
+
+<pre><code>service keepalived start
+
+</code></pre>
+
+<p><strong>如果设置和启动都是成功的，您不会在日志信息中收到任何的 keepalived 报错信息</strong>。接下来您就可以使用 192.168.61.100 这个 IP 访问 Nginx 了：</p>
+
+<p><img src="https://img-blog.csdn.net/20150730210724952" alt=""/></p>
+
+<p>另外，这个绑定在 192.168.61.129 上的浮动 ip：192.168.61.100，您通过 ipconfig 命令一般是看不到的，要使用 ip addr 命令进行查看：</p>
+
+<p><img src="https://img-blog.csdn.net/20150730211138410" alt=""/></p>
+
+<p>为了试验，我们主动停止 Master 节点上的 keepalived 服务（注意，杀 Nginx 进程不起作用，因为我们的检查脚本会试图重新启动 Nginx 进程），接下来我们可以看到浮动 IP 漂移到了 130 备机上：</p>
+
+<p><img src="https://img-blog.csdn.net/20150730211530195" alt=""/></p>
+
+<h1 id="toc_11"><a></a>5、Nginx + Keepalived 非抢占模式</h1>
+
+<p>通过第 4 节的详细介绍，相信您对 Nginx + Keepalived 的安装方式有了一个明确的理解。keepalived 的切换可以是自动的，但是却做不到毫秒级别，他怎么都需要几秒钟的时间进行切换。</p>
+
+<p>这就有一个问题，虽然在主节点出现问题我们转向备份节点时，这个延时无可避免，但是在我们修复主节点后，实际上并没有必要再马上做一次切换，所以 Keepalived 提供了一种非抢占模式，来满足这个要求。</p>
+
+<p>下面我们就来介绍一下 Keepalived 的非抢占模式的配置（无 MASTER 节点，全部依据优先级确定哪个节点进行工作）：</p>
+
+<h2 id="toc_12"><a></a>5.1、原来主节点的配置改动</h2>
+
+<pre><code>! Configuration File for keepalived
+# global setting , notify email setting
+global_defs {
+   router_id LVS_V1
+}
+
+vrrp_script chknginx {
+    script &quot;/usr/keepalived-1.2.17/bin/checknginx.sh&quot;
+    interval 10
+    # 一旦节点失效，节点的优先级就减少2
+    # 有多少个keepalived节点，就填写多少数量。
+    # 这样保证这个节点的优先级比其他节点都低
+    weight -2
+    # fall 表示多少次检查失败，就算节点失效。默认1
+    #fall 1
+}
+
+vrrp_instance VI_1 {
+    #state状态都是BACKUP表示是主要工作节点。
+    state BACKUP
+    interface eth1
+    virtual_router_id 52
+    # 这个关键配置项，设置为“非抢占”模式
+    nopreempt
+    # 每个节点的优先级一定要不一样
+    priority 100
+    advert_int 1
+    mcast_src_ip=192.168.61.129
+    authentication {
+        auth_type PASS
+        auth_pass 1111
+    }
+    #虚拟地址和绑定的端口，如果有多个，就绑定多个
+    #dev 是指定浮动IP要绑定的网卡设备号
+    virtual_ipaddress {
+        192.168.61.100 dev eth1
+    }
+
+    #设置的检查脚本
+    #关联上方的“vrrp_script chknginx”
+    track_script {
+        chknginx
+    }
+}
+
+</code></pre>
+
+<p>原来的主节点设置更改完成。</p>
+
+<h2 id="toc_13"><a></a>5.2、原来备份节点的配置改动</h2>
+
+<p>加入 “非抢占” 模式的关键字、更改一个确定的优先级，设置检查失败后优先级的递减量，就行了。</p>
+
+<h1 id="toc_14"><a></a>6、后文介绍</h1>
+
+<p>这是我 8 月份的首篇文章，后文我们将介绍 LVS + Keepalived + Nginx 的安装和配置方式。注意，LVS 被 Keepalived 后，就没有必要在对 Nginx 做 Keepalived 了。</p>
 
                         
                       </div>
@@ -652,31 +574,31 @@ default         192.168.220.1   0.0.0.0         UG    0      0        0 eth0
 	      
 		      
 			      <li class="post">
-			        <a href="15389311738065.html">重构到更深层的模型</a>
+			        <a href="15459058392039.html">Reliable Domain Events</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389278377243.html">IAM of Google Cloud</a>
+			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389224951575.html">RSocket, a New Application Network Protocol for Reactive Applications, Announced at SpringOne</a>
+			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389220103546.html">如何形象地描述RxJava中的背压和流控机制？</a>
+			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389214670417.html">Modeling Uncertainty with Reactive DDD</a>
+			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
 			      </li>
 		     
 		  

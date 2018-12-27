@@ -105,169 +105,206 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15277821532847.html">
+                <a class="clearlink" href="15325941121250.html">
                 
-                  <h1>Aspect-Oriented Programming in Spring Boot Part 2: Spring JDK Proxies vs CGLIB vs AspectJ</h1>
+                  <h1>Spring Boot Application as a Service</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p>Justin Wilson May 9, 2016<br/>
-<a href="https://www.credera.com/blog/technology-insights/open-source-technology-insights/aspect-oriented-programming-in-spring-boot-part-2-spring-jdk-proxies-vs-cglib-vs-aspectj/">https://www.credera.com/blog/technology-insights/open-source-technology-insights/aspect-oriented-programming-in-spring-boot-part-2-spring-jdk-proxies-vs-cglib-vs-aspectj/</a></p>
+<p><a href="http://www.baeldung.com/spring-boot-app-as-a-service">http://www.baeldung.com/spring-boot-app-as-a-service</a></p>
 </blockquote>
 
-<p>This is the second entry in a three-part series on aspect-oriented programming (AOP) with Spring Boot. This entry covers the differences between using AOP with Spring JDK proxies, CGLIB proxes, and AspectJ load-time weaving (LTW). The <a href="https://www.credera.com/blog/technology-insights/open-source-technology-insights/aspect-oriented-programming-in-spring-boot-part-1-making-your-own-hystrix-aspect/">first entry</a> covered how to write your own aspect, and the <a href="https://www.credera.com/blog/technology-insights/open-source-technology-insights/aspect-oriented-programming-in-spring-boot-part-3-setting-up-aspectj-load-time-weaving/">last entry</a> will contain detailed AspectJ LTW setup information.</p>
+<h2 id="toc_0"><strong>1. Overview</strong></h2>
 
-<p><strong>How Can You Call Code Without Writing Its Invocation?</strong></p>
+<p>This article explores some options of running Spring Boot applications as a service.</p>
 
-<p>The Spring framework supports two main methods of AOP—Spring proxies and AspectJ. Both methods allow code snippets called aspects to be injected or “woven” around existing code by targeting specific join points. However, even though both AOP styles can use the same code for their aspects, the way in which they weave those aspects into existing code is completely different.</p>
+<p>Firstly, we are going to explain web applications’ packaging options and system services. In the subsequent sections, we explore different alternatives we have when setting up a service for both Linux as Windows based systems.</p>
 
-<p><strong>Spring Proxies: JDK and CGLIB Styles</strong></p>
+<p>Finally, we will conclude with some references to additional sources of information.</p>
 
-<p>Every Spring bean (heretofore referred to as just a “bean”) can be considered a managed component. Whenever you declare a bean in XML or use @Component, @Service, or @Repository on a class targeted by Spring’s annotation component scanning (which is enabled by default for Spring Boot), that class is instantiated and managed as a singleton bean by the Spring framework. (It’s technically possible to use different scoping mechanisms to avoid singletons, but those won’t be covered here; see <a href="https://www.credera.com/blog/technology-insights/java/dependency-injection-part-3-spring/">my blog series on dependency injection</a> for more information.) Spring can inject references to that bean into other beans that request it using the @Autowired annotation (or @Resource or @Inject annotations) or beans that use “ref” in their XML definition. However, Spring doesn’t actually provide a literal reference to the original bean when it’s injected—it wraps the bean in a proxy class to give Spring a chance to weave in AOP code if needed.</p>
+<h2 id="toc_1"><strong>2. Project Setup and Build Instructions</strong></h2>
 
-<p>There are two ways Spring can make proxies:</p>
+<h3 id="toc_2"><strong>2.1. Packaging</strong></h3>
 
-<p>1. By default, Spring will try to use <a href="http://www.ibm.com/developerworks/java/library/j-jtp08305/index.html">JDK dynamic proxy libraries</a> to create a new instance of the injected bean’s interface which will act as a delegate to that bean. This behavior is demonstrated by the <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-proxy/src/test/java/org/jdw/blog/ProxyHystrixAspectTest.java#L36">unit tests</a> that use injected beans with interfaces in the <a href="https://github.com/jwilsoncredera/spring-aop-blog/tree/master/spring-aop-proxy">spring-aop-proxy sample project</a>.</p>
+<p>Web applications are traditionally packaged as a Web Application aRchives (WAR) and deployed to a web server.</p>
 
-<p><a href="https://www.credera.com/wp-content/uploads/2016/04/Picture2-4.png"><img src="https://www.credera.com/wp-content/uploads/2016/04/xPicture2-4.png.pagespeed.ic.dhHNYptsoi.webp" alt="Picture2"/></a></p>
+<p>Spring Boot applications may be packaged both as WAR and JAR files. The latter embeds a web server within a JAR file, which allows you to run applications without the need of an installation and configuration of an application server.</p>
 
-<p>2. If CGLIB is available on the classpath (which comes by default with Spring Boot) and there is no interface to implement a proxy with, CGLIB will be used to make a new object that extends the target bean’s class and acts as a delegate to that original bean. This behavior is also demonstrated by a <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-proxy/src/test/java/org/jdw/blog/ProxyHystrixAspectTest.java#L65">unit test</a> that uses an injected bean without an interface in the <a href="https://github.com/jwilsoncredera/spring-aop-blog/tree/master/spring-aop-proxy">spring-aop-proxy sample project</a>.</p>
+<h3 id="toc_3"><strong>2.2. Maven Configuration</strong></h3>
 
-<p><a href="https://www.credera.com/wp-content/uploads/2016/04/Picture3-3.png"><img src="https://www.credera.com/wp-content/uploads/2016/04/xPicture3-3.png.pagespeed.ic.W2zdwkeosT.webp" alt="Picture3"/></a></p>
+<p>Let’s start by defining the configuration of our <u>pom.xml</u> file:</p>
 
-<p>By default, Spring Boot will use JDK proxies if the bean has an interface and CGLIB proxies if the bean does not. If you try to inject a bean using its concrete class and that bean has an interface, Spring will fail to find the bean with a NoSuchBeanDefinitionException because it will fail to create a JDK proxy using the concrete class. In the first example above, that would be using this:</p>
-
-<p>| </p>
-
-<pre><code class="language-java">@Autowired
-private ImplForInterface bean;
+<pre><code class="language-xml">&lt;packaging&gt;jar&lt;/packaging&gt;
+ 
+&lt;parent&gt;
+    &lt;groupId&gt;org.springframework.boot&lt;/groupId&gt;
+    &lt;artifactId&gt;spring-boot-starter-parent&lt;/artifactId&gt;
+    &lt;version&gt;1.4.0.RELEASE&lt;/version&gt;
+&lt;/parent&gt;
+ 
+&lt;dependencies&gt;
+    ....
+&lt;/dependencies&gt;
+ 
+&lt;build&gt;
+    &lt;plugins&gt;
+        &lt;plugin&gt;
+            &lt;groupId&gt;org.springframework.boot&lt;/groupId&gt;
+            &lt;artifactId&gt;spring-boot-maven-plugin&lt;/artifactId&gt;
+            &lt;configuration&gt;
+                &lt;executable&gt;true&lt;/executable&gt;
+            &lt;/configuration&gt;
+        &lt;/plugin&gt;
+    &lt;/plugins&gt;
+&lt;/build&gt;
 </code></pre>
 
-<p>Instead of this:</p>
+<p>The packaging must be set to <u>jar</u>. We are using the latest stable version of Spring Boot at the time of writing, but any version after 1.3 will be enough. You can find more information about available versions <a href="http://projects.spring.io/spring-boot/">here</a>.</p>
 
-<pre><code class="language-java">@Autowired
-private Interface bean;
+<p>Notice that we have set the <u><executable></u> parameter to <u>true</u> for the <u>spring-boot-maven-plugin</u> artifact. This makes sure that a <u>MANIFEST.MF</u> file is added to the JAR package. This manifest contains a <u>Main-Class</u> entry that specifies which class defines the main method for your application.</p>
+
+<h3 id="toc_4"><strong>2.3. Building Your Application</strong></h3>
+
+<p>Run the following command inside your application’s root directory:</p>
+
+<pre><code>$ mvn clean package
 </code></pre>
 
-<p>To get around this limitation and be able to inject concrete classes that have interfaces, you have to tell Spring to always use CGLIB for all beans. This will disable Spring’s use of JDK proxies entirely, making Spring always extend concrete classes even if an interface is injected. To enable this in Spring Boot, just add the following Java property, as seen in the <a href="https://github.com/jwilsoncredera/spring-aop-blog/tree/master/spring-aop-proxy-cglib">spring-aop-proxy-cglib</a> sample project’s <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-proxy-cglib/src/main/resources/application.properties">application.properties</a> file:</p>
+<p>The executable JAR file is now available in the <u>target</u> directory and we may start up the application by executing the following command on the command line:</p>
 
-<p>spring.aop.proxy-target-class=true</p>
+<pre><code>$ java -jar your-app.jar
+</code></pre>
 
-<p><strong>Spring Proxies: Annotations on Interfaces</strong></p>
+<p>At this point, you still need to invoke the Java interpreter with the <u>-jar</u> option. There are many reasons why it would be preferable to have your app started by being able to invoke it as a service.</p>
 
-<p>Consider an aspect that’s used to weave code around annotated methods (such as the <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-common/src/main/java/org/jdw/blog/common/aspect/HystrixAspect.java">HystrixAspect</a> that targets <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-common/src/main/java/org/jdw/blog/common/annotation/HystrixWrapper.java">@HystrixWrapper</a> annotated methods from part one in this series).</p>
+<h2 id="toc_5"><strong>3. On Linux</strong></h2>
+
+<p>In order to run a program as a background process, we could simply use the <u>nohup</u> Unix command, but this is not the preferred way either for various reasons. A good explanation is provided in this <a href="http://stackoverflow.com/questions/958249/whats-the-difference-between-nohup-and-a-daemon">thread</a>.</p>
+
+<p>Instead, we are going to <u>daemonize</u> our process. Under Linux, we may choose to configure a daemon either with a traditional <u>System V init</u> script or with a <u>Systemd</u> configuration file. The former is traditionally the most well-known option but is gradually being replaced by the latter.</p>
+
+<p>You may find more details on this difference <a href="http://www.tecmint.com/systemd-replaces-init-in-linux/">here</a>.</p>
+
+<p>For enhanced security we first create a specific user to run the service with and change the executable JAR file permissions accordingly:</p>
+
+<pre><code>$ sudo useradd baeldung
+$ sudo passwd baeldung
+$ sudo chown baeldung:baeldung your-app.jar
+$ sudo chmod 500 your-app.jar
+</code></pre>
+
+<h3 id="toc_6"><strong>3.1. System V Init</strong></h3>
+
+<p>A Spring Boot executable JAR file makes the service setup process very easy:</p>
+
+<pre><code>$ sudo ln -s /path/to/your-app.jar /etc/init.d/your-app
+</code></pre>
+
+<p>The above command creates a symbolic link to your executable JAR file. You must use the full path to your executable JAR file, otherwise, the symbolic link will not work properly. This link enables you to start the application as a service:</p>
+
+<pre><code>$ sudo service your-app start
+</code></pre>
+
+<p>The script supports the standard service <u>start</u>, <u>stop</u>, <u>restart</u> and <u>status</u> commands. Moreover:</p>
 
 <ul>
-<li>  When a Spring JDK proxy is used, the join point annotation should be present on both the interface’s method and the concrete class’s method for the aspect to trigger correctly.
-
-<ul>
-<li>  The <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-proxy/src/test/java/org/jdw/blog/ProxyHystrixAspectTest.java#L72">second to last test in the spring-aop-proxy test class</a> proves that both the interface and the concrete class require the join point annotation when a JDK proxy is used.</li>
-</ul></li>
-<li>  When a CGLIB proxy is used, the concrete implementation must have the annotation on its method for the aspect to trigger.
-
-<ul>
-<li>  The <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-proxy-cglib/src/test/java/org/jdw/blog/ProxyCglibHystrixAspectTest.java#L96">second to last test in the spring-aop-proxy-cglib test class</a> proves that the interface’s join point annotations are ignored when CGLIB is used.</li>
-</ul></li>
+<li>  it starts the services running under the user <u>baeldung</u> we have just created</li>
+<li>  it tracks the application’s process ID in <u>/var/run/your-app/your-app.pid</u></li>
+<li>  it writes console logs to <u>/var/log/your-app.log</u>, which you may want to check in case your application fails to start properly</li>
 </ul>
 
-<p>The <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-proxy/src/test/java/org/jdw/blog/ProxyHystrixAspectTest.java#L48">JDK proxy unit test that expects an <strong>InaccessablePointcutAnnotationException</strong></a> is of particular interest. It demonstrates that if you’re using a JDK proxy and the join point annotation is present on the concrete implementation of a bean and not on its interface, the aspect will still trigger but it won’t be able to find the annotation that was used to trigger it. This prevents us from finding the Hystrix command group key that should come from the wrapped method’s annotation, as shown in the bold parts of the example below. (<a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-common/src/main/java/org/jdw/blog/common/annotation/HystrixWrapper.java">This</a> is the GitHub link for the @HystrixWrapper annotation, and <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-common/src/main/java/org/jdw/blog/common/aspect/HystrixAspect.java">this</a> is the link for the HystrixAspect.)</p>
+<h3 id="toc_7"><strong>3.2. Systemd</strong></h3>
 
-<pre><code class="language-java">@Retention(RetentionPolicy.RUNTIME)
-@Target(ElementType.METHOD)
-public @interface HystrixWrapper {
-  public String commandGroupKey();
-}
-@Aspect
-@Component
-public class HystrixAspect {
+<p>The <u>systemd</u> service setup is very simple as well. Firstly, we create a script named <u>your-app.service</u> using the following example and put it in <u>/etc/systemd/system</u> directory:</p>
 
-  @Around(&quot;within(org.jdw.blog..*) &amp;amp;&amp;amp; &quot;  &quot;@annotation(org.jdw.blog.common.annotation.HystrixWrapper)&quot;)
-  public Object around(final ProceedingJoinPoint joinPoint) {
-
-    Method method = ((MethodSignature) joinPoint.getSignature()).getMethod();
-    HystrixWrapper annotation = method.getAnnotation(HystrixWrapper.class);
-    if (annotation == null) {      // Can occur when not using CCGLIB-style &#39;subclass&#39; proxies,
-      // when using an interface that has a concrete class
-      // that has the annotation.
-      throw new InaccessablePointcutAnnotationException();    }
-
-    // Hystrix invocation code goes here, see GitHub for details. 
-    // [https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-common/src/main/java/org/jdw/blog/common/aspect/HystrixAdvice.java](https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-common/src/main/java/org/jdw/blog/common/aspect/HystrixAdvice.java)
-  }
-}
+<pre><code class="language-service">[Unit]
+Description=A Spring Boot application
+After=syslog.target
+ 
+[Service]
+User=baeldung
+ExecStart=/path/to/your-app.jar SuccessExitStatus=143 
+ 
+[Install] 
+WantedBy=multi-user.target
 </code></pre>
 
-<p><strong>I recommend always using CGLIB to avoid this edge case.</strong> Doing so makes all Spring proxy behavior consistent since JDK proxies will never be used, it allows the injection of concrete implementations of beans which can be useful for unit tests, and it negates the need to duplicate join point annotations on interfaces and concrete classes (which could easily get out of sync). As a reminder, to always use CGLIB, just set the “spring.aop.proxy-target-class” property to true.</p>
+<p>Remember to modify <u>Description</u>, <u>User</u> and <u>ExecStart</u> fields to match your application. You should be able to execute the aforementioned standard service commands at this point as well.</p>
 
-<p>Before using CGLIB, ensure your codebase always uses pre-existing AOP annotations (such as @Transactional) on concrete classes instead of only on interfaces. Interface-only AOP annotations will be ignored when CGLIB is enabled. Changing when @Transactional aspects are triggered could lead to items not being saved to the database, or poor performance due to transactional boundary shifting.</p>
+<p>As opposed to the <u>System V init</u> approach described in the previous section, the process ID file and console log file should be configured explicitly using appropriate fields in the service script. An exhaustive list of options may be found <a href="http://www.freedesktop.org/software/systemd/man/systemd.service.html">here</a>.</p>
 
-<p><strong>Spring Proxies: Annotations in Concrete Classes</strong></p>
+<h3 id="toc_8"><strong>3.3. Upstart</strong></h3>
 
-<p>Both JDK- and CGLIB-style Spring proxies have one glaring weakness—AOP can only be invoked by calling a method on an injected bean. Consider a bean with these two methods (all of the classes in <a href="https://github.com/jwilsoncredera/spring-aop-blog/tree/master/spring-aop-common/src/main/java/org/jdw/blog/common/executable">this package</a> qualify):</p>
+<p><a href="http://upstart.ubuntu.com/">Upstart</a> is an event-based service manager, a potential replacement for the <u>System V init</u> that offers more control on the behavior of the different daemons.</p>
 
-<pre><code class="language-java">@HystrixWrapper(commandGroupKey = &quot;blog&quot;)
-public long hystrixWrappedGetCurrentThreadId() {
-  return getCurrentThreadId();
-}
+<p>The site has good <a href="http://upstart.ubuntu.com/getting-started.html">setup instructions</a> that should work for almost any Linux distribution. When using Ubuntu you probably have it installed and configured already (check if there are any jobs with a name starting with “upstart” in <u>/etc/init</u>).</p>
 
-public long nestedHystrixWrappedGetCurrentThreadId() {
-  return hystrixWrappedGetCurrentThreadId();
-}
+<p>We create a job <u>your-app.conf</u> to start our Spring Boot application:</p>
+
+<pre><code># Place in /home/{user}/.config/upstart
+ 
+description &quot;Some Spring Boot application&quot;
+ 
+respawn # attempt service restart if stops abruptly
+ 
+exec java -jar /path/to/your-app.jar
 </code></pre>
 
-<p>The second method cannot trigger the HystrixAspect when calling the first method because it invokes the first method directly without going through a Spring proxy—the bean is just calling one of its own methods. Spring doesn’t have any opportunities to inject the aspect code. This is demonstrated by every other test in both the <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-proxy/src/test/java/org/jdw/blog/ProxyHystrixAspectTest.java#L42">spring-aop-proxy test class</a> and <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-proxy-cglib/src/test/java/org/jdw/blog/ProxyCglibHystrixAspectTest.java#L41">spring-aop-proxy-cglib test class</a> (all the tests that start with “testNestedHystrixWrappedMethod”).</p>
+<p>Now run “start your-app” and your service will start.</p>
 
-<p>However, when AspectJ is used instead of Spring proxies, the HystrixAspect <u>does</u> trigger when a bean calls its own join point annotated method. This is shown by every other test in the <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-aspectj-ltw/src/test/java/org/jdw/blog/AspectJHystrixAspectTest.java#L41">spring-aop-aspectj-ltw test class</a> (which also begin with “testNestedHystrixWrappedMethod”)—every scenario that fails to invoke the Hystrix aspect for Spring proxies succeeds for AspectJ (except for <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-aspectj-ltw/src/test/java/org/jdw/blog/AspectJHystrixAspectTest.java#L101">one specific scenario</a> which will be covered later). How can this be?</p>
+<p>Upstart offers many job configuration options, you can find most of them <a href="http://upstart.ubuntu.com/cookbook/">here</a>.</p>
 
-<p><strong>AspectJ</strong></p>
+<h2 id="toc_9"><strong>4. On Windows</strong></h2>
 
-<p>AspectJ extends the Java compiler to weave aspect code directly into join points. It doesn’t require Spring to run. Instead, you need to use <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-aspectj-ltw/README.md">JVM arguments</a> to enable a compiler extension along with an <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-aspectj-ltw/src/main/resources/META-INF/aop.xml">aop.xml file</a> and <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-aspectj-ltw/src/main/java/org/jdw/blog/config/AspectJConfig.java">another configuration file</a> which will be covered in part three of this series.</p>
+<p>In this section, we present a couple of options that may be used to run a Java JAR as a Windows service.</p>
 
-<p>This has two important ramifications. First, if you’re using AspectJ, you don’t need to inject Spring beans to invoke AOP functionality. Technically you don’t even need Spring beans for AOP at all when AspectJ is enabled—you could manually create a new object and invoke AOP code on it right away if it had join points your aspects could target.</p>
+<h3 id="toc_10"><strong>4.1. Windows Service Wrapper</strong></h3>
 
-<p>Second, if an object calls its own methods it can trigger AOP code, unlike AOP using Spring proxies. Here’s a visual example of how this AspectJ behavior would look if the @HystrixAspect used @Before instead of @Around to inject code in front of its join point targets instead of completely wrapping them (because it’s easier to depict):</p>
+<p>Due to difficulties with the GPL license of the <a href="http://wrapper.tanukisoftware.org/doc/english/index.html">Java Service Wrapper</a> (see next subsection) in combination with e.g. the MIT license of Jenkins, the <a href="https://github.com/kohsuke/winsw">Windows Service Wrapper</a> project, also known as <u>winsw</u>, was conceived.</p>
 
-<p><a href="https://www.credera.com/wp-content/uploads/2016/04/Picture5-2.png"><img src="https://www.credera.com/wp-content/uploads/2016/04/xPicture5-2.png.pagespeed.ic.PXtdJ6_MY_.webp" alt="Picture5"/></a></p>
+<p><u>Winsw</u> provides programmatic means to install/uninstall/start/stop a service. In addition, it may be used to run any kind of executable as a service under Windows, whereas Java Service Wrapper, as implied by its name, only supports Java applications.</p>
 
-<p>The fact that beans can trigger their own AOP code means you need to be very careful when enabling AspectJ on existing Spring projects, because this can change when database transactions are started by @Transactional annotations. For example, if you had a bean with two methods and one didn’t have an @Transactional annotation and it called another one that did, then that invocation would start a database transaction with AspectJ enabled but not with default Spring proxy-based AOP.</p>
+<p>First, you download the binaries <a href="http://repo.jenkins-ci.org/releases/com/sun/winsw/winsw/">here</a>. Next, the configuration file that defines our Windows service, <u>MyApp.xml</u>, should look like this:</p>
 
-<pre><code class="language-java">public void notAnnotated() {
-  annotated();
-}
-
-@Transactional
-public void annotated() {
-  // With AspectJ, a direct call from notAnnotated will enable the transaction.
-  // Without it, this method will only get a transaction if it was called from a Spring proxy.
-}
+<pre><code class="language-xml">&lt;service&gt;
+    &lt;id&gt;MyApp&lt;/id&gt;
+    &lt;name&gt;MyApp&lt;/name&gt;
+    &lt;description&gt;This runs Spring Boot as a Service.&lt;/description&gt;
+    &lt;env name=&quot;MYAPP_HOME&quot; value=&quot;%BASE%&quot;/&gt;
+    &lt;executable&gt;java&lt;/executable&gt;
+    &lt;arguments&gt;-Xmx256m -jar &quot;%BASE%\MyApp.jar&quot;&lt;/arguments&gt;
+    &lt;logmode&gt;rotate&lt;/logmode&gt;
+&lt;/service&gt;
 </code></pre>
 
-<p>Luckily, there is a way around this issue—AspectJ and Spring proxies can co-exist. The <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-aspectj-ltw/src/main/resources/META-INF/aop.xml">aop.xml file</a> lets you decide which aspects will be managed by AspectJ and which packages are included or excluded from AspectJ code weaving. If you exclude classes that use @Transactional from AspectJ weaving, their behavior will default to the same Spring proxy behavior they were using before. Stay tuned for part three of this series, which covers how to configure an aop.xml file.</p>
+<p>Finally, you have to rename the <u>winsw.exe</u> to <u>MyApp.exe</u> so that its name matches with the <u>MyApp.xml</u> configuration file. Thereafter you can install the service like so:</p>
 
-<p><strong>What About That Unit Test Where AspectJ Didn’t Work?</strong></p>
-
-<p>As noted earlier, every other test in the <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-aspectj-ltw/src/test/java/org/jdw/blog/AspectJHystrixAspectTest.java#L41">spring-aop-aspectj unit test</a> (which each begin with “testNestedHystrixWrappedMethod”) demonstrates how beans can trigger the HystrixAspect when calling their own @HystrixWrapper join point annotated methods without going through Spring beans… except for the <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-aspectj-ltw/src/test/java/org/jdw/blog/AspectJHystrixAspectTest.java#L102">last test</a>.</p>
-
-<p>That last test invokes the “nestedGetCurrentThreadId” method on a Spring CGLIB proxy of a class similar to the example below (<a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-common/src/main/java/org/jdw/blog/common/executable/NonAnnotatedImplForInterfaceWithAnnotation.java#L22">GitHub link for the original class</a>). The class’s interface annotates “getCurrentThreadId” with @HystrixWrapper, but the concrete class itself does not. Thus, when “getCurrentThreadId” is invoked by “nestedGetCurrentThreadId” within the CGLIB proxy, AspectJ looks at the concrete class instead of the interface and can’t find the @HystrixWrapper join point. Therefore, the HystrixAspect is not woven.</p>
-
-<pre><code class="language-java">@Override
-public long getCurrentThreadId () {
-  return Thread.currentThread().getId();
-}
-
-@Override
-public long nestedGetCurrentThreadId () {
-  return getCurrentThreadId();
-}
+<pre><code>$ MyApp.exe install
 </code></pre>
 
-<p>The takeaway from this scenario is that you should always put join point annotations on concrete classes when using AspectJ, just like you should when using Spring CGLIB proxies for AOP.</p>
+<p>Similarly, you may use <u>uninstall</u>, <u>start</u>, <u>stop</u>, etc.</p>
 
-<p><strong>Next Steps</strong></p>
+<h3 id="toc_11"><strong>4.2. Java Service Wrapper</strong></h3>
 
-<p>Stay tuned for the third and final entry in this blog series, which will cover how to configure AspectJ for Spring Boot. It contains a critical piece of JVM configuration information that isn’t widely found in other tutorials (including Spring’s own documentation), so be sure to catch the next entry by following @CrederaOpen on Twitter or connecting with us on LinkedIn.</p>
+<p>In case you don’t mind the GPL licensing of the <a href="http://wrapper.tanukisoftware.org/doc/english/index.html">Java Service Wrapper</a> project, this alternative may address your needs to configure your JAR file as a Windows service equally well. Basically, the Java Service Wrapper also requires you to specify in a configuration file which specifies how to run your process as a service under Windows.</p>
+
+<p><a href="http://edn.embarcadero.com/article/32068">This article</a> explains in a very detailed way how to set up such an execution of a JAR file as a service under Windows, so we there’s no need to repeat the info.</p>
+
+<h2 id="toc_12"><strong>5. Additional References</strong></h2>
+
+<p>Spring Boot applications may also be started as Windows service using <a href="http://commons.apache.org/proper/commons-daemon/procrun.html">Procrun</a> of the <a href="http://commons.apache.org/daemon/index.html">Apache Commons Daemon</a> project. Procrun is a set of applications that allow Windows users to wrap Java applications as Windows services. Such a service may be set to start automatically when the machine boots and will continue to run without any user being logged on.</p>
+
+<p>More details on starting Spring Boot applications under Unix may be found <a href="http://docs.spring.io/spring-boot/docs/current/reference/html/deployment-install.html">here</a>. There are also detailed instructions on how to modify <a href="https://access.redhat.com/documentation/en-US/Red_Hat_Enterprise_Linux/7/html/System_Administrators_Guide/sect-Managing_Services_with_systemd-Unit_Files.html">Systemd unit files for Redhat</a> based systems. Finally</p>
+
+<p>Finally, <a href="https://coderwall.com/p/ssuaxa/how-to-make-a-jar-file-linux-executable">this quick howto</a> describes how to incorporate a Bash script into your JAR file, so that it becomes an executable itself!</p>
+
+<h2 id="toc_13"><strong>6. Conclusion</strong></h2>
+
+<p>Services allow you to manage your application state very efficiently and, as we have seen, service setup for Spring Boot applications is now easier than ever.</p>
+
+<p>Just remember to follow the important and simple security measures on user permissions to run your service.</p>
 
                         
                       </div>
@@ -276,10 +313,10 @@ public long nestedGetCurrentThreadId () {
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/5/31</span>
+                    <span class="date">2018/7/26</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Java.html'>Java</a></span>
+          					    <span class="posted-in"><a href='Spring.html'>Spring</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -369,31 +406,31 @@ public long nestedGetCurrentThreadId () {
 	      
 		      
 			      <li class="post">
-			        <a href="15389311738065.html">重构到更深层的模型</a>
+			        <a href="15459058392039.html">Reliable Domain Events</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389278377243.html">IAM of Google Cloud</a>
+			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389224951575.html">RSocket, a New Application Network Protocol for Reactive Applications, Announced at SpringOne</a>
+			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389220103546.html">如何形象地描述RxJava中的背压和流控机制？</a>
+			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389214670417.html">Modeling Uncertainty with Reactive DDD</a>
+			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
 			      </li>
 		     
 		  

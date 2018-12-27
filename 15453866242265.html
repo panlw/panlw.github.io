@@ -1,0 +1,402 @@
+<!doctype html>
+<html class="no-js" lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>
+    
+  Design Of A Modern Cache - Junkman
+  
+  </title>
+  
+  
+  <link href="atom.xml" rel="alternate" title="Junkman" type="application/atom+xml">
+    <link rel="stylesheet" href="asset/css/foundation.min.css" />
+    <link rel="stylesheet" href="asset/css/docs.css" />
+    <script src="asset/js/vendor/modernizr.js"></script>
+    <script src="asset/js/vendor/jquery.js"></script>
+  <script src="asset/highlightjs/highlight.pack.js"></script>
+  <link href="asset/highlightjs/styles/github.css" media="screen, projection" rel="stylesheet" type="text/css">
+  <script>hljs.initHighlightingOnLoad();</script>
+<script type="text/javascript">
+  function before_search(){
+    var searchVal = 'site:panlw.github.io ' + document.getElementById('search_input').value;
+    document.getElementById('search_q').value = searchVal;
+    return true;
+  }
+</script>
+  </head>
+  <body class="antialiased hide-extras">
+    
+    <div class="marketing off-canvas-wrap" data-offcanvas>
+      <div class="inner-wrap">
+
+
+<nav class="top-bar docs-bar hide-for-small" data-topbar>
+
+
+  <section class="top-bar-section">
+  <div class="row">
+      <div style="position: relative;width:100%;"><div style="position: absolute; width:100%;">
+        <ul id="main-menu" class="left">
+        
+        <li id=""><a target="self" href="index.html">Home</a></li>
+        
+        <li id=""><a target="_self" href="archives.html">Archives</a></li>
+        
+        </ul>
+
+        <ul class="right" id="search-wrap">
+          <li>
+<form target="_blank" onsubmit="return before_search();" action="http://google.com/search" method="get">
+    <input type="hidden" id="search_q" name="q" value="" />
+    <input tabindex="1" type="search" id="search_input"  placeholder="Search"/>
+</form>
+</li>
+          </ul>
+      </div></div>
+  </div>
+  </section>
+
+</nav>
+
+        <nav class="tab-bar show-for-small">
+  <a href="javascript:void(0)" class="left-off-canvas-toggle menu-icon">
+    <span> &nbsp; Junkman</span>
+  </a>
+</nav>
+
+<aside class="left-off-canvas-menu">
+      <ul class="off-canvas-list">
+       
+       <li><a href="index.html">HOME</a></li>
+    <li><a href="archives.html">Archives</a></li>
+    <li><a href="about.html">ABOUT</a></li>
+
+    <li><label>Categories</label></li>
+
+        
+            <li><a href="Infra.html">Infra</a></li>
+        
+            <li><a href="Coding.html">Coding</a></li>
+        
+            <li><a href="Modeling.html">Modeling</a></li>
+        
+            <li><a href="Archtecting.html">Archtecting</a></li>
+         
+
+      </ul>
+    </aside>
+
+<a class="exit-off-canvas" href="#"></a>
+
+
+        <section id="main-content" role="main" class="scroll-container">
+        
+       
+
+ <script type="text/javascript">
+  $(function(){
+    $('#menu_item_index').addClass('is_active');
+  });
+</script>
+<div class="row">
+  <div class="large-8 medium-8 columns">
+      <div class="markdown-body article-wrap">
+       <div class="article">
+          
+          <h1>Design Of A Modern Cache</h1>
+     
+        <div class="read-more clearfix">
+          <span class="date">2018/12/21</span>
+
+          <span>posted in&nbsp;</span> 
+          
+              <span class="posted-in"><a href='Cache.html'>Cache</a></span>
+           
+         
+          <span class="comments">
+            
+
+            
+          </span>
+
+        </div>
+      </div><!-- article -->
+
+      <div class="article-content">
+      <blockquote>
+<p>原文地址 <a href="http://highscalability.com/blog/2016/1/25/design-of-a-modern-cache.html">http://highscalability.com/blog/2016/1/25/design-of-a-modern-cache.html</a></p>
+</blockquote>
+
+<pre><code>MONDAY, JANUARY 25, 2016 AT 8:56AM
+</code></pre>
+
+<p><img src="https://c2.staticflickr.com/2/1584/23979355273_e1ea8b2397_o.png" alt=""/></p>
+
+<p><u>This is a guest post by <a href="https://github.com/ben-manes">Benjamin Manes</a>, who did engineery things for Google and is now doing engineery things for a new load documentation startup, <a href="https://loaddocs.co/">LoadDocs</a>.</u></p>
+
+<p>Caching is a common approach for improving performance, yet most implementations use strictly classical techniques. In this article we will explore the modern methods used by <a href="https://github.com/ben-manes/caffeine">Caffeine</a>, an open-source Java caching library, that <strong>yield high hit rates and excellent concurrency</strong>. These ideas can be translated to your favorite language and hopefully some readers will be inspired to do just that.</p>
+
+<h3 id="toc_0">Eviction Policy</h3>
+
+<p>A cache’s <strong>eviction policy tries to predict which entries are most likely to be used again</strong> in the near future, thereby maximizing the hit ratio. The Least Recently Used (LRU) policy is perhaps the most popular due to its simplicity, good runtime performance, and a decent hit rate in common workloads. Its ability to predict the future is limited to the history of the entries residing in the cache, preferring to give the last access the highest priority by guessing that it is the most likely to be reused again soon.</p>
+
+<p>Modern caches extend the usage history to include the recent past and give preference to entries based on recency and frequency. One approach for retaining history is to use a popularity sketch (a compact, probabilistic data structure) to identify the “heavy hitters” in a large stream of events. Take for example <a href="http://dimacs.rutgers.edu/%7Egraham/pubs/papers/cmsoft.pdf">CountMin Sketch</a>, which <strong>uses a matrix of counters and multiple hash functions</strong>. The addition of an entry increments a counter in each row and the frequency is estimated by taking the minimum value observed. This approach lets us tradeoff between space, efficiency, and the error rate due to collisions by adjusting the matrix’s width and depth.</p>
+
+<p><img src="https://docs.google.com/drawings/d/sPS-0VWjzfHp6DtvEQKU0Hg/image?w=470&amp;h=177&amp;rev=1&amp;ac=1" alt=""/></p>
+
+<p><a href="http://arxiv.org/pdf/1512.00727.pdf">Window TinyLFU</a> (W-TinyLFU) <strong>uses the sketch as a filter, admitting a new entry</strong> if it has a higher frequency than the entry that would have to be evicted to make room for it. Instead of filtering immediately, an admission window gives an entry a chance to build up its popularity. This avoids consecutive misses, especially in cases like sparse bursts where an entry may not be deemed suitable for long-term retention. To keep the history fresh an aging process is performed periodically or incrementally to halve all of the counters.</p>
+
+<p><img src="https://docs.google.com/drawings/d/sHXTg0FelH7DQ0ctP3zAnYg/image?w=511&amp;h=123&amp;rev=94&amp;ac=1" alt=""/></p>
+
+<p>W-TinyLFU uses the Segmented LRU (SLRU) policy for long term retention. An entry starts in the probationary segment and on a subsequent access it is promoted to the protected segment (capped at 80% capacity). When the protected segment is full it evicts into the probationary segment, which may trigger a probationary entry to be discarded. This ensures that entries with a small reuse interval (the hottest) are retained and those that are less often reused (the coldest) become eligible for eviction.</p>
+
+<p><img src="https://lh5.googleusercontent.com/FMyO_6DWOaAU-ulD38My9G-KpmYdAe8IQupR0n9MUEDVlDJ9xjvnJtccy2lms-rzQ3bPkbB773lPsCS67WgvOrLn-LpVBkVNCjfavzi4QD3BSNwWp0gGQEI_21rfhKytOLp-N2A" alt=""/></p>
+
+<p><img src="https://lh4.googleusercontent.com/KzGH8Y4W-2qZ4bGpqmHQVb6rXb6DbYiBcrm4UwKfdDyIoiwUXAAnLSPHW4r9WEqhIVEat7pelOPiB5w_VbWI-vC_trza1WU_DVsYW2quV-1RIb9uUnY32PSPF8GklwJySYruC94" alt=""/></p>
+
+<p>As the database and search traces show, there is a lot of opportunity to improve upon LRU by taking into account recency and frequency. More advanced policies such as <a href="https://www.usenix.org/event/fast03/tech/full_papers/megiddo/megiddo.pdf">ARC</a>, <a href="http://web.cse.ohio-state.edu/hpcs/WWW/HTML/publications/papers/TR-02-6.pdf">LIRS</a>, and <a href="http://arxiv.org/pdf/1512.00727.pdf">W-TinyLFU</a> narrow the gap to provide a near optimal hit rate. For additional workloads see the research papers and try our <a href="https://github.com/ben-manes/caffeine/wiki/Simulator">simulator</a> if you have your own traces to experiment with.</p>
+
+<h3 id="toc_1">Expiration Policy</h3>
+
+<p>Expiration is often implemented as variable per entry and expired entries are evicted lazily due to a capacity constraint. This pollutes the cache with dead items, so sometimes a scavenger thread is used to periodically sweep the cache and reclaim free space. This strategy tends to work better than ordering entries by their expiration time on a O(lg n) priority queue due to hiding the cost from the user instead of incurring a penalty on every read or write operation.</p>
+
+<p>Caffeine takes a different approach by <strong>observing that most often a fixed duration is preferred</strong>. This constraint allows for organizing entries on O(1) time ordered queues. A time to live duration is a write order queue and a time to idle duration is an access order queue. The cache can reuse the eviction policy’s queues and the concurrency mechanism described below, so that expired entries are discarded during the cache’s maintenance phase.</p>
+
+<h3 id="toc_2">Concurrency</h3>
+
+<p>Concurrent access to a cache is viewed as a difficult problem because in <strong>most policies every access is a write to some shared state</strong>. The traditional solution is to guard the cache with a single lock. This might then be improved through lock striping by splitting the cache into many smaller independent regions. Unfortunately that tends to have a limited benefit due to hot entries causing some locks to be more contented than others. When contention becomes a bottleneck the next classic step has been to <strong>update only per entry metadata</strong> and use either a <a href="http://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.110.8469&amp;rep=rep1&amp;type=pdf">random sampling</a> or a <a href="https://en.wikipedia.org/wiki/Page_replacement_algorithm#Second-chance">FIFO-based</a> eviction policy. Those techniques can have great read performance, poor write performance, and difficulty in choosing a good victim.</p>
+
+<p>An <a href="http://web.cse.ohio-state.edu/hpcs/WWW/HTML/publications/papers/TR-09-1.pdf">alternative</a> is to <strong>borrow an idea from database theory where writes are scaled by using a commit log</strong>. Instead of mutating the data structures immediately, the <strong>updates are written to a log and replayed in asynchronous batches</strong>. This same idea can be applied to a cache by performing the hash table operation, recording the operation to a buffer, and scheduling the replay activity against the policy when deemed necessary. The policy is still guarded by a lock, or a try lock to be more precise, but shifts contention onto appending to the log buffers instead.</p>
+
+<p>In Caffeine <strong>separate buffers are used for cache reads and writes</strong>. An access is recorded into a <strong>striped ring buffer</strong> where the stripe is chosen by a thread specific hash and the number of stripes grows when contention is detected. When a ring buffer is full an asynchronous drain is scheduled and subsequent additions to that buffer are discarded until space becomes available. When the access is not recorded due to a full buffer the cached value is still returned to the caller. The loss of policy information does not have a meaningful impact because W-TinyLFU is able to identify the hot entries that we wish to retain. By using a thread-specific hash instead of the key’s hash the cache avoids popular entries from causing contention by more evenly spreading out the load.</p>
+
+<p><img src="https://docs.google.com/drawings/d/sxSo8y3_uR8QZ_NbIqnCwzA/image?w=313&amp;h=121&amp;rev=371&amp;ac=1" alt=""/></p>
+
+<p>In the case of a write a more traditional concurrent queue is used and every change schedules an immediate drain. While data loss is unacceptable, there are still ways to optimize the write buffer. Both types of buffers are written to by multiple threads but only consumed by a single one at a given time. This multiple producer / single consumer behavior allows for simpler, more efficient algorithms to be employed. </p>
+
+<p>The buffers and fine grained writes introduce a race condition where operations for an entry may be recorded out of order. An insertion, read, update, and removal can be replayed in any order and if improperly handled the policy could retain dangling references. The solution to this is a state machine defining the lifecycle of an entry.</p>
+
+<p> <img src="https://docs.google.com/drawings/d/scG-jsP3Cfr4YfwBQn9_bpQ/image?w=529&amp;h=133&amp;rev=173&amp;ac=1" alt=""/></p>
+
+<p>In <a href="https://github.com/ben-manes/caffeine/wiki/Benchmarks#read-100-1">benchmarks</a> the cost of the buffers is relatively cheap and scales with the underlying hash table. <strong>Reads scale linearly with the number of CPUs</strong> at about 33% of the hash table’s throughput. Writes have a 10% penalty, but only because contention when updating the hash table is the dominant cost.</p>
+
+<p><img src="https://lh5.googleusercontent.com/Zrb2daVCRylwYZpSKykg1HVxCwsJI6N4sB7KQZ6wTfVdhdZNf75PNi38kO9BKMGn0PW5hHgaEDg2JfFtqbAPU3r4kQZ1toHJ0k7b7gTFII0pXbAJw0pbJ1oPjmqL6ZVEKBHSzLY" alt=""/></p>
+
+<h3 id="toc_3">Conclusion</h3>
+
+<p>There are many pragmatic topics that have not been covered. This could include tricks to minimize the memory overhead, testing techniques to retain quality as complexity grows, and ways to analyze performance to determine whether a optimization is worthwhile. These are areas that practitioners must keep an eye on, because once neglected it can be difficult to restore confidence in one’s own ability to manage the ensuing complexity.</p>
+
+<p>The design and implementation of <a href="https://github.com/ben-manes/caffeine">Caffeine</a> is the result of numerous insights and the hard work of many contributors. Its evolution over the years wouldn’t have been possible without the help from the following people: Charles Fry, Adam Zell, Gil Einziger, Roy Friedman, Kevin Bourrillion, Bob Lee, Doug Lea, Josh Bloch, Bob Lane, Nitsan Wakart, Thomas Müeller, Dominic Tootell, Louis Wasserman, and Vladimir Blagojevic. Thanks to Nitsan Wakart, Adam Zell, Roy Friedman, and Will Chu for their feedback on drafts of this article.</p>
+
+<h2 id="toc_4">Related Articles </h2>
+
+<ul>
+<li>  <a href="https://news.ycombinator.com/item?id=10968521">On HackerNews</a></li>
+<li>  <a href="https://www.reddit.com/r/programming/comments/42s3ku/design_of_a_modern_cache/">On Reddit</a> </li>
+<li>  <a href="https://github.com/dgryski/go-tinylfu">TinyLFU</a> - cache admission policy</li>
+</ul>
+
+
+    
+
+      </div>
+
+      <div class="row">
+        <div class="large-6 columns">
+        <p class="text-left" style="padding:15px 0px;">
+      
+          <a href="15456638361570.html" 
+          title="Previous Post: Spring boot metrics monitoring using TICK stack">&laquo; Spring boot metrics monitoring using TICK stack</a>
+      
+        </p>
+        </div>
+        <div class="large-6 columns">
+      <p class="text-right" style="padding:15px 0px;">
+      
+          <a  href="15449526758162.html" 
+          title="Next Post: 深入理解「分布式事务」">深入理解「分布式事务」 &raquo;</a>
+      
+      </p>
+        </div>
+      </div>
+      <div class="comments-wrap">
+        <div class="share-comments">
+          <script type="text/javascript" src="//s7.addthis.com/js/300/addthis_widget.js#pubid=ra-5ae58078c0d7b2ab"></script>
+
+          
+
+          
+        </div>
+      </div>
+    </div><!-- article-wrap -->
+  </div><!-- large 8 -->
+
+
+
+
+ <div class="large-4 medium-4 columns">
+  <div class="hide-for-small">
+    <div id="sidebar" class="sidebar">
+          <div id="site-info" class="site-info">
+            
+                <div class="site-a-logo"><img src="./asset/img/logo.jpg" /></div>
+            
+                <h1>Junkman</h1>
+                <div class="site-des">“拾荒者”一词来自凯文・凯利的《失控》中关于机器学习的故事（“收集癖好机”如何完成他的收集工作）。</div>
+                <div class="social">
+
+
+
+
+
+
+
+
+
+<a target="_blank" class="github" target="_blank" href="https://github.com/panlw/" title="GitHub">GitHub</a>
+
+  <a target="_blank" class="rss" href="atom.xml" title="RSS">RSS</a>
+                
+              	 </div>
+          	</div>
+
+             
+
+              <div id="site-categories" class="side-item ">
+                <div class="side-header">
+                  <h2>Categories</h2>
+                </div>
+                <div class="side-content">
+
+      	<p class="cat-list">
+        
+            <a href="Infra.html"><strong>Infra</strong></a>
+        
+            <a href="Coding.html"><strong>Coding</strong></a>
+        
+            <a href="Modeling.html"><strong>Modeling</strong></a>
+        
+            <a href="Archtecting.html"><strong>Archtecting</strong></a>
+         
+        </p>
+
+
+                </div>
+              </div>
+
+              <div id="site-categories" class="side-item">
+                <div class="side-header">
+                  <h2>Recent Posts</h2>
+                </div>
+                <div class="side-content">
+                <ul class="posts-list">
+	      
+		      
+			      <li class="post">
+			        <a href="15459058392039.html">Reliable Domain Events</a>
+			      </li>
+		     
+		  
+		      
+			      <li class="post">
+			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
+			      </li>
+		     
+		  
+		      
+			      <li class="post">
+			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
+			      </li>
+		     
+		  
+		      
+			      <li class="post">
+			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
+			      </li>
+		     
+		  
+		      
+			      <li class="post">
+			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
+			      </li>
+		     
+		  
+		      
+		  
+		      
+		  
+		      
+		  
+		      
+		  
+		      
+		  
+		      
+		  
+		      
+		  
+		      
+		  
+		      
+		  
+		      
+		  
+		      
+		  
+		      
+		  
+		      
+		  
+		      
+		  
+		      
+		   
+		  		</ul>
+                </div>
+              </div>
+        </div><!-- sidebar -->
+      </div><!-- hide for small -->
+</div><!-- large 4 -->
+
+</div><!-- row -->
+
+ <div class="page-bottom clearfix">
+  <div class="row">
+   <p class="copyright">Copyright &copy; 2015
+Powered by <a target="_blank" href="http://www.mweb.im">MWeb</a>,&nbsp; 
+Theme used <a target="_blank" href="http://github.com">GitHub CSS</a>.</p>
+  </div>
+</div>
+
+        </section>
+      </div>
+    </div>
+
+  
+    
+
+    <script src="asset/js/foundation.min.js"></script>
+    <script>
+      $(document).foundation();
+      function fixSidebarHeight(){
+        var w1 = $('.markdown-body').height();
+          var w2 = $('#sidebar').height();
+          if (w1 > w2) { $('#sidebar').height(w1); };
+      }
+      $(function(){
+        fixSidebarHeight();
+      })
+      $(window).load(function(){
+          fixSidebarHeight();
+      });
+     
+    </script>
+
+    <script src="asset/chart/all-min.js"></script><script type="text/javascript">$(function(){    var mwebii=0;    var mwebChartEleId = 'mweb-chart-ele-';    $('pre>code').each(function(){        mwebii++;        var eleiid = mwebChartEleId+mwebii;        if($(this).hasClass('language-sequence')){            var ele = $(this).addClass('nohighlight').parent();            $('<div id="'+eleiid+'"></div>').insertAfter(ele);            ele.hide();            var diagram = Diagram.parse($(this).text());            diagram.drawSVG(eleiid,{theme: 'simple'});        }else if($(this).hasClass('language-flow')){            var ele = $(this).addClass('nohighlight').parent();            $('<div id="'+eleiid+'"></div>').insertAfter(ele);            ele.hide();            var diagram = flowchart.parse($(this).text());            diagram.drawSVG(eleiid);        }    });});</script>
+<script type="text/javascript" src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML"></script><script type="text/x-mathjax-config">MathJax.Hub.Config({TeX: { equationNumbers: { autoNumber: "AMS" } }});</script>
+
+
+  </body>
+</html>

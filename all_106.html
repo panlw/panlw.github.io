@@ -105,139 +105,136 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15290740608340.html">
+                <a class="clearlink" href="15309736200535.html">
                 
-                  <h1>RPC 代理（Proxy）配置</h1>
+                  <h1>Asynchronous timeouts with CompletableFutures in Java 8 and Java 9</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://github.com/eggjs/egg-sofa-rpc/wiki/RPC-%E4%BB%A3%E7%90%86%EF%BC%88Proxy%EF%BC%89%E9%85%8D%E7%BD%AE">https://github.com/eggjs/egg-sofa-rpc/wiki/RPC-%E4%BB%A3%E7%90%86%EF%BC%88Proxy%EF%BC%89%E9%85%8D%E7%BD%AE</a></p>
+<p>原文地址 <a href="http://iteratrlearning.com/java9/2016/09/13/java9-timeouts-completablefutures.html">http://iteratrlearning.com/java9/2016/09/13/java9-timeouts-completablefutures.html</a></p>
 </blockquote>
 
-<h2 id="toc_0">简介</h2>
+<p><u>Written on September 13, 2016</u></p>
 
-<p>在作为 RPC 的调用方时，我们需要对我们调用的服务做一些预先申明，然后生成一些本地代理代码，然后你就可以像调用一个本地方法一样调用一个远程接口了。</p>
+<p>Java 8 introduced <code>CompletableFuture&lt;T&gt;</code> as an enhancement to <code>Future&lt;T&gt;</code>. It is a new class which lets you express the flow of information from different tasks using a callback driven style. A <code>CompletableFuture</code> is used for defining computations on singular events, which is a different use case than computations on streams of events (e.g. <code>Observable</code> using RxJava). In this article, you will learn about the problem with timeouts in Java 8’s CompletableFuture and the improvements that Java 9 brings.</p>
 
-<p>在 eggjs 里面，我们约定这个客户端接口声明文件位于 <code>${app_root}/config/proxy.js</code>。</p>
+<h2 id="toc_0">Combining two services</h2>
 
-<h2 id="toc_1">一个简单的配置</h2>
+<p>For the purpose of this article, let’s say you’d like to combine the result of two services over the network:</p>
 
-<p>我们先看一个简单的配置（如下），它的基本含义是：我需要调用 <code>sofarpc</code> 应用暴露的 <code>com.alipay.sofa.rpc.test.ProtoService</code> 这个服务。</p>
+<ol>
+<li> A best price finder for a flight route</li>
+<li> An exchange service that converts USD to GBP</li>
+</ol>
 
-<pre><code class="language-js">&#39;use strict&#39;;
+<p>Both of these services will introduce a certain delay before responding back with a result. This is due to the costs of network communication with the service.</p>
 
-module.exports = {
-  services: [{
-    appName: &#39;sofarpc&#39;,
-    api: {
-      ProtoService: &#39;com.alipay.sofa.rpc.test.ProtoService&#39;,
-    },
-  }],
-};
+<p>You could solve this problem by making use of CompletableFuture as follows (by default a CompletableFuture uses the <a href="https://docs.oracle.com/javase/8/docs/api/java/util/concurrent/ForkJoinPool.html">common thread pool</a> but this can be parametrised with an <code>Executor</code> using an overload of <code>supplyAsync</code>):</p>
+
+<pre><code class="language-java">BigDecimal amount = 
+    CompletableFuture.supplyAsync(() -&gt; findBestPrice(&quot;LDN - NYC&quot;))
+                     .thenCombine(CompletableFuture.supplyAsync(() -&gt; queryExchangeRateFor(&quot;GBP&quot;)), 
+                                                 this::convert)
+                     .get();
+
 </code></pre>
 
-<p>配置好以后（确保已经将接口定义文件 *.proto 放置到了 <code>proto</code> 目录下），我们运行 <a href="https://github.com/eggjs/egg-rpc-generator">egg-rpc-generator</a> 工具就可以生成服务的调用代理文件：<code>${app_root}/app/proxy/ProxyService.js</code></p>
+<p>In the code above, the method <code>convert</code> takes the two BigDecimal results from <code>findBestPrice</code> and <code>queryExchangeRateFor</code> and calculates the final amount. You can refer to the <a href="https://docs.oracle.com/javase/8/docs/api/java/util/concurrent/CompletableFuture.html">javadoc</a> for a more detailed description of the methods available using <code>CompletableFuture</code>.</p>
 
-<pre><code class="language-bash">$ egg-rpc-generator
+<h2 id="toc_1">Timeout mechanism</h2>
 
-[EggRpcGenerator] framework: /egg-rpc-demo/node_modules/egg, baseDir: /egg-rpc-demo
-[ProtoRPCPlugin] found &quot;com.alipay.sofa.rpc.test.ProtoService&quot; in proto file
-[ProtoRPCPlugin] save all proto info into &quot;/egg-rpc-demo/run/proto.json&quot;
+<p>However, there are a few problems associated with this code. First, <code>get()</code> is a blocking call. This means that the main thread will have to wait until the result is ready before it can progress. Ideally, you’d like the main thread to do other useful work while the result is calculated in the background. Second, the main thread could be blocking indefinitely because there isn’t a timeout specified. What if one of the service is overloaded and doesn’t respond? To add a timeout mechanism, you can use the other version of <code>get</code> inherited from Future which throws a <code>TimeoutException</code> when the overall pipeline takes longer than a certain amount of time to return the result:</p>
+
+<pre><code class="language-java">BigDecimal result = 
+    CompletableFuture.supplyAsync(() -&gt; findBestPrice(&quot;LDN - NYC&quot;), executorService)
+                     .thenCombine(CompletableFuture.supplyAsync(() -&gt; queryExchangeRateFor(&quot;GBP&quot;)), 
+                                                 this::convert)
+                     .get(1, TimeUnit.SECONDS);
+
 </code></pre>
 
-<h2 id="toc_2">完整的配置示例和详解</h2>
+<p>Unfortunately this code is still blocking and prevents the main thread from doing useful work in the meantime! To tackle this issue, you can refactor the above code to use <code>thenAccept</code> and provide a callback which is executed when the result is finally available:</p>
 
-<pre><code class="language-js">&#39;use strict&#39;;
+<pre><code class="language-java">CompletableFuture.supplyAsync(() -&gt; findBestPrice(&quot;LDN - NYC&quot;), executorService)
+                         .thenCombine(CompletableFuture.supplyAsync(() -&gt; queryExchangeRateFor(&quot;GBP&quot;)),  
+                                                 this::convert)
+                         .thenAccept(amount -&gt; System.out.println(&quot;The price is: &quot; + amount + &quot;GBP&quot;));
 
-module.exports = {
-  errorAsNull: false,
-  responseTimeout: 3000,              
-  services: [{
-    appName: &#39;sofarpc&#39;,
-    api: {
-      ProtoService: {
-        interfaceName: &#39;com.alipay.sofa.rpc.test.ProtoService&#39;,
-        version: &#39;1.0&#39;,
-        group: &#39;SOFA&#39;,
-        errorAsNull: true,
-        responseTimeout: 5000,
-        method: {
-          echoObj: {
-            responseTimeout: 10000,
-          },
-        },
-      },
-    },
-  }],
-};
 </code></pre>
 
-<ul>
-<li><code>errorAsNull</code> (可选)：是否将后台服务错误以 <code>null</code> 返回, 默认为 <code>false</code>，不处理，直接抛异常。该配置有两个层级，在根节点的是全局的，针对所有服务，下面的服务配置中可以覆盖全局配置</li>
-<li><code>responseTimeout</code> (可选)：服务的超时间隔，如果超过则会抛 <code>RpcSocketConnectTimeoutError</code> 异常。该配置也有三个层级，在根节点的是全局的，针对所有服务，下面的服务和方法配置中可以覆盖全局配置</li>
-<li><code>services</code>（必选）：RPC 依赖的服务列表，它是一个 Object 数组，每一个 item 代表一个服务提供者（应用）
+<p>However, using this approach we lost the timeout functionality! Ideally we’d like to specify a timeout using a non-blocking method. Unfortunately there isn’t a built-in elegant support to solve this problem in Java 8. Solutions available include using <code>acceptEither()</code> or <code>applyToEither</code> together with the <code>CompletableFuture</code> you are waiting the result for and another <code>CompletableFuture</code> which wraps up a <code>ScheduledThreadpoolExecutor</code> that throws a <code>TimeoutException</code> after a certain time:</p>
 
-<ul>
-<li><code>appName</code>（必选）：RPC 服务提供者的应用名。这个为什么是必选参数，是为了方便我们在 <code>egg</code> 的配置文件 <code>${app_root}/config/config.{env}.js</code> 中，按照应用维度进行配置</li>
-<li>app.config[&#39;${appName}.rpc.service.enable&#39;]：为 true 时开启此服务，默认为 true</li>
-<li>app.config[&#39;${appName}.rpc.service.url&#39;]：直接配置 rpc 服务的地址（硬负载）。</li>
-<li>app.config[&#39;${appName}.rpc.service.timeout&#39;]：服务请求的超时时间（服务级别的），单位为 ms，默认为 3000
-它的默认 responseTimeout 是 antx[&#39;${appname}.tr.service.timeout&#39;]：服务请求的超时时间，单位为 ms，默认为 5000 </li>
-<li><code>api</code>（必选）：服务列表（key-value），其中 key 为生成 proxy 文件的名字，value 是服务接口名（interfaceName）。如果需要进行更加细粒度的配置，value 也支持以下对象格式：</li>
-<li><code>interfaceName</code>(必选)： 服务接口名</li>
-<li><code>version</code> (可选)：服务的默认版本号，如：1.0.0、1.0.0.daily。如果不填，默认值是 1.0</li>
-<li><code>group</code> (可选)：服务组别，默认是 SOFA</li>
-<li><code>responseTimeout</code>(可选)：覆盖上面的全局配置</li>
-<li><code>errorAsNull</code> (可选：覆盖上面的全局配置</li>
-<li><code>method</code>(可选)：方法级别配置（key-value 键值对），key 为方法名，value 是一个对象，结构如下：
+<pre><code class="language-java">CompletableFuture.supplyAsync(() -&gt; findBestPrice(&quot;LDN - NYC&quot;), executorService)
+                         .thenCombine(CompletableFuture.supplyAsync(() -&gt; queryExchangeRateFor(&quot;GBP&quot;)),  
+                                                 this::convert)
+                         .acceptEither(timeoutAfter(1, TimeUnit.SECONDS), 
+                                       amount -&gt; System.out.println(&quot;The price is: &quot; + amount + &quot;GBP&quot;));
 
-<ul>
-<li><code>responseTimeout</code>(可选)：覆盖上面的全局和服务配置 </li>
-</ul></li>
-</ul></li>
-</ul>
-
-<h2 id="toc_3">几个配置之间的优先级</h2>
-
-<p>上面配置中，我们看到好几次 <code>responseTimeout</code> 这个配置，如果都配了，它们的优先级是怎么样的呢？</p>
-
-<ul>
-<li>方法级别的优先级最高。下面 echoObj 方法超时时长为 10s</li>
-</ul>
-
-<pre><code class="language-js">module.exports = {
-  responseTimeout: 3000,              
-  services: [{
-    appName: &#39;sofarpc&#39;,
-    api: {
-      ProtoService: {
-        interfaceName: &#39;com.alipay.sofa.rpc.test.ProtoService&#39;,
-        responseTimeout: 5000,
-        method: {
-          echoObj: {
-            responseTimeout: 10000,
-          },
-        },
-      },
-    },
-  }],
-};
 </code></pre>
 
-<ul>
-<li><code>egg</code> 的配置文件 <code>config/config.{env}.js</code> 里 <code>app.config[&#39;${appName}.rpc.service.timeout&#39;]</code> 优先级次之</li>
-</ul>
+<p>A simple implementation of <code>timeoutAfter</code> is as follows where <code>delayer</code> is an instance of a <code>ScheduledThreadPoolExecutor</code>:</p>
 
-<pre><code class="language-js">// ${app_root}/config/config.{env}.js
-exports[&#39;sofarpc.rpc.service.timeout&#39;] = 6000; // sofarpc 这个应用的rpc超时时长为 6s，覆盖上面的配置 5s
+<pre><code>public &lt;T&gt; CompletableFuture&lt;T&gt; timeoutAfter(long timeout, TimeUnit unit) {
+    CompletableFuture&lt;T&gt; result = new CompletableFuture&lt;T&gt;();
+    delayer.schedule(() -&gt; result.completeExceptionally(new TimeoutException()), timeout, unit);
+    return result;
+}
+
 </code></pre>
 
-<ul>
-<li>服务级别的再次之（上面示例中的 5s）</li>
-<li>全局配置最低（上面示例中的 3s）</li>
-</ul>
+<h2 id="toc_2">Java 9 improvements</h2>
+
+<p>Java 9’s <code>CompletableFuture</code> introduces several new methods amongst which are <code>orTimeout</code> and <code>completeOnTimeOut</code> that provide built-in support for dealing with timeouts.</p>
+
+<p>The method <code>orTimeout</code> has the following signature:</p>
+
+<pre><code class="language-java">public CompletableFuture&lt;T&gt; orTimeout(long timeout, TimeUnit unit)
+
+</code></pre>
+
+<p>It internally uses a <code>ScheduledThreadExecutor</code> and completes the CompletableFuture with a <code>TimeoutException</code> after the specified timeout has elapsed. It also returns another CompletableFuture, meaning you can further chain your computation pipeline and deal with the <code>TimeoutException</code> by providing a friendly message back. Note that <code>whenComplete</code> in the code below could report other exceptional completions that might occur before the timeout occurs.</p>
+
+<p>For example:</p>
+
+<pre><code class="language-java">CompletableFuture.supplyAsync(() -&gt; findBestPrice(&quot;LDN - NYC&quot;), executorService)
+                         .thenCombine(CompletableFuture.supplyAsync(() -&gt; queryExchangeRateFor(&quot;GBP&quot;)),  
+                                                 this::convert)
+                         .orTimeout(1, TimeUnit.SECONDS)
+                         .whenComplete((amount, error) -&gt; {
+                                        if (error == null) {
+                                            System.out.println(&quot;The price is: &quot; + amount + &quot;GBP&quot;);
+                                        } else {
+                                            System.out.println(&quot;Sorry, we could not return you a result&quot;);
+                                        }
+                         });
+
+</code></pre>
+
+<p>The method <code>completeOnTimeout</code> has the following signature:</p>
+
+<pre><code class="language-java">public CompletableFuture&lt;T&gt; completeOnTimeout(T value, long timeout, TimeUnit unit)
+
+</code></pre>
+
+<p>It also uses a <code>ScheduledThreadExecutor</code> internally but in contrast to <code>orTimeout</code>, it provides a default value in the case that the CompletableFuture pipeline times out. You can conceptually relate this method to <code>orElse()</code> using <code>java.util.Optional</code>.</p>
+
+<pre><code class="language-java">CompletableFuture.supplyAsync(() -&gt; findBestPrice(&quot;LDN - NYC&quot;), executorService)
+                         .thenCombine(CompletableFuture.supplyAsync(() -&gt; queryExchangeRateFor(&quot;GBP&quot;)),  
+                                                 this::convert)
+                         .completeOnTimeout(DEFAULT_PRICE, 1, TimeUnit.SECONDS)
+                         .thenAccept(amount -&gt; {
+                             System.out.println(&quot;The price is: &quot; + amount + &quot;GBP&quot;);
+                         });
+
+</code></pre>
+
+<p>In the code above, if the services are slow to respond, a default price is provided otherwise the result of combining the two services is returned.</p>
+
+<p>If you are curious about the internal implementation details of these methods, you can view the source of <code>CompletableFuture</code> in JDK9 <a href="http://hg.openjdk.java.net/jdk9/jdk9/jdk/file/tip/src/java.base/share/classes/java/util/concurrent/CompletableFuture.java">here</a>.</p>
+
+<p>If you interested to learn more about this asynchronous style of programming check out our <a href="http://iteratrlearning.com/javareactive">intensive Asynchronous and Reactive Java in-house course</a>. For everything Java 8 related, we also teach a popular <a href="http://iteratrlearning.com/java8">two-day Modern Development using Java 8 course</a>.</p>
 
                         
                       </div>
@@ -246,10 +243,10 @@ exports[&#39;sofarpc.rpc.service.timeout&#39;] = 6000; // sofarpc 这个应用�
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/6/15</span>
+                    <span class="date">2018/7/7</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Microservice.html'>Microservice</a></span>
+          					    <span class="posted-in"><a href='Java.html'>Java</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -339,31 +336,31 @@ exports[&#39;sofarpc.rpc.service.timeout&#39;] = 6000; // sofarpc 这个应用�
 	      
 		      
 			      <li class="post">
-			        <a href="15389311738065.html">重构到更深层的模型</a>
+			        <a href="15459058392039.html">Reliable Domain Events</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389278377243.html">IAM of Google Cloud</a>
+			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389224951575.html">RSocket, a New Application Network Protocol for Reactive Applications, Announced at SpringOne</a>
+			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389220103546.html">如何形象地描述RxJava中的背压和流控机制？</a>
+			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389214670417.html">Modeling Uncertainty with Reactive DDD</a>
+			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
 			      </li>
 		     
 		  

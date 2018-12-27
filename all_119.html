@@ -105,218 +105,132 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15281970486767.html">
+                <a class="clearlink" href="15301793061134.html">
                 
-                  <h1>最小权限的容器编排</h1>
+                  <h1>架构设计：负载均衡层设计方案（1）——负载场景和解决方式</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p>作者：Diogo Mónica[3] 译者：qhwdw 校对：wxy<br/>
-本文由 LCTT 原创编译，Linux 中国 荣誉推出 <a href="https://linux.cn/article-9712-1.html">https://linux.cn/article-9712-1.html</a><br/>
-via: <a href="https://blog.docker.com/2017/10/least-privilege-container-orchestration/">https://blog.docker.com/2017/10/least-privilege-container-orchestration/</a></p>
+<p><a href="https://blog.csdn.net/yinwenjie/article/details/46605451">https://blog.csdn.net/yinwenjie/article/details/46605451</a></p>
 </blockquote>
 
-<p>Docker 平台和容器已经成为打包、部署、和管理应用程序的标准。为了在一个集群内协调跨节点的容器，必须有一个关键的能力：一个容器编排器。</p>
+<p>在上一篇<a href="http://blog.csdn.net/yinwenjie/article/details/46480485%20%E6%A0%87%E5%87%86Web%E7%B3%BB%E7%BB%9F%E7%9A%84%E6%9E%B6%E6%9E%84%E5%88%86%E5%B1%82">《标准 Web 系统的架构分层》</a>文章中，我们概述了 WEB 系统架构中的分层架设体系，介绍了包括负载均衡层、业务层、业务通信层、数据存储层的作用和存在意义。从本片文章开始，我们将首先详细讲解负载均衡层的架构原理和选型场景。</p>
 
-<p><img src="https://dn-linuxcn.qbox.me/data/attachment/album/201806/03/215736pd1dhdoumu8ilhdi.jpg" alt=""/></p>
+<h1 id="toc_0"><a></a>1、不同的负载场景</h1>
 
-<p><u>container orchestrator</u></p>
+<p>我们知道负载均衡层的作用是 “将来源于外部的处理压力通过某种规律 / 手段分摊到内部各个处理节点上”，那么不同的业务场景需要的负载均衡方式又是不一样的，架构师还要考虑架构方案的成本、可扩展性、运维难易度等问题。下面我们先介绍几种典型的不同业务场景，大家也可以先想一下如果是您，会怎么架设这些场景的负载均衡层。</p>
 
-<p>对于关键的集群化以及计划的任务，编排器是起重大作用的，比如：</p>
+<p>需要注意的是，这个系统的文章，我们都将使用这几个典型的业务场景来讲解系统架构的设计递归设计。在后续几篇介绍负载层架构的文章中，我们也将通过这几个典型的业务场景讲解负载层的架构方案。</p>
 
-<ul>
-<li>  管理容器计划和资源分配。</li>
-<li>  支持服务发现和无缝的应用程序部署。</li>
-<li>  分配应用程序运行必需的资源。</li>
-</ul>
+<h2 id="toc_1"><a></a>1.1、负载场景一</h2>
 
-<p>不幸的是，在这种环境下，编排器的分布式特性和资源的短暂性使得确保编排器的安全是一个极具挑战性的任务。在这篇文章中，我们将讨论容器编排器安全模型中没有考虑到的、但是很重要的这方面的详细情况，以及 Docker 企业版中如何使用内置的编排性能、Swarm 模式，去克服这些问题。</p>
+<p>这是一个国家级物流园区的货运订单和物流管理系统。在物流园区内的货运代理商、合作司机（货运车辆）、园区管理员和客服人员都要使用这套系统。每日 RUV 在 1 万人次，日 PV 在 10 万左右。甲方总经理使用这套系统的原有是抱着 “试一下移动互联网对物流产品是否能起到提高效率的作用”。可以看出整个系统基本上没有访问压力，甲方对您设计的系统只有一个要求：能够保证系统以后的功能和性能扩展性。</p>
 
-<p><a id="3_1089" class="target-fix ext" rel="external nofollow" target="_blank"></a></p>
+<p><img src="https://img-blog.csdn.net/20150627081654476" alt=""/></p>
 
-<h3 id="toc_0">诱因和威胁模型</h3>
+<h2 id="toc_2"><a></a>1.2、负载场景二</h2>
 
-<p>使用 swarm 模式的 Docker 企业版的其中一个主要目标是提供一个内置安全特性的编排器。为达到这个目标，我们部署了第一个在我们心目中认为的以最小权限原则设计的容器编排器。</p>
+<p>效果不错！在第一版系统架设后的 6 个月，货场丢货的情况大大减少，并且由于货车在途情况的监控，按时到达率也显著提升，货车司机也反映由于整个货场货车信息都是共享的，货车的待货时间也明显缩短。在这期间物流园中越来越多的货运代理商、货车司机都开始使用这套系统了，整个系统的访问量成线性增长。</p>
 
-<p>在计算机科学中，一个分布式系统所要求的最小权限原则是，系统中的每个参与者仅仅能访问它正当目的所需要的信息和资源。不是更多，也不是更少。</p>
+<p>物流园的总经理对整个系统的作用感到满意，决定扩大系统的使用范围，并增加新的功能。经过讨论甲方最终决定把整套系统开放给货主：或者可以在系统上查看货运代理商的线路报价、线上通知代理商上门取货、监控目前自己货品的运输状态、了解第三方签收情况。初步估计系统的日 RUV 将达到 10 万，日 PV 将突破 50 万。</p>
+
+<p><img src="https://img-blog.csdn.net/20150627091936459" alt=""/></p>
+
+<h2 id="toc_3"><a></a>1.3、负载场景三</h2>
+
+<p>一年后，赞不绝口的大宗货品运输服务质量终于传到了政府领导的耳朵里。省里分管运输的领导亲自领队到物流园区参观考察，最终决定由省政府牵头，各地方政府参与，将这套管理办法在整个省级范围进行推广使用。全省 10 家大型物流园和 50 家二级物流园中的上万货运代理商、散落省内的零散代理商、10 万个人 / 企业货主、40 万优等资质车源共同接入系统。</p>
+
+<p>新的功能上，增加了费用结算和运费保障功能，从货主预付款开始到第三方确认收货的整个环节都进行费用管理。为了保证线上收货环节的顺利，新版本中还增加了代理商之间的合作收货功能。新系统的日 RUV 将超过 50 万，日 PV 将突破 250 万。</p>
+
+<p><img src="https://img-blog.csdn.net/20150627103725131" alt=""/></p>
+
+<h2 id="toc_4"><a></a>1.4、负载场景四</h2>
+
+<p>服务效应、经济效应、口碑效应不断发酵，经过近两年多的发展，目前这套系统已经是省内知名的物流配送平台，专门服务大宗货运物流。联合政府向全国推广服务的时机终于到来。预计全国 1000 多个物流园区，50 万左右物流代理商，500 万货运车辆、数不清的个人和企业货主都将使用该系统。预估的 RUV 和 PV 是多少呢？无法预估，如果按照全国 32 省来进行一个简单的乘法，是可以得到一个大概的值（50 万 * 32 = 1500 万 +；500 万 * 32 = 1.5 亿 +，已经超过了 JD.com 的平峰流量），但是各省的物流业规模是不一样的，从业者数量也不一样，所以这样的预估并不科学。而且再这样的系统规模下我们应该更过的考虑系统的峰值冗余。</p>
+
+<p>业务功能的情况：为了保证注册货车的有效性，您所在的公司被政府允许访问政府的车辆信息库，在车辆注册的过程中进行车辆信息有效性的验证（第三方系统接口调用，我们并不知道第三方系统是否能够接收一个较高水平的并发量，所以这个问题留给我我们的架构师，我们将在业务层讲解时进行详细的描述）。</p>
+
+<h2 id="toc_5"><a></a>1.5、沉思片刻</h2>
+
+<p>看到这里，我们已经将几个递进的业务场景进行了详细的说明（甚至在后文中我们讨论业务层、业务通信层、数据存储层时所涉及的业务场景也不会有什么大的变化了）。看客们看到这里，可以稍作休息，先想想如果是您，您会如何搭建负载层，甚至整个系统的顶层架构。</p>
 
 <blockquote>
-<p>“一个进程必须仅仅能去访问它的正当目的所需要的信息和资源”</p>
+<p>由于整个系统的性能除了和硬件有关外，业务层的拆分规则，代码质量，缓存技术的使用方式，数据库的优化水平都可能对其产生影响。所以：</p>
+
+<p><strong>我们在讨论负载层的几篇文章中，我们要假设系统架构中各层的设计都没有对系统性能产生瓶颈</strong></p>
 </blockquote>
 
-<p><a id="4_1721" class="target-fix ext" rel="external nofollow" target="_blank"></a></p>
+<p>如果您已经思考好了，那么可以继续看以下的内容。</p>
 
-<h4 id="toc_1">最小权限原则</h4>
+<h1 id="toc_6"><a></a>2、负载方案构想</h1>
 
-<p>在一个 Docker 企业版集群中的每个节点分配的角色：既不是管理者（manager），也不是工人（worker）。这些角色为节点定义了一个很粗粒度的权限级别：分别进行管理和任务执行。尽管如此，不用理会它的角色，通过使用加密的方式，来保证一个节点仅仅有执行它的任务所需要的信息和资源。结果是，确保集群安全变得更容易了，甚至可以防止大多数的有经验的攻击者模式：攻击者控制了底层通讯网络，或者甚至攻陷了集群节点。</p>
+<h2 id="toc_7"><a></a>2.1、解决方案一：独立的 Nginx/Haproxy 方案</h2>
 
-<p><a id="3_2340" class="target-fix ext" rel="external nofollow" target="_blank"></a></p>
+<p>很显然，第一个业务场景下，系统并没有多大的压力就是一套简单业务系统，日访问量也完全没有 “有访问压力” 这样的说法。但是客户有一个要求值得我们关注：要保证系统以后的功能和性能扩展性。为了保证功能和性能扩展性，在系统建立之初就要有一个很好的业务拆分规划，例如我们首先会把用户信息权限子系统和订单系统进行拆分，独立的车辆信息和定位系统可能也需要拆分出来。</p>
 
-<h3 id="toc_2">内核缺省安全</h3>
+<p>这也是我们在系统建立时就要引入负载均衡层的一个重要原因。也是负载均衡层的重要作用之一。如下图所示：</p>
 
-<p>这是一个很老的安全最大化状态：如果它不是缺省的，就没人用它。Docker Swarm 模式将缺省安全这一概念融入了核心，并且使用这一机制去解决编排器生命周期中三个很难并且很重要的部分：</p>
+<p><img src="https://img-blog.csdn.net/20150630091204501" alt=""/></p>
 
-<ol>
-<li> 可信引导和节点引入。</li>
-<li> 节点身份发布和管理。</li>
-<li> 认证、授权和加密的信息存储和传播。</li>
-</ol>
+<p>可以看出，这时负载均衡层只有一个作用，就是按照设定的访问规则，将访问不同系统的请求转发给对应的系统，并且在出现错误访问的情况下转发到错误提示页面。</p>
 
-<p>我们来分别看一下这三个部分：</p>
+<h2 id="toc_8"><a></a>2.2、解决方案二：Nginx/Haproxy + Keepalived 方案</h2>
 
-<p><a id="4_2847" class="target-fix ext" rel="external nofollow" target="_blank"></a></p>
+<p>此后，系统的访问压力进一步加大，系统的稳定性越来越受到我们的关注。所以在单节点处理还能满足业务要求的情况下，我们为负载层（还有各层）引入热备方案，以保证一个节点在崩溃的情况下，另一个节点能够自动接替其工作，为工程师解决问题赢得时间。如下图所示：</p>
 
-<h4 id="toc_3">可信引导和节点引入</h4>
+<p><img src="https://img-blog.csdn.net/20150630091331246" alt=""/></p>
 
-<p>确保集群安全的第一步，没有别的，就是严格控制成员和身份。管理员不能依赖它们节点的身份，并且在节点之间强制实行绝对的负载隔离。这意味着，未授权的节点不能允许加入到集群中，并且，已经是集群一部分的节点不能改变身份，突然去伪装成另一个节点。</p>
+<h2 id="toc_9"><a></a>2.3、解决方案三：LVS（DR）+ Keepalived+ Nginx 方案</h2>
 
-<p>为解决这种情况，通过 Docker 企业版 Swarm 模式管理的节点，维护了健壮的、不可改变的身份。期望的特性是，通过使用两种关键的构建块去保证加密：</p>
+<p>在第三版本架构方案中，为了保证负载层足够稳定的状态下，适应更大的访问吞吐量还要应付可能的访问洪峰，我们加入了 LVS 技术。LVS 负责第一层负载，然后再将访问请求转发到后端的若干台 Nginx 上。LVS 的 DR 工作模式，只是将请求转到后端，后端的 Nginx 服务器必须有一个外网 IP，在收到请求并处理完成后，Nginx 将直接发送结果到请求方，不会再经 LVS 回发（具体的 LVS 工作原理介绍将在后文中详细介绍）。</p>
 
-<ol>
-<li> 为集群成员使用<ruby>安全加入令牌 <rt>Secure join token</rt></ruby>。</li>
-<li> 从一个集中化的认证机构发行的内嵌唯一身份的证书。</li>
-</ol>
+<p><img src="https://img-blog.csdn.net/20150630091527570" alt=""/></p>
 
-<p><a id="5_3651" class="target-fix ext" rel="external nofollow" target="_blank"></a></p>
-
-<h5 id="toc_4">加入 Swarm</h5>
-
-<p>要加入 Swarm，节点需要一份<ruby>安全加入令牌 <rt>Secure join token</rt></ruby> 的副本。在集群内的每个操作角色的令牌都是独一无二的 —— 现在有两种类型的节点：工人（workers）和管理者（managers）。由于这种区分，拥有一个工人令牌的节点将不允许以管理者角色加入到集群。唯一得到这个特殊令牌的方式是通过 swarm 的管理 API 去向集群管理者请求一个。</p>
-
-<p>令牌是安全的并且是随机生成的，它还有一个使得令牌泄露更容易被检测到的特殊语法：一个可以在你的日志和仓库中很容易监视的特殊前缀。幸运的是，即便发现一个泄露，令牌也可以很容易去更新，并且，推荐你经常去更新它们 —— 特别是，在一段时间中你的集群不进行扩大的情况下。</p>
-
-<p><img src="https://dn-linuxcn.qbox.me/data/attachment/album/201806/03/215739qv7uv8sbyv87hfvx.jpg" alt=""/></p>
-
-<p><u>Docker Swarm</u></p>
-
-<p><a id="5_4684" class="target-fix ext" rel="external nofollow" target="_blank"></a></p>
-
-<h5 id="toc_5">引导信任</h5>
-
-<p>作为它的身份标识创建的一部分，一个新的节点将向任意一个网络管理者请求发布一个新的身份。但是，在我们下面的威胁模型中，所有的通讯可以被一个第三方拦截。这种请求存在的问题是：一个节点怎么知道与它进行对话的对方是合法的管理者？</p>
-
-<p><img src="https://dn-linuxcn.qbox.me/data/attachment/album/201806/03/215739sbxzyy3i5yi7yv41.jpg" alt=""/></p>
-
-<p><u>Docker Security</u></p>
-
-<p>幸运的是，Docker 有一个内置机制可以避免这种情况。这个加入令牌被主机用于加入 Swarm，包含了一个根 CA 证书的哈希串。所以，主机可以使用单向 TLS，并且使用这个哈希串去验证它加入的 Swarm 是否正确：如果管理者持有的证书没有被正确的 CA 哈希串签名，节点就知道它不可信任。</p>
-
-<p><a id="4_5558" class="target-fix ext" rel="external nofollow" target="_blank"></a></p>
-
-<h4 id="toc_6">节点身份发布和管理</h4>
-
-<p>在一个 Swarm 中，身份标识是内嵌在每个节点都单独持有的一个 x509 证书中。在一个最小权限原则的表现形式中，证书的私钥被绝对限制在主机的原始位置。尤其是，管理者不能访问除了它自己的私钥以外的任何一个私钥。</p>
-
-<p><a id="5_5908" class="target-fix ext" rel="external nofollow" target="_blank"></a></p>
-
-<h5 id="toc_7">身份发布</h5>
-
-<p>要接收它们的证书而无需共享它们的私钥，新的主机通过发布一个证书签名请求（CSR）来开始，管理者收到证书签名请求之后，转换成一个证书。这个证书成为这个新的主机的身份标识，使这个节点成为 Swarm 的一个完全合格成员！</p>
-
-<p><img src="https://dn-linuxcn.qbox.me/data/attachment/album/201806/03/215742n1acrwxccxngwici.jpg" alt=""/></p>
-
-<p>当和安全引导机制一起使用时，发行身份标识的这个机制来加入节点是缺省安全的：所有的通讯部分都是经过认证的、授权的，并且非敏感信息从来都不会以明文方式进行交换。</p>
-
-<p><a id="5_6601" class="target-fix ext" rel="external nofollow" target="_blank"></a></p>
-
-<h5 id="toc_8">身份标识延期</h5>
-
-<p>尽管如此，给一个 Swarm 中安全地加入节点，仅仅是 “故事” 的一部分。为降低证书的泄露或者失窃造成的影响，并且移除管理 CRL 列表的复杂性，Swarm 模式为身份标识使用了较短存活周期的证书。这些证书缺省情况下三个月后将过期，但是，也可以配置为一个小时后即刻过期！</p>
-
-<p><img src="https://dn-linuxcn.qbox.me/data/attachment/album/201806/03/215742hud947n983d3s7a8.jpg" alt=""/></p>
-
-<p><u>Docker secrets</u></p>
-
-<p>较短的证书过期时间意味着不能手动去处理证书更新，所以，通常会使用一个 PKI 系统。对于 Swarm，所有的证书是以一种不中断的方式进行自动更新的。这个过程很简单：使用一个相互认证的 TLS 连接去证明一个特定身份标识的所有者，一个 Swarm 节点定期生成一个新的公钥 / 私钥密钥对，并且用相关的 CSR 去签名发送，创建一个维持相同身份标识的完整的新证书。</p>
-
-<p><a id="4_7631" class="target-fix ext" rel="external nofollow" target="_blank"></a></p>
-
-<h4 id="toc_9">经过认证、授权、和加密的信息存储和传播。</h4>
-
-<p>在一个正常的 Swarm 的操作中，关于任务的信息被发送给去运行的工人（worker）节点。这里不仅仅包含将被一个节点运行的容器的信息；也包含那个容器运行所必需的资源的所有信息，包括敏感的机密信息，比如，私钥、密码和 API 令牌。</p>
-
-<p><a id="5_8035" class="target-fix ext" rel="external nofollow" target="_blank"></a></p>
-
-<h5 id="toc_10">传输安全</h5>
-
-<p>事实上，参与 Swarm 的每个节点都拥有一个独一无二的 X509 格式的证书，因此，节点之间的通讯安全是没有问题的：节点使用它们各自的证书，与另一个连接方进行相互认证、继承机密、真实性、和 TLS 的完整性。</p>
-
-<p><img src="https://dn-linuxcn.qbox.me/data/attachment/album/201806/03/215744kv6j5j6118rrrlrl.jpg" alt=""/></p>
-
-<p><u>Swarm Mode</u></p>
-
-<p>关于 Swarm 模式的一个有趣的细节是，本质上它是使用了一个推送模式：仅管理者被允许去发送信息到工人们（workers）—— 显著降低了暴露在低权限的工人节点面前的管理者节点的攻击面。</p>
-
-<p><a id="5_8737" class="target-fix ext" rel="external nofollow" target="_blank"></a></p>
-
-<h5 id="toc_11">将负载严格隔离进安全区域</h5>
-
-<p>管理者节点的其中一个责任是，去决定发送到每个工人（worker）节点的任务是什么。管理者节点使用多种策略去做这个决定；根据每个节点和每个负载的特性，去跨 Swarm 去安排负载。</p>
-
-<p>在使用 Swarm 模式的 Docker 企业版中，管理者节点通过使用附加到每个单个节点标识上的安全标签，去影响这些安排决定。这些标签允许管理者将节点组与不同的安全区域连接到一起，以限制敏感负载暴露，以及使相关机密信息更安全。</p>
-
-<p><img src="https://dn-linuxcn.qbox.me/data/attachment/album/201806/03/215744hfd4zgcgzfrmthde.jpg" alt=""/></p>
-
-<p><u>Docker Swarm Security</u></p>
-
-<p><a id="5_9488" class="target-fix ext" rel="external nofollow" target="_blank"></a></p>
-
-<h5 id="toc_12">安全分发机密</h5>
-
-<p>除了加快身份标识发布过程之外，管理者节点还有存储和分发工人节点所需要的任何资源的任务。机密信息像任何其它类型的资源一样处理，并且基于安全的 mTLS 连接，从管理者推送到工人节点。</p>
-
-<p><img src="https://dn-linuxcn.qbox.me/data/attachment/album/201806/03/215745uoodd3k3e43kivvv.jpg" alt=""/></p>
-
-<p><u>Docker Secrets</u></p>
-
-<p>在主机上，Docker 企业版能确保机密仅提供给它们指定的容器。在同一个主机上的其它容器并不能访问它们。Docker 以一个临时文件系统的方式显露机密给一个容器，确保机密总是保存在内存中，并且从不写入到磁盘。这种方式比其它竞争的替代者更加安全，比如，<a href="https://diogomonica.com/2017/03/27/why-you-shouldnt-use-env-variables-for-secret-data/">在环境变量中存储它们</a>。一旦这个任务完成，这个机密将永远消失。</p>
-
-<p><a id="5_10460" class="target-fix ext" rel="external nofollow" target="_blank"></a></p>
-
-<h5 id="toc_13">存储机密</h5>
-
-<p>在管理者主机上的机密总是保持加密的。缺省情况下，加密这些机密的密钥（被称为数据加密密钥，DEK）是以明文的方式存储在硬盘上的。这使得那些对安全性要求较低的人可以轻松地去使用 Docker Swarm 模式。</p>
-
-<p>但是，如果你运行一个生产集群，我们推荐你启用自动锁定模式。当自动锁定模式启用后，一个重新更新过的 DEK 被一个独立的加密密钥的密钥（KEK）所加密。这个密钥从不被存储在集群中；管理者有责任将它存储在一个安全可靠的地方，并且当集群启动的时候可以提供它。这就是所谓的 “解锁” Swarm。</p>
-
-<p>根据 Raft 故障容错一致性算法，Swarm 模式支持多个管理者。在这个场景中，无缝扩展了机密存储的安全性。每个管理者主机除了共享密钥之外，还有一个唯一的磁盘加密密钥。幸运的是，Raft 日志在磁盘上也是加密的，并且，在自动锁定模式下，没有 KEK 同样是不可访问的。</p>
-
-<p><a id="4_11568" class="target-fix ext" rel="external nofollow" target="_blank"></a></p>
-
-<h4 id="toc_14">当一个节点被攻陷后发生了什么？</h4>
-
-<p><img src="https://dn-linuxcn.qbox.me/data/attachment/album/201806/03/215746h7dbkd33obobtk66.jpg" alt=""/></p>
-
-<p><u>Docker Secrets</u></p>
-
-<p>在传统的编排器中，挽回一台被攻陷的主机是一个缓慢而复杂的过程。使用 Swarm 模式，恢复它就像运行一个 Docker 节点的 <code>rm</code> 命令一样容易。这是从集群中删除一个受影响的节点，而 Docker 将去处理剩下的事情，即，重新均衡负载，并且确保其它的主机已经知道，而不会去与受影响的节点通讯。</p>
-
-<p>正如我们看到的那样，感谢最小权限的编排器，甚至是，如果攻击者在主机上持续活动，它们将被从剩余的网络上切断。主机的证书 —— 它的身份标识 —— 被列入黑名单，因此，管理者也不能有效访问它。</p>
-
-<p><a id="3_12461" class="target-fix ext" rel="external nofollow" target="_blank"></a></p>
-
-<h3 id="toc_15">结论</h3>
-
-<p>使用 Swarm 模式的 Docker 企业版，在缺省情况下确保了编排器的所有关键区域的安全：</p>
+<p>这里要注意的是：</p>
 
 <ul>
-<li>  加入集群。阻止恶意节点加入到集群。</li>
-<li>  把主机分组为安全区域。阻止攻击者的横向移动。</li>
-<li>  安排任务。任务将仅被委派到允许的节点。</li>
-<li>  分配资源。恶意节点不能 “盗取” 其它的负载或者资源。</li>
-<li>  存储机密。从不明文保存并且从不写入到工人节点的磁盘上。</li>
-<li>  与工人节点的通讯。使用相互认证的 TLS 加密。</li>
+<li><p>有了上层的 LVS 的支撑 Nginx 就不再需要使用 Keepalived 作为热备方案。因为首先 Nginx 不再是单个节点进行负载处理，而是一个集群多台 Nginx 节点；另外 LVS 对于下后端的服务器自带基于端口的健康检查功能；</p></li>
+<li><p>LVS 是单节点处理的，虽然 LVS 是非常稳定的，但是为了保证 LVS 更稳定的工作，我们还是需要使用 Keepalived 为 LVS 做一个热备节点，以防不时之需。</p></li>
 </ul>
 
-<p>因为 Swarm 模式的持续改进，Docker 团队正在努力将最小权限原则进一步推进。我们正在处理的一个任务是：如果一个管理者被攻陷了，怎么去保证剩下的节点的安全？路线图已经有了，其中一些功能已经可以使用，比如，白名单功能，仅允许特定的 Docker 镜像，阻止管理者随意运行负载。这是通过 Docker 可信内容来实现的。</p>
+<h2 id="toc_10"><a></a>2.4、解决方案四：DNS 轮询 + LVS（DR）+ Keepalived + Nginx 方案</h2>
 
-<hr/>
+<p><img src="https://img-blog.csdn.net/20150627232428537" alt=""/></p>
 
-<p>via: <a href="https://blog.docker.com/2017/10/least-privilege-container-orchestration/">https://blog.docker.com/2017/10/least-privilege-container-orchestration/</a></p>
+<p>场景四中，为了满足平均上亿的日 PV 访问，在对业务进行外网暴露的基础上，我们在互联网的最前端做了一个 DNS 轮询。然后将（对用户信息系统）访问压力首先分摊到两个对称 LVS 组上，再由每个组向下继续分拆访问压力。</p>
 
-<p>作者：<a href="https://blog.docker.com/author/diogo/">Diogo Mónica</a> 译者：<a href="https://github.com/qhwdw">qhwdw</a> 校对：<a href="https://github.com/wxy">wxy</a></p>
+<p>注意上图的负载层方案的不同：</p>
+
+<ul>
+<li><p>首先我们不在像前面的方案中，使用目录名分割业务系统了，而是直接将业务系统的访问使用不同的二级域名进行拆分。这样的变化有利于每个业务系统都拥有自己独立的负载均衡层。</p></li>
+<li><p>请注意上图中的细节，这个负载均衡层是专门为 “用户信息子系统” 提供负载均衡支撑的，而可能还存在的 “订单子系统”、“车辆信息子系统” 都会有他们独立的负载均衡层。</p></li>
+<li><p>在 LVS 下方的 Nginx 服务可以实现无限制的扩展，同样的就像场景三种所给出的解决方案一样，Nginx 本身不在需要 Keepalived 保持热备，而是全部交由上层的 LVS 进行健康情况检查。而即使有一两台 Nginx 服务器出现故障，对整个负载集群来说问题也不大。</p></li>
+</ul>
+
+<p>方案扩展到了这一步，LVS 层就没有必要再进行扩展新的节点了。为什么呢？根据您的业务选择的合适的 LVS 工作模式，两个 LVS 节点的性能足以支撑地球上的所有核心 WEB 站点。如果您对 LVS 的性能有疑惑，请自行谷歌百度。这里我们提供了一份参考资料：《LVS 性能，转发数据的理论极限》<a href="http://www.zhihu.com/question/21237968">http://www.zhihu.com/question/21237968</a></p>
+
+<h1 id="toc_11"><a></a>3、为什么没有独立的 LVS 方案</h1>
+
+<p>在下一篇文章《架构设计：负载均衡层设计方案（2）——LVS、keepalived、Nginx 安装和核心原理解析》中我们将提到这个问题。实际上通过本篇文章的架构演进分析，一些读者都可以看出端倪。如果用一句话说明其中的原因，那就是 LVS 为了保证其性能对配置性有所牺牲，单独使用的话往往无法满足业务层对负载层灵活分配请求的要求。</p>
+
+<h1 id="toc_12"><a></a>4、说明</h1>
+
+<h2 id="toc_13"><a></a>4.1、术语说明</h2>
+
+<ul>
+<li><p>TPS: 衡量业务层处理性能的重要指标（每秒钟 request / 事务的处理数量）。业务服务处理一个完整的业务过程，并向上层返回处理结果的过程就是一个 request / 事务。那么在一秒钟内整个业务系统能够完成多少个这样的过程，其衡量单位就是 TPS。TPS 不但和系统架构有很大的关系（特别是业务层和业务通信层的架构祥泰），和物理环境、代码质量的关系也非常密切。</p></li>
+<li><p>PV: 网页浏览数是评价网站流量最常用的指标之一，简称为 PV。Page Views 中的 Page 一般是指普通的 html 网页，也包含 php、jsp 等动态产生的 html 内容。注意是完整的显示一个 Page 成为一个 PV。但是一个 PV，一般需要多次 HTTP 请求，以便获取多个静态资源，这是需要注意的。</p></li>
+<li><p>UV: Unique Visitor 一个独立 IP，在一个单位时间内（例如一日 / 一小时）对系统的一个 PV 请求，成为一个 UV（重复的 PV 不在进行计数）。</p></li>
+<li><p>RUV: Repeat User Visitor 一个独立用户，在一个单位时间内（例如一日 / 一小时）对系统的一个 PV 请求，并且重复的访问要进行计数。</p></li>
+</ul>
+
+<h2 id="toc_14"><a></a>4.2、后文介绍</h2>
+
+<p>下篇文章《架构设计：负载均衡层设计方案（2）——LVS、keepalived、Nginx 安装和核心原理解析》中，我们将提到 LVS 的工作原理和 Nginx 中核心负载策略的工作原理（Hash、轮询、权重），以及独立的 LVS、Nginx、keepalived 的安装方式（虽然安装方式在网络上一个搜索就能搜出来一大把，但是很对都是抄袭，且没有经过详细的正误检查，所以我觉得还是需要重新进行一下说明）</p>
+
+<p><link rel="stylesheet" href="https://csdnimg.cn/release/phoenix/template/css/markdown_views-ea0013b516.css"></p>
 
                         
                       </div>
@@ -325,10 +239,10 @@ via: <a href="https://blog.docker.com/2017/10/least-privilege-container-orchest
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/6/5</span>
+                    <span class="date">2018/6/28</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Container.html'>Container</a></span>
+          					    <span class="posted-in"><a href='Network.html'>Network</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -418,31 +332,31 @@ via: <a href="https://blog.docker.com/2017/10/least-privilege-container-orchest
 	      
 		      
 			      <li class="post">
-			        <a href="15389311738065.html">重构到更深层的模型</a>
+			        <a href="15459058392039.html">Reliable Domain Events</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389278377243.html">IAM of Google Cloud</a>
+			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389224951575.html">RSocket, a New Application Network Protocol for Reactive Applications, Announced at SpringOne</a>
+			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389220103546.html">如何形象地描述RxJava中的背压和流控机制？</a>
+			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389214670417.html">Modeling Uncertainty with Reactive DDD</a>
+			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
 			      </li>
 		     
 		  

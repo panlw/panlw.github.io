@@ -105,112 +105,361 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15293273764686.html">
+                <a class="clearlink" href="15322166489736.html">
                 
-                  <h1>对高并发流量控制的一点思考</h1>
+                  <h1>React JS: what is a PureComponent?</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="http://blog.51cto.com/zhangfengzhe">zfz_linux_boy</a> 2018-01-30<br/>
-<a href="http://blog.51cto.com/zhangfengzhe/2066683">http://blog.51cto.com/zhangfengzhe/2066683</a></p>
+<p><a href="http://lucybain.com/blog/2018/react-js-pure-component/">http://lucybain.com/blog/2018/react-js-pure-component/</a></p>
+
+<p>Published on: January 14, 2018</p>
+
+<p>Tags: <a href="/blog/tags/react/">react</a>, <a href="/blog/tags/js/">js</a>, and <a href="/blog/tags/performance/">performance</a></p>
 </blockquote>
 
-<h2 id="toc_0">前言</h2>
+<p>Early on, React developers had the idea of “pure” components. This concept went by a variety of names (stateful/pure, smart/dumb, container/presentational, etc.) but were all fairly similar. These components still used the <code>React.Component</code> class, but the idea provided a useful mental model for developers to work with.</p>
 
-<p>在实际项目中，曾经遭遇过线上 5W+QPS 的峰值，也在压测状态下经历过 10W+QPS 的大流量请求，本篇博客的话题主要就是自己对高并发流量控制的一点思考。</p>
+<p>But then on June 29, 2016 React 15.3 was released a new <code>PureComponent</code> class. The <code>PureComponent</code> kind of summed up the previous concept of “pure” components, and put a large speed boost in as well. This article is about the <code>PureComponent</code> class, and only touches on the “pure” component mental model. I’ve added some links in the references section to cover why the idea of “pure” components is useful. Because of <code>PureComponent</code>’s emphasis on performance, this is also a continuation from my previous article about <a href="/blog/2017/react-js-when-to-rerender/">when React re-renders</a> (I recommend reading that one first if you haven’t already).</p>
 
-<h2 id="toc_1">应对大流量的一些思路</h2>
+<h3 id="toc_0">What problem does it solve?</h3>
+
+<p>By default, a plain <code>React.Component</code> has <code>shouldComponentUpdate</code> set to always return <code>true</code>. This is good because it means React errs on the side of always updating the component in case there’s any new data to show. However, it’s bad because it means React might trigger unnecessary re-renders. One way to deal with these extra re-renders is to change the <code>shouldComponentUpdate</code> function to check when your component needs to update (see my <a href="/blog/2017/react-js-when-to-rerender/">previous post</a> for more information).</p>
+
+<p>Another way to stop extra re-renders is to use a <code>PureComponent</code>. Let’s build out the example from the previous performance post...</p>
+
+<h3 id="toc_1">Example setup</h3>
+
+<p><strong>Note:</strong> I’ve written intentionally bad code in the <code>componentDidMount</code> methods throughout. This is to keep the examples small and to show some gotchas along the way. Please do not write this kind of code for reals!</p>
+
+<pre><code class="language-js">class Todos extends React.PureComponent {
+
+    constructor(props) {
+        super(props);
+        this.state = { 
+            todos: [
+                { title: &#39;take out the trash&#39;, done: false, notes: [&#39;boring&#39;] },
+                { title: &#39;walk dog&#39;, done: true, notes: [&#39;exercise&#39;] },
+                { title: &#39;read about React&#39;, done: false, notes: [&#39;fun!&#39;] },
+            ]
+        };
+    }
+
+    componentDidMount() {
+        setInterval(() =&gt; {
+            this.setState((oldState) =&gt; {
+                return { todos: [...oldState.todos] }
+            });
+        }, 1000);
+    }
+
+    render() {
+        console.log(&#39;Todos render called&#39;);
+        return (&lt;div&gt;
+            {this.state.todos.map((todo, i) =&gt; {
+              return (&lt;TodoItem
+                key={i}
+                title={todo.title}
+                done={todo.done}
+                notes={todo.notes}
+              /&gt;);
+            })}
+          &lt;/div&gt;);
+    }
+}
+
+class TodoItem extends React.Component {
+
+    render() {
+        console.log(&#39;TodoItem render called&#39;);
+        return (&lt;div&gt;
+                {this.props.done ? &#39;✓&#39;: &#39;▢&#39;} {this.props.title}
+                ({this.props.notes.join(&#39;, &#39;)})
+            &lt;/div&gt;);
+    }
+}
+
+ReactDOM.render(&lt;Todos /&gt;, document.getElementById(&#39;app&#39;));
+</code></pre>
+
+<p>It’s bigger than most of the examples I write, but it’s all relevant - promise! We’ll break it down (feel free to skip down to the next section if the above is clear to you already):</p>
+
+<h4 id="toc_2"><code>Todos</code></h4>
+
+<p>First we have a React component, this is the one that <code>ReactDOM</code> will render (see the last line in the example).</p>
+
+<p>We have the constructor method so we can set the initial state - in this case an array of <code>todos</code>, each of which has <code>title</code>, <code>done</code>, and <code>notes</code> attributes. (Typically this kind of state would be passed in through <code>props</code> but I’ve written it in the <code>state</code> to keep the example smaller and self contained.)</p>
+
+<pre><code class="language-js">constructor(props) {
+    super(props);
+    this.state = { 
+        todos: [
+            { title: &#39;take out the trash&#39;, done: false, notes: [&#39;boring&#39;] },
+            { title: &#39;walk dog&#39;, done: true, notes: [&#39;exercise&#39;] },
+            { title: &#39;read about React&#39;, done: false, notes: [&#39;fun!&#39;] },
+        ]
+    };
+}
+</code></pre>
+
+<p>Then there’s the <code>componentDidMount</code> method. Its only purpose is to change the state every second so we can see how React deals with those changes. Right now it updates <code>state.todos</code> to be the same as the previous <code>state.todos</code>.</p>
+
+<pre><code class="language-js">componentDidMount() {
+    setInterval(() =&gt; {
+        this.setState((oldState) =&gt; {
+            return { todos: [...oldState.todos] }
+        });
+    }, 1000);
+}
+</code></pre>
+
+<p>Finally <code>Todos</code> has the render method. It renders a list of the <code>TodoItem</code> components, and passes in their respective <code>title</code>, <code>done</code>, and <code>notes</code> attributes. The main thing we’re interested in here is seeing when this component is rendered.</p>
+
+<pre><code class="language-js">render() {
+    console.log(&#39;Todos render called&#39;);
+    return (&lt;div&gt;
+        {this.state.todos.map((todo, i) =&gt; {
+            return (&lt;TodoItem
+            key={i}
+            title={todo.title}
+            done={todo.done}
+            notes={todo.notes}
+            /&gt;);
+        })}
+        &lt;/div&gt;);
+}
+</code></pre>
+
+<h4 id="toc_3"><code>TodoItem</code></h4>
+
+<p><u>It’s a lot simpler than <code>Todos</code></u></p>
+
+<p>Yes, that’s right <code>TodoItem</code> inherits from <code>React.Component</code> just like <code>Todos</code>, but it only implements the <code>render</code> function (which is required) to display the <code>title</code>, <code>done</code>, and <code>notes</code> values. Here again we’re mostly interested in knowing <u>when</u> the <code>render</code> method is called, not really what is displayed (yet!).</p>
+
+<pre><code class="language-js">render() {
+    console.log(&#39;TodoItem render called&#39;);
+    return (&lt;div&gt;
+            {this.props.done ? &#39;✓&#39;: &#39;▢&#39;} {this.props.title}
+            ({this.props.notes.join(&#39;, &#39;)})
+        &lt;/div&gt;);
+}
+</code></pre>
+
+<h3 id="toc_4">What’s the problem?</h3>
+
+<p>Well, if you <a href="https://codepen.io/lbain/pen/GyOXye">look at it yourself</a> you’ll see the console spits out:</p>
+
+<pre><code class="language-log">Todos render called
+TodoItem render called
+TodoItem render called
+TodoItem render called
+Todos render called
+TodoItem render called
+TodoItem render called
+TodoItem render called
+</code></pre>
+
+<p>Over and over, every second.</p>
+
+<p><u>That seems silly, the data isn’t even changing!</u></p>
+
+<p>You’re right - there’s no need to re-render any of these components because the data doesn’t change. But React doesn’t know this - the <code>setState</code> method from the <code>onComponentDidmount</code> triggers a re-render every second for the <code>Todos</code> component and its children.</p>
+
+<h3 id="toc_5">How do we re-render less?</h3>
+
+<p>Let’s focus on <code>TodoItem</code> for now. It’s rendering three times for each <code>Todos</code> render so we can optimise it first. We’ll talk about <code>Todos</code> later on.</p>
+
+<p><u>How can we fix <code>TodoItem</code> re-rendering too much?</u></p>
+
+<p>That brings us nicely to the <code>React.PureComponent</code> this post is supposed to be all about. The <code>TodoItem</code> doesn’t need to re-render since none of its data changes. The <code>props</code> coming in each time are the same, and there’s no internal <code>state</code>. Let’s try converting <code>TodoItem</code> to a <code>React.PureComponent</code>:</p>
+
+<pre><code class="language-js">class TodoItem extends React.PureComponent { // This line changed
+
+    render() {
+        console.log(&#39;TodoItem render called&#39;);
+        return (&lt;div&gt;
+                {this.props.done ? &#39;✓&#39;: &#39;▢&#39;} {this.props.title}
+                ({this.props.notes.join(&#39;, &#39;)})
+            &lt;/div&gt;);
+    }
+}
+</code></pre>
+
+<p>If you make that change in the <a href="https://codepen.io/lbain/pen/GyOXye">CodePen</a> you’ll see the following in the console:</p>
+
+<pre><code class="language-log">Todos render called
+TodoItem render called
+TodoItem render called
+TodoItem render called
+Todos render called
+Todos render called
+Todos render called
+Todos render called
+...
+</code></pre>
+
+<p>After the initial <code>TodoItem</code>s render, they never render again <u>even though their parent renders multiple times.</u></p>
+
+<p><strong>Boom.</strong></p>
+
+<p>Did you catch that? We just saved ourselves a <u>bunch</u> of unnecessary <code>TodoItem</code> renders simply by converting it to a <code>PureComponent</code>. Aw yeah.</p>
+
+<h3 id="toc_6">How does <code>PureComponent</code> work?</h3>
+
+<p><u>Ok, you’ve had your big reveal. How does it actually work?</u></p>
+
+<p>You know how we’d normally need to write our own <code>shouldComponentUpdate</code> to check if the component should re-render or not? Well, React has written that check for us in <code>PureComponent</code>. The <a href="https://github.com/facebook/react/blob/9d310e0bc7b9d5ce39d82536dfcb67f98462a346/packages/react-test-renderer/src/ReactShallowRenderer.js#L170-L173">relevant shouldComponentUpdate code</a> is:</p>
+
+<pre><code class="language-js">if (type.prototype &amp;&amp; type.prototype.isPureReactComponent) {
+    shouldUpdate = !shallowEqual(oldProps, props) ||
+                   !shallowEqual(oldState, state);
+}
+</code></pre>
+
+<p><strong>Note:</strong> React checks both <code>props</code> and <code>state</code>. Throughout this article I focus on <code>state</code> because it makes the examples easier and self contained, however it’s important to note that everything we talk about here equally applies to <code>props</code>.</p>
+
+<p><a href="https://github.com/facebook/fbjs/blob/c69904a511b900266935168223063dd8772dfc40/packages/fbjs/src/core/shallowEqual.js">Here</a> is the code for that <code>shallowEqual</code> function. Of particular interest is the <a href="https://github.com/facebook/fbjs/blob/c69904a511b900266935168223063dd8772dfc40/packages/fbjs/src/core/shallowEqual.js#L35-L37">method documentation</a>:</p>
 
 <blockquote>
-<p>首先，我们来说一下什么是大流量？</p>
-
-<p>大流量，我们很可能会冒出：TPS（每秒事务量），QPS（每秒请求量），1W+，5W+，10W+，100W+...。其实并没有一个绝对的数字，如果这个量造成了系统的压力，影响了系统的性能，那么这个量就可以称之为大流量了。</p>
-
-<p>其次，应对大流量的一些常见手段是什么？</p>
-
-<p>缓存：说白了，就是让数据尽早进入缓存，离程序近一点，不要大量频繁的访问 DB。</p>
-
-<p>降级：如果不是核心链路，那么就把这个服务降级掉。打个比喻，现在的 APP 都讲究千人千面，拿到数据后，做个性化排序展示，如果在大流量下，这个排序就可以降级掉！</p>
-
-<p>限流：大家都知道，北京地铁早高峰，地铁站都会做一件事情，就是限流了！想法很直接，就是想在一定时间内把请求限制在一定范围内，保证系统不被冲垮，同时尽可能提升系统的吞吐量。</p>
-
-<p>注意到，有些时候，缓存和降级是解决不了问题的，比如，电商的双十一，用户的购买，下单等行为，是涉及到大量写操作，而且是核心链路，无法降级的，这个时候，限流就比较重要了。</p>
-
-<p>那么接下来，我们重点说一下，限流。</p>
+<p>Performs equality by iterating through keys on an object and returning false when any key has values which are not strictly equal between the arguments. Returns true when the values of all keys are strictly equal.</p>
 </blockquote>
 
-<h2 id="toc_2">限流的常用方式</h2>
+<p><u>But wait, what does “strictly equal” mean?</u></p>
 
-<blockquote>
-<p>限流的常用处理手段有：计数器、滑动窗口、漏桶、令牌。</p>
-</blockquote>
+<p>That is a <strong>very</strong> good question, so we’ll dedicate a whole section to it.</p>
 
-<p><strong>计数器</strong> </p>
+<h3 id="toc_7">Side note: shallow equality</h3>
 
-<blockquote>
-<p>计数器是一种比较简单的限流算法，用途比较广泛，在接口层面，很多地方使用这种方式限流。在一段时间内，进行计数，与阀值进行比较，到了时间临界点，将计数器清 0。</p>
-</blockquote>
+<p>Feel free to skip if this isn’t new for you.</p>
 
-<p><img src="http://i2.51cto.com/images/blog/201801/30/26433210356cfa9d26407d07d0819b14.png?x-oss-process=image/watermark,size_16,text_QDUxQ1RP5Y2a5a6i,color_FFFFFF,t_100,g_se,x_10,y_10,shadow_90,type_ZmFuZ3poZW5naGVpdGk=" alt=""/></p>
+<p>A <u>shallow</u> equality check means that JS only checks that the value’s object <u>ids</u> (as in, the memory address for where JS stores the information for that particular object) are the same, not that their <u>content</u> is the same. So here’s an example where shallow equality is what you and I would usually think of as “equal”:</p>
 
-<p><img src="http://i2.51cto.com/images/blog/201801/30/36bd0e076d23e7bcd10ac0b1ac498bb7.png?x-oss-process=image/watermark,size_16,text_QDUxQ1RP5Y2a5a6i,color_FFFFFF,t_100,g_se,x_10,y_10,shadow_90,type_ZmFuZ3poZW5naGVpdGk=" alt=""/></p>
+<pre><code class="language-js">const value = &#39;cat&#39;;
 
-<blockquote>
-<p>这里需要注意的是，存在一个时间临界点的问题。举个栗子，在 12:01:00 到 12:01:58 这段时间内没有用户请求，然后在 12:01:59 这一瞬时发出 100 个请求，OK，然后在 12:02:00 这一瞬时又发出了 100 个请求。这里你应该能感受到，在这个临界点可能会承受恶意用户的大量请求，甚至超出系统预期的承受。</p>
-</blockquote>
+const item1 = value;
+const item2 = value;
 
-<p><strong>滑动窗口</strong> </p>
+console.log(item1 === item2); // true
+</code></pre>
 
-<blockquote>
-<p>由于计数器存在临界点缺陷，后来出现了滑动窗口算法来解决。</p>
+<p>And here’s an example where JS’s definition of “equal” and our definition might differ:</p>
 
-<p><img src="http://i2.51cto.com/images/blog/201801/30/292f2358a31662de2846a122e25bb005.png?x-oss-process=image/watermark,size_16,text_QDUxQ1RP5Y2a5a6i,color_FFFFFF,t_100,g_se,x_10,y_10,shadow_90,type_ZmFuZ3poZW5naGVpdGk=" alt=""/></p>
+<pre><code class="language-js">const value = &#39;cat&#39;;
 
-<p>滑动窗口的意思是说把固定时间片，进行划分，并且随着时间的流逝，进行移动，这样就巧妙的避开了计数器的临界点问题。也就是说这些固定数量的可以移动的格子，将会进行计数判断阀值，因此格子的数量影响着滑动窗口算法的精度。</p>
-</blockquote>
+const array1 = [value];
+const array2 = [value];
 
-<p><strong>漏桶</strong> </p>
+console.log(array1 === array2); // false
+</code></pre>
 
-<blockquote>
-<p>虽然滑动窗口有效避免了时间临界点的问题，但是依然有时间片的概念，而漏桶算法在这方面比滑动窗口而言，更加先进。</p>
+<p>Even though we can clearly see the <u>content</u> of <code>array2</code> is the same as <code>array1</code> JS registers them as different since their <u>ids</u> are different. In this case we created two completely separate arrays, that just happened to have the same data in them.</p>
 
-<p>有一个固定的桶，进水的速率是不确定的，但是出水的速率是恒定的，当水满的时候是会溢出的。</p>
-</blockquote>
+<p><u>What’s the alternative?</u></p>
 
-<p><img src="http://i2.51cto.com/images/blog/201801/30/0bdc37469876669d8ff3813da367705d.png?x-oss-process=image/watermark,size_16,text_QDUxQ1RP5Y2a5a6i,color_FFFFFF,t_100,g_se,x_10,y_10,shadow_90,type_ZmFuZ3poZW5naGVpdGk=" alt=""/></p>
+<p>We can check inside each item and see if all the values are the same - this is called a “deep” equality check. Something like this:</p>
 
-<p><img src="http://i2.51cto.com/images/blog/201801/30/244ab47205fd764fd74e34f4f0da1cb8.png?x-oss-process=image/watermark,size_16,text_QDUxQ1RP5Y2a5a6i,color_FFFFFF,t_100,g_se,x_10,y_10,shadow_90,type_ZmFuZ3poZW5naGVpdGk=" alt=""/></p>
+<pre><code class="language-js">const value = &#39;cat&#39;;
 
-<p><strong>令牌桶</strong> </p>
+const array1 = [value];
+const array2 = [value];
 
-<blockquote>
-<p>注意到，漏桶的出水速度是恒定的，那么意味着如果瞬时大流量的话，将有大部分请求被丢弃掉（也就是所谓的溢出）。为了解决这个问题，令牌桶进行了算法改进。</p>
+let equal = true;
+array1.forEach((item, index) =&gt; {
+    equal = equal &amp;&amp; array1[index] === array2[index];
+});
 
-<p><img src="http://i2.51cto.com/images/blog/201801/30/35a6b4a0842d6ac0e5f5b14b7c64189d.png?x-oss-process=image/watermark,size_16,text_QDUxQ1RP5Y2a5a6i,color_FFFFFF,t_100,g_se,x_10,y_10,shadow_90,type_ZmFuZ3poZW5naGVpdGk=" alt=""/></p>
+console.log(equal); // true
+</code></pre>
 
-<p>生成令牌的速度是恒定的，而请求去拿令牌是没有速度限制的。这意味，面对瞬时大流量，该算法可以在短时间内请求拿到大量令牌，而且拿令牌的过程并不是消耗很大的事情。（有一点生产令牌，消费令牌的意味）</p>
+<p><u>Why would shallow equality ever be useful?</u></p>
 
-<p>不论是对于令牌桶拿不到令牌被拒绝，还是漏桶的水满了溢出，都是为了保证大部分流量的正常使用，而牺牲掉了少部分流量，这是合理的，如果因为极少部分流量需要保证的话，那么就可能导致系统达到极限而挂掉，得不偿失。</p>
-</blockquote>
+<p>Well, it’s <u>really</u> fast. In the previous example we have to loop through every single item in the array to find that the arrays are equal. Assuming you’ve got more than one thing in your array that gets slow quickly.</p>
 
-<p><img src="http://i2.51cto.com/images/blog/201801/30/6b63bf4412c0d412095131091144e357.png?x-oss-process=image/watermark,size_16,text_QDUxQ1RP5Y2a5a6i,color_FFFFFF,t_100,g_se,x_10,y_10,shadow_90,type_ZmFuZ3poZW5naGVpdGk=" alt=""/></p>
+<h3 id="toc_8">Warning: PureComponent does a shallow equality check</h3>
 
-<h2 id="toc_3">限流神器：Guava RateLimiter</h2>
+<p>React uses a shallow equality check because it is is <u>way</u> more performant than doing a deep equal. In fact, React doesn’t even offer doing a deep equality check. You can do a shallow check (with <code>PureComponent</code>), write your own check (with <code>shouldComponentUpdate</code>), or not check at all and just always re-render (the default). It’s too risky for React to do a deep equality check since you might have really deeply nested data. Instead React errs on the side of not checking and doing the re-render automatically.</p>
 
-<blockquote>
-<p>Guava 不仅仅在集合、缓存、异步回调等方面功能强大，而且还给我们封装好了限流的 API！</p>
+<p>All if this is generally good news if your component is working with shallow-equality-friendly data. If the <code>state</code> and <code>prop</code> value ids change when their content changes then the components re-render when the should - yay! However, if you don’t handle your data properly, then you can accidentally not re-render when you should - boo!</p>
 
-<p>Guava RateLimiter 基于令牌桶算法，我们只需要告诉 RateLimiter 系统限制的 QPS 是多少，那么 RateLimiter 将以这个速度往桶里面放入令牌，然后请求的时候，通过 tryAcquire() 方法向 RateLimiter 获取许可（令牌）。</p>
-</blockquote>
+<p><u>Could you give an example?</u></p>
 
-<p><img src="http://i2.51cto.com/images/blog/201801/30/57203303c36a7c5fb5a0974ba98116d7.png?x-oss-process=image/watermark,size_16,text_QDUxQ1RP5Y2a5a6i,color_FFFFFF,t_100,g_se,x_10,y_10,shadow_90,type_ZmFuZ3poZW5naGVpdGk=" alt=""/></p>
+<p>As it happens, we already have one ready to go! Let’s leave <code>TodoItem</code> as a <code>PureComponent</code>, and change <code>Todo</code>&#39;s <code>componentDidMount</code> to mess with some data:</p>
 
-<h2 id="toc_4">分布式场景下的限流</h2>
+<pre><code class="language-js">componentDidMount() {
+    setInterval(() =&gt; {
+        this.setState((oldState) =&gt; {
+            oldState.todos[0].done = !oldState.todos[0].done; // new line
+            return { todos: [...oldState.todos] }
+        });
+    }, 1000);
+}
+</code></pre>
 
-<p><strong>上面所说的限流的一些方式，都是针对单机而言的，其实大部分的场景，单机的限流已经足够了。分布式下限流的手段常常需要多种技术相结合，比如 Nginx+Lua，Redis+Lua 等去做。本文主要讨论的是单机的限流，这里就不在详细介绍分布式场景下的限流了。</strong> <br/>
-<strong>一句话，让系统的流量，先到队列中排队、限流，不要让流量直接打到系统上。</strong></p>
+<p>If you run this you’ll see the “done” state for the first todo item flash on and off every second. This is good news - we’re updating the data and it’s displaying properly.</p>
+
+<p>But... let’s try this one:</p>
+
+<pre><code class="language-js">componentDidMount() {
+    setInterval(() =&gt; {
+        this.setState((oldState) =&gt; {
+            oldState.todos[0].notes.push(&#39;smelly&#39;); // new line
+            return { todos: [...oldState.todos] }
+        });
+    }, 1000);
+}
+</code></pre>
+
+<p>The first todo item <u>should</u> re-render every second with a new “smelly” note displaying. But it doesn’t, there’s just the initial render (without the “smelly” note), and that’s it.</p>
+
+<p><u>Why doesn’t React re-render?</u></p>
+
+<p>Because doing a <code>push</code> on an array <a href="http://gunnariauvinen.com/difference-between-concat-and-push-in-javascript/">does <u>not</u> create a <u>new</u> array.</a> When React does the shallow equality check for the <code>PureComponent</code> it only checks <code>oldState.notes === newState.notes</code>, which is <code>true</code> <u>even though</u> the data in <code>notes</code> has changed. In order to render this properly we need to change <code>TodoItem</code> back to a <code>React.Component</code>, <strong>or</strong> we can use <code>forceUpdate</code> to tell React that the data actually has changed. However using <code>forceUpdate</code> is kind of a code smell, so I won’t cover it here.</p>
+
+<h3 id="toc_9">Warning: think of the children!</h3>
+
+<p>A common pitfall when converting from <code>Component</code> to <code>PureComponent</code> is to forget that the children need to re-render too. As with all React - if the parent doesn’t re-render the children won’t either. So if you have a <code>PureComponent</code> with children, those children can only update if the parent’s <code>state</code> or <code>props</code> are shallowly different (causing the parent to re-render).</p>
+
+<p>You can only have a <code>PureComponent</code> parent if you know none of the children should re-render if the parent doesn’t re-render. Let’s see an example of this pitfall by converting the <code>Todos</code> component from a <code>Component</code> to a <code>PureComponent</code> :</p>
+
+<pre><code class="language-js">class Todos extends React.PureComponent { // new line
+    // ...
+
+    componentDidMount() {
+        setInterval(() =&gt; {
+            this.setState((oldState) =&gt; {
+                oldState.todos[0].done = !oldState.todos[0].done; // new line
+                return oldState; // new line
+            });
+        }, 1000);
+    }
+
+    // ...
+}
+</code></pre>
+
+<p>As you can see, most of the code is the same. We’ve changed <code>Todos</code> to be a <code>PureComponent</code> and the <code>componentDidMount</code> to return the original <code>oldState</code> object rather than creating a new object (as before).</p>
+
+<p>Now we <u>should</u> see the first todo item flashing its <code>done</code> state on and off. But it doesn’t, again there is only the initial render and that’s it. This happens because <code>Todos</code> is now a <code>PureComponent</code>, when the shallow equal check happens with <code>oldState === newState</code> we find exactly the same object (again, even though the content of that object has changed). So <code>Todos</code> never re-renders, so its <u>children</u> also never re-render. We can fix this really easily by simply changing <code>Todos</code> back to a <code>Component</code>.</p>
+
+<hr/>
+
+<h3 id="toc_10">Wrapping up</h3>
+
+<p><code>PureComponent</code> is very powerful in that it can help you limit the number of unnecessary re-renders that occur. However, it can also cause surprising gotchas. The key thing to keep in mind is that <code>PureComponent</code> only does a shallow equality check on <code>props</code> and <code>state</code> before deciding if it should re-render or not. And that has a cascade effect on if its children re-render or not. So use <code>PureComponent</code> and love the performance gains, but be sure to check that it is always re-rendering when it should. When in doubt fall back to a <code>Component</code> instead.</p>
+
+<h3 id="toc_11">Resources</h3>
+
+<p>I read a <u>lot</u> of posts and questions about <code>PureComponent</code>, <code>Component</code>, and <code>shouldComponentUpdate</code> for this, so the below is not a complete list of resources. Hopefully they’re the most useful though!</p>
+
+<ul>
+<li>  <a href="https://reactjs.org/docs/react-api.html#reactpurecomponent">React docs</a></li>
+<li>  <a href="https://stackoverflow.com/questions/41340697/react-component-vs-react-purecomponent">StackOverflow</a></li>
+<li>  <a href="https://blog.shakacode.com/react-purecomponent-pitfalls-d057882f4b6e">Rob Wise</a> lists more pitfalls of using <code>PureComponent</code> - a good one to check if your <code>PureComponents</code> are rendering <u>more</u> than you’d expect (whereas I focused on not triggering re-renders enough)</li>
+<li>  <a href="https://medium.com/modus-create-front-end-development/component-rendering-performance-in-react-df859b474adc">Grgur Grisogono</a> did some performance testing on <code>PureComponent</code></li>
+<li>  <a href="https://medium.com/@dan_abramov/smart-and-dumb-components-7ca2f9a7c7d0">Dan Abramov</a> and <a href="https://jaketrent.com/post/smart-dumb-components-react/">Jake Trent</a> discuss what “pure” components are</li>
+</ul>
 
                         
                       </div>
@@ -219,10 +468,10 @@
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/6/18</span>
+                    <span class="date">2018/7/22</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Cocurrency.html'>Cocurrency</a></span>
+          					    <span class="posted-in"><a href='Node.js.html'>Node.js</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -312,31 +561,31 @@
 	      
 		      
 			      <li class="post">
-			        <a href="15389311738065.html">重构到更深层的模型</a>
+			        <a href="15459058392039.html">Reliable Domain Events</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389278377243.html">IAM of Google Cloud</a>
+			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389224951575.html">RSocket, a New Application Network Protocol for Reactive Applications, Announced at SpringOne</a>
+			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389220103546.html">如何形象地描述RxJava中的背压和流控机制？</a>
+			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389214670417.html">Modeling Uncertainty with Reactive DDD</a>
+			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
 			      </li>
 		     
 		  

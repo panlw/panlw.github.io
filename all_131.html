@@ -105,323 +105,820 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15277850962764.html">
+                <a class="clearlink" href="15290786992049.html">
                 
-                  <h1>Leaf——美团点评分布式ID生成系统</h1>
+                  <h1>React 应用单元测试策略</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://tech.meituan.com/MT_Leaf.html">原文地址</a></p>
+<p><a href="https://github.com/linesh-simplicity/linesh-simplicity.github.io/issues/200">原文地址</a><br/>
+<a href="https://github.com/linesh-simplicity/linesh-simplicity.github.io/issues/122#issuecomment-340631650">续 #122 (comment)</a></p>
 </blockquote>
 
-<h1 id="toc_0">背景</h1>
+<p>从客观性的角度讲，程墨在<a href="https://book.douban.com/subject/27033213/">《深入浅出 React &amp; Redux》</a>那章单元测试讲的比我客观；从内容的角度讲，我觉得讲得没有我这节 issue 好。它没有抓住重点，并且只是站在测试的角度来谈测试，只介绍了如何写单元测试，对为什么要写单元测试并没有分析透彻。由于它客观，导致它没有一个鲜明的观点。</p>
 
-<p>在复杂分布式系统中，往往需要对大量的数据和消息进行唯一标识。如在美团点评的金融、支付、餐饮、酒店、猫眼电影等产品的系统中，数据日渐增长，对数据分库分表后需要有一个唯一ID来标识一条数据或消息，数据库的自增ID显然不能满足需求；特别一点的如订单、骑手、优惠券也都需要有唯一ID做标识。此时一个能够生成全局唯一ID的系统是非常必要的。概括下来，那业务系统对ID号的要求有哪些呢？</p>
+<p>作者认为，不争论 TDD 是否有必要（当然不争论，肯定有必要），最重要一点是：单元测试应该是让开发者的工作更轻松更高效，而不是成为开发过程中的包袱。不晓得言下之意，是不是说，如果（因为不会写，写不好而导致）单元测试成为了开发过程中的包袱，那就可以果断不要单元测试。</p>
 
-<ol>
-<li> 全局唯一性：不能出现重复的ID号，既然是唯一标识，这是最基本的要求。</li>
-<li> 趋势递增：在MySQL InnoDB引擎中使用的是聚集索引，由于多数RDBMS使用B-tree的数据结构来存储索引数据，在主键的选择上面我们应该尽量使用有序的主键保证写入性能。</li>
-<li> 单调递增：保证下一个ID一定大于上一个ID，例如事务版本号、IM增量消息、排序等特殊需求。</li>
-<li> 信息安全：如果ID是连续的，恶意用户的扒取工作就非常容易做了，直接按照顺序下载指定URL即可；如果是订单号就更危险了，竞对可以直接知道我们一天的单量。所以在一些应用场景下，会需要ID无规则、不规则。</li>
-</ol>
+<p>这一点我的观点是鲜明的：单元测试是一定要的。React 的单元测试客观上是可以让开发者的工作更高效的，写不好是能力问题，不写则是态度问题。</p>
 
-<p>上述123对应三类不同的场景，3和4需求还是互斥的，无法使用同一个方案满足。</p>
+<p>下面开始谈单元测试。</p>
 
-<p>同时除了对ID号码自身的要求，业务还对ID号生成系统的可用性要求极高，想象一下，如果ID生成系统瘫痪，整个美团点评支付、优惠券发券、骑手派单等关键动作都无法执行，这就会带来一场灾难。</p>
+<h2 id="toc_0">单元测试的上下文</h2>
 
-<p>由此总结下一个ID生成系统应该做到如下几点：</p>
+<p>我上面批评程墨在书中「只是站在测试的角度来谈测试」，是因为我认为，谈任何东西都一定要有个上下文。你的论述不能是「因为单元测试有这些好处，所以我们要做单元测试」，而应该是「不做单元测试我们会遇到什么问题」，这样才能回答「为什么要写单元测试」的问题。那么我们谈论单元测试的上下文是什么呢？不做单元测试我们会遇到什么问题呢？</p>
 
-<ol>
-<li> 平均延迟和TP999延迟都要尽可能低；</li>
-<li> 可用性5个9；</li>
-<li> 高QPS。</li>
-</ol>
+<p><a href="https://user-images.githubusercontent.com/11895199/40921421-fb13c2cc-6841-11e8-9880-b7f72182ae7f.png"><img src="https://user-images.githubusercontent.com/11895199/40921421-fb13c2cc-6841-11e8-9880-b7f72182ae7f.png" alt=""/></a></p>
 
-<h1 id="toc_1">常见方法介绍</h1>
+<p><a href="https://user-images.githubusercontent.com/11895199/40921436-03152e66-6842-11e8-9c24-920ba5d8dd27.png"><img src="https://user-images.githubusercontent.com/11895199/40921436-03152e66-6842-11e8-9c24-920ba5d8dd27.png" alt=""/></a></p>
 
-<h3 id="toc_2">UUID</h3>
+<p>看上两图。<strong>我认为单元测试的上下文存在于「敏捷」中</strong>。敏捷为的是更快地交付有价值的可工作的软件。为此，它有一个指标来度量这个「更快」，那就是 lead time，它度量的是一个 idea 从提出被验证，到最终上生产环境面对用户的时间。显然，这个时间越短，软件获得反馈的时间就越短，对价值的验证就越快发生。这个结论对我们写不写单元测试有什么影响呢？答案是，不写单元测试，你就快不起来。为啥呢？因为每次发布，你都要投入人力来进行手工测试；因为没有测试，你倾向于不敢随意重构，这又导致代码逐渐腐化，复杂度使得你的开发速度降低。</p>
 
-<p>UUID(Universally Unique Identifier)的标准型式包含32个16进制数字，以连字号分为五段，形式为8-4-4-4-12的36个字符，示例：<code>550e8400-e29b-41d4-a716-446655440000</code>，到目前为止业界一共有5种方式生成UUID，详情见IETF发布的UUID规范 <a href="http://www.ietf.org/rfc/rfc4122.txt">A Universally Unique IDentifier (UUID) URN Namespace</a>。</p>
-
-<p>优点：</p>
+<p>那么在这个上下文中来谈要不要单元测试，我们就可以很有根据了，而不是开发爽了就用，不爽就不用这样含糊的答案：</p>
 
 <ul>
-<li>  性能非常高：本地生成，没有网络消耗。</li>
+<li>  如果你说我的业务部门不需要频繁上线，并且我有足够的人力来覆盖手工测试，那你可以不用单元测试</li>
+<li>  如果你说我不在意代码腐化，并且我也不做重构，那你可以不用单元测试</li>
+<li>  如果你说我不在意代码质量，好几个没有测试保护的 <code>if-else</code> 裸奔也不在话下，脑不好还做什么程序员，那你可以不用单元测试</li>
+<li>  如果你说我确有快速部署的需求，但我们不 care 质量问题，出回归问题就修，那你可以不用单元测试</li>
 </ul>
 
-<p>缺点：</p>
+<p>除此之外，你就需要写单元测试。如果你想随时整理重构代码，那么你需要写单元测试；如果你想有自动化的测试套件来帮你快速验证提交的完整性，那么你需要写单元测试。综上，我用以谈单元测试的「透镜」是什么呢？一言以蔽之，两点：<strong>反馈速度</strong>和<strong>自动化</strong>。</p>
+
+<p><strong>自动化</strong>回答的是<strong>要不要自动化的单元测试</strong>这个问题。测试是重构的唯一保障，也就是说，没有测试，基本上就没法重构代码（重构指的是 <a href="https://www.martinfowler.com/bliki/DefinitionOfRefactoring.html">不改变软件可观测行为的前提下改善代码内部设计或实现</a> ），基本上就只能看着代码腐化。那么，基本上只要你的系统需要持续发展，你就需要单元测试。</p>
+
+<p><strong>反馈速度</strong>回答的是<strong>要不要 TDD、测试先行还是后补</strong>这个问题。我认为，要 TDD，最好先行，因为<a href="https://github.com/linesh-simplicity/linesh-simplicity.github.io/issues/197">可以提高反馈速度</a>。</p>
+
+<p>至此回答了「为什么我们需要写单元测试」的问题。下面谈谈如何写好 React 的单元测试。</p>
+
+<h2 id="toc_1">测试策略</h2>
+
+<p>其实，上面的讨论中，从质量问题到单元测试的这个映射过程中，为了简化问题我有意地省略了一些中间步骤，那就是<strong>测试策略</strong>。简单来说，问这么两个问题：</p>
 
 <ul>
-<li>  不易于存储：UUID太长，16字节128位，通常以36长度的字符串表示，很多场景不适用。</li>
-<li>  信息不安全：基于MAC地址生成UUID的算法可能会造成MAC地址泄露，这个漏洞曾被用于寻找梅丽莎病毒的制作者位置。</li>
-<li><p>ID作为主键时在特定的环境会存在一些问题，比如做DB主键的场景下，UUID就非常不适用：</p>
-
-<p>① MySQL官方有明确的建议主键要尽量越短越好[4]，36个字符长度的UUID不符合要求。</p>
-
-<blockquote>
-<p>All indexes other than the clustered index are known as secondary indexes. In InnoDB, each record in a secondary index contains the primary key columns for the row, as well as the columns specified for the secondary index. InnoDB uses this primary key value to search for the row in the clustered index. <strong>_If the primary key is long, the secondary indexes use more space, so it is advantageous to have a short primary key_</strong>.</p>
-</blockquote>
-
-<p>② 对MySQL索引不利：如果作为数据库主键，在InnoDB引擎下，UUID的无序性可能会引起数据位置频繁变动，严重影响性能。</p></li>
+<li>  保证质量，一定要通过测试吗？</li>
+<li>  如果需要测试，一定要是单元测试吗？</li>
 </ul>
 
-<h3 id="toc_3">类snowflake方案</h3>
+<p>关于第一个问题，其实程墨在单元测试一章中也提到<strong>可测试性</strong>这个概念。他提到，「… 可以看出来 React 和 Redux 的单元测试往往非常直观，几乎可以认为是多余的。的确，重要的不是代码容易测试，而是程序的结构非常简单，简单到单元测试都显得没有必要的地步。」这里我理解核心观点是，一个好的架构和分层可以让应用结构趋于简单，这可以让应用的某些层级非常简单直观，以至于有毛病时，依赖架构一眼就可以定位出，而不需要多余的测试。我完全同意这个观点，架构对于应用的可维护性至关重要。虽然，「结构简单到单元测试都显得没有必要」，肯定是乐观了。不管如何，结论是，还有其他的手段可以保证质量，比如架构就是重要的一个方面。它们与测试的关系不是互斥的，而是互相受益的。</p>
 
-<p>这种方案大致来说是一种以划分命名空间（UUID也算，由于比较常见，所以单独分析）来生成ID的一种算法，这种方案把64-bit分别划分成多段，分开来标示机器、时间等，比如在snowflake中的64-bit分别表示如下图（图片来自网络）所示：</p>
+<p>第二个问题，当然不是。我们的系统中有各种各样的假设，可能需要使用不同的测试来覆盖它们。有的测试编写维护成本高，运行时间长、速度慢（如端到端测试、集成测试、UI 测试等）；有的测试编写成本低，运行时间短、速度快（如单元测试、契约测试等）。视你的项目痛点不同，资源不同（人多或时间充裕），你可以决定使用不同比例的测试组合，它本质是个按收益 - 成本进行的决策，因此我们也叫测试策略。经典的测试策略是测试金字塔（看下图），说白了，结论是：你应该拥有更多接近底层次的测试，因为它们成本低速度快。而这个底层次的测试就是单元测试。这是我们需要单元测试的原因，因为它们编写成本最低，反馈速度最快，因而保护价值相对最大。</p>
 
-<p><img src="media/15277850962764/15277851805055.png" alt=""/></p>
+<p><a href="https://user-images.githubusercontent.com/11895199/40923670-fcd8d010-6847-11e8-931e-5831bc4db2da.png"><img src="https://user-images.githubusercontent.com/11895199/40923670-fcd8d010-6847-11e8-931e-5831bc4db2da.png" alt=""/></a></p>
 
-<p>41-bit的时间可以表示（1L&lt;&lt;41）/(1000L<em>3600</em>24*365)=69年的时间，10-bit机器可以分别表示1024台机器。如果我们对IDC划分有需求，还可以将10-bit分5-bit给IDC，分5-bit给工作机器。这样就可以表示32个IDC，每个IDC下可以有32台机器，可以根据自身需求定义。12个自增序列号可以表示2<sup>12个ID，理论上snowflake方案的QPS约为409.6w/s，这种分配方式可以保证在任何一个IDC的任何一台机器在任意毫秒内生成的ID都是不同的。</sup></p>
+<p>综上，我完成了 质量保证 -&gt; 单元测试 的这个逻辑解释，主要的依据是测试金字塔。好，那么一个典型的 React 应用，我们的架构一般是什么样子的呢？一般的单元测试策略又是什么样？</p>
 
-<p>这种方式的优缺点是：</p>
+<p><a href="https://user-images.githubusercontent.com/11895199/40923699-11235b76-6848-11e8-9f15-a498b3d646b1.png"><img src="https://user-images.githubusercontent.com/11895199/40923699-11235b76-6848-11e8-9f15-a498b3d646b1.png" alt=""/></a></p>
 
-<p>优点：</p>
+<p>我们项目上的 React-redux 应用架构如上所述。这个架构中包含了几个层级，分别有不同的特点，因此也有不同的测试策略：</p>
+
+<table>
+<thead>
+<tr>
+<th style="text-align: center">架构层级</th>
+<th style="text-align: left">测试内容</th>
+<th style="text-align: left">测试策略</th>
+<th style="text-align: left">解释</th>
+</tr>
+</thead>
+
+<tbody>
+<tr>
+<td style="text-align: center">action(creator) 层</td>
+<td style="text-align: left">是否正确创建 action 对象</td>
+<td style="text-align: left">一般不需要测试，视信心而定</td>
+<td style="text-align: left">这个层级非常简单，基础设施搭好以后一般不可能出错，属于架构带来的简单性</td>
+</tr>
+<tr>
+<td style="text-align: center">reducer 层</td>
+<td style="text-align: left">是否正确完成计算</td>
+<td style="text-align: left">对于有逻辑的 reducer 需要 100% 覆盖率</td>
+<td style="text-align: left">这个层级 input -&gt; output 明确，又有业务逻辑的计算在内，天然属于单元测试宠爱的对象</td>
+</tr>
+<tr>
+<td style="text-align: center">selector 层</td>
+<td style="text-align: left">是否正确完成计算</td>
+<td style="text-align: left">对于有复杂逻辑的 selector 需要 100% 覆盖率</td>
+<td style="text-align: left">这个层级 input -&gt; output 明确，又有复杂的业务逻辑计算，天然属于单元测试宠爱的对象</td>
+</tr>
+<tr>
+<td style="text-align: center">saga(副作用) 层</td>
+<td style="text-align: left">是否获取了正确的参数去调用 API，并使用正确的数据存取回 redux 中</td>
+<td style="text-align: left">对于是否获取了正确参数、是否调用正确的 API、是否使用了正确的返回值保存数据、业务分支逻辑、异常分支需要 100% 覆盖</td>
+<td style="text-align: left">这个层级也有业务逻辑，对前面所述的 5 大方面进行测试很有重构价值</td>
+</tr>
+<tr>
+<td style="text-align: center">component(组件接入) 层</td>
+<td style="text-align: left">是否渲染了正确的组件</td>
+<td style="text-align: left"></td>
+<td style="text-align: left"></td>
+</tr>
+</tbody>
+</table>
 
 <ul>
-<li>  毫秒数在高位，自增序列在低位，整个ID都是趋势递增的。</li>
-<li>  不依赖数据库等第三方系统，以服务的方式部署，稳定性更高，生成ID的性能也是非常高的。</li>
-<li>  可以根据自身业务特性分配bit位，非常灵活。</li>
+<li>  组件的分支渲染逻辑要求 100% 覆盖</li>
+<li>  交互事件的调用参数一般要求 100% 覆盖</li>
+<li>  被 redux connect 过的组件不测</li>
+<li>  纯 UI 不测</li>
+<li><p>CSS 不测</p>
+
+<p>| 这个层级最为复杂，测试策略还是以「代价最低，收益最高」为原则进行 |<br/>
+| UI 层 | 样式是否正确 | 目前不测 | 这个事情关键目前我理解在于，能不能提供可视化的快照对比，哪怕是成本高一些 |</p></li>
 </ul>
 
-<p>缺点：</p>
+<p>这里做一些补充。一是不测 redux connect 过的组件这个策略。理由是成本远高于收益：要牺牲开发体验（搞起来没那么快了），要配置依赖（配置 store、 <code>&lt;Provider /&gt;</code>，在大型或遗留系统中补测试还很可能遇到 <code>@connect</code> 组件里套 <code>@connect</code> 组件的场景）；然后收益也只是可能覆盖到了几个极少数出现的场景。得不偿失，果断不测。</p>
+
+<p>另外，UI 测试这块，团队之前尝试过 snapshot 测试，然而在「保证 UI 不受非预期改变」这点上收益不大，成本也偏高。所以我个人持非常保留的态度，不推荐。</p>
+
+<h2 id="toc_2">好测试的特征</h2>
+
+<p>好的单元测试应该遵循这三点大的原则。如果在落地测试策略的过程中，发现测试很难维护、价值不大，请回过头来看这三条原则，并思考你的单元测试是否有改进空间、你的测试工具是否有改进空间。</p>
 
 <ul>
-<li>  强依赖机器时钟，如果机器上时钟回拨，会导致发号重复或者服务会处于不可用状态。</li>
+<li>  快、稳定（比如，单元测试中不应该掉真实的 API、IndexDB 等）</li>
+<li>  仅对输入输出敏感（比如，不应该对执行次序敏感）</li>
+<li>  不关注（或极少关注）内部实现（只要输入输出没变，测试就不应该挂，从而保证重构进行）</li>
 </ul>
 
-<h4 id="toc_4">应用举例Mongdb objectID</h4>
+<p>遵循好这三条基本原则，可以很大程度提高测试的稳定性、降低维护成本，让其能为项目后续的重构和持续改进保驾护航，能作为活文档让所有团队成员阅读理解。</p>
 
-<p><a href="https://docs.mongodb.com/manual/reference/method/ObjectId/#description">MongoDB官方文档 ObjectID</a>可以算作是和snowflake类似方法，通过“时间+机器码+pid+inc”共12个字节，通过4+3+2+3的方式最终标识成一个24长度的十六进制字符。</p>
+<h2 id="toc_3">reducer 测试</h2>
 
-<h3 id="toc_5">数据库生成</h3>
+<p>最为简单的 reducer 测试，仅一一对应保存数据切片。此种 reducer 可以不需要测试覆盖，因为基本由架构简单和逻辑简单保证，不需要靠读测试用例来理解。</p>
 
-<p>以MySQL举例，利用给字段设置<code>auto_increment_increment</code>和<code>auto_increment_offset</code>来保证ID自增，每次业务使用下列SQL读写MySQL得到ID号。</p>
+<pre><code class="language-js">import reducers from &#39;&lt;a class=&quot;octolinker-link octolinker-line-indicator&quot;&gt;./reducers&lt;/a&gt;&#39;
+import actions from &#39;&lt;a class=&quot;octolinker-link octolinker-line-indicator&quot;&gt;./actions&lt;/a&gt;&#39;
 
-<pre><code>begin;
-REPLACE INTO Tickets64 (stub) VALUES (&#39;a&#39;);
-SELECT LAST_INSERT_ID();
-commit;
+test(&#39;should save loading start indicator when action isLoadingProducts is dispatched given is loading is true&#39;, () =&gt; {
+  const state = { isLoadingProducts: false }
+  const expected = { isLoadingProducts: true }
 
+  const result = reducers(state, actions.isLoadingProducts(true))
+
+  expect(result).toEqual(expected)
+})
 </code></pre>
 
-<p><img src="media/15277850962764/15277851990427.png" alt=""/></p>
+<p>一个较为复杂、具备测试价值的 reducer 可能如下，它在保存数据的同时，还进行了合并、去重的操作：</p>
 
-<p>这种方案的优缺点如下：</p>
+<pre>export default createReducers((on) => {
+  on(actions.saveUserComments, (state, action) => {
+    return state.merge({
+      comments: uniqBy(state.comments.concat(action.payload.comments), 'id')
+    })
+  })
+})</pre>
 
-<p>优点：</p>
+<pre><code class="language-js">import reducers from &#39;&lt;a class=&quot;octolinker-link octolinker-line-indicator&quot;&gt;./reducers&lt;/a&gt;&#39;
+import actions from &#39;&lt;a class=&quot;octolinker-link octolinker-line-indicator&quot;&gt;./actions&lt;/a&gt;&#39;
 
-<ul>
-<li>  非常简单，利用现有数据库系统的功能实现，成本小，有DBA专业维护。</li>
-<li>  ID号单调自增，可以实现一些对ID有特殊要求的业务。</li>
-</ul>
+test(&#39;should merge user comments within the same day and remove duplications when action saveUserComments is dispatched with new fetched comments&#39;, () =&gt; {
+  const state = {
+    comments: {
+      &#39;2017-08-21&#39;: [{ id: 1, title: &#39;comments-1&#39; }],
+    },
+  }
+  const comments = {
+    &#39;2017-08-21&#39;: [
+      { id: 1, title: &#39;comments-1&#39; },
+      { id: 2, title: &#39;comments-2&#39; },
+    ],
+  }
+  const expected = {
+    comments: {
+      &#39;2017-08-21&#39;: [
+        { id: 1, title: &#39;comments-1&#39; },
+        { id: 2, title: &#39;comments-2&#39; },
+      ],
+    },
+  }
 
-<p>缺点：</p>
+  const result = reducers(state, actions.saveUserComments(comments))
 
-<ul>
-<li>  强依赖DB，当DB异常时整个系统不可用，属于致命问题。配置主从复制可以尽可能的增加可用性，但是数据一致性在特殊情况下难以保证。主从切换时的不一致可能会导致重复发号。</li>
-<li>  ID发号性能瓶颈限制在单台MySQL的读写性能。</li>
-</ul>
-
-<p>对于MySQL性能问题，可用如下方案解决：在分布式系统中我们可以多部署几台机器，每台机器设置不同的初始值，且步长和机器数相等。比如有两台机器。设置步长step为2，TicketServer1的初始值为1（1，3，5，7，9，11...）、TicketServer2的初始值为2（2，4，6，8，10...）。这是Flickr团队在2010年撰文介绍的一种主键生成策略（<a href="http://code.flickr.net/2010/02/08/ticket-servers-distributed-unique-primary-keys-on-the-cheap/">Ticket Servers: Distributed Unique Primary Keys on the Cheap</a> ）。如下所示，为了实现上述方案分别设置两台机器对应的参数，TicketServer1从1开始发号，TicketServer2从2开始发号，两台机器每次发号之后都递增2。</p>
-
-<pre><code>TicketServer1:
-auto-increment-increment = 2
-auto-increment-offset = 1
-
-TicketServer2:
-auto-increment-increment = 2
-auto-increment-offset = 2
-
+  expect(result).toEqual(expected)
+})
 </code></pre>
 
-<p>假设我们要部署N台机器，步长需设置为N，每台的初始值依次为0,1,2...N-1那么整个架构就变成了如下图所示：</p>
+<h3 id="toc_4">错误姿势</h3>
 
-<p><img src="media/15277850962764/15277852102924.png" alt=""/></p>
+<p>上面这个 reducer 测试形态应该是最轻量级的了，直接 import 进来待测的单元（reducer），按照 <code>newState = reducer(previousState, action)</code> 的 API 扔给它当前 reducer 的 state 状态和待处理的 action，准备数据也十分方便，然后直接断言返回的结果。相反，之前项目采取过这样的测试姿势，虽然区别不大，但仍然可以看出差距：</p>
 
-<p>这种架构貌似能够满足性能的需求，但有以下几个缺点：</p>
+<pre><code class="language-js">import configureStore from &#39;&lt;a class=&quot;octolinker-link octolinker-line-indicator&quot;&gt;./store&lt;/a&gt;&#39;
+import actions from &#39;&lt;a class=&quot;octolinker-link octolinker-line-indicator&quot;&gt;./actions&lt;/a&gt;&#39;
 
-<ul>
-<li>  系统水平扩展比较困难，比如定义好了步长和机器台数之后，如果要添加机器该怎么做？假设现在只有一台机器发号是1,2,3,4,5（步长是1），这个时候需要扩容机器一台。可以这样做：把第二台机器的初始值设置得比第一台超过很多，比如14（假设在扩容时间之内第一台不可能发到14），同时设置步长为2，那么这台机器下发的号码都是14以后的偶数。然后摘掉第一台，把ID值保留为奇数，比如7，然后修改第一台的步长为2。让它符合我们定义的号段标准，对于这个例子来说就是让第一台以后只能产生奇数。扩容方案看起来复杂吗？貌似还好，现在想象一下如果我们线上有100台机器，这个时候要扩容该怎么做？简直是噩梦。所以系统水平扩展方案复杂难以实现。</li>
-<li>  ID没有了单调递增的特性，只能趋势递增，这个缺点对于一般业务需求不是很重要，可以容忍。</li>
-<li>  数据库压力还是很大，每次获取ID都得读写一次数据库，只能靠堆机器来提高性能。</li>
-</ul>
+test(&#39;should save loading start indicator when action isLoadingProducts is dispatched given is loading is true&#39;, () =&gt; {
+  const state = {
+    products: {
+      isLoadingProducts: false,
+    },
+  }
+  const expected = {
+    isLoadingProducts: true,
+  }
 
-<h1 id="toc_6">Leaf方案实现</h1>
+  const store = configureStore(state)
+  store.dispatch(actions.isLoadingProducts(true))
 
-<p>Leaf这个名字是来自德国哲学家、数学家莱布尼茨的一句话：</p>
-
-<blockquote>
-<p>There are no two identical leaves in the world</p>
-
-<p>&quot;世界上没有两片相同的树叶&quot;</p>
-</blockquote>
-
-<p>综合对比上述几种方案，每种方案都不完全符合我们的要求。所以Leaf分别在上述第二种和第三种方案上做了相应的优化，实现了Leaf-segment和Leaf-snowflake方案。</p>
-
-<h3 id="toc_7">Leaf-segment数据库方案</h3>
-
-<p>第一种Leaf-segment方案，在使用数据库的方案上，做了如下改变：</p>
-
-<ul>
-<li>  原方案每次获取ID都得读写一次数据库，造成数据库压力大。改为利用proxy server批量获取，每次获取一个segment(step决定大小)号段的值。用完之后再去数据库获取新的号段，可以大大的减轻数据库的压力。</li>
-<li>  各个业务不同的发号需求用biz_tag字段来区分，每个biz-tag的ID获取相互隔离，互不影响。如果以后有性能需求需要对数据库扩容，不需要上述描述的复杂的扩容操作，只需要对biz_tag分库分表就行。</li>
-</ul>
-
-<p>数据库表设计如下：</p>
-
-<pre><code>+-------------+--------------+------+-----+-------------------+-----------------------------+
-| Field       | Type         | Null | Key | Default           | Extra                       |
-+-------------+--------------+------+-----+-------------------+-----------------------------+
-| biz_tag     | varchar(128) | NO   | PRI |                   |                             |
-| max_id      | bigint(20)   | NO   |     | 1                 |                             |
-| step        | int(11)      | NO   |     | NULL              |                             |
-| desc        | varchar(256) | YES  |     | NULL              |                             |
-| update_time | timestamp    | NO   |     | CURRENT_TIMESTAMP | on update CURRENT_TIMESTAMP |
-+-------------+--------------+------+-----+-------------------+-----------------------------+
-
+  expect(store.getState().products).toMatchObject(expected)
+})
 </code></pre>
 
-<p>重要字段说明：biz_tag用来区分业务，max_id表示该biz_tag目前所被分配的ID号段的最大值，step表示每次分配的号段长度。原来获取ID每次都需要写数据库，现在只需要把step设置得足够大，比如1000。那么只有当1000个号被消耗完了之后才会去重新读写一次数据库。读写数据库的频率从1减小到了1/step，大致架构如下图所示：</p>
+<p>代码看起来也不长，但感觉就是太重了！毛病在哪里呢？就先不讲这个 store 其实是用的真实的 store，也不讲 <code>dispatch</code>/<code>getStore</code> 这两个代码与 redux 实现方式耦合，这段测试代码还有两点其他的坏味道：</p>
 
-<p><img src="media/15277850962764/15277852227891.png" alt=""/></p>
+<ul>
+<li>  准备测试 reducer 的 state 时，还必须知道它注册在 <code>products</code> 这个 key 下，一方面这与实际的产品代码是耦合，另一方面为了测试一个单元你需要知道额外的信息，重一</li>
+<li>  <code>store.getState().products</code> 拿回来的是整个 reducer 切片，里面除了你要断言的 <code>isLoadingProducts</code> 字段，还可能有其他的字段（如果你不是 mock 的话，用的就是真实的 reducer <code>initState</code>），这导致你没法做 <code>toEqual</code> 的精确对比。当然可以有其他的解决方案（比如 <code>getState().products.isLoadingProducts</code> 或使用 <code>toMatchObject</code> 断言），但「测试受到其他部分影响」这个事实，也造成你需要了解额外的知识才能把测试写对，重二</li>
+</ul>
 
-<p>test_tag在第一台Leaf机器上是1~1000的号段，当这个号段用完时，会去加载另一个长度为step=1000的号段，假设另外两台号段都没有更新，这个时候第一台机器新加载的号段就应该是3001~4000。同时数据库对应的biz_tag这条数据的max_id会从3000被更新成4000，更新号段的SQL语句如下：</p>
+<p>一开始介绍的 reducer 测试就不存在这两种问题。纯正的纯函数测试。</p>
 
-<pre><code class="language-sql">Begin
-UPDATE table SET max_id=max_id+step WHERE biz_tag=xxx
-SELECT tag, max_id, step FROM table WHERE biz_tag=xxx
-COMMIT
+<h2 id="toc_5">actions 测试</h2>
+
+<p>这一层太过简单，基本都可以不用测试，获益于架构的简单性。</p>
+
+<pre><code class="language-js">export default createActions({
+  saveUserComments: (comments) =&gt; ({ comments }),
+})
 </code></pre>
 
-<p>这种模式有以下优缺点：</p>
+<pre><code class="language-js">test(&#39;should dispatch saveUserComments action with fetched user comments&#39;, () =&gt; {
+  const comments = []
+  const expected = {
+    type: &#39;saveUserComments&#39;,
+    payload: {
+      comments,
+    },
+  }
 
-<p>优点：</p>
+  expect(actions.saveUserComments(comments)).toEqual(expected)
+})
+</code></pre>
+
+<h2 id="toc_6">selector 测试</h2>
+
+<p>selector 是重逻辑的地方，并且它也是一个纯函数，与 reducer 测试享受同样待遇：纯净的输入输出，简易的测试准备。下面给一个先看一个稍微简单点的 selector 测试用例：</p>
+
+<pre><code class="language-js">import { createSelector } from &#39;&lt;a class=&quot;octolinker-link octolinker-line-indicator&quot;&gt;reselect&lt;/a&gt;&#39;
+
+const transformSelectedLabelArrayToObjectForPerformance = (labels) =&gt; {
+  return labels
+    .map((label) =&gt; ({
+      [label.name]: label.active,
+    }))
+    .reduce((a, b) =&gt; ({ ...a, ...b }), {})
+}
+
+export const selectedProductLabels = createSelector(
+  [(store, ownProps) =&gt; store.products[ownProps.id].labels],
+  transformSelectedLabelArrayToObjectForPerformance
+)
+</code></pre>
+
+<pre><code class="language-js">test(&#39;should map array of product labels to object for performant component access&#39;, () =&gt; {
+  const store = {
+    products: {
+      10085: {
+        labels: [
+          { code: &#39;canvas&#39;, name: &#39;帆布鞋&#39;, active: false },
+          { code: &#39;casual&#39;, name: &#39;休闲鞋&#39;, active: false },
+          { code: &#39;oxford&#39;, name: &#39;牛津鞋&#39;, active: false },
+          { code: &#39;bullock&#39;, name: &#39;布洛克&#39;, active: true },
+          { code: &#39;ankle&#39;, name: &#39;高帮鞋&#39;, active: true },
+        ],
+      },
+    },
+  }
+  const expected = {
+    canvas: false,
+    casual: false,
+    oxford: false,
+    bullock: true,
+    ankle: false,
+  }
+
+  const productLabels = selectedProductLabels(store, { id: 10085 })
+
+  expect(productLabels).toEqual(expected)
+})
+</code></pre>
+
+<p>可以看到，调 selector 如调普通函数，无需特别准备，另外数据的准备也是非常简单的，不需要复杂的 mock 技巧。</p>
+
+<h2 id="toc_7">saga 测试</h2>
+
+<p>saga 是负责调用 API、处理副作用的一层。这一层副作用怎么测试呢，首先为了保证单元测试的速度和稳定性，像 API 调用这种不确定性的依赖我们一定是要 mock 掉的。在实际的项目上有可能副作用是通过其他的中间层进行处理，比如 redux-thunk、redux-promise 等，但主要的思想是一样的。这一层经过总结，我认为主要的测试内容包括：</p>
 
 <ul>
-<li>  Leaf服务可以很方便的线性扩展，性能完全能够支撑大多数业务场景。</li>
-<li>  ID号码是趋势递增的8byte的64位数字，满足上述数据库存储的主键要求。</li>
-<li>  容灾性高：Leaf服务内部有号段缓存，即使DB宕机，短时间内Leaf仍能正常对外提供服务。</li>
-<li>  可以自定义max_id的大小，非常方便业务从原有的ID方式上迁移过来。</li>
+<li>  是否使用正确的参数（通常是从 action payload 或 redux 中来），调用了正确的 API</li>
+<li>  对于 mock 的 API 返回，是否保存了正确的数据（通常是通过 action 保存到 redux 中去）</li>
+<li>  主要的业务逻辑（比如仅当用户满足某些权限时才调用 API 等）</li>
+<li>  异常逻辑</li>
 </ul>
 
-<p>缺点：</p>
+<h3 id="toc_8">不完美的姿势</h3>
 
-<ul>
-<li>  ID号码不够随机，能够泄露发号数量的信息，不太安全。</li>
-<li>  TP999数据波动大，当号段使用完之后还是会hang在更新数据库的I/O上，tg999数据会出现偶尔的尖刺。</li>
-<li>  DB宕机会造成整个系统不可用。</li>
-</ul>
+<p>redux-saga 官方提供了一个 <a href="https://github.com/redux-saga/redux-saga/blob/master/docs/advanced/Testing.md#branching-saga">util: <code>CloneableGenerator</code></a> 用以帮我们写 saga 的测试。这是我们项目使用的第一种测法，大概会写出来的测试如下：</p>
 
-<h3 id="toc_8">双buffer优化</h3>
+<pre><code class="language-js">export function* fetchDataOnProductDetail({ payload: { productId, userId } }) {
+  const { userRole } = yield select((store) =&gt; store.credentails)
 
-<p>对于第二个缺点，Leaf-segment做了一些优化，简单的说就是：</p>
+  yield put(actions.fetchProductDetailSaga(productId))
+  yield put(actions.fetchProductComments(productId))
+  yield put(actions.fetchUserUnreadComments(productId, userId))
+  yield put(actions.fetchProductPromotions(productId))
 
-<p>Leaf 取号段的时机是在号段消耗完的时候进行的，也就意味着号段临界点的ID下发时间取决于下一次从DB取回号段的时间，并且在这期间进来的请求也会因为DB号段没有取回来，导致线程阻塞。如果请求DB的网络和DB的性能稳定，这种情况对系统的影响是不大的，但是假如取DB的时候网络发生抖动，或者DB发生慢查询就会导致整个系统的响应时间变慢。</p>
+  if (userRole !== UserRole.VIP_USER) {
+    yield put(actions.fetchAdsSaga())
+  }
+}
+</code></pre>
 
-<p>为此，我们希望DB取号段的过程能够做到无阻塞，不需要在DB取号段的时候阻塞请求线程，即当号段消费到某个点时就异步的把下一个号段加载到内存中。而不需要等到号段用尽的时候才去更新号段。这样做就可以很大程度上的降低系统的TP999指标。详细实现如下图所示：</p>
+<pre><code class="language-js">import { cloneableGenerator } from &#39;&lt;a class=&quot;octolinker-link octolinker-line-indicator&quot;&gt;redux-saga/utils&lt;/a&gt;&#39;
 
-<p><img src="media/15277850962764/15277852373915.png" alt=""/></p>
+test(&#39;should execute loginHookSaga actions in correct order&#39;, () =&gt; {
+  const action = { payload: { productId: 10085, userId: 28071562837 } }
+  const credentials = { userRole: UserRole.NOT_VIP_USER }
+  const generator = cloneableGenerator(fetchDataOnProductDetail)(action)
 
-<p>采用双buffer的方式，Leaf服务内部有两个号段缓存区segment。当前号段已下发10%时，如果下一个号段未更新，则另启一个更新线程去更新下一个号段。当前号段全部下发完后，如果下个号段准备好了则切换到下个号段为当前segment接着下发，循环往复。</p>
+  generator.next() // cannot take the same selector as the implementation did
+  expect(generator.next(credentials).value).toEqual(put(actions.fetchProductDetailSaga(10085)))
+  expect(generator.next().value).toEqual(put(actions.fetchProductComments(10085)))
+  expect(generator.next().value).toEqual(put(actions.fetchUserUnreadComments(10085, 28071562837)))
+  expect(generator.next().value).toEqual(put(actions.fetchProductPromotions(10085)))
+  expect(generator.next().value).toEqual(put(actions.fetchAdsSaga()))
+})
+</code></pre>
 
-<ul>
-<li><p>每个biz-tag都有消费速度监控，通常推荐segment长度设置为服务高峰期发号QPS的600倍（10分钟），这样即使DB宕机，Leaf仍能持续发号10-20分钟不受影响。</p></li>
-<li><p>每次请求来临时都会判断下个号段的状态，从而更新此号段，所以偶尔的网络抖动不会影响下个号段的更新。</p></li>
-</ul>
-
-<h3 id="toc_9">Leaf高可用容灾</h3>
-
-<p>对于第三点“DB可用性”问题，我们目前采用一主两从的方式，同时分机房部署，Master和Slave之间采用<strong>半同步方式[5]</strong>同步数据。同时使用公司Atlas数据库中间件(已开源，改名为<a href="http://tech.meituan.com/dbproxy-introduction.html">DBProxy</a>)做主从切换。当然这种方案在一些情况会退化成异步模式，甚至在<strong>非常极端</strong>情况下仍然会造成数据不一致的情况，但是出现的概率非常小。如果你的系统要保证100%的数据强一致，可以选择使用“类Paxos算法”实现的强一致MySQL方案，如MySQL 5.7前段时间刚刚GA的<a href="https://dev.mysql.com/doc/refman/5.7/en/group-replication.html">MySQL Group Replication</a>。但是运维成本和精力都会相应的增加，根据实际情况选型即可。</p>
-
-<p><img src="media/15277850962764/15277852467563.png" alt=""/></p>
-
-<p>同时Leaf服务分IDC部署，内部的服务化框架是“MTthrift RPC”。服务调用的时候，根据负载均衡算法会优先调用同机房的Leaf服务。在该IDC内Leaf服务不可用的时候才会选择其他机房的Leaf服务。同时服务治理平台OCTO还提供了针对服务的过载保护、一键截流、动态流量分配等对服务的保护措施。</p>
-
-<h1 id="toc_10">Leaf-snowflake方案</h1>
-
-<p>Leaf-segment方案可以生成趋势递增的ID，同时ID号是可计算的，不适用于订单ID生成场景，比如竞对在两天中午12点分别下单，通过订单id号相减就能大致计算出公司一天的订单量，这个是不能忍受的。面对这一问题，我们提供了 Leaf-snowflake方案。</p>
-
-<p><img src="media/15277850962764/15277852551504.png" alt=""/></p>
-
-<p>Leaf-snowflake方案完全沿用snowflake方案的bit位设计，即是“1+41+10+12”的方式组装ID号。对于workerID的分配，当服务集群数量较小的情况下，完全可以手动配置。Leaf服务规模较大，动手配置成本太高。所以使用Zookeeper持久顺序节点的特性自动对snowflake节点配置wokerID。Leaf-snowflake是按照下面几个步骤启动的：</p>
+<p>这个方案写多了，大家开始感受到了痛点，读者是否也能感受得到：</p>
 
 <ol>
-<li> 启动Leaf-snowflake服务，连接Zookeeper，在leaf_forever父节点下检查自己是否已经注册过（是否有该顺序子节点）。</li>
-<li> 如果有注册过直接取回自己的workerID（zk顺序节点生成的int类型ID号），启动服务。</li>
-<li> 如果没有注册过，就在该父节点下面创建一个持久顺序节点，创建成功后取回顺序号当做自己的workerID号，启动服务。</li>
+<li> 测试分明就是把实现抄了一遍。这违反上述所说「仅对输入输出敏感」的原则</li>
+<li> 当在实现中某个部分加入新的语句时，该语句后续所有的测试都会挂掉，并且出错信息非常难以描述原因，导致常常要陷入「调试测试」的境地，这种场景下我们说维护测试确实是成本</li>
+<li> 测试没有重点，随便改点什么都会挂测试，无法很好支持「重构」这种改变内部实现但不改变业务行为的代码清理行为</li>
 </ol>
 
-<p><img src="media/15277850962764/15277852658209.png" alt=""/></p>
+<h3 id="toc_9">正确姿势</h3>
 
-<h3 id="toc_11">弱依赖ZooKeeper</h3>
+<p>于是，针对以上痛点，我们想出了可能的解决方案：是否可以通过将 saga 全部执行一遍，搜集所有 dispatch 出去的 action，然后由开发者自由断言某个 action 是否被正确 dispatch？这样的话，可以只测试你真正关心的、与业务逻辑相关的部分，并且可以做到<strong>与次序解耦</strong>、<strong>重构改动了代码而不挂测试</strong>，从而大大提升测试效率和开发体验。恰好，redux-saga 官方就有这么一个跑测试的工具：<a href="https://redux-saga.js.org/docs/api/#runsagaoptions-saga-args"><code>runSaga</code></a>。于是，我们推出了我们的第二版 saga 测试方案：<strong><code>runSaga</code> + 自定义拓展 jest 的 <code>expect</code> 断言</strong>。最终，使用这个工具写出来的 saga 测试，看起来是这样子的：</p>
 
-<p>除了每次会去ZK拿数据以外，也会在本机文件系统上缓存一个workerID文件。当ZooKeeper出现问题，恰好机器出现问题需要重启时，能保证服务能够正常启动。这样做到了对三方组件的弱依赖。一定程度上提高了SLA</p>
+<pre><code class="language-js">import { call } from &#39;&lt;a class=&quot;octolinker-link octolinker-line-indicator&quot;&gt;redux-saga/effects&lt;/a&gt;&#39;
 
-<h3 id="toc_12">解决时钟问题</h3>
+export function* fetchUserUnreadComments({ payload: { productId, userId } }) {
+  try {
+    const { data: { comments, newCommentsSinceLastReply } } = yield call(
+      Api.get,
+      `products/${productId}/comments?userId=${userId}`
+    )
 
-<p>因为这种方案依赖时间，如果机器的时钟发生了回拨，那么就会有可能生成重复的ID号，需要解决时钟回退的问题。</p>
+    const hasUnreadComments = newCommentsSinceLastReply &gt; 0
+    yield put(actions.saveProductComments(productId, comments))
+    yield put(actions.hasUnreadCommentsSinceLastReply(hasUnreadComments))
 
-<p><img src="media/15277850962764/15277852832400.png" alt=""/></p>
-
-<p>参见上图整个启动流程图，服务启动时首先检查自己是否写过ZooKeeper leaf_forever节点：</p>
-
-<ol>
-<li> 若写过，则用自身系统时间与leaf_forever/${self}节点记录时间做比较，若小于leaf_forever/${self}时间则认为机器时间发生了大步长回拨，服务启动失败并报警。</li>
-<li> 若未写过，证明是新服务节点，直接创建持久节点leaf_forever/${self}并写入自身系统时间，接下来综合对比其余Leaf节点的系统时间来判断自身系统时间是否准确，具体做法是取leaf_temporary下的所有临时节点(所有运行中的Leaf-snowflake节点)的服务IP：Port，然后通过RPC请求得到所有节点的系统时间，计算sum(time)/nodeSize。</li>
-<li> 若abs( 系统时间-sum(time)/nodeSize ) &lt; 阈值，认为当前系统时间准确，正常启动服务，同时写临时节点leaf_temporary/${self} 维持租约。</li>
-<li> 否则认为本机系统时间发生大步长偏移，启动失败并报警。</li>
-<li> 每隔一段时间(3s)上报自身系统时间写入leaf_forever/${self}。</li>
-</ol>
-
-<p>由于强依赖时钟，对时间的要求比较敏感，在机器工作时NTP同步也会造成秒级别的回退，建议可以直接关闭NTP同步。要么在时钟回拨的时候直接不提供服务直接返回ERROR_CODE，等时钟追上即可。<strong>或者做一层重试，然后上报报警系统，更或者是发现有时钟回拨之后自动摘除本身节点并报警</strong>，如下：</p>
-
-<pre><code class="language-java"> //发生了回拨，此刻时间小于上次发号时间
- if (timestamp &lt; lastTimestamp) {
-
-            long offset = lastTimestamp - timestamp;
-            if (offset &lt;= 5) {
-                try {
-                    //时间偏差大小小于5ms，则等待两倍时间
-                    wait(offset &lt;&lt; 1);//wait
-                    timestamp = timeGen();
-                    if (timestamp &lt; lastTimestamp) {
-                       //还是小于，抛异常并上报
-                        throwClockBackwardsEx(timestamp);
-                      }    
-                } catch (InterruptedException e) {  
-                   throw  e;
-                }
-            } else {
-                //throw
-                throwClockBackwardsEx(timestamp);
-            }
-        }
- //分配ID
+    if (hasUnreadComments) {
+      yield put(actions.saveNotification(`有${newCommentsSinceLastReply}条新回复，快去看看吧`))
+    }
+  } catch (error) {}
+}
 </code></pre>
 
-<p><strong>从上线情况来看，在2017年闰秒出现那一次出现过部分机器回拨，由于Leaf-snowflake的策略保证，成功避免了对业务造成的影响。</strong></p>
+<pre><code class="language-js">test(&#39;should fetch user unread comments and show notifications if there are any&#39;, async () =&gt; {
+  const action = {
+    payload: {
+      productId: 10085,
+      userId: 28071562837,
+    },
+  }
+  const comments = [
+    { id: 283992, author: &#39;男***8&#39;, comment: &#39;价廉物美，相信奥康旗舰店&#39; },
+    { id: 283993, author: &#39;雨***成&#39;, comment: &#39;因为工作穿皮鞋时间较多，所以一双合脚的鞋子...&#39; },
+    { id: 283994, author: &#39;叶***亮&#39;, comment: &#39;不错，很软，我买了大一码，因为脚宽些，是真皮的，划算萌东上...&#39; },
+    { id: 283995, author: &#39;替***崽&#39;, comment: &#39;磕到了，脚踝疼得不好穿，要不你们试试&#39; },
+  ]
+  const response = {
+    data: {
+      comments: comments,
+      newCommentsSinceLastReply: 2,
+    },
+  }
+  Api.get = jest.fn().mockImplementation(() =&gt; createResponse(response))
 
-<h1 id="toc_13">Leaf现状</h1>
+  await testSaga(fetchUserUnreadComments, action)
 
-<p>Leaf在美团点评公司内部服务包含金融、支付交易、餐饮、外卖、酒店旅游、猫眼电影等众多业务线。目前Leaf的性能在4C8G的机器上QPS能压测到近5w/s，TP999 1ms，已经能够满足大部分的业务的需求。每天提供亿数量级的调用量，作为公司内部公共的基础技术设施，必须保证高SLA和高性能的服务，我们目前还仅仅达到了及格线，还有很多提高的空间。</p>
+  expect(Api.get).toHaveBeenCalledWith(&#39;products/10085/comments?userId=28071562837&#39;)
 
-<h1 id="toc_14">作者简介</h1>
+  expect(actions.saveProductComments).toHaveBeenDispatchedWith(10085, comments)
+  expect(actions.saveNotification).toHaveBeenDispatchedWith(&#39;有2条新回复，快去看看吧&#39;)
+})
+</code></pre>
 
-<p>照东，美团点评基础架构团队成员，主要参与<a href="http://tech.meituan.com/mt-mtrace.html">美团大型分布式链路跟踪系统Mtrace</a>和美团点评分布式ID生成系统Leaf的开发工作。曾就职于阿里巴巴，2016年7月加入美团。</p>
+<p>这个测试略长，但写习惯就好。总之，它的优点在于：</p>
 
-<p>最后做一个招聘广告：如果你对大规模分布式环境下的服务治理、分布式会话链追踪等系统感兴趣，诚挚欢迎投递简历至：zhangjinlu#meituan.com。</p>
+<ul>
+<li>  非常容易准备数据：store、mock API response</li>
+<li>  覆盖了一个业务场景（获取编号 10085 产品的评论列表，如果在用户上次访问之后有 2 条未读回复，那么提醒用户「有 2 条新回复」），当这个业务场景（也就是准备的测试数据）不变时，无论你怎么修改优化内部实现，这个测试都不会挂，真正做到了测试支持重构的作用</li>
+<li>  可以仅断言你关心的点，不断言中间某些东西也不会有次序问题导致测试挂掉（比如上例中，我们就没有断言 <code>actions.hasUnreadCommentsSinceLastReply</code> 是否真正被 dispatch 出去）</li>
+<li>  自定义的 <code>expect(action).toHaveBeenDispatchedWith(payload)</code> matcher 很有表达力，且出错信息友好</li>
+</ul>
 
-<h1 id="toc_15">参考资料</h1>
+<p>这个自定义的 matcher 是通过 jest 的 <code>expect.extend</code> 扩展实现的：</p>
 
-<ol>
-<li> 施瓦茨. 高性能MySQL[M]. 电子工业出版社, 2010:162-171.</li>
-<li> <a href="https://zh.wikipedia.org/wiki/%E9%80%9A%E7%94%A8%E5%94%AF%E4%B8%80%E8%AF%86%E5%88%AB%E7%A0%81">维基百科：UUID</a>.</li>
-<li> <a href="https://github.com/twitter/snowflake">snowflake</a>.</li>
-<li> <a href="https://dev.mysql.com/doc/refman/5.7/en/innodb-index-types.html">MySQL: Clustered and Secondary Indexes</a>.</li>
-<li> <a href="https://dev.mysql.com/doc/refman/5.5/en/replication-semisync.html">半同步复制 Semisynchronous Replication</a>.</li>
-</ol>
+<pre><code class="language-js">expect.extend({
+  toHaveBeenDispatched(action) { ... },
+  toHaveBeenDispatchedWith(action, payload) { ... },
+})
+</code></pre>
+
+<p>上面是我们认为比较好的副作用测试工具、测试策略和测试方案。使用时紧紧抓住一开始提到的 4 点主要的业务价值来测试即可。</p>
+
+<h2 id="toc_10">component 测试</h2>
+
+<p>组件测试其实是实践最多，争论也最多的地方。React 组件是一个高度自治的单元，从分类上来看，它大概有这么几类：</p>
+
+<ul>
+<li>  展示型业务组件</li>
+<li>  容器型业务组件</li>
+<li>  通用 UI 组件</li>
+<li>  功能型组件</li>
+</ul>
+
+<p>先把这个分类放在这里，待会回过头来谈。对于 React 组件测什么不测什么，我有一些思考，它是以「好的单元测试标准」作为原则出发考虑的：输入输出确定、不依赖于内部实现。先说结论：两测两不测。<strong>组件分支渲染逻辑必须测，事件调用和参数传递一般要测；纯 UI 不测，连接 redux 的高阶组件不测</strong>；其他的一般不测（比如 CSS，官方文档有反例）。具体怎么得出这个结论的呢，分析如下：</p>
+
+<ul>
+<li>  纯 UI 不测：因为 UI 既不好 TDD，断言起期望结果来也不如直接看来得直观。所谓快照测试有意义的前提在于，对比方式必须是视觉级别的，像 snapshot 这种 UI 测试跟提交的时候看 Git 我觉得没差别，价值不大，还打乱工作流。因此，我认为 UI 测试诉诸手工，在中等规模的项目上看起来还是可行的</li>
+<li>  连接 redux 的高阶组件不测。理由如下详述</li>
+<li>  组件分支渲染逻辑必须测：这种东西<strong>相对</strong>还是好断言的，并且分支逻辑往往具有业务意义，测试顺便能做为文档使用</li>
+<li>  事件调用和参数传递一般要测：函数调用作为组件的一个「行为」，往往也有业务意义，这部分测试在重构的时候也能提供相当的保护价值</li>
+</ul>
+
+<p><code>connect</code> 过的组件从测试的角度看无非四个点：</p>
+
+<ul>
+<li>  是否从 <code>mapStateToProps</code> 中取得了正确的参数</li>
+<li>  是否从 <code>mapDispatchToProps</code> 中取得正确的参数</li>
+<li>  是否正确地被传递给了组件</li>
+<li>  redux 对应的数据切片更新时是否会触发组件进行一次 props 更新</li>
+</ul>
+
+<p>这四个点，<code>react-redux</code> <a href="https://github.com/reduxjs/react-redux/blob/master/test/components/connect.spec.js">已经都帮你测过了</a>，<a href="https://github.com/reduxjs/react-redux/issues/325#issuecomment-199449298">已经证明 work 了</a>，为啥要重复测试自寻烦恼呢？当然，不测这个东西的话，是有可能你 export 的纯组件测试都是过的，但是代码实际运行出错。穷尽下来主要可能是这几种问题：</p>
+
+<ul>
+<li>  你在 <code>mapStateToProps</code> 中打错了字或打错了变量名</li>
+<li>  你写了 <code>mapStateToProps</code> 但没有 connect 上去</li>
+<li>  你在 <code>mapStateToProps</code> 中取的路径是错的，在 redux 中已经被改过</li>
+</ul>
+
+<p>第一、二种可能，无视。测试不是万能药，不能预防人主动犯错，这种场景如果是小步提交发现起来是很快的，如果不小步提交那什么测试都帮不了你的；如果发生得很频繁，解决方案大概有二：如果因为某段数据获取的逻辑多处重复，则可能应该被抽取到 selector 进行单独测试；如果某段数据获取就是经常敲错，那么可以专门 export 这段代码进行测试固定。</p>
+
+<p>第三种可能，确实是问题，但发生频率目前看来较低。为啥呢，因为没有类型系统我们不会也不敢随意改 redux 的数据结构啊…（这侵入性重的框架哟）</p>
+
+<p>综上，<code>@connect</code> 组件不测，因为框架本身已做了大部分测试，剩下的场景出 bug 频率不高，而施加测试的话提高成本（准备依赖和数据），降低开发体验，模糊测试场景，性价比不大，所以强烈建议省了这份心。不测 <code>@connect</code> 过的组件，其实也是 <a href="https://redux.js.org/recipes/writing-tests#connected-components">官方文档</a> 推荐的做法。</p>
+
+<p>然后，基于上面第 1、2 个结论，映射回四类组件的结构当中去，我们可以得到下面的表格，然后发现… 每种组件都要测<strong>渲染分支</strong>和<strong>事件调用</strong>，跟组件类型根本没必然的关联… 不过，功能型组件有可能会涉及一些其他的模式，因此又大致分出一小节来谈。</p>
+
+<table>
+<thead>
+<tr>
+<th style="text-align: center">组件类型 / 测试内容</th>
+<th style="text-align: center">分支渲染逻辑</th>
+<th style="text-align: center">事件调用</th>
+<th style="text-align: center"><code>@connect</code></th>
+<th style="text-align: center">纯 UI</th>
+</tr>
+</thead>
+
+<tbody>
+<tr>
+<td style="text-align: center">展示型组件</td>
+<td style="text-align: center"><g-emoji class="g-emoji" alias="white_check_mark" fallback-src="https://assets-cdn.github.com/images/icons/emoji/unicode/2705.png">✅</g-emoji></td>
+<td style="text-align: center"><g-emoji class="g-emoji" alias="white_check_mark" fallback-src="https://assets-cdn.github.com/images/icons/emoji/unicode/2705.png">✅</g-emoji></td>
+<td style="text-align: center">-</td>
+<td style="text-align: center"><g-emoji class="g-emoji" alias="heavy_multiplication_x" fallback-src="https://assets-cdn.github.com/images/icons/emoji/unicode/2716.png">✖️</g-emoji></td>
+</tr>
+<tr>
+<td style="text-align: center">容器型组件</td>
+<td style="text-align: center"><g-emoji class="g-emoji" alias="white_check_mark" fallback-src="https://assets-cdn.github.com/images/icons/emoji/unicode/2705.png">✅</g-emoji></td>
+<td style="text-align: center"><g-emoji class="g-emoji" alias="white_check_mark" fallback-src="https://assets-cdn.github.com/images/icons/emoji/unicode/2705.png">✅</g-emoji></td>
+<td style="text-align: center"><g-emoji class="g-emoji" alias="heavy_multiplication_x" fallback-src="https://assets-cdn.github.com/images/icons/emoji/unicode/2716.png">✖️</g-emoji></td>
+<td style="text-align: center"><g-emoji class="g-emoji" alias="heavy_multiplication_x" fallback-src="https://assets-cdn.github.com/images/icons/emoji/unicode/2716.png">✖️</g-emoji></td>
+</tr>
+<tr>
+<td style="text-align: center">通用 UI 组件</td>
+<td style="text-align: center"><g-emoji class="g-emoji" alias="white_check_mark" fallback-src="https://assets-cdn.github.com/images/icons/emoji/unicode/2705.png">✅</g-emoji></td>
+<td style="text-align: center"><g-emoji class="g-emoji" alias="white_check_mark" fallback-src="https://assets-cdn.github.com/images/icons/emoji/unicode/2705.png">✅</g-emoji></td>
+<td style="text-align: center">-</td>
+<td style="text-align: center"><g-emoji class="g-emoji" alias="heavy_multiplication_x" fallback-src="https://assets-cdn.github.com/images/icons/emoji/unicode/2716.png">✖️</g-emoji></td>
+</tr>
+<tr>
+<td style="text-align: center">功能型组件</td>
+<td style="text-align: center"><g-emoji class="g-emoji" alias="white_check_mark" fallback-src="https://assets-cdn.github.com/images/icons/emoji/unicode/2705.png">✅</g-emoji></td>
+<td style="text-align: center"><g-emoji class="g-emoji" alias="white_check_mark" fallback-src="https://assets-cdn.github.com/images/icons/emoji/unicode/2705.png">✅</g-emoji></td>
+<td style="text-align: center"><g-emoji class="g-emoji" alias="heavy_multiplication_x" fallback-src="https://assets-cdn.github.com/images/icons/emoji/unicode/2716.png">✖️</g-emoji></td>
+<td style="text-align: center"><g-emoji class="g-emoji" alias="heavy_multiplication_x" fallback-src="https://assets-cdn.github.com/images/icons/emoji/unicode/2716.png">✖️</g-emoji></td>
+</tr>
+</tbody>
+</table>
+
+<h3 id="toc_11">一般的业务型组件</h3>
+
+<pre><code class="language-js">const ProductDetailPage = ({ name, introduction, details, comments }) =&gt; (
+  &lt;&gt;
+    &lt;Title name={name} /&gt;
+    &lt;Introduction introduction={introduction} /&gt;
+    &lt;ProductDetail content={details} /&gt;
+    {comments.length &gt; 0 &amp;&amp; &lt;Comments comments={comments} /&gt;}
+  &lt;/&gt;
+)
+</code></pre>
+
+<p>对应的测试如下，测试的是不同的分支渲染逻辑：该产品条目是否应渲染一个评论组件。</p>
+
+<pre><code class="language-js">test(&#39;should not render a comments section when product has no comments&#39;, () =&gt; {
+  const component = shallow(&lt;ProductDetailPage comments={[]} /&gt;)
+
+  const commentsSection = component.find(Comments)
+
+  expect(commentsSection).toHaveLength(0)
+})
+
+test(&#39;should render a comments section when product has comments&#39;, () =&gt; {
+  const comments = [
+    { id: 283992, author: &#39;男***8&#39;, comment: &#39;价廉物美，相信奥康旗舰店&#39; },
+    { id: 283993, author: &#39;雨***成&#39;, comment: &#39;因为工作穿皮鞋时间较多，所以一双合脚的鞋子...&#39; },
+  ]
+  const component = shallow(&lt;ProductDetailPage comments={comments} /&gt;)
+
+  const commentsSection = component.find(Comments)
+
+  expect(commentsSection).toHaveLength(1)
+})
+</code></pre>
+
+<p>测试事件的一个场景如下：当某条产品被点击时，应该将产品相关的信息发送给埋点系统进行埋点。</p>
+
+<pre><code class="language-js">const ProductItem = ({ id, productName, introduction, trackPressEvent }) =&gt; (
+  &lt;TouchableWithoutFeedback onPress={() =&gt; trackPressEvent(id, productName)}&gt;
+    &lt;View&gt;
+      &lt;Title name={productName} /&gt;
+      &lt;Introduction introduction={introduction} /&gt;
+    &lt;/View&gt;
+  &lt;/TouchableWithoutFeedback&gt;
+)
+</code></pre>
+
+<pre><code class="language-js">test(&#39;should send product id and name to analytics system when user press the product item&#39;, () =&gt; {
+  const trackPressEvent = jest.fn()
+  const component = shallow(
+    &lt;ProductItem id={100832} introduction=&quot;iMac Pro - Power to the pro.&quot; trackPressEvent={trackPressEvent} /&gt;
+  )
+
+  component.find(TouchableWithoutFeedback).simulate(&#39;press&#39;)
+
+  expect(trackPressEvent).toHaveBeenCalledWith(100832, &#39;iMac Pro - Power to the pro.&#39;)
+})
+</code></pre>
+
+<p>简单得很吧。这里的几个测试，在你改动了样式相关的东西时，不会挂掉；但是如果你改动了分支逻辑或函数调用的内容时，它就会挂掉了。而分支逻辑或函数调用，恰好是我觉得接近业务的地方，所以它们对保护代码逻辑、保护重构是有价值的。当然，它们多少还是依赖了组件内部的实现细节，比如说 <code>find(TouchableWithoutFeedback)</code>、<code>expect().toHaveLength(1)</code>，都分别做了「组件内部使用了 <code>TouchableWithoutFeedback</code>」、「该组件最多只应该渲染一个 <code>VideoPlayer</code> 组件」这样的假设，而这些假设很可能是会变的。这对于组件测试来说，是不够完美的地方。也正因此，我认为从架构上正确地拆分组件树才如此重要，如果你的每个组件都十分清晰直观、逻辑分明，那么像上面这样的组件测起来也就很轻松，一般就遵循 <code>shallow</code> -&gt; <code>find(Component)</code> -&gt; 断言的三段式，哪怕是了解了一些组件的内部细节，通常也在可控的范围内，维护起来成本并不高。这是目前我觉得平衡了表达力、重构意义和测试成本的最佳实践</p>
+
+<h3 id="toc_12">功能型组件</h3>
+
+<p>功能型组件，指的是跟业务无关的另一类组件：它是功能型的，更像是底层支撑着业务组件运作的基础组件，比如路由组件、分页组件等。这些组件可能会偏重逻辑多一点，但本质测法跟业务组件是一致的：都是测分支渲染和事件调用。但由于它偏功能型的特性，使得它在设计上常会出现一些业务型组件不常出现的设计模式，如高阶组件、以函数为子组件等。下面分别针对这几种进行分述。</p>
+
+<h4 id="toc_13"><code>children</code> 型组件</h4>
+
+<pre><code class="language-js">export const FeatureToggle = ({ features, featureName, children }) =&gt; {
+  if (!features[featureName]) return null
+
+  return children
+}
+</code></pre>
+
+<pre><code class="language-js">import React from &#39;&lt;a class=&quot;octolinker-link octolinker-line-indicator&quot;&gt;react&lt;/a&gt;&#39;
+import { shallow } from &#39;&lt;a class=&quot;octolinker-link octolinker-line-indicator&quot;&gt;enzyme&lt;/a&gt;&#39;
+import { View } from &#39;&lt;a class=&quot;octolinker-link octolinker-line-indicator&quot;&gt;react-native&lt;/a&gt;&#39;
+
+import FeatureToggles from &#39;&lt;a class=&quot;octolinker-link octolinker-line-indicator&quot;&gt;./featureToggleStatus&lt;/a&gt;&#39;
+import { FeatureToggle } from &#39;&lt;a class=&quot;octolinker-link octolinker-line-indicator&quot;&gt;./index&lt;/a&gt;&#39;
+
+const SomeComponent = () =&gt; &lt;View /&gt;
+
+test(&#39;should not render children component when remote toggle is empty&#39;, () =&gt; {
+  const component = shallow(
+    &lt;FeatureToggle features={{}} feature&gt;
+      &lt;SomeComponent /&gt;
+    &lt;/FeatureToggle&gt;
+  )
+
+  expect(component.find(SomeComponent)).toHaveLength(0)
+})
+
+test(&#39;should render children component when remote toggle object is present given promotion618 feature is on&#39;, () =&gt; {
+  const features = {
+    promotion618: FeatureToggles.on,
+  }
+
+  const component = shallow(
+    &lt;FeatureToggle features={features} feature&gt;
+      &lt;SomeComponent /&gt;
+    &lt;/FeatureToggle&gt;
+  )
+
+  expect(component.find(SomeComponent)).toHaveLength(1)
+})
+
+test(&#39;should not render children component when remote toggle object is present given promotion618 feature is off&#39;, () =&gt; {
+  const features = {
+    promotion618: FeatureToggles.off,
+  }
+
+  const component = shallow(
+    &lt;FeatureToggle features={features} feature&gt;
+      &lt;SomeComponent /&gt;
+    &lt;/FeatureToggle&gt;
+  )
+
+  expect(component.find(SomeComponent)).toHaveLength(0)
+})
+</code></pre>
+
+<h4 id="toc_14">以函数为子组件类组件</h4>
+
+<p>既然是侧重逻辑的功能型组件，它的设计模式就比较多样一些，其中经常会出现「以函数为子组件」的这种设计模式。至于为什么会用到这种模式，它的利弊如何呢，可以看看程墨书中关于高阶组件的这部分，讲的很到位，这里不再细补充。还是以代码为例子：</p>
+
+<pre><code class="language-js">import React, { PureComponent } from &#39;&lt;a class=&quot;octolinker-link octolinker-line-indicator&quot;&gt;react&lt;/a&gt;&#39;
+import PropTypes from &#39;&lt;a class=&quot;octolinker-link octolinker-line-indicator&quot;&gt;prop-types&lt;/a&gt;&#39;
+import { TouchableOpacity, View } from &#39;&lt;a class=&quot;octolinker-link octolinker-line-indicator&quot;&gt;react-native&lt;/a&gt;&#39;
+
+import { Indicator } from &#39;&lt;a class=&quot;octolinker-link octolinker-line-indicator&quot;&gt;../Indicator&lt;/a&gt;&#39;
+import styles from &#39;&lt;a class=&quot;octolinker-link octolinker-line-indicator&quot;&gt;./styles&lt;/a&gt;&#39;
+
+export default class Readable extends PureComponent {
+  static propTypes = {
+    children: PropTypes.func,
+    initialStatus: PropTypes.bool,
+  }
+
+  state = {
+    pressed: false,
+  }
+
+  get readStatus() {
+    return this.state.pressed || this.props.initialStatus
+  }
+
+  onPress = () =&gt; this.setState({ pressed: true })
+
+  render() {
+    return (
+      &lt;View style={styles.container}&gt;
+        &lt;Indicator status={this.readStatus} /&gt;
+
+        &lt;TouchableOpacity activeOpacity={0.8} onPress={this.onPress}&gt;
+          {this.props.children(this.readStatus)}
+        &lt;/TouchableOpacity&gt;
+      &lt;/View&gt;
+    )
+  }
+}
+</code></pre>
+
+<p>这个组件，顾名思义，是负责管理「已读未读」的组件：它接受一个 children，负责记录它是否已被点击（阅读）过的状态，并将此状态作为参数，调用 children 时传递给它。再来看使用它的地方：</p>
+
+<pre><code class="language-js">const ProductItem = ({ isRead, productName, comments }) =&gt; (
+  &lt;Readable initialStatus={isRead}&gt;
+    {(isRead) =&gt; (
+      &lt;&gt;
+        &lt;ItemContent title={productName} style={[styles.normal, isRead &amp;&amp; styles.readStyle]} /&gt;
+        {comments.length &gt; 0 &amp;&amp; &lt;Comments comments={comments} /&gt;}
+      &lt;/&gt;
+    )}
+  &lt;/Readable&gt;
+)
+</code></pre>
+
+<p>好，现在比如你要测 <code>ProductItem</code> 里面的这段「是否渲染评论组件」的逻辑，你要怎么测呢？一般的 <code>shallow(&lt;ProductItem /&gt;)</code>，里面这段以函数作为子组件的函数可不会被调用哟？</p>
+
+<p>目前我们项目解决方案是，手动拿到 children 这个函数，再手动 <code>shallow</code> 渲染一下，然后再测。再次地，这非常有侵入性，对实现了解比上面的例子更多。这是我所能接受的差不多一个平衡点了，就是如果准备再复杂一些，我就会开始觉得麻烦了。</p>
+
+<pre><code class="language-js">test(&#39;should render a Comment component when comment is not empty&#39;, () =&gt; {
+  const componant = shallow(
+    &lt;ProductItem
+      isRead={false}
+      product
+      comments={[&#39;awesome products&#39;, &#39;I will buy 10 for my friends&#39;, &#39;I would love to have such a friend!&#39;]}
+    /&gt;
+  )
+  const productItem = shallow(component.find(Readable).props().children())
+
+  const commentsSection = productItem.find(Comments)
+
+  expect(commentsSection).toHaveLength(1)
+})
+</code></pre>
+
+<h2 id="toc_15">参数化测试</h2>
+
+<p>严格来说，参数化测试是一种方法，可以应用在任何层级的测试中。它非常适用于数据驱动类型的测试中，可以提升数据准备效率，同时兼顾用例信息、错误提示灯优点。话不多说，直接上例子。</p>
+
+<p><a href="https://user-images.githubusercontent.com/11895199/41195038-a0a747b2-6c58-11e8-9ba0-f1c7916850d8.png"><img src="https://user-images.githubusercontent.com/11895199/41195038-a0a747b2-6c58-11e8-9ba0-f1c7916850d8.png" alt=""/></a></p>
+
+<h2 id="toc_16">总结</h2>
+
+<p>好，总结下来，本文主要的内容如下：</p>
+
+<ul>
+<li>  单元测试对于 React 项目（及其他任何项目）来说都是必须的</li>
+<li>  在必须有测试的上下文中，推荐练习并使用 TDD 这种测试先行的方法获得快速反馈</li>
+<li>  之所以优先选择单元测试，是依据测试金字塔的成本收益比原则确定得到的</li>
+<li>  好的单元测试具备三大特征：<strong>仅对输入输出敏感</strong>、<strong>不依赖于内部实现</strong>、<strong>快且稳定</strong></li>
+<li>  测试也有测试策略：在 React 的典型架构下，一个测试体系大概分为五层：组件、action、reducer、selector、副作用层。它们分别的测试策略为：
+
+<ul>
+<li>  reducer、selector 的重逻辑代码要求 100% 覆盖</li>
+<li>  副作用层主要测试：<strong>是否拿到了正确的参数</strong>、<strong>是否调用了正确的 API</strong>、<strong>是否保存了正确的数据</strong>、<strong>业务逻辑</strong>、<strong>异常逻辑</strong> 五个层面</li>
+<li>  组件层两测两不测：<strong>分支渲染逻辑</strong> 和 <strong>事件、交互调用</strong> 必测；纯 UI、<code>@connect</code> 过的高阶组件不测</li>
+<li>  action 层选择性覆盖：可不测</li>
+</ul></li>
+<li>  其他高级技巧：定制测试工具（<code>jest.extend</code>）、参数化测试（<code>test.each()</code>）等</li>
+</ul>
+
+<h2 id="toc_17">施工中<g-emoji class="g-emoji" alias="construction" fallback-src="https://assets-cdn.github.com/images/icons/emoji/unicode/1f6a7.png">🚧</g-emoji> - 待补充 &amp; 待修改</h2>
+
+<ul>
+<li>  [x]  代码进一步脱敏</li>
+<li>  [ ]  补充个「简介」section，可以拿来上前端期刊。期刊的话，还有些文章级别的东西要整理，批评《浅出》的言论就不要上了；调调更积极一些，尽量对人有信心，不要随意喷能力问题；对外发布的话，需要对「快照测试」的部分做更客观的评价，「强烈不推荐」这个结论可能不是很经得住实践考验</li>
+<li>  [ ]  <code>{ comments.length &gt; 0 &amp;&amp; &lt;Comments comments={comments} /&gt;</code> feature envy 例子重构，找个更合适的例子</li>
+<li>  [ ]  saga 章节统一下例子</li>
+<li>  [ ]  所涉及的测试，皆用 fixture 突出关键信息，隐去无关信息的准备</li>
+<li>  [ ]  以「函数为子组件」的模式，是不是都可以写个专门的 helper 来屏蔽掉这些细节？</li>
+<li>  [ ]  更细致的组件测试的例子：如 mock、更接近「实现」更违背「不应关注实现」但具有业务价值的例子</li>
+</ul>
+
+<hr/>
+
+<p><details><summary>附录：快照测试成本与实践落地剖析</summary></p>
+
+<h2 id="toc_18">snapshot testing 测试实践</h2>
+
+<p>之前我对快照测试是很有看法的，觉得外界对它「多快好省」的希冀其实真实的价值并没有那么大，反而有很多副作用。就像 TDD 的狂热者一样，大家对快照测试狂热不已。为了描述这种坏味道，我有三点主要的质疑：</p>
+
+<ul>
+<li>  快照测试是反 TDD 的</li>
+<li>  快照测试会阻碍团队的重构</li>
+<li>  快照测试会损伤开发者体验</li>
+</ul>
+
+<p>这些质疑都有其道理，却也不是不能解决。先来看看其道理所在：反 TDD 很明显，它是写完再打快照，那在你开始写到写完这个过程，你没有办法通过测试获得反馈；阻碍重构，是指我重构组件的过程中就算逻辑没有动，但因为字符串的改变组件仍然会挂（这点非真）；损伤开发者体验，主要是说如果我频繁运行测试，并且正在修改组件，那我不得不重复「比对差异 - 更新快照」这个事情以使快照测试通过，否则我就得忍受经常红掉的测试。</p>
+
+<p>先说反 TDD 这个事情，它确实和 TDD 不是一路的玩法。和祁兮沟通了一下，他觉得快照测试更接近 ATDD 这样高层级的测试，只不过它是针对于 UI 的测试。那可能就是你先写着，但在你的故事卡完成之前它一直会是挂的。那么你是不是可以选择在做卡的时候不去运行快照测试，只有结卡的时候再去把它固化下来？这点看起来很吸引，但仍然有一个问题，且看后面。但关键点是说，它确实不是与 TDD 兼容的测试方式，但同时它也是更高层级的测试，你不需要经常运行，需要 TDD 的时候依然可以采用其他的测试工具。</p>
+
+<p>阻碍团队重构，是我了解不足所导致。我原本以为，只有改了任意字符串，快照测试就会挂，哪怕你没有改动功能，那这样就不满足我们对「不改变软件可观测行为的前提下进行重构」的标准。但事实证明，快照测试并不只是简单比较字符串，而且比较对于给定的 props 输入，输出是不是一致。因此，里面的可执行代码（逻辑）变化了，只要最终可观测的输出没有变化，那么快照测试也不会挂球。所以这点感受非真。</p>
+
+<p>损伤开发者体验，这个问题比较关键。因为快照测试是检测「变化」，而非「结果」，所以当你改动了 UI 时，快照测试必然会挂。这个测试的挂就是给你传达这样一个信息：「现在我挂了，说明你改了代码。至于你改对了没有，那我咋个晓得呢，你确定你真的要修改吗？」因此，你要做的无非两个事情：比对差异、做出回应（更新快照或回滚修改）。这个对开发者体验可能的影响点是在，它是凭空地在你的红绿循环中间加了这么一道，当你频繁运行测试时，你可能必须频繁重复这两个事情：比对差异、做出回应。那么，你要么别频繁运行测试，要么能快速地完成这两个事情。</p>
+
+<p>别频繁运行测试肯定是不能接受的，那么问题就转化成了：如何快速地完成这两个事情，以及这个过程带来的价值真的比开发者体验过程牺牲的反馈时间性价比更高吗？</p>
+
+<p><strong>价值</strong>。我们把组件的观测点分为两类：纯 UI 和逻辑。逻辑方面，用 Enzyme 来覆盖更加能保留业务场景；UI 方面，用 Enzyme 来覆盖必然要面临脆弱测试的问题，此时用 snapshot 测试则更有价值。因此我们讨论的结果是 <strong>snapshot 测试主要的价值就是在固化 UI 上</strong>，这其中也包括样式。祁兮说，如果把 UI 当成与业务代码一样对待，那么保证每个提交都没有破坏业务功能和 UI，显示是有其价值的。</p>
+
+<p><strong>如何快速地完成 比对差异 和 做出回应</strong> 这两个事情：</p>
+
+<h3 id="toc_19">比对差异</h3>
+
+<p>对于 UI 组件的更新，一般可以分为四类操作：</p>
+
+<ul>
+<li>  改字、改样式。这个差异比对体验完美 - 不就是自己开个 Git 比对一样的效果么？</li>
+<li>  增加或删除 UI 组件</li>
+<li>  改变组件结构，比如包一层，去一层之类的</li>
+<li>  可观测 UI 行为不变，重构逻辑。这个 snapshot 或单元测试都能覆盖，推荐后者，更清晰、轻量</li>
+</ul>
+
+<p>后两个在纯 React/HTML/JSX 中体验过，也跟纯文本对比一样，所以基本来说可以达到没什么成本。尽管说，这样而言就跟 Git 比对没什么两样，为啥还要测试这个流程？优点还是有一个，可以自动化，以及防止人为对 UI 的疏忽导致改出来 bug。问题是，在 RN 中，增删组件、包一层减一层组件（一般是包 <code>View</code>），jest 会默认把 View 的内部实现展开出来，变成冗长的字符串，这会导致差异没法比对，大大增加比对成本。解决方案是把它 mock 掉。</p>
+
+<p>因此，差异比对这一块，如果没有特别的坑，可以做到比较低的成本；比对方式，仍然遵照 Git 进行文本比对的方式即可。</p>
+
+<h3 id="toc_20">更新快照</h3>
+
+<ul>
+<li>  可以通过命令行的方式 <code>jest --updateSnapshot</code>，但执行太耗时，并且要它执行完以后你才可以 commit，需要等待，打断节奏；</li>
+<li>  可以通过 <code>jest --watch</code> 的方式，在快照更新并确认要更新后按个 <code>w</code> 去更新，但我用的是 WebStorm 的测试面板，它通常被我放在副屏，不在主屏，这样我要么需要通过 <code>cmd + 4</code> 或鼠标移动的方式切换到测试面板去执行这个「按 <code>w</code> 更新快照」的操作，然后再通过两下 <code>escape</code> 或鼠标移动点击的方式回主面板。当我核心注意力在红绿循环中的时候，这无疑需要额外的注意力来切换屏幕、进行鼠标操作，乃是大忌，频繁执行测试下，对工作流和节奏的打乱更要命</li>
+<li>  可以通过 <code>precommit</code> 脚本自动执行 <code>jest --updateSnapshot</code>。这是我目前想到相对最好的解决方案，在你比对了差异并确认需要更新后，还是通过 WS 的 Git 插件 <code>cmd + k</code> 进行 commit，然后 hook 脚本就会在后台执行，既不需要切换，也不需要打断当前思路和流程</li>
+</ul>
+
+<p>至此，如果没有其他的坑，差异比对和更新快照的问题都得到了妥善解决。去除了这层成本对开发者体验的影响，我依然可以 TDD，于是能尝试去使用快照测试，看看具体的关节实践起来是否真如我们期望。</p>
+
+<p>还有另外一个问题，就是快照测试什么时候运行并提交的问题。有三种粒度：</p>
+
+<ul>
+<li>  commit 粒度。即每个 commit 都需要保证快照测试通过，它是把 UI 当成与逻辑同样的一等公民来对待。这个粒度能保证每次对快照的更新都比较少，使得差异比较能 focus 在一个点上；它还能保证每个提交都是「原子提交」，即随便切一个 commit 都是可发布的状态，它们都通过 lint、通过 UI 测试、通过单元测试；这个是我们所期望的状态，<strong>挑战在于它需要 UI 部分跟 UT 一样要频繁进行「比对差异、更新快照」这两个事情</strong>，只有按照前面描述的实践，把这两个事情的时间成本降到最低，才能保证工作流畅，不然光研究差异就得花去半天时间，哪里还有心情写代码</li>
+<li>  push 粒度。就是说我 push 的时候必须保证快照测试通过。缺点是，中间的提交不能保证原子性，即是我没法保证每个 commit 都可发布；同时 review 的时候变化可能比较多，如果因为其他原因可读性不够好，基本就 review 不下去了，那也只能强行 <code>jest --updateSnapshot</code> 了，可能会增加比对差异的成本；</li>
+<li>  pr 粒度。通过配合本地 skip 掉快照测试的方式，这种粒度对开发者体验的侵入性是最小的。但缺点是 commit 原子性无法保证，比对差异可能更难进行，过高的比对成本可能导致人在这个环节偷懒犯错，从而失去快照测试的本意和意义</li>
+</ul>
+
+<p>综上，快照测试的价值是对 UI 进行覆盖，把 UI 当成与逻辑同等地位的代码来看待。同时，<a href="https://facebook.github.io/jest/docs/en/snapshot-testing.html#does-snapshot-testing-substitute-unit-testing">快照测试不能完全取代单元测试</a>，有逻辑的部分建议使用 Enzyme 进行 TDD 和覆盖。快照测试的粒度，建议是 commit 的粒度，以便每次提交都能保持「原子性」（即 lint、UT、快照测试都通过）。为此，依然需要频繁运行测试，并需要解决这个过程频繁的「差异比对」和「更新快照」可能带来的过高的成本，防止开发者体验因此降低。在价值、定位、粒度、具体操作都明确的基础上，不妨进行尝试，看它是否能带来预期的收益。</p>
+
+<p><a href="https://benmccormick.org/2016/09/19/testing-with-jest-snapshots-first-impressions">https://benmccormick.org/2016/09/19/testing-with-jest-snapshots-first-impressions</a> 。这里将 ST 的优缺点和利弊权衡都讲得好。</details></p>
 
                         
                       </div>
@@ -430,10 +927,10 @@ COMMIT
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/6/1</span>
+                    <span class="date">2018/6/16</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Persistence.html'>Persistence</a></span>
+          					    <span class="posted-in"><a href='Node.js.html'>Node.js</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -523,31 +1020,31 @@ COMMIT
 	      
 		      
 			      <li class="post">
-			        <a href="15389311738065.html">重构到更深层的模型</a>
+			        <a href="15459058392039.html">Reliable Domain Events</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389278377243.html">IAM of Google Cloud</a>
+			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389224951575.html">RSocket, a New Application Network Protocol for Reactive Applications, Announced at SpringOne</a>
+			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389220103546.html">如何形象地描述RxJava中的背压和流控机制？</a>
+			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389214670417.html">Modeling Uncertainty with Reactive DDD</a>
+			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
 			      </li>
 		     
 		  

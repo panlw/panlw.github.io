@@ -105,267 +105,454 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15316420362215.html">
+                <a class="clearlink" href="15374968439284.html">
                 
-                  <h1>研究consul的service mesh功能</h1>
+                  <h1>OpenID Connect explained</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://jeremy-xu.oschina.io/2018/07/%E7%A0%94%E7%A9%B6consul%E7%9A%84service-mesh%E5%8A%9F%E8%83%BD/">https://jeremy-xu.oschina.io/2018/07/%E7%A0%94%E7%A9%B6consul%E7%9A%84service-mesh%E5%8A%9F%E8%83%BD/</a></p>
+<p><a href="https://connect2id.com/learn/openid-connect">https://connect2id.com/learn/openid-connect</a></p>
 </blockquote>
 
-<pre><code>2018-07-06
-</code></pre>
+<p>OpenID Connect has become the leading standard for single sign-on and identity provision on the Internet. Its formula for success: simple JSON-based identity tokens (JWT), delivered via OAuth 2.0 flows designed for web, browser-based and native / mobile applications.</p>
 
-<p>之前一直是将 consul 当成一个服务发现、分布式 KV 服务、服务健康检查服务等，不过前几天 <a href="https://www.hashicorp.com/blog/consul-1-2-service-mesh">consul 发布了 1.2 版本</a>，宣称其实现了 Service Mesh 方案，最近在做 Service Mesh 相关的工作，正好有一点时间，就花时间研究一下。</p>
+<h2 id="toc_0"><a href="#intro">1. Local user authentication vs Identity Providers</a></h2>
 
-<h2 id="toc_0"><a href="#%E8%AF%95%E7%94%A8consul%E7%9A%84service-mesh"></a>试用 consul 的 service mesh</h2>
+<p><img src="https://connect2id.com/assets/learn/openid-connect/enter.png" alt=""/></p>
 
-<h3 id="toc_1"><a href="#%E5%8D%87%E7%BA%A7consul%E8%87%B31-2%E7%89%88%E6%9C%AC"></a>升级 consul 至 1.2 版本</h3>
+<p>Applications often need to identify their users. The simplistic approach is to create a local database for the users’ accounts and credentials. Given enough technical care this can be made to work well. However, local authentication can be bad for business:</p>
 
-<p>macOS 下升级 consul 很简单，简单用 brew 命令就好</p>
+<ul>
+<li><p>People find sign up and account creation tedious, and rightly so. Consumer web sites and apps may suffer abandoned shopping carts because of that, which means loss of business and sales.</p></li>
+<li><p>For enterprises with many apps, maintenance of separate user databases can easily become an administrative and security nightmare. You may want to put your IT resources to better use.</p></li>
+</ul>
 
-<pre><code class="language-bash">brew update consul
-</code></pre>
+<p>The established solution to these problems is to delegate user authentication and provisioning to a dedicated, purpose-built service, called an Identity Provider (IdP).</p>
 
-<p>为了方便后面修改 consul 的配置文件，添加一个<code>-config-dir</code>参数</p>
+<p>Google, Facebook and Twitter, where many people on the internet are registered, offer such IdP services for their users. A consumer web site can greatly streamline user onboarding by integrating login with these IdPs.</p>
 
-<p><code>/usr/local/opt/consul/homebrew.mxcl.consul.plist</code></p>
+<p>In a enterprise, this would ideally be one internal IdP service, for employees and contractors to log into the internal applications. Centralisation has considerable benefits, such as easier administration and potentially faster development cycles for new apps. You may ask: Isn’t that going to create a single point of failure? No, not when the IdP service is built for redundancy.</p>
 
-<pre><code class="language-xml">&lt;?xml version=&quot;1.0&quot; encoding=&quot;UTF-8&quot;?&gt;
-&lt;!DOCTYPE plist PUBLIC &quot;-//Apple//DTD PLIST 1.0//EN&quot; &quot;http://www.apple.com/DTDs/PropertyList-1.0.dtd&quot;&gt;
-&lt;plist version=&quot;1.0&quot;&gt;
-  &lt;dict&gt;
-    &lt;key&gt;KeepAlive&lt;/key&gt;
-    &lt;dict&gt;
-      &lt;key&gt;SuccessfulExit&lt;/key&gt;
-      &lt;false/&gt;
-    &lt;/dict&gt;
-    &lt;key&gt;Label&lt;/key&gt;
-    &lt;string&gt;homebrew.mxcl.consul&lt;/string&gt;
-    &lt;key&gt;ProgramArguments&lt;/key&gt;
-    &lt;array&gt;
-      &lt;string&gt;/usr/local/opt/consul/bin/consul&lt;/string&gt;
-      &lt;string&gt;agent&lt;/string&gt;
-      &lt;string&gt;-dev&lt;/string&gt;
-      &lt;string&gt;-advertise&lt;/string&gt;
-      &lt;string&gt;127.0.0.1&lt;/string&gt;
-      &lt;string&gt;-config-dir&lt;/string&gt;
-      &lt;string&gt;/usr/local/etc/consul.d&lt;/string&gt;
-    &lt;/array&gt;
-    &lt;key&gt;RunAtLoad&lt;/key&gt;
-    &lt;true/&gt;
-    &lt;key&gt;WorkingDirectory&lt;/key&gt;
-    &lt;string&gt;/usr/local/var&lt;/string&gt;
-    &lt;key&gt;StandardErrorPath&lt;/key&gt;
-    &lt;string&gt;/usr/local/var/log/consul.log&lt;/string&gt;
-    &lt;key&gt;StandardOutPath&lt;/key&gt;
-    &lt;string&gt;/usr/local/var/log/consul.log&lt;/string&gt;
-  &lt;/dict&gt;
-&lt;/plist&gt;
-</code></pre>
+<h2 id="toc_1"><a href="#oidc">2. Enter OpenID Connect</a></h2>
 
-<p>这个配置文件中，我添加了以下两行：</p>
+<p><img src="https://connect2id.com/assets/learn/openid-connect/openid.png" alt=""/></p>
 
-<pre><code class="language-xml">&lt;string&gt;-config-dir&lt;/string&gt;
-&lt;string&gt;/usr/local/etc/consul.d&lt;/string&gt;
-</code></pre>
+<p><a href="https://openid.net/specs/openid-connect-core-1_0.html">OpenID Connect</a>, published in 2014, is not the first standard for IdP, but definitely the best in terms of usability and simplicity, having learned the lessons from past efforts such as <a href="https://en.wikipedia.org/wiki/Security_Assertion_Markup_Language">SAML</a> and OpenID 1.0 and 2.0.</p>
 
-<h3 id="toc_2"><a href="#%E5%86%99%E4%B8%A4%E4%B8%AA%E6%A8%A1%E6%8B%9F%E7%9A%84%E5%BE%AE%E6%9C%8D%E5%8A%A1"></a>写两个模拟的微服务</h3>
+<p>What is the formula for success of OpenID Connect?</p>
 
-<p>用 golang 写两个小程序，用以模拟两个微服务。</p>
+<ul>
+<li><p><strong>Easy to consume identity tokens</strong>: Clients receive the user’s identity encoded in a secure JSON Web Token (JWT), called an ID token. JWTs are appreciated for their elegance and portability, and for their ready support for a wide range of signature and encryption algorithms. All that makes JWT outstanding for the ID token job.</p></li>
+<li><p><strong>Based on the OAuth 2.0 protocol</strong>: The ID token is obtained via a standard OAuth 2.0 flow, with support for web applications as well as native / mobile apps. OAuth 2.0 also means having one protocol for authentication and authorisation (obtaining access tokens).</p></li>
+<li><p><strong>Simplicity</strong>: OpenID Connect is simple enough to integrate with basic apps, but it also has the features and security options to match demanding enterprise requirements.</p></li>
+</ul>
 
-<p><code>service1.go</code></p>
+<h2 id="toc_2"><a href="#id-token">3. The identity token</a></h2>
 
-<pre><code class="language-go">package main
-import (
-    &quot;net/http&quot;
-    &quot;log&quot;
-    &quot;io&quot;
-)
-func TestServer(w http.ResponseWriter, req *http.Request) {
-    resp, err := http.Get(&quot;http://127.0.0.1:8082/test2&quot;)
-    if resp != nil &amp;&amp; resp.Body != nil {
-        defer resp.Body.Close()
-    }
-    if err != nil {
-        w.Write([]byte(&quot;make request failed\n&quot;))
-        return
-    }
-    io.Copy(w, resp.Body)
-}
-func main() {
-    http.HandleFunc(&quot;/test1&quot;, TestServer)
-    err := http.ListenAndServe(&quot;:8081&quot;, nil)
-    if err != nil {
-        log.Fatal(&quot;ListenAndServe: &quot;, err)
-    }
+<p><img src="https://connect2id.com/assets/learn/openid-connect/id-card.png" alt=""/></p>
+
+<p>The <a href="https://openid.net/specs/openid-connect-core-1_0.html#IDToken">ID token</a> resembles the concept of an identity card, in a standard <a href="https://tools.ietf.org/html/rfc7523">JWT</a> format, signed by the OpenID Provider (OP). To obtain one the client needs to send the user to their OP with an authentication request.</p>
+
+<p>Features of the ID token:</p>
+
+<ul>
+<li>  Asserts the identity of the user, called <u>subject</u> in OpenID (sub).</li>
+<li>  Specifies the issuing authority (iss).</li>
+<li>  Is generated for a particular <u>audience</u>, i.e. client (aud).</li>
+<li>  May contain a nonce (nonce).</li>
+<li>  May specify when (auth_time) and how, in terms of strength (acr), the user was authenticated.</li>
+<li>  Has an issue (iat) and expiration time (exp).</li>
+<li>  May include additional requested details about the subject, such as name and email address.</li>
+<li>  Is digitally signed, so it can be verified by the intended recipients.</li>
+<li>  May optionally be encrypted for confidentiality.</li>
+</ul>
+
+<p>The ID token statements, or claims, are packaged in a simple JSON object:</p>
+
+<pre><code>{
+  &quot;sub&quot;       : &quot;alice&quot;,
+  &quot;iss&quot;       : &quot;https://openid.c2id.com&quot;,
+  &quot;aud&quot;       : &quot;client-12345&quot;,
+  &quot;nonce&quot;     : &quot;n-0S6_WzA2Mj&quot;,
+  &quot;auth_time&quot; : 1311280969,
+  &quot;acr&quot;       : &quot;c2id.loa.hisec&quot;,
+  &quot;iat&quot;       : 1311280970,
+  &quot;exp&quot;       : 1311281970
 }
 </code></pre>
 
-<p><code>service2.go</code></p>
+<p>The ID token header, claims JSON and signature are encoded into a base 64 URL-safe string, for easy passing arround, for example as URL parameter.</p>
 
-<pre><code class="language-go">package main
-import (
-    &quot;io&quot;
-    &quot;net/http&quot;
-    &quot;log&quot;
-)
-func TestServer(w http.ResponseWriter, req *http.Request) {
-    io.WriteString(w, &quot;hello, world!\n&quot;)
+<pre><code>eyJhbGciOiJSUzI1NiIsImtpZCI6IjFlOWdkazcifQ.ewogImlzcyI6ICJodHRw
+Oi8vc2VydmVyLmV4YW1wbGUuY29tIiwKICJzdWIiOiAiMjQ4Mjg5NzYxMDAxIiw
+KICJhdWQiOiAiczZCaGRSa3F0MyIsCiAibm9uY2UiOiAibi0wUzZfV3pBMk1qIi
+wKICJleHAiOiAxMzExMjgxOTcwLAogImlhdCI6IDEzMTEyODA5NzAKfQ.ggW8hZ
+1EuVLuxNuuIJKX_V8a_OMXzR0EHR9R6jgdqrOOF4daGU96Sr_P6qJp6IcmD3HP9
+9Obi1PRs-cwh3LO-p146waJ8IhehcwL7F09JdijmBqkvPeB2T9CJNqeGpe-gccM
+g4vfKjkM8FcGvnzZUN4_KSP0aAp1tOJ1zZwgjxqGByKHiOtX7TpdQyHE5lcMiKP
+XfEIQILVq0pc_E2DzL7emopWoaoZTF_m0_N0YzFC6g6EJbOEoRoSK5hoDalrcvR
+YLSrQAZZKflyuVCyixEoV9GfNQC3_osjzw2PAithfubEEBLuVVk4XUVrWOLrLl0
+nx7RkKU8NXNHq-rvKMzqg
+</code></pre>
+
+<p>You can read more about the JWT data structure and its encoding in <a href="https://tools.ietf.org/html/rfc7519">RFC 7519</a>.</p>
+
+<h2 id="toc_3"><a href="#auth-request">4. How to request an ID token</a></h2>
+
+<p><img src="https://connect2id.com/assets/learn/openid-connect/walk.png" alt=""/></p>
+
+<p>Now that we know what an <a href="#id-token">ID token</a> is, how can a client, called Relying Party (RP) in OpenID Connect, request one?</p>
+
+<p>Authentication must take place at the identity provider, where the user’s session or credentials will be checked. For that a trusted agent is required, and this role is usually performed by the web browser.</p>
+
+<p>A browser popup is the preferred way for a web application to redirect the user to the IdP. Mobile apps on platforms such as Android or iOS should launch the system browser for that purpose. Embedded web views are not be trusted, as there’s nothing to prevent the app from snooping on the user password. User authentication must always occur in a trusted context that is separate from the app (e.g. the browser).</p>
+
+<p>Note that OpenID Connect doesn’t specify how users should actually be authenticated, this is <a href="#auth-methods">left up to the provider to decide</a>.</p>
+
+<p>ID tokens are requested via the <a href="oauth-2">OAuth 2.0 protocol</a>, which has been a tremendous success on its own. OAuth was originally devised as a simple authorisation mechanism for apps to obtain access tokens for web APIs or other protected resources. It has <u>flows</u> designed for all application type: traditional server-based web applications, browser (JavaScript) only apps, and native / mobile apps.</p>
+
+<p>So what are those flows, or paths, for obtaining ID tokens?</p>
+
+<ul>
+<li><p><a href="https://openid.net/specs/openid-connect-core-1_0.html#CodeFlowAuth">Authorisation code flow</a> — the most commonly used flow, intended for traditional web apps as well as native / mobile apps. Involves an initial browser redirection to / from the OP for user authentication and consent, then a second back-channel request to retrieve the ID token. This flow offers optimal security, as tokens are not revealed to the browser and the client can also be authenticated.</p></li>
+<li><p><a href="https://openid.net/specs/openid-connect-core-1_0.html#ImplicitFlowAuth">Implicit flow</a> — for browser (JavaScript) based apps that don’t have a backend. The ID token is received directly with the redirection response from the OP. No back-channel request is required here.</p></li>
+<li><p><a href="https://openid.net/specs/openid-connect-core-1_0.html#HybridFlowAuth">Hybrid flow</a> — rarely used, allows the application front-end and back-end to receive tokens separately from one another. Essentially a combination of the code and implicit flows.</p></li>
+</ul>
+
+<p>The OpenID Connect spec provides a nice <a href="https://openid.net/specs/openid-connect-core-1_0.html#Authentication">comparison</a> of the three flows, reproduced here in a simplified form.</p>
+
+<p><colgroup><col> <col style="width: 18%"> <col style="width: 18%"> <col style="width: 18%"></colgroup><br/>
+| Flow property | Code | Implicit | Hybrid |<br/>
+| Browser redirection step | ✔ | ✔ | ✔ |<br/>
+| Backend request step | ✔ | ✕ | ✔ |<br/>
+| Tokens revealed to browser | ✕ | ✔ | ✔ |<br/>
+| Client can be authenticated | ✔ | ✕ | ✔ |</p>
+
+<h2 id="toc_4"><a href="#cool-id-token-uses">5. Cool ID token uses</a></h2>
+
+<p><img src="https://connect2id.com/assets/learn/openid-connect/checkin.png" alt=""/></p>
+
+<p>An <a href="#id-token">ID token</a> can be put to uses beyond basic sign-in:</p>
+
+<ul>
+<li><p><strong>Stateless sessions</strong> — Put into a browser cookie the ID token can implement a lightweight stateless session. This does away with the need to store sessions on the server side (in memory or on disk), which can be a burden to manage and scale. The session is checked by validating the ID token. When the token reaches some predefined age past its issue timestamp (iat) the application can simply ask the OP for a new one via a silent <u>prompt=none</u> request.</p></li>
+<li><p><strong>Passing identity to 3rd parties</strong> — The ID token may be passed to other application components or to backend services when knowledge of the user’s identity is required, for example to log audit trails.</p></li>
+<li><p><strong>Token exchange</strong> — The ID token may be exchanged for an access token at the token endpoint of an OAuth 2.0 authorisation server (<a href="https://tools.ietf.org/html/draft-ietf-oauth-token-exchange-12">draft-ietf-oauth-token-exchange-12</a>). There are real world scenarios when an identity document is required to obtain access, for example when you check in at a hotel to get your room key. Token exchange has uses in distributed and enterprise applications.</p></li>
+</ul>
+
+<h2 id="toc_5"><a href="#example-auth-code-flow">6. Example OpenID authentication</a></h2>
+
+<p><img src="https://connect2id.com/assets/learn/openid-connect/browser.png" alt=""/></p>
+
+<p>We will now go through a minimal example of how to obtain an ID token for a user from an OP, using the <a href="https://openid.net/specs/openid-connect-core-1_0.html#CodeFlowAuth">authorisation code flow</a>. This is the most commonly used flow by traditional web applications. Examples of the <a href="https://openid.net/specs/openid-connect-core-1_0.html#ImplicitFlowAuth">implicit</a> and <a href="https://openid.net/specs/openid-connect-core-1_0.html#HybridFlowAuth">hybrid flow</a> can be found in the <a href="https://openid.net/specs/openid-connect-core-1_0.html">OpenID Connect spec</a>.</p>
+
+<p>The code flow has two steps:</p>
+
+<p><colgroup><col> <col style="width: 40%"> <col style="width: 40%"></colgroup><br/>
+|  | Step 1 | Step 2 |<br/>
+| <strong>Purpose</strong> | 1. Authenticate user<br/>
+2. Receive user consent | 1. Authenticate client (optional)<br/>
+2. Exchange code for token(s) |<br/>
+| <strong>Via</strong> | Front-channel request<br/>
+<small>(browser redirection)</small> | Back-channel request<br/>
+<small>(app to web server)</small> |<br/>
+| <strong>To</strong> | Authorisation endpoint | Token endpoint |<br/>
+| <strong>Result on success</strong> | Authorisation code<br/>
+<small>(step 2 input)</small> | ID token<br/>
+<small>(+ OAuth 2.0 access token)</small> |</p>
+
+<h3 id="toc_6"><a href="#example-auth-code-flow-step-1">Code flow: Step 1</a></h3>
+
+<p>The RP initiates user authentication by redirecting the browser to the <a href="https://tools.ietf.org/html/rfc6749#section-3.1">OAuth 2.0 authorisation endpoint</a> of the OpenID Provider. The OpenID <a href="https://openid.net/specs/openid-connect-core-1_0.html#AuthRequest">authentication request</a> is essentially an OAuth 2.0 <a href="https://tools.ietf.org/html/rfc6749#section-4.1.1">authorisation request</a> to access the user’s identity, indicated by an <code>openid</code> value in the scope parameter.</p>
+
+<p>Example authentication redirection to the OP:</p>
+
+<pre><code>HTTP/1.1 302 Found
+Location: https://openid.c2id.com/login?
+          response_type=code
+          &amp;scope=openid
+          &amp;client_id=s6BhdRkqt3
+          &amp;state=af0ifjsldkj
+          &amp;redirect_uri=https%3A%2F%2Fclient.example.org%2Fcb
+</code></pre>
+
+<p>The request parameters are encoded in the URI query:</p>
+
+<ul>
+<li><p><strong>response_type</strong> Set to <code>code</code> to indicate an authorisation code flow.</p></li>
+<li><p><strong>scope</strong> Used to specify the scope of the requested authorisation in OAuth. The scope value <code>openid</code> signals a request for OpenID authentication and ID token.</p></li>
+<li><p><strong>client_id</strong> The client identifier of the RP at the OP. This identifier is assigned when the RP is registered with the OP, via the client registration API, a developer console, or some other method.</p></li>
+<li><p><strong>state</strong> Opaque value set by the RP to maintain state between request and callback.</p></li>
+<li><p><strong>redirect_uri</strong> The RP callback URI for the authentication response.</p></li>
+</ul>
+
+<p>At the OP, the user will typically be authenticated by checking if they have a valid session (established by a browser cookie), and in the absence of that, by prompting the user to login. After that the user will typically be asked whether they agree to sign into the RP.</p>
+
+<p><img src="https://connect2id.com/assets/learn/openid-connect/op-login-consent.png" alt=""/></p>
+
+<p>The OP will then call the client <code>redirect_uri</code> with an authorisation code (on success) or an error code (if access was denied, or some other error occurred, such a malformed request was detected).</p>
+
+<pre><code>HTTP/1.1 302 Found
+Location: https://client.example.org/cb?
+          code=SplxlOBeZQQYbYS6WxSbIA
+          &amp;state=af0ifjsldkj
+</code></pre>
+
+<p>The RP must validate the <code>state</code> parameter, and use the <code>code</code> to proceed to the <a href="#example-auth-code-flow-step-2">next step</a> - exchanging the code for the ID token.</p>
+
+<h3 id="toc_7"><a href="#example-auth-code-flow-step-2">Code flow: Step 2</a></h3>
+
+<p>The authorisation code is an intermediate credential, which encodes the authorisation obtained at <a href="#example-auth-code-flow-step-1">step 1</a>. It is therefore opaque to the RP and only has meaning to the OP server. To retrieve the ID token the RP must submit the code to the OP, but this time with a direct back-channel request. This is done for two reasons:</p>
+
+<ul>
+<li>  To authenticate confidential clients with the OP before revealing the tokens;</li>
+<li>  To deliver the tokens straight to the RP, thus avoid exposing them to the browser.</li>
+</ul>
+
+<p>The code-for-token exchange happens at the <a href="#token-endpoint">token endpoint</a> of the OP:</p>
+
+<pre><code>POST /token HTTP/1.1
+Host: openid.c2id.com
+Content-Type: application/x-www-form-urlencoded
+Authorization: Basic czZCaGRSa3F0MzpnWDFmQmF0M2JW
+
+grant_type=authorization_code
+ &amp;code=SplxlOBeZQQYbYS6WxSbIA
+ &amp;redirect_uri=https%3A%2F%2Fclient.example.org%2Fcb
+</code></pre>
+
+<p>The client ID and secret are passed via the <code>Authorization</code> header. Apart from <a href="https://tools.ietf.org/html/rfc6749#section-2.3.1">HTTP basic authentication</a> OpenID Connect also supports authentication with a <a href="https://tools.ietf.org/html/rfc7523">JWT</a>, which doesn’t expose the client credentials with the token request, has expiration, and thus provides stronger security.</p>
+
+<p>The token request parameters are form-encoded:</p>
+
+<ul>
+<li><p><strong>grant_type</strong> Set to <code>authorization_code</code>.</p></li>
+<li><p><strong>code</strong> The code obtained from <a href="#example-auth-code-flow-step-1">step 1</a>.</p></li>
+<li><p><strong>redirect_uri</strong> Repeats the callback URI from step 1.</p></li>
+</ul>
+
+<p>On success the OP will return a JSON object with the ID token, an access token and an optional refresh token:</p>
+
+<pre><code>HTTP/1.1 200 OK
+Content-Type: application/json
+Cache-Control: no-store
+Pragma: no-cache
+
+{
+  &quot;id_token&quot;: &quot;eyJhbGciOiJSUzI1NiIsImtpZCI6IjFlOWdkazcifQ.ewogImlzc
+    yI6ICJodHRwOi8vc2VydmVyLmV4YW1wbGUuY29tIiwKICJzdWIiOiAiMjQ4Mjg5
+    NzYxMDAxIiwKICJhdWQiOiAiczZCaGRSa3F0MyIsCiAibm9uY2UiOiAibi0wUzZ
+    fV3pBMk1qIiwKICJleHAiOiAxMzExMjgxOTcwLAogImlhdCI6IDEzMTEyODA5Nz
+    AKfQ.ggW8hZ1EuVLuxNuuIJKX_V8a_OMXzR0EHR9R6jgdqrOOF4daGU96Sr_P6q
+    Jp6IcmD3HP99Obi1PRs-cwh3LO-p146waJ8IhehcwL7F09JdijmBqkvPeB2T9CJ
+    NqeGpe-gccMg4vfKjkM8FcGvnzZUN4_KSP0aAp1tOJ1zZwgjxqGByKHiOtX7Tpd
+    QyHE5lcMiKPXfEIQILVq0pc_E2DzL7emopWoaoZTF_m0_N0YzFC6g6EJbOEoRoS
+    K5hoDalrcvRYLSrQAZZKflyuVCyixEoV9GfNQC3_osjzw2PAithfubEEBLuVVk4
+    XUVrWOLrLl0nx7RkKU8NXNHq-rvKMzqg&quot;
+  &quot;access_token&quot;: &quot;SlAV32hkKG&quot;,
+  &quot;token_type&quot;: &quot;Bearer&quot;,
+  &quot;expires_in&quot;: 3600,
 }
-func main() {
-    http.HandleFunc(&quot;/test2&quot;, TestServer)
-    err := http.ListenAndServe(&quot;:8082&quot;, nil)
-    if err != nil {
-        log.Fatal(&quot;ListenAndServe: &quot;, err)
-    }
+</code></pre>
+
+<p>The ID token is a JWT and must be properly <a href="https://openid.net/specs/openid-connect-core-1_0.html#IDTokenValidation">validated</a> by the RP before it can be accepted.</p>
+
+<p>Note that a <a href="https://tools.ietf.org/html/rfc6750">bearer access token</a> is also included. This is to ensure the <a href="https://tools.ietf.org/html/rfc6749#section-4.1.4">token response</a> is compliant with the <a href="https://tools.ietf.org/html/rfc6749">OAuth 2.0</a> spec. For basic OpenID authentication requests where only an ID token is requested this access token is nominal and may be safely ignored. The access token however comes into play when also requesting access to user profile data at the UserInfo endpoint. More on this in the <a href="#claims">next chapter</a>.</p>
+
+<h2 id="toc_8"><a href="#claims">7. Claims (user info)</a></h2>
+
+<p><img src="https://connect2id.com/assets/learn/openid-connect/userinfo.png" alt=""/></p>
+
+<p>OpenID Connect specifies a set of <a href="https://openid.net/specs/openid-connect-core-1_0.html#StandardClaims">standard claims</a>, or user attributes. They are intended to supply the client with consented user details such as email, name and picture, upon request. <a href="https://en.wikipedia.org/wiki/IETF_language_tag">Language tags</a> enable localisation.</p>
+
+<table>
+<thead>
+<tr>
+<th>Scope value</th>
+<th>Associated claims</th>
+</tr>
+</thead>
+
+<tbody>
+<tr>
+<td>email</td>
+<td>email, email_verified</td>
+</tr>
+<tr>
+<td>phone</td>
+<td>phone_number, phone_number_verified</td>
+</tr>
+<tr>
+<td>profile</td>
+<td>name, family_name, given_name, middle_name, nickname, preferred_username, profile, picture, website, gender, birthdate, zoneinfo, locale, updated_at</td>
+</tr>
+<tr>
+<td>address</td>
+<td>address</td>
+</tr>
+</tbody>
+</table>
+
+<p>Clients can request claims in two ways:</p>
+
+<ul>
+<li>  An entire claims category by its <code>scope</code> value (see the above table for the scope value to claim mappings)</li>
+<li>  Individually, with the optional <a href="https://openid.net/specs/openid-connect-core-1_0.html#ClaimsParameter">claims</a> request parameter.</li>
+</ul>
+
+<p>Example request to access the user’s identity (ID token) and email, by simply setting the scope to <code>openid email</code>:</p>
+
+<pre><code>HTTP/1.1 302 Found
+Location: https://openid.c2id.com/login?
+          response_type=code
+          &amp;scope=openid%20email
+          &amp;client_id=s6BhdRkqt3
+          &amp;state=af0ifjsldkj
+          &amp;redirect_uri=https%3A%2F%2Fclient.example.org%2Fcb
+</code></pre>
+
+<p>If you’re an application developer, respect the user’s privacy and keep the requested claims down to the very essential. This will increase your chances of user conversion and will also ensure compliance with recent privacy laws.</p>
+
+<p>Note that even if a user allows an application to access their identity, they may choose to deny release of some claims. The application should be able to handle such decisions gracefully.</p>
+
+<p>The claims format is JSON:</p>
+
+<pre><code>{
+   &quot;sub&quot;                     : &quot;alice&quot;,
+   &quot;email&quot;                   : &quot;alice@wonderland.net&quot;,
+   &quot;email_verified&quot;          : true,
+   &quot;name&quot;                    : &quot;Alice Adams&quot;,
+   &quot;given_name&quot;              : &quot;Alice&quot;,
+   &quot;family_name&quot;             : &quot;Adams&quot;,
+   &quot;phone_number&quot;            : &quot;+359 (99) 100200305&quot;,
+   &quot;profile&quot;                 : &quot;https://c2id.com/users/alice&quot;,
+   &quot;https://c2id.com/groups&quot; : [ &quot;audit&quot;, &quot;admin&quot; ]
+ }
+</code></pre>
+
+<p>OpenID providers may extend the standard JSON claims schema to include <a href="https://openid.net/specs/openid-connect-core-1_0.html#AdditionalClaims">additional attributes</a>. Enterprises may for instance define claims such as employee role, manager, and department. The names of any additional claims should be prefixed by a URL to create a safe namespace for them and prevent collisions.</p>
+
+<h2 id="toc_9"><a href="#endpoints">8. OpenID Connect provider endpoints</a></h2>
+
+<p><img src="https://connect2id.com/assets/learn/openid-connect/endpoints.png" alt=""/></p>
+
+<p><colgroup><col style="width: 50%"> <col style="width: 50%"></colgroup><br/>
+| Core endpoints | Optional endpoints |<br/>
+| </p>
+
+<ul>
+<li>  <a href="#authz-endpoint">Authorisation</a></li>
+<li>  <a href="#token-endpoint">Token</a></li>
+<li><p><a href="#userinfo-endpoint">UserInfo</a></p>
+
+<p>| </p></li>
+<li><p><a href="#optional-endpoints">WebFinger</a></p></li>
+<li><p><a href="#optional-endpoints">Provider metadata</a></p></li>
+<li><p><a href="#optional-endpoints">Provider JWK set</a></p></li>
+<li><p><a href="#optional-endpoints">Client registration</a></p></li>
+<li><p><a href="#optional-endpoints">Session management</a></p>
+
+<p>|</p></li>
+</ul>
+
+<h3 id="toc_10"><a href="#authz-endpoint">8.1 Authorisation endpoint</a></h3>
+
+<p>This is the OP server endpoint where the user is asked to <a href="#auth-methods">authenticate</a> and grant the client access to the user’s identity (ID token) and potentially other requested details, such as email and name (called UserInfo claims).</p>
+
+<p>This is the only standard endpoint where users interact with the OP, via a user agent, which role is typically assumed by a web browser.</p>
+
+<h3 id="toc_11"><a href="#token-endpoint">8.2 Token endpoint</a></h3>
+
+<p>The token endpoint lets the client appf exchange the code received from the <a href="#authz-endpoint">authorisation endpoint</a> for an ID token and access token. If the client is confidential it will be required to authenticate at the token endpoint.</p>
+
+<p>The token endpoint it may also accept other OAuth 2.0 <a href="https://tools.ietf.org/html/rfc6749#section-1.3">grant types</a> to issue tokens, for example:</p>
+
+<ul>
+<li>  <a href="https://tools.ietf.org/html/rfc7523">JWT assertion</a></li>
+<li>  <a href="https://tools.ietf.org/html/rfc7522">SAML 2.0 assertion</a></li>
+</ul>
+
+<h3 id="toc_12"><a href="#userinfo-endpoint">8.3 UserInfo endpoint</a></h3>
+
+<p>The <a href="https://openid.net/specs/openid-connect-core-1_0.html#UserInfo">UserInfo endpoint</a> returns previously consented user profile information to the client. A valid access token is required for that.</p>
+
+<pre><code>GET /userinfo HTTP/1.1
+Host: openid.c2id.com
+Authorization: Bearer SlAV32hkKG
+</code></pre>
+
+<p>The UserInfo is JSON encoded and may optionally be packaged as a JWT that is signed or encrypted.</p>
+
+<pre><code>HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  &quot;sub&quot;                     : &quot;alice&quot;,
+  &quot;email&quot;                   : &quot;alice@wonderland.net&quot;,
+  &quot;email_verified&quot;          : true,
+  &quot;name&quot;                    : &quot;Alice Adams&quot;,
+  &quot;picture&quot;                 : &quot;https://c2id.com/users/alice.jpg&quot;
 }
 </code></pre>
 
-<p>这里模拟微服务<code>service1</code>调用<code>service2</code>。</p>
+<h3 id="toc_13"><a href="#optional-endpoints">8.4 Optional endpoints</a></h3>
 
-<h3 id="toc_3"><a href="#%E5%9C%A8consul%E9%87%8C%E9%85%8D%E7%BD%AE%E4%B8%A4%E4%B8%AA%E6%9C%8D%E5%8A%A1"></a>在 consul 里配置两个服务</h3>
+<p>OpenID Connect providers can have these additional endpoints:</p>
 
-<p>在 consul 的配置文件目录下新建两个 json 文件，用来配置上述两个服务。</p>
+<ul>
+<li><p><strong><a href="https://openid.net/specs/openid-connect-discovery-1_0.html#IssuerDiscovery">WebFinger</a></strong> — Enables dynamic discovery of the OpenID Connect provider for a given user, based on their email address or some other detail.</p></li>
+<li><p><strong><a href="https://openid.net/specs/openid-connect-discovery-1_0.html#ProviderMetadata">Provider metadata</a></strong> — JSON document listing the OP endpoint URLs and the OpenID Connect / OAuth 2.0 features it supports. Clients can use this information to configure their requests to the OP.</p></li>
+<li><p><strong>Provider JWK set</strong> — JSON document containing the provider’s public keys (typically RSA) in JSON Web Key (JWK) format. These keys are used to secure the issued ID tokens and other artifacts.</p></li>
+<li><p><strong><a href="https://openid.net/specs/openid-connect-registration-1_0.html">Client registration</a></strong> — RESTful web API for registering client apps with the OP. Registration may be protected (require pre-authorisation) or open (public).</p></li>
+<li><p><strong><a href="https://openid.net/specs/openid-connect-session-1_0.html">Session management</a></strong> — Enables client apps to check if a logged in user has still an active session with the OpenID Connect provider. Also to facilitate logout.</p></li>
+</ul>
 
-<p><code>/usr/local/etc/consul.d/01_service1.json</code>:</p>
+<h2 id="toc_14"><a href="#specs">9. Where is the spec?</a></h2>
 
-<pre><code class="language-json">{
-  &quot;service&quot;: {
-    &quot;name&quot;: &quot;service1&quot;,
-    &quot;port&quot;: 8081,
-    &quot;connect&quot;: {
-      &quot;proxy&quot;: {
-        &quot;config&quot;: {
-          &quot;upstreams&quot;: [{
-             &quot;destination_name&quot;: &quot;service2&quot;,
-             &quot;local_bind_port&quot;: 38082
-          }]
-        }
-      }
-    }
-  }
-}
-</code></pre>
+<p><img src="https://connect2id.com/assets/learn/openid-connect/done.png" alt=""/></p>
 
-<p><code>/usr/local/etc/consul.d/01_service2.json</code>:</p>
+<p>The standard was produced by a working group at the <a href="https://openid.net">OpenID foundation</a> and comprises a set of documents which can be explored at <a href="https://openid.net/connect/"></a><a href="https://openid.net/connect/">http://openid.net/connect/</a>.</p>
 
-<pre><code class="language-json">{
-  &quot;service&quot;: {
-    &quot;name&quot;: &quot;service2&quot;,
-    &quot;port&quot;: 8082,
-    &quot;connect&quot;: {
-      &quot;proxy&quot;: {
-      }
-    }
-  }
-}
-</code></pre>
+<h2 id="toc_15"><a href="#faq">10. FAQ</a></h2>
 
-<p>然后执行命令重新加载 consul 的配置</p>
+<p><img src="https://connect2id.com/assets/learn/openid-connect/faq.png" alt=""/></p>
 
-<pre><code class="language-bash">consul reload
-</code></pre>
+<h3 id="toc_16"><a href="#oidc-oauth-relationship">10.1 How is OpenID Connect related to OAuth 2.0?</a></h3>
 
-<p>修改 service1 中引用 service2 的代码：</p>
+<p><a href="oauth-2">OAuth 2.0</a> is a framework for obtaining access tokens for protected resources such as web APIs. OpenID Connect utilises the OAuth 2.0 semantics and flows to allow clients (relying parties) to access the user’s identity, encoded in a JSON Web Token (JWT) called ID token. The access token facilitates retrieval of consented profile details (called claims or attributes) from the <a href="#userinfo">UserInfo</a> endpoint of the OpenID provider.</p>
 
-<pre><code class="language-go">......
-func TestServer(w http.ResponseWriter, req *http.Request) {
-    //resp, err := http.Get(&quot;http://127.0.0.1:8082/test2&quot;)
-    resp, err := http.Get(&quot;http://127.0.0.1:38082/test2&quot;)
-    if resp != nil &amp;&amp; resp.Body != nil {
-        defer resp.Body.Close()
-    }
-    if err != nil {
-        w.Write([]byte(&quot;make request failed\n&quot;))
-        return
-    }
-    io.Copy(w, resp.Body)
-}
-......
-</code></pre>
+<h3 id="toc_17"><a href="#auth-methods">10.2 How do OpenID providers authenticate users?</a></h3>
 
-<h3 id="toc_4"><a href="#%E8%B7%91%E8%B5%B7%E6%9D%A5"></a>跑起来</h3>
+<p>OpenID Connect leaves this entirely up to the particular IdP. Implementors may use any method for authenticating users, or combine two methods for stronger security (2FA).</p>
 
-<p>将 service1、service2 跑起来，然后用 curl 命令访问 service1</p>
+<ul>
+<li>  Username / password</li>
+<li>  Hardware tokens</li>
+<li>  SMS confirmation</li>
+<li>  Biometrics</li>
+<li>  Etc.</li>
+</ul>
 
-<pre><code class="language-bash">&gt; go run service1.go &amp;&gt; /dev/null
-&gt; go run service2.go &amp;&gt; /dev/null
-&gt; curl http://127.0.0.1:8081/test1
-# 如果出现以下输出，则说明一切正常，Bingo!
-hello, world!
-</code></pre>
+<p>The IdP may set the optional <code>acr</code> and <code>amr</code> claims in the <a href="#id-token">ID token</a> to inform the client how the user has been authenticated.</p>
 
-<h3 id="toc_5"><a href="#%E5%85%B6%E5%AE%83%E4%BD%BF%E7%94%A8%E6%96%B9%E6%B3%95"></a>其它使用方法</h3>
+<p>Clients are also have control over authentication:</p>
 
-<p>除了 Service Mesh 的玩法，consul 1.2 还提供了 SDK 的用法。简单来说就是 Go 语言开发的微服务按照它的规范修改服务提供方、服务消费方的代码，服务间的调用将会自动使用底层的 connect 隧道。这个使用方法不太符合 service mesh 的初衷，做过微服务框架 sdk 的我不是太喜欢，这里就不详细讲了，可以参考官方给出的文档。</p>
+<ul>
+<li><p>The optional <code>prompt=login</code> parameter will cause the user to be (re)authenticated, even if they have a valid session (cookie) with the IdP.</p></li>
+<li><p>With IdPs that support various authentication strengths, the application may request stronger authentication using the optional <code>acr_values</code> parameter.</p></li>
+</ul>
 
-<p><a href="https://www.consul.io/docs/connect/native.html">Connect Native 原理</a></p>
+<h3 id="toc_18"><a href="#bearer-access-token">10.3 What is a bearer access token?</a></h3>
 
-<p><a href="https://www.consul.io/docs/connect/native/go.html">Connect Native Go 语言项目改造指引</a></p>
+<p>The access token resembles the concept of a physical token or ticket. It gives the holder access to a specific HTTP resource or web service, which is typically limited by scope and has an expiration time.</p>
 
-<h2 id="toc_6"><a href="#consul%E7%9A%84service-mesh%E5%8E%9F%E7%90%86%E5%88%86%E6%9E%90"></a>consul 的 service mesh 原理分析</h2>
+<p>Bearer access tokens are easy to use - whoever has one is permitted to call the protected resource. For that reason they must always be passed around over a secure channel (TLS / HTTPS) and stored securely.</p>
 
-<p>其实 consul 的文档本身说的比较明白，这里结合 consul-ui 及代码大概分析一下。</p>
+<p>OpenID Connect employs OAuth 2.0 access tokens to allow client apps to retrieve consented <a href="#claims">user information</a> from the <a href="#userinfo-endpoint">UserInfo endpoint</a>.</p>
 
-<p>当给 consul 的服务配置里添加了<code>&quot;connect&quot;: { &quot;proxy&quot;: { } }</code>后，consul 将会为每个服务实例创建一个专门的隧道代理，如下图所示：</p>
-
-<p><a href="https://jeremy-xu.oschina.io/images/20180708/image-20180708231726604.png"><img src="https://jeremy-xu.oschina.io/images/20180708/image-20180708231726604.png" alt=""/></a></p>
-
-<p>隧道代理的作用是当以 connect 模式连入时，会自动建立一条到原服务实例的 tcp 隧道，后面 tcp 层以上的应用协议数据流将在这条 tcp 隧道上传输，具体代码在<code>https://github.com/hashicorp/consul/blob/master/connect/proxy/listener.go#NewPublicListener</code>。</p>
-
-<p>而涉及服务间调用时，在 consul 服务配置里添加服务<code>UpstreamListener</code>声明，服务消费方访问服务时需使用<code>UpstreamListener</code>的地址。<code>UpstreamListener</code>实际上是一个反向代理，当访问它时，它会以 connect 模式连接对应的服务实例<code>Connect Proxy</code>，具体代码在<code>https://github.com/hashicorp/consul/blob/master/connect/proxy/listener.go#NewUpstreamListener</code>。</p>
-
-<p>结合上述两条规则，整个数据链路就通了。</p>
-
-<p>这里有一个问题，为啥一定要 connect 模式的隧道代理呢？反向代理服务不能直接连接原来的目标服务地址吗？</p>
-
-<p>看了下<code>https://github.com/hashicorp/consul/blob/master/connect/service.go#Dial</code>，大概知道原因了。因为 connect 模式的隧道代理是使用 TLS 加密的，这样物理服务器节点之间的网络流量就走 TLS 安全连接了，再加上 <a href="https://www.consul.io/docs/connect/intentions.html">intentions</a> 机制，服务间的调用安全性上有了很大保障。还有一个原因，如果采用 <a href="https://www.consul.io/docs/connect/native/go.html">Connect-Native</a> 的方式集成 consul 的 service mesh 功能，底层连接是 TLS，上层就可以很方便地走 HTTP/2.0 协议了。</p>
-
-<h2 id="toc_7"><a href="#consul%E7%9A%84service-mesh%E4%BC%98%E7%BC%BA%E7%82%B9%E5%88%86%E6%9E%90"></a>consul 的 service mesh 优缺点分析</h2>
-
-<p>优点：</p>
-
-<ol>
-<li><p>直接使用 tcp 隧道，因此直接支持各类基于 tcp 的协议代理，如 HTTP/1.1、HTTP/2.0、GRPC。</p></li>
-<li><p>实现原理简单，<code>https://github.com/hashicorp/consul/blob/master/connect/</code>、<code>https://github.com/hashicorp/consul/tree/master/api/connect*.go</code>、<code>https://github.com/hashicorp/consul/tree/master/agent/connect/</code>下的关键文件不超过 20 个，逻辑很容易就看清了。</p></li>
-<li><p>直接结合 consul 做服务注册与服务发现，集成度高。</p></li>
-</ol>
-
-<p>缺点：</p>
-
-<ol>
-<li> 目前的负载均衡算法还很简单，就是随机，见下面：</li>
-</ol>
-
-<p><a href="https://jeremy-xu.oschina.io/images/20180708/image-20180708231828625.png"><img src="https://jeremy-xu.oschina.io/images/20180708/image-20180708231828625.png" alt=""/></a></p>
-
-<ol>
-<li><p>一些微服务框架的基本功能还不具备，如超时、重试、熔断、流量分配等，可以从<code>https://github.com/hashicorp/consul/blob/master/connect/proxy/listener.go#handleConn</code>这里开始扩展。</p></li>
-<li><p>需要手动修改 consul 的服务配置；服务消费方要根据 consul 里的服务配置，修改调用其它服务的地址（这里跟 service mesh 的初衷有些不符）。</p></li>
-</ol>
-
-<h2 id="toc_8"><a href="#%E6%80%BB%E7%BB%93"></a>总结</h2>
-
-<p>目前来看 consul 的 service mesh 方案还比较简单，功能很基本，但具备进一步扩展的空间，可以好好研究学习它的代码。</p>
-
-<h2 id="toc_9"><a href="#%E5%8F%82%E8%80%83"></a>参考</h2>
-
-<ol>
-<li> <a href="https://www.hashicorp.com/blog/consul-1-2-service-mesh">https://www.hashicorp.com/blog/consul-1-2-service-mesh</a></li>
-<li> <a href="https://www.consul.io/intro/getting-started/connect.html">https://www.consul.io/intro/getting-started/connect.html</a></li>
-<li> <a href="https://www.consul.io/docs/agent/options.html">https://www.consul.io/docs/agent/options.html</a></li>
-<li> <a href="https://www.consul.io/docs/connect/intentions.html">https://www.consul.io/docs/connect/intentions.html</a></li>
-<li> <a href="https://www.consul.io/docs/connect/native.html">https://www.consul.io/docs/connect/native.html</a></li>
-<li> <a href="https://www.consul.io/docs/connect/native/go.html">https://www.consul.io/docs/connect/native/go.html</a></li>
-<li> <a href="https://www.consul.io/docs/connect/configuration.html">https://www.consul.io/docs/connect/configuration.html</a></li>
-<li> <a href="https://www.consul.io/docs/connect/proxies.html">https://www.consul.io/docs/connect/proxies.html</a></li>
-<li> <a href="https://www.consul.io/docs/connect/dev.html">https://www.consul.io/docs/connect/dev.html</a></li>
-<li> <a href="https://www.consul.io/docs/connect/ca/consul.html">https://www.consul.io/docs/connect/ca/consul.html</a></li>
-</ol>
+<p>An OpenID provider may extend the access token scope to other protected resources and web APIs.</p>
 
                         
                       </div>
@@ -374,10 +561,10 @@ hello, world!
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/7/15</span>
+                    <span class="date">2018/9/21</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Microservice.html'>Microservice</a></span>
+          					    <span class="posted-in"><a href='Authn&Authz.html'>Authn&Authz</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -467,31 +654,31 @@ hello, world!
 	      
 		      
 			      <li class="post">
-			        <a href="15389311738065.html">重构到更深层的模型</a>
+			        <a href="15459058392039.html">Reliable Domain Events</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389278377243.html">IAM of Google Cloud</a>
+			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389224951575.html">RSocket, a New Application Network Protocol for Reactive Applications, Announced at SpringOne</a>
+			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389220103546.html">如何形象地描述RxJava中的背压和流控机制？</a>
+			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389214670417.html">Modeling Uncertainty with Reactive DDD</a>
+			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
 			      </li>
 		     
 		  

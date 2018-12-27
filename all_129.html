@@ -105,311 +105,212 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15277856731195.html">
+                <a class="clearlink" href="15293209479597.html">
                 
-                  <h1>Functor and monad examples in plain Java</h1>
+                  <h1>一个支付服务的最终一致性实践案例（含伪代码）</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://www.nurkiewicz.com/2016/06/functor-and-monad-examples-in-plain-java.html">https://www.nurkiewicz.com/2016/06/functor-and-monad-examples-in-plain-java.html</a><br/>
-June 23, 2016</p>
+<p><a href="https://mp.weixin.qq.com/s/3liPJulRZu4f72pmcabCSA">https://mp.weixin.qq.com/s/3liPJulRZu4f72pmcabCSA</a></p>
 </blockquote>
 
-<p>This article was initially an appendix in our <a href="http://amzn.to/28NV8eJ">Reactive Programming with RxJava</a> book. However introduction to monads, albeit very much related to reactive programming, didn&#39;t suit very well. So I decided to take it out and publish separately as a blog post. I am aware that &quot;_my very own, half correct and half complete explanation of monads_&quot; is the new &quot;_Hello, world_&quot; on programming blogs. Yet the article looks at functors and monads from a specific angle of Java data structures and libraries. Thus I thought it&#39;s worthwhile sharing.</p>
-
-<p>RxJava was designed and built on top of very fundamental concepts like <u>functors</u> , <u>monoids</u> and <u>monads</u> . Even though Rx was modeled initially for imperative C# language and we are learning about RxJava, working on top of similarly imperative language, the library has its roots in functional programming. You should not be surprised after you realize how compact RxJava API is. There are pretty much just a handful of core classes, typically immutable, and everything is composed using mostly pure functions.</p>
-
-<p>With a recent rise of functional programming (or functional style), most commonly expressed in modern languages like Scala or Clojure, monads became a widely discussed topic. There is a lot of folklore around them:</p>
-
-<p>A monad is a monoid in the category of endofunctors, what&#39;s the problem?<br/>
-<a href="http://james-iry.blogspot.com/2009/05/brief-incomplete-and-mostly-wrong.html">_James Iry_</a></p>
-
-<p>The curse of the monad is that once you get the epiphany, once you understand - &quot;oh that&#39;s what it is&quot; - you lose the ability to explain it to anybody.<br/>
-<a href="https://www.youtube.com/watch?v=dkZFtimgAcM">_Douglas Crockford_</a></p>
-
-<p>The vast majority of programmers, especially those without functional programming background, tend to believe monads are some arcane computer science concept, so theoretical that it can not possibly help in their programming career. This negative perspective can be attributed to dozens of articles and blog posts being either too abstract or too narrow. But it turns out that monads are all around us, even is standard Java library, especially since Java Development Kit (JDK) 8 (more on that later). What is absolutely brilliant is that once you understand monads for the first time, suddenly several unrelated classes and abstractions, serving entirely different purposes, become familiar.</p>
-
-<p>Monads generalize various seemingly independent concepts so that learning yet another incarnation of monad takes very little time. For example you do not have to learn how <code>CompletableFuture</code> works in Java 8, once you realize it is a monad, you know precisely how it works and what can you expect from its semantics. And then you hear about RxJava which sounds so much different but because <code>Observable</code> is a monad, there is not much to add. There are numerous other examples of monads you already came across without knowing that. Therefore this section will be a useful refresher even if you fail to actually use RxJava.</p>
-
-<h1 id="toc_0">Functors</h1>
-
-<p>Before we explain what a monad is, let&#39;s explore simpler construct called a <u>functor</u> . A functor is a typed data structure that encapsulates some value(s). From syntactic perspective a functor is a container with the following API:</p>
-
-<pre><code class="language-java">import java.util.function.Function;
- 
-interface Functor&lt;T&gt; {
-     
-    &lt;R&gt; Functor&lt;R&gt; map(Function&lt;T, R&gt; f);
-     
-}
-</code></pre>
-
-<p>But mere syntax is not enough to understand what functor is. The only operation that functor provides is <code>map()</code> that takes a function <code>f</code>. This function receives whatever is inside a box, transforms it and wraps the result as-is into a second functor. Please read that carefully. <code>Functor&lt;T&gt;</code> is always an immutable container, thus <code>map</code> never mutates original object it was executed on. Instead it returns the result (or results - be patient) wrapped in a brand new functor, possibly of different type <code>R</code>. Additionally functors should not perform any actions when identity function is applied, that is <code>map(x -&gt; x)</code>. Such a pattern should always return either the same functor or an equal instance.</p>
-
-<p>Often <code>Functor&lt;T&gt;</code> is compared to a box holding instance of <code>T</code> where the only way of interacting with this value is by transforming it. However there is no idiomatic way of unwrapping or escaping from the functor. The value(s) always stay within the context of functor. Why are functors useful? They generalize multiple common idioms like collections, promises, optionals, etc. with a single, uniform API that works across all of them. Let me introduce a couple of functors to make you more fluent with this API:</p>
-
-<pre><code class="language-java">interface Functor&lt;T,F extends Functor&lt;?,?&gt;&gt; {
-    &lt;R&gt; F map(Function&lt;T,R&gt; f);
-}
- 
-class Identity&lt;T&gt; implements Functor&lt;T,Identity&lt;?&gt;&gt; {
- 
-    private final T value;
- 
-    Identity(T value) { this.value = value; }
- 
-    public &lt;R&gt; Identity&lt;R&gt; map(Function&lt;T,R&gt; f) {
-        final R result = f.apply(value);
-        return new Identity&lt;&gt;(result);
-    }
-     
-}
-</code></pre>
-
-<p>An extra <code>F</code> type parameter was required to make <code>Identity</code> compile. What you saw in the preceding example was the simplest functor just holding a value. All you can do with that value is transforming it inside <code>map</code> method, but there is no way to extract it. This is considered beyond the scope of pure functor. The only way to interact with functor is by applying sequences of type-safe transformations:</p>
-
-<pre><code class="language-java">Identity&lt;String&gt; idString = new Identity&lt;&gt;(&quot;abc&quot;);
-Identity&lt;Integer&gt; idInt = idString.map(String::length);
-</code></pre>
-
-<p>Or fluently, just like you compose functions:</p>
-
-<pre><code class="language-java">Identity&lt;byte[]&gt; idBytes = new Identity&lt;&gt;(customer)
-        .map(Customer::getAddress)
-        .map(Address::street)
-        .map((String s) -&gt; s.substring(0, 3))
-        .map(String::toLowerCase)
-        .map(String::getBytes);
-</code></pre>
-
-<p>From this perspective mapping over a functor is not much different than just invoking chained functions:</p>
-
-<pre><code class="language-java">byte[] bytes = customer
-        .getAddress()
-        .street()
-        .substring(0, 3)
-        .toLowerCase()
-        .getBytes();
-</code></pre>
-
-<p>Why would you even bother with such verbose wrapping that not only does not provide any added value, but also is not capable of extracting the contents back? Well, it turns out you can model several other concepts using this raw functor abstraction. For example <code>java.util.Optional&lt;T&gt;</code> starting from Java 8 is a functor with <code>map()</code> method. Let us implement it from scratch:</p>
-
-<pre><code class="language-java">class FOptional&lt;T&gt; implements Functor&lt;T,FOptional&lt;?&gt;&gt; {
- 
-    private final T valueOrNull;
- 
-    private FOptional(T valueOrNull) {
-        this.valueOrNull = valueOrNull;
-    }
- 
-    public &lt;R&gt; FOptional&lt;R&gt; map(Function&lt;T,R&gt; f) {
-        if (valueOrNull == null)
-            return empty();
-        else
-            return of(f.apply(valueOrNull));
-    }
- 
-    public static &lt;T&gt; FOptional&lt;T&gt; of(T a) {
-        return new FOptional&lt;T&gt;(a);
-    }
- 
-    public static &lt;T&gt; FOptional&lt;T&gt; empty() {
-        return new FOptional&lt;T&gt;(null);
-    }
- 
-}
-</code></pre>
-
-<p>Now it becomes interesting. An <code>FOptional&lt;T&gt;</code> functor <u>may</u> hold a value, but just as well it might be empty. It&#39;s a type-safe way of encoding <code>null</code>. There are two ways of constructing <code>FOptional</code> - by supplying a value or creating <code>empty()</code> instance. In both cases, just like with <code>Identity</code>, <code>FOptional</code> is immutable and we can only interact with the value from inside. What differs <code>FOptional</code> is that the transformation function <code>f</code> may not be applied to any value if it is empty. This means functor may not necessarily encapsulate exactly one value of type <code>T</code>. It can just as well wrap arbitrary number of values, just like <code>List</code>... functor:</p>
-
-<pre><code class="language-java">import com.google.common.collect.ImmutableList;
- 
-class FList&lt;T&gt; implements Functor&lt;T, FList&lt;?&gt;&gt; {
- 
-    private final ImmutableList&lt;T&gt; list;
- 
-    FList(Iterable&lt;T&gt; value) {
-        this.list = ImmutableList.copyOf(value);
-    }
- 
-    @Override
-    public &lt;R&gt; FList&lt;?&gt; map(Function&lt;T, R&gt; f) {
-        ArrayList&lt;R&gt; result = new ArrayList&lt;R&gt;(list.size());
-        for (T t : list) {
-            result.add(f.apply(t));
-        }
-        return new FList&lt;&gt;(result);
-    }
-}
-</code></pre>
-
-<p>The API remains the same: you take a functor in a transformation <code>T -&gt; R</code> - but the behavior is much different. Now we apply a transformation on each and every item in the <code>FList</code>, declaratively transforming whole list. So if you have a list of <code>customers</code> and you want a list of their streets, it&#39;s as simple as:</p>
-
-<pre><code class="language-java">import static java.util.Arrays.asList;
- 
-FList&lt;Customer&gt; customers = new FList&lt;&gt;(asList(cust1, cust2));
- 
-FList&lt;String&gt; streets = customers
-        .map(Customer::getAddress)
-        .map(Address::street);
-</code></pre>
-
-<p>It&#39;s no longer as simple as saying <code>customers.getAddress().street()</code>, you can&#39;t invoke <code>getAddress()</code> on a collection of customers, you must invoke <code>getAddress()</code> on each individual customer and then place it back in a collection. By the way Groovy found this pattern so common that it actually has a syntax sugar for that: <code>customer*.getAddress()*.street()</code>. This operator, known as spread-dot, is actually a <code>map</code> in disguise. Maybe you are wondering why I iterate over <code>list</code> manually inside <code>map</code> rather than using <code>Stream</code>s from Java 8: <code>list.stream().map(f).collect(toList())</code>? Does this ring a bell? What if I told you <code>java.util.stream.Stream&lt;T&gt;</code> in Java is a functor as well? And by the way, also a monad?</p>
-
-<p>Now you should see the first benefits of functors - they abstract away the internal representation and provide consistent, easy to use API over various data structures. As the last example let me introduce <u>promise</u> functor, similar to <code>Future</code>. <code>Promise</code> &quot;promises&quot; that a value will become available one day. It is not yet there, maybe because some background computation was spawned or we are waiting for external event. But it will appear some time in the future. The mechanics of completing a <code>Promise&lt;T&gt;</code> are not interesting, but the functor nature is:</p>
-
-<pre><code class="language-java">Promise&lt;Customer&gt; customer = //...
-Promise&lt;byte[]&gt; bytes = customer
-        .map(Customer::getAddress)
-        .map(Address::street)
-        .map((String s) -&gt; s.substring(0, 3))
-        .map(String::toLowerCase)
-        .map(String::getBytes);
-</code></pre>
-
-<p>Looks familiar? That is the point! The implementation of <code>Promise</code> functor is beyond the scope of this article and not even important. Enough to say that we are very close to implementing <code>CompletableFuture</code> from Java 8 and we almost discovered <code>Observable</code> from RxJava. But back to functors. <code>Promise&lt;Customer&gt;</code> does not hold a value of <code>Customer</code> just yet. It promises to have such value in the future. But we can still map over such functor, just like we did with <code>FOptional</code> and <code>FList</code> - the syntax and semantics are exactly the same. The behavior follows what the functor represents. Invoking <code>customer.map(Customer::getAddress)</code> yields <code>Promise&lt;Address&gt;</code> which means <code>map</code> is non-blocking. <code>customer.map()</code> will <u>not</u> wait for the underlying <code>customer</code> promise to complete. Instead it returns another promise, of different type. When upstream promise completes, downstream promise applies a function passed to <code>map()</code> and passes the result downstream. Suddenly our functor allows us to pipeline asynchronous computations in a non-blocking manner. But you do not have to understand or learn that - because <code>Promise</code> is a functor, it must follow syntax and laws.</p>
-
-<p>There are many other great examples of functors, for example representing value or error in a compositional manner. But it is high time to look at monads.</p>
-
-<h1 id="toc_1">From functors to monads</h1>
-
-<p>I assume you understand how functors work and why are they a useful abstraction. But functors are not that universal as one might expect. What happens if your transformation function (the one passed as an argument to <code>map()</code>) returns functor instance rather than simple value? Well, functor is just a value as well, so nothing bad happens. Whatever was returned is placed back in a functor so all behaves consistently. However imagine you have this handy method for parsing <code>String</code>s:</p>
-
-<pre><code class="language-java">FOptional&lt;Integer&gt; tryParse(String s) {
-    try {
-        final int i = Integer.parseInt(s);
-        return FOptional.of(i);
-    } catch (NumberFormatException e) {
-        return FOptional.empty();
-    }
-}
-</code></pre>
-
-<p>Exceptions are side-effects that undermine type system and functional purity. In pure functional languages there is no place for exceptions, after all we never heard about throwing exceptions during math classes, right? Errors and illegal conditions are represented explicitly using values and wrappers. For example <code>tryParse()</code> takes a <code>String</code> but does not simply return an <code>int</code> or silently throw an exception at runtime. We explicitly tell, through the type system, that <code>tryParse()</code> can fail, there is nothing exceptional or erroneous in having a malformed string. This semi-failure is represented by optional result. Interestingly Java has checked exceptions, the ones that must be declared and handled, so in some sense Java is purer in that regard, it does not hide side-effects. But for better or worse checked exceptions are often discouraged in Java, so let&#39;s get back to <code>tryParse()</code>. It seems useful to compose <code>tryParse</code> with <code>String</code> already wrapped in <code>FOptional</code>:</p>
-
-<pre><code class="language-java">FOptional&lt;String&gt; str = FOptional.of(&quot;42&quot;);
-FOptional&lt;FOptional&lt;Integer&gt;&gt; num = str.map(this::tryParse);
-</code></pre>
-
-<p>That should not come as a surprise. If <code>tryParse()</code> would return an <code>int</code> you would get <code>FOptional&lt;Integer&gt; num</code>, but because <code>map()</code> function returns <code>FOptional&lt;Integer&gt;</code> itself, it gets wrapped twice into awkward <code>FOptional&lt;FOptional&lt;Integer&gt;&gt;</code>. Please look carefully at the types, you must understand why we got this double wrapper here. Apart from looking horrible, having a functor in functor ruins composition and fluent chaining:</p>
-
-<pre><code class="language-java">FOptional&lt;Integer&gt; num1 = //...
-FOptional&lt;FOptional&lt;Integer&gt;&gt; num2 = //...
- 
-FOptional&lt;Date&gt; date1 = num1.map(t -&gt; new Date(t));
- 
-//doesn&#39;t compile!
-FOptional&lt;Date&gt; date2 = num2.map(t -&gt; new Date(t));
-</code></pre>
-
-<p>Here we try to map over the contents of <code>FOptional</code> by turning <code>int</code> into +Date+. Having a function of <code>int -&gt; Date</code> we can easily transform from <code>Functor&lt;Integer&gt;</code> to <code>Functor&lt;Date&gt;</code>, we know how it works. But in case of <code>num2</code> situation becomes complicated. What <code>num2.map()</code> receives as input is no longer an <code>int</code> but an <code>FOoption&lt;Integer&gt;</code> and obviously <code>java.util.Date</code> does not have such a constructor. We broke our functor by double wrapping it. However having a function that returns a functor rather than simple value is so common (like <code>tryParse()</code>) that we can not simply ignore such requirement. One approach is to introduce a special parameterless <code>join()</code> method that &quot;flattens&quot; nested functors:</p>
-
-<pre><code class="language-java">FOptional&lt;Integer&gt; num3 = num2.join()
-</code></pre>
-
-<p>It works but because this pattern is so common, special method named <code>flatMap()</code> was introduced. <code>flatMap()</code> is very similar to <code>map</code> but expects the function received as an argument to return a functor - or <u>monad</u> to be precise:</p>
-
-<pre><code class="language-java">interface Monad&lt;T,M extends Monad&lt;?,?&gt;&gt; extends Functor&lt;T,M&gt; {
-    M flatMap(Function&lt;T,M&gt; f);
-}
-</code></pre>
-
-<p>We simply concluded that <code>flatMap</code> is just a syntactic sugar to allow better composition. But <code>flatMap</code> method (often called <code>bind</code> or <code>&gt;&gt;=</code> from Haskell) makes all the difference since it allows complex transformations to be composed in a pure, functional style. If <code>FOptional</code> was an instance of monad, parsing suddenly works as expected:</p>
-
-<pre><code class="language-java">FOptional&lt;String&gt; num = FOptional.of(&quot;42&quot;);
-FOptional&lt;Integer&gt; answer = num.flatMap(this::tryParse);
-</code></pre>
-
-<p>Monads do not need to implement <code>map</code>, it can be implemented on top of <code>flatMap()</code> easily. As a matter of fact <code>flatMap</code> is the essential operator that enables a whole new universe of transformations. Obviously just like with functors, syntactic compliance is not enough to call some class a monad, the <code>flatMap()</code> operator has to follow monad laws, but they are fairly intuitive like associativity of <code>flatMap()</code> and identity. The latter requires that <code>m(x).flatMap(f)</code> is the same as <code>f(x)</code> for any monad holding a value <code>x</code> and any function <code>f</code>. We are not going to dive too deep into monad theory, instead let&#39;s focus on practical implications. Monads shine when their internal structure is not trivial, for example <code>Promise</code> monad that will hold a value in the future. Can you guess from the type system how <code>Promise</code> will behave in the following program? First all methods that can potentially take some time to complete return a <code>Promise</code>:</p>
-
-<pre><code class="language-java">import java.time.DayOfWeek;
- 
- 
-Promise&lt;Customer&gt; loadCustomer(int id) {
-    //...
-}
- 
-Promise&lt;Basket&gt; readBasket(Customer customer) {
-    //...
-}
- 
-Promise&lt;BigDecimal&gt; calculateDiscount(Basket basket, DayOfWeek dow) {
-    //...
-}
-</code></pre>
-
-<p>We can now compose these functions as if they were all blocking using monadic operators:</p>
-
-<pre><code class="language-java">Promise&lt;BigDecimal&gt; discount = 
-    loadCustomer(42)
-        .flatMap(this::readBasket)
-        .flatMap(b -&gt; calculateDiscount(b, DayOfWeek.FRIDAY));
-</code></pre>
-
-<p>This becomes interesting. <code>flatMap()</code> must preserve monadic type therefor all intermediate objects are <code>Promise</code>s. It is not just about keeping the types in order - preceding program is suddenly fully asynchronous! <code>loadCustomer()</code> returns a <code>Promise</code> so it does not block. <code>readBasket()</code> takes whatever the <code>Promise</code> has (will have) and applies a function returning another <code>Promise</code> and so on and so forth. Basically we built an asynchronous pipeline of computation where the completion of one step in background automatically triggers next step.</p>
-
-<h1 id="toc_2">Exploring <code>flatMap()</code></h1>
-
-<p>It is very common to have two monads and combining the value they enclose together. However both functors and monads do not allow direct access to their internals, which would be impure. Instead we must carefully apply transformation without escaping the monad. Imagine you have two monads and you want to combine them:</p>
-
-<pre><code class="language-java">import java.time.LocalDate;
-import java.time.Month;
- 
- 
-Monad&lt;Month&gt; month = //...
-Monad&lt;Integer&gt; dayOfMonth = //...
- 
-Monad&lt;LocalDate&gt; date = month.flatMap((Month m) -&gt;
-        dayOfMonth
-                .map((int d) -&gt; LocalDate.of(2016, m, d)));
-</code></pre>
-
-<p>Please take your time to study the preceding pseudo-code. I don&#39;t use any real monad implementation like <code>Promise</code> or <code>List</code> to emphasize the core concept. We have two independent monads, one of type <code>Month</code> and the other of type <code>Integer</code>. In order to build <code>LocalDate</code> out of them we must build a nested transformation that has access to the internals of both monads. Work through the types, especially making sure you understand why we use <code>flatMap</code> in one place and <code>map()</code> in the other. Think how you would structure this code if you had a third <code>Monad&lt;Year&gt;</code> as well. This pattern of applying a function of two arguments (<code>m</code> and <code>d</code> in our case) is so common that in Haskell there is special helper function called <code>liftM2</code> that does exactly this transformation, implemented on top of <code>map</code> and <code>flatMap</code>. In Java pseudo-syntax it would look somewhat like this:</p>
-
-<pre><code class="language-java">Monad&lt;R&gt; liftM2(Monad&lt;T1&gt; t1, Monad&lt;T2&gt; t2, BiFunction&lt;T1, T2, R&gt; fun) {
-    return t1.flatMap((T1 tv1) -&gt;
-            t2.map((T2 tv2) -&gt; fun.apply(tv1, tv2))
-    );
-}
-</code></pre>
-
-<p>You don&#39;t have to implement this method for every monad, <code>flatMap()</code> is enough, moreover it works consistently for all monads. <code>liftM2</code> is extremely useful when you consider how it can be used with various monads. For example <code>liftM2(list1, list2, function)</code> will apply <code>function</code> on every possible pair of items from <code>list1</code> and <code>list2</code> (Cartesian product). On the other hand for optionals it will apply a function only when both optionals are non-empty. Even better, for <code>Promise</code> monad a function will be executed asynchronously when both <code>Promise</code>s are completed. This means we just invented a simple synchronization mechanism (<code>join()</code> in fork-join algorithms) of two asynchronous steps.</p>
-
-<p>Another useful operator that we can easily build on top of <code>flatMap()</code> is <code>filter(Predicate&lt;T&gt;)</code> which takes whatever is inside a monad and discards it entirely if it does not meet certain predicate. In a way it is similar to <code>map</code> but rather than 1-to-1 mapping we have 1-to-0-or-1. Again <code>filter()</code> has the same semantics for every monad but quite amazing functionality depending on which monad we actually use. Obviously it allows filtering out certain elements from a list:</p>
-
-<pre><code class="language-java">FList&lt;Customer&gt; vips = 
-    customers.filter(c -&gt; c.totalOrders &gt; 1_000);
-</code></pre>
-
-<p>But it works just as well e.g. for optionals. In that case we can transform non-empty optional into an empty one if the contents of optional does not meet some criteria. Empty optionals are left intact.</p>
-
-<h1 id="toc_3">From list of monads to monad of list</h1>
-
-<p>Another useful operator that originates from <code>flatMap()</code> is <code>sequence()</code>. You can easily guess what it does simply by looking at type signature:</p>
-
-<pre><code class="language-java">Monad&lt;Iterable&lt;T&gt;&gt; sequence(Iterable&lt;Monad&lt;T&gt;&gt; monads)
-</code></pre>
-
-<p>Often we have a bunch of monads of the same type and we want to have a single monad of a list of that type. This might sounds abstract to you, but it is impressively useful. Imagine you wanted to load a few customers from the database concurrently by ID so you used <code>loadCustomer(id)</code> method several times for different IDs, each invocation returning <code>Promise&lt;Customer&gt;</code>. Now you have a list of <code>Promise</code>s but what you really want is a list of customers, e.g. to be displayed in the web browser. <code>sequence()</code> (in RxJava <code>sequence()</code> is called <code>concat()</code> or <code>merge()</code>, depending on use-case) operator is built just for that:</p>
-
-<pre><code class="language-java">FList&lt;Promise&lt;Customer&gt;&gt; custPromises = FList
-    .of(1, 2, 3)
-    .map(database::loadCustomer);
- 
-Promise&lt;FList&lt;Customer&gt;&gt; customers = custPromises.sequence();
- 
-customers.map((FList&lt;Customer&gt; c) -&gt; ...);
-</code></pre>
-
-<p>Having an <code>FList&lt;Integer&gt;</code> representing customer IDs we <code>map</code> over it (do you see how it helps that <code>FList</code> is a functor?) by calling <code>database.loadCustomer(id)</code> for each ID. This leads to rather inconvenient list of <code>Promise</code>s. <code>sequence()</code> saves the day, but once again this is not just a syntactic sugar. Preceding code is fully non-blocking. For different kinds of monads <code>sequence()</code> still makes sense, but in a different computational context. For example it can change a <code>FList&lt;FOptional&lt;T&gt;&gt;</code> into <code>FOptional&lt;FList&lt;T&gt;&gt;</code>. And by the way, you can implement <code>sequence()</code> (just like <code>map()</code>) on top of <code>flatMap()</code>.</p>
-
-<p>This is just the tip of the iceberg when it comes to usefulness of <code>flatMap()</code> and monads in general. Despite coming from rather obscure category theory, monads proved to be extremely useful abstraction even in object-oriented programming languages such as Java. Being able to compose functions returning monads is so universally helpful that dozens of unrelated classes follow monadic behavior.</p>
-
-<p>Moreover once you encapsulate data inside monad, it is often hard to get it out explicitly. Such operation is not part of the monad behavior and often leads to non-idiomatic code. For example <code>Promise.get()</code> on <code>Promise&lt;T&gt;</code> can technically return <code>T</code>, but only by blocking, whereas all operators based on <code>flatMap()</code> are non-blocking. Another example is <code>FOptional.get()</code> that can fail because <code>FOptional</code> may be empty. Even <code>FList.get(idx)</code> that peeks particular element from a list sounds awkward because you can replace <code>for</code> loops with <code>map()</code> quite often.</p>
-
-<p>I hope you now understand why monads are so popular these days. Even in object-oriented(-ish) language like Java they are quite useful abstraction.</p>
+<p>“功夫贷” 是一款线上贷款 APP，主要是给信用卡优质用户提供纯线上的信用贷款，以期限长、额度高、利息低为主要优势（类似的业务模式主要有宜人贷）。</p>
+
+<p>和任何一种分期贷款一样，符合资质的用户，在功夫贷成功贷款之后，需要在约定还款日还款。目前还款主要有以下这几种方式：</p>
+
+<ul>
+<li>  用户在 APP 上主动还款；</li>
+<li>  系统定时通过后台任务扣款；</li>
+<li>  催收人员通过内部作业系统，手动发起扣款；</li>
+</ul>
+
+<p>真正的扣款操作（从银行卡扣款）主要是通过第三方支付来完成，比如京东支付、通联等。不同的第三方支付，支持的银行列表和限额不同，费用和稳定性也不尽相同，我们会选择出个最优通道、以及多层级备用通道，为此研发了支付路由系统，同时这些服务商的业务限制 / 出错概率还不低，所以我们又要考虑业务上的一致性，这也是本文要介绍的主题。</p>
+
+<p>扣款业务是比较复杂的，包括如下几个主要步骤：</p>
+
+<ol>
+<li> 对业务表 (扣款任务表 / 还款计划表等) 的数据库操作</li>
+<li> 调用第三方支付</li>
+<li> 清算入账</li>
+</ol>
+
+<p>这多个子功能需要保证同时成功或者同时失败，其中既有外部第三方调用，又有内部微服务的调用，所以这是个比较典型的分布式事务的场景。由于外部的第三方支付服务有时不稳定、且部分交易可能很长时间才能确认成功。</p>
+
+<p>因此 <strong>我们没考虑两阶段提交的分布式事务，而是选择了最终一致性</strong>，而为了保证在状态不一致这个时间窗口的准确性 (比如不能在该窗口对用户重复扣款)，我们也额外多做了很多的考虑。</p>
+
+<h2 id="toc_0">主流程分析</h2>
+
+<p>扣款服务的主流程如下图所示（在这里仅举 “第三方支付渠道是同步返回扣款结果” 作为例子，在实际情况中，各家第三方支付渠道的接口并不一致，有同步返回的、也有异步 + 轮询方式的，这两种形式，在我们这的处理逻辑上没有明显区别）。</p>
+
+<p><img src="media/15293209479597/15293210151187.jpg" alt=""/></p>
+
+<p>为了避免对业务流程造成干扰，上图中把同样处于主执行路径上的、起着日志记录作用的 &quot;log-x&quot; 这些步骤，在各自所处的位置以虚线表示，记得它们是主流程的一部分。这些 “log-x” 步骤在实现上，是建立一张日志表，以持久化、结构化的方式来记录，并不是 logback 之类的文件日志，因为这些日志在异常时的恢复，起着重要作用。</p>
+
+<p>从上图可以看出，由 1、2、3、4、6 这五个步骤，形成一个整体，我们需要保证的是，这 5 个步骤同时成功、或者同时失败。其中包含几类操作：</p>
+
+<ul>
+<li>  本地 DB 的 SQL 执行，包括步骤 1、4；</li>
+<li>  远程 HTTP/RPC 调用，包括步骤 2；</li>
+<li>  发送 MQ 消息，包括步骤 3；</li>
+<li>  异步系统执行，包括步骤 6；</li>
+</ul>
+
+<p>其中步骤 6 是另外一个服务（账务服务），是在支付服务之外的，所以用虚线框来表示，但在逻辑上是整体不可分的一部分，需要共同成功 / 失败。下面我们来看，在这些步骤中，会有哪些失败场景和各自特点：</p>
+
+<ul>
+<li>  本地 DB 的 SQL 执行：SQL 错误、与 DB 网络中断或者 DB 不可用的时候，会失败，但这种失败可补偿，且概率很低；</li>
+<li>  远程调用：在本例中是 “同步调用第三方支付渠道扣款”，因为这是网络调用，最复杂的一种，可能会超时、也可能会连接中断或其他错误原因中断，这里的失败是有无法补偿的可能的，尤其是业务类错误——用户余额不足、用户银行卡状态不对等，都可能导致业务终止而无法继续下去；</li>
+<li>  发送 MQ 消息：和本地 DB 的 SQL 执行类似，是可补偿的失败，从可用性的角度来看，比 SQL 执行的失败概率略高一些，在我们实际场景中，就有发送失败的情况（我们使用的是 RocketMQ，曾经出现过几次 broker 刷盘缓慢导致流控的发送失败）；</li>
+<li>  异步系统执行：我们这里是触发账务系统入账，是 RPC 类（我们用的 Dubbo）操作，有一定的失败可能性（账务系统压力过大、内存溢出、磁盘占满等都可能导致其不能或部分服务器不能提供服务），但又因为它在业务上是肯定能成功的记账操作，所以即使失败，也是可以补偿的；</li>
+</ul>
+
+<p>综合上面这些分析，考虑到步骤 2“同步调用第三方支付渠道扣款” 是唯一一种无法补偿的业务，且处于流程链最靠前的地方，所以整个业务流，我们是向着可补偿的方式，即保证最终都会成功的最终一致性的方向去做。如果步骤 2 靠后，则由于它的不可补偿性，我们就必须在前面步骤的步骤考虑回滚——或 DB 事务回滚、或二阶段回滚、或提供撤销功能，以达到最终都会失败的最终一致性。</p>
+
+<h2 id="toc_1">详细设计</h2>
+
+<p><strong>难题一：出现预期内的异常时，如何保证最终一致性？</strong></p>
+
+<p>我们先分析，如果主流程上的各个环节，出现了预期内的异常，我们大概要怎么处理，以保证最终一致性。预期内的异常，是指程序提前考虑到的——主要是 try/catch 中 catch 到 Exception 部分的逻辑。</p>
+
+<p>步骤 1：更新 DB 的还款记录状态为 “扣款中”：其是流程第一步，如果它失败，流程结束，不需补偿；</p>
+
+<p>步骤 2：同步调用第三方支付渠道来扣款：例子中的这家服务商的扣款接口，提供的是只有两种结果状态的契约：“扣款成功”或 “扣款失败”。如果在扣款中的话，则调用程序就在同步阻塞着。无论是由于调用超时、或调用中连接中断、或系统 Crash，导致失败，我们无法判定是否扣款是否成功，因此需要辅助以主动查询——轮询调用此家第三方支付服务商的查询接口，以确定扣款状态，达到“成功” 或“失败”的终态为止，如下图所示。</p>
+
+<p><img src="media/15293209479597/15293210573189.jpg" alt=""/></p>
+
+<p>步骤 3：发送 MQ 通知下游账务系统入账：如果失败的话，和上一步类似，需要日志表 + 定时任务补偿。</p>
+
+<p>步骤 4/5：更新 DB 的还款记录状态为 “扣款成功” 或“扣款失败”：如果更新 DB 操作出现了失败，则需要定时任务，重试补偿，这需要借助日志表来恢复，后台定时任务去扫描该日志表，以从之前失败的步骤，继续执行下去，类似于“断点续传”，这里我们暂不详述；</p>
+
+<p>步骤 5：发送 MQ 通知下游账务系统入账：如果发送失败的话，和上一步类似，需要日志表 + 定时任务补偿；</p>
+
+<p>步骤 6：账务系统入账：由于通常的 MQ（我们用的是 RocketMQ）本身有 at-least-once 的重试机制，这就保证了消息必须被正确消费（只要账务系统程序不会主动 ignore 掉）才会被 ack，所以这个地方的最终成功，就由消息中间件来保证了；如果使用的 MQ 组件没有这种重试机制，则需要在账务系统端建立日志表，来补偿（如果 MQ 有丢失消息的风险，那仍然可能不一致）。</p>
+
+<p><strong>难题二：出现预期外的异常，如何保证最终一致性？</strong></p>
+
+<p>顾名思义，预期外的异常就是非程序提前感知到的，比如进程被强制 KILL、机器 CRASH，在这种情况下，程序执行到一半，突然结束了，这时怎么保证最终一致性?</p>
+
+<p>在这种情况下，只能是靠日志表了，主流程或任何依赖内存记录的恢复程序都无效了。</p>
+
+<p>定时任务的目的是补偿未能正常结束的扣款任务。一般来说，如果扣款任务未能正常结束，可能会有如下几种原因：</p>
+
+<ol>
+<li><p>系统意外退出（进程被 KILL、宕机等）；</p></li>
+<li><p>系统重启——如当前某笔扣款记录在轮询第三方支付服务的扣款状态，此时重启也造成了流程中断；</p></li>
+<li><p>执行过程中出错，如数据库异常、调用超时、MQ 不可用等；</p></li>
+</ol>
+
+<p>为了达到补偿目标，需要设计若干张日志表来辅助。我们设计了 2 张，如图：<br/>
+<img src="media/15293209479597/15293210830707.jpg" alt=""/></p>
+
+<p>其一，“扣款途中日志表”是用于标识扣款任务是否仍然在途中。在扣款开始之前，往该表插入记录，扣款完成后 (成功或失败) 更新状态。该表主要目的是：可以方便地找出来，哪些扣款任务是没有正常结束的。为什么没直接用业务表 “还款记录表” 来查询在途扣款呢? 主要是从便捷性和性能上考虑——业务表的数据是不能删除的，而该日志表可以定期将已完成的扣款任务清除掉，以控制该表其数据量，保证查询效率；</p>
+
+<p>其二，“扣款执行日志表” 是用于记录扣款任务的执行过程。该表的记录不更新，只插入。如果某个扣款任务需要恢复补偿，则从该表中找到上次执行的 “断点”，继续向后执行。上图中举了 3 组数据作为例子：黄色背景是一笔完成的、扣款成功的日志；浅绿色背景是一笔完成的、扣款失败的日志；浅橙色背景是一笔进行中（正在执行调用第三方扣款）的日志。</p>
+
+<p>下面是定时补偿任务的主流程：</p>
+
+<p><img src="media/15293209479597/15293210937430.jpg" alt=""/></p>
+
+<ol>
+<li> 在实践中，一个正常的扣款任务在 1 分钟内都应该结束了，时间主要花费在调用第三方扣款服务上，绝大部分 30 秒内结束，少量的会拖的时间比较长，甚至跨日；</li>
+<li> 定时任务 3 分钟执行一次，每次扫描 3 分钟前开始的、且当前未结束的任务。3 分钟以内的任务不处理的原因是：它们可能仍然在自己的正常处理过程中，此时还不需要定时任务来接管；</li>
+</ol>
+
+<h3 id="toc_2">伪代码</h3>
+
+<p>为了便于读者理解，这里以伪代码的形式把整个扣款过程写出来，且分几个迭代版本不断增强。</p>
+
+<h4 id="toc_3">版本一</h4>
+
+<p><img src="media/15293209479597/15293211306294.jpg" alt=""/></p>
+
+<ol>
+<li> 在执行之前，注意要把数据库事务设为自动提交，即不可把整个过程纳入到一个事务里——不仅是性能问题，更重要的是，如果过程中失败了，日志数据也被回滚掉了，无法恢复；</li>
+<li> 面对预期内的异常和预期外的异常，如详细设计里所述，或抛出异常结束、或 return 结束，后期由定时任务补偿。在主流程中不做各种各样繁杂的异常处理，既避免繁琐，也避免出错；</li>
+<li> 上面只是伪代码，在实践中应该打印出详细的 Exception 信息、以及 log 文件日志，以便于定位和查找问题；</li>
+</ol>
+
+<p>版本一有 2 个问题</p>
+
+<ol>
+<li> 如果失败了，都要等定时任务补偿，那样响应有些慢，毕竟定时任务几分钟才执行一次；</li>
+<li> 定时任务补偿时，要判断之前执行到哪，如果补偿的起始阶段不同、代码逻辑也不一样，这也比较麻烦；</li>
+</ol>
+
+<p>基于此，有了版本 II，这里取 “调用第三方支付渠道扣款” 的片段来说明。</p>
+
+<p><section class="" style="box-sizing: border-box;font-size: 16px;text-align: left;margin-top: 30px;margin-left: 8px;color: rgb(60, 112, 198);">版本二</section><br/>
+<img src="media/15293209479597/15293213207297.jpg" alt=""/></p>
+
+<ol>
+<li> 红色部分增加了日志状态的判断。如果是补偿性的，如该步骤以前已经成功了，则跳过这段调用第三方的逻辑；</li>
+<li> 蓝色部分增加了先查询的操作，不论是否已经调用过扣款；</li>
+<li> 褐色部分增加了后台线程池轮询，而不是单单等定时任务去触发；这地方实践中稍微控制下线程池数量、且最好有多路复用的模式，防止很多线程都挂在那轮询；</li>
+<li> 绿色部分，其实是出现异常的话，上面这些步骤可以再来一遍；</li>
+</ol>
+
+<p>不难看出，该版本主要是增加各个逻辑段的幂等性，既使其能安全执行、又使代码逻辑简洁。</p>
+
+<p>版本二还可以更为严谨一点——拿下面这个代码段红框里的来说，如果在两段 SQL 之间失败了，有造成不一致的可能（概率很小）。<br/>
+<img src="media/15293209479597/15293213305162.jpg" alt=""/></p>
+
+<h3 id="toc_4">版本三</h3>
+
+<p><img src="media/15293209479597/15293213453102.jpg" alt=""/></p>
+
+<p>通过事务保证逻辑段能同时成功或同时失败。虽然概率很小，但如果线上发生了，很难找到原因。</p>
+
+<p>上面这些伪码是本人用 markdown 纯粹手敲的，并不是生产代码，没有经过严格测试，所以如果有些地方写的笔误或逻辑有漏洞，请读者谅解。</p>
+
+<p>通过上面分析，我们看到有多个地方可能会对同一笔还款记录扣款，包括：</p>
+
+<ol>
+<li> 正常执行扣款；</li>
+<li> 提交到后台线程池的重试 / 轮询；</li>
+<li> 定时任务补偿；</li>
+<li> 人工执行扣款</li>
+</ol>
+
+<p>所以针对单笔还款记录的扣款操作，我们需要使用锁定，实践中我们采用的是 redission 来做的分布式锁，这比较简单，这里不多叙述，不忽略这一点就好。</p>
+
+<h2 id="toc_5">兜底方案</h2>
+
+<p>上面我们分析了很多，对主流程中的分支都做了很多的考虑，但仍然有这两个风险：</p>
+
+<ol>
+<li> 有些异常分支没有考虑到；</li>
+<li> 随着业务的发展，新加进来的逻辑，或者新人进来，很可能有些新的分支点没有被充分考虑；</li>
+</ol>
+
+<p>所以从严谨的角度，我们需要个兜底方案——主动检查 + 对账，以主动识别任何异常现象。从实践上看，由于业务的复杂性以及持续变化，可能很难完全梳理清楚所有的异常点，因此 “主动检查 + 对账” 可能更为重要。</p>
+
+<h3 id="toc_6">主动检查</h3>
+
+<p>我们创建了个 Thread，定时查询还款计划表中，处于”扣款中 “的异常数据，进行检查，如果有问题，自动修正或者通知出来人工干预。比如某条还款记录，从“还款中” 的状态到现在，已经过去了 1 个小时了，这种情况就会被判定为可疑现象，需要人工介入。</p>
+
+<h3 id="toc_7">对账</h3>
+
+<p>仍然有一些情况，是系统所覆盖不到的，需要双方对账 (我们和第三方支付对账、第三方支付和银行对账)。主要有以下这些场景：</p>
+
+<ul>
+<li>  跨日——双方把订单归到不同日期。比如 23:59 的订单，我们归到今天，第三方支付那边可能归到第二天；</li>
+<li>  第三方支付开始告诉我们是成功的，我们已经结束操作了，后来对账时，第三方支付说支付失败了（可能它的信息是来自于银行）；</li>
+<li>  我这边还款 1 笔，第三方支付那边搞成了 2 笔（可能是它们自己的原因，也可能是银行的原因）；</li>
+</ul>
+
+<p>对账主要是根据 “订单号”、“状态”、“日期”，主要是看状态和日期，是否对的。金额之类的，一般是不核对的，因为它不会出错。</p>
+
+<p>兜底方案虽然好，但往往需要人工介入，成本高、反馈慢，如果能够系统自动就识别并修正，保证系统一致，那么在用户体验和成本角度考虑，都是很合适的。所以兜底方案和系统一致性是相互补充、各自取长补短的事情。</p>
+
+<h2 id="toc_8">总结</h2>
+
+<p>上面以我们的支付服务，作为一个最终一致性的例子。虽然场景不是很复杂，但写的比较细致，需要考虑的点也还是不少，希望能帮助到读者，将来在处理类似问题时，能够有比较清晰的思路。</p>
+
+<h2 id="toc_9">作者介绍</h2>
+
+<p>作者张轲目前任职于杭州大树网络技术有限公司，担任首席架构师，负责系统整体业务架构以及基础架构，熟悉微服务、分布式设计、中间件领域，对运维、测试、敏捷开发等相关领域也有所涉猎，个人微信公众号：zhangke83。</p>
 
                         
                       </div>
@@ -418,10 +319,10 @@ customers.map((FList&lt;Customer&gt; c) -&gt; ...);
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/6/1</span>
+                    <span class="date">2018/6/18</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Java.html'>Java</a></span>
+          					    <span class="posted-in"><a href='Persistence.html'>Persistence</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -511,31 +412,31 @@ customers.map((FList&lt;Customer&gt; c) -&gt; ...);
 	      
 		      
 			      <li class="post">
-			        <a href="15389311738065.html">重构到更深层的模型</a>
+			        <a href="15459058392039.html">Reliable Domain Events</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389278377243.html">IAM of Google Cloud</a>
+			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389224951575.html">RSocket, a New Application Network Protocol for Reactive Applications, Announced at SpringOne</a>
+			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389220103546.html">如何形象地描述RxJava中的背压和流控机制？</a>
+			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389214670417.html">Modeling Uncertainty with Reactive DDD</a>
+			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
 			      </li>
 		     
 		  

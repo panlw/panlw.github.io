@@ -105,303 +105,525 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15301797659390.html">
+                <a class="clearlink" href="15327632423477.html">
                 
-                  <h1>架构设计：负载均衡层设计方案（3）——Nginx 进阶</h1>
+                  <h1>A Guide to Java 9 Modularity</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://blog.csdn.net/yinwenjie/article/details/46742661">https://blog.csdn.net/yinwenjie/article/details/46742661</a></p>
+<p><a href="http://www.baeldung.com/java-9-modularity">http://www.baeldung.com/java-9-modularity</a></p>
 </blockquote>
 
-<p>上篇文章《架构设计：负载均衡层设计方案（2）——Nginx 安装》（<a href="http://blog.csdn.net/yinwenjie/article/details/46620711">http://blog.csdn.net/yinwenjie/article/details/46620711</a>），我们介绍了 Nginx 的核心设计思想、基本安装和使用。本来准备继续介绍 Nginx 的几个使用特性，但是奈何博文篇幅太长，只有将一篇文章拆成两篇。本文我们将承接上文，继续讲解 Nginx 的实用特性，包括 gzip 功能、rewirte 功能和一个第三方的节点监测模块。本文我们还将提到 Taobao 团队对 Nginx 的深度改造 Tengine。</p>
+<h2 id="toc_0"><strong>1. Overview</strong></h2>
 
-<h1 id="toc_0"><a></a>1、Nginx 继续进阶</h1>
+<p>Java 9 introduces a new level of abstraction above packages, formally known as the Java Platform Module System (JPMS), or “Modules” for short.</p>
 
-<h2 id="toc_1"><a></a>1.1、gzip</h2>
+<p>In this tutorial, we’ll go through the new system and discuss its various aspects.</p>
 
-<p>nginx 对返回给浏览器的 http response body 是可以进行压缩的。虽然需要消耗一点 cpu 和内存资源，但是想到 100KB 的数据量可以压缩到 60KB 甚至更小进行传输，是否有一定的吸引力？这里我的建议是，不要为了节约成本将业务服务和负载层服务放在一台物理服务器上，这样做既影响性能又增加了运维难度。http 返回数据进行压缩的功能在很多场景下都实用：</p>
+<p>We’ll also build a simple project to demonstrate all concepts we’ll be learning in this guide.</p>
+
+<h2 id="toc_1"><strong>2. What’s a Module?</strong></h2>
+
+<p>First of all, we need to understand what a module is before we can understand how to use them.</p>
+
+<p><strong>A Module is a group of closely related packages and resources along with a new module descriptor file.</strong></p>
+
+<p>In other words, it’s a “package of Java Packages” abstraction that allows us to make our code even more reusable.</p>
+
+<h3 id="toc_2"><strong>2.1. Packages</strong></h3>
+
+<p>The packages inside a module are identical to the Java packages we’ve been using since the inception of Java.</p>
+
+<p>When we create a module, <strong>we organize the code internally in packages just like we previously did with any other project.</strong></p>
+
+<p>Aside from organizing our code, packages are used to determine what code is publicly accessible outside of the module. We’ll spend more time talking about this later in the article.</p>
+
+<h3 id="toc_3"><strong>2.2. Resources</strong></h3>
+
+<p><strong>Each module is responsible for its resources, like media or configuration files.</strong></p>
+
+<p>Previously we’d put all resources into the root level of our project and manually manage which resources belonged to different parts of the application.</p>
+
+<p>With modules, we can ship required images and XML files with the module that needs it, making our projects much easier to manage.</p>
+
+<h3 id="toc_4"><strong>2.3. Module Descriptor</strong></h3>
+
+<p>When we create a module, we include a descriptor file that defines several aspects of our new module:</p>
 
 <ul>
-<li><p>如果浏览器使用的是 3G/4G 网络，那么流量对于用户来说就是 money。</p></li>
-<li><p>压缩可节约服务器机房的对外带宽，为更多用户服务。按照目前的市场价良好的机房带宽资源的一般在 200RMB/Mbps，而服务器方案的压力往往也来自于机房带宽。</p></li>
-<li><p>主要注意的是，不是 Nginx 开启了 gzip 功能，HTTP 响应的数据就一定会被压缩，除了满足 Nginx 设置的 “需要压缩的 http 格式” 以外，客户端（浏览器）也需要支持 gzip（不然它怎么解压呢），一个好消息是，目前大多数浏览器和 API 都支持 http 压缩。</p>
-
-<p>我们首先来讲解 Nginx 中的 gzip 的设置参数，然后我们讲解当开启压缩功能后，HTTP 的交互过程和过程中关键的几个属性。我们首先来看看 Nginx 中开启 gzip 的属性（gzip 的设置放置在 HTTP 主配置区域）：</p></li>
+<li>  <strong>Name</strong> – the name of our module</li>
+<li>  <strong>Dependencies</strong> – a list of other modules that this module depends on</li>
+<li>  <strong>Public Packages</strong> – a list of all packages we want accessible from outside the module</li>
+<li>  <strong>Services Offered</strong> – we can provide service implementations that can be consumed by other modules</li>
+<li>  <strong>Services Consumed</strong> – allows the current module to be a consumer of a service</li>
+<li>  <strong>Reflection Permissions</strong> – explicitly allows other classes to use reflection to access the private members of a package</li>
 </ul>
 
-<pre><code class="language-conf">#开启 gzip 压缩服务，
-gzip on;
+<p>The module naming rules are similar to how we name packages (dots are allowed, dashes are not). It’s very common to do either project-style (my.module) or Reverse-DNS (_com.baeldung.mymodule_) style names. We’ll use project-style in this guide.</p>
 
-#gzip 压缩是要申请临时内存空间的，假设前提是压缩后大小是小于等于压缩前的。例如，如果原始文件大小为 10K，那么它超过了 8K，所以分配的内存是 8 * 2 = 16K; 再例如，原始文件大小为 18K，很明显 16K 也是不够的，那么按照 8 * 2 * 2 = 32K 的大小申请内存。如果没有设置，默认值是申请跟原始数据相同大小的内存空间去存储 gzip 压缩结果。
-gzip_buffers 2 8k;
+<p><strong>We need to list all packages we want to be public because by default all packages are module private.</strong></p>
 
-#进行压缩的原始文件的最小大小值，也就是说如果原始文件小于 5K，那么就不会进行压缩了
-gzip_min_length 5K;
+<p>The same is true for reflection. By default, we cannot use reflection on classes we import from another module.</p>
 
-#gzip 压缩基于的 http 协议版本，默认就是 HTTP 1.1
-gzip_http_version 1.1;
+<p>Later in the article, we’ll look at examples of how to use the module descriptor file.</p>
 
-# gzip 压缩级别 1-9，级别越高压缩率越大，压缩时间也就越长 CPU 越高
-gzip_comp_level 5;
+<h3 id="toc_5"><strong>2.4. Module Types</strong></h3>
 
-#需要进行 gzip 压缩的 Content-Type 的 Header 的类型。建议 js、text、css、xml、json 都要进行压缩；图片就没必要了，gif、jpge 文件已经压缩得很好了，就算再压，效果也不好，而且还耗费 cpu。
-Igzip_types text/HTML text/plain application/x-javascript text/css application/xml;
+<p>There are four types of modules in the new module system:</p>
+
+<ul>
+<li>  <strong>System Modules</strong>– These are the modules listed when we run the _list-modules_ command above. They include the Java SE and JDK modules.</li>
+<li>  <strong>Application Modules</strong> – These modules are what we usually want to build when we decide to use Modules. They are named and defined in the compiled _module-info.class_ file included in the assembled JAR.</li>
+<li>  <strong>Automatic Modules</strong> – We can include unofficial modules by adding existing JAR files to the module path. The name of the module will be derived from the name of the JAR. Automatic modules will have full read access to every other module loaded by the path.</li>
+<li>  <strong>Unnamed Module</strong> – When a class or JAR is loaded onto the classpath, but not the module path, it’s automatically added to the unnamed module. It’s a catch-all module to maintain backward compatibility with previously-written Java code.</li>
+</ul>
+
+<h3 id="toc_6"><strong>2.5. Distribution</strong></h3>
+
+<p>Modules can be distributed one of two ways: as a JAR file or as an “exploded” compiled project. This, of course, is the same as any other Java project so it should come as no surprise.</p>
+
+<p>We can create multi-module projects comprised of a “main application” and several library modules.</p>
+
+<p><strong>We have to be careful though because we can only have one module per JAR file.</strong></p>
+
+<p>When we set up our build file, we need to make sure to bundle each module in our project as a separate jar.</p>
+
+<h2 id="toc_7"><strong>3. Default Modules</strong></h2>
+
+<p>When we install Java 9, we can see that the JDK now has a new structure.</p>
+
+<p>They have taken all the original packages and moved them into the new module system.</p>
+
+<p>We can see what these modules are by typing into the command line:</p>
+
+<pre><code class="language-sh">java --list-modules
 </code></pre>
 
-<pre><code>设置完成后，重启 nginx，即可生效。下面我们来看看浏览器和服务器进行 gzip 压缩的请求和处理返回过程（实际上在我的《标准 Web 系统的架构分层》文章中，已经有所提及）：
+<p>These modules are split into four major groups: _java, javafx, jdk, _and _Oracle_.</p>
+
+<p><u>java</u> modules are the implementation classes for the core SE Language Specification.</p>
+
+<p><u>javafx</u> modules are the FX UI libraries.</p>
+
+<p><strong>Anything needed by the JDK itself is kept in the _jdk_ modules.</strong></p>
+
+<p>And finally, <strong>anything that is Oracle-specific is in the _oracle_ modules.</strong></p>
+
+<h2 id="toc_8"><strong>4. Module Declarations</strong></h2>
+
+<p><strong>To set up a module, we need to put a special file at the root of our packages named _module-info.java_.</strong></p>
+
+<p>This file is known as the module descriptor and contains all of the data needed to build and use our new module.</p>
+
+<p>We construct the module with a declaration whose body is either empty or made up of module directives:</p>
+
+<pre><code class="language-java">module myModuleName {
+    // all directives are optional
+}
 </code></pre>
 
-<p><img src="https://img-blog.csdn.net/20150709162940954" alt=""/></p>
+<p>We start the module declaration with the <u>module</u> keyword, and we follow that with the name of the module.</p>
 
-<ul>
-<li><p>整个请求过程来看，开启 gzip 和不开启 gip 功能，其 http 的请求和返回过程是一致的，不同的是参数。这个可以看看我的另外一篇文章《标准 Web 系统的架构分层》<a href="http://blog.csdn.net/yinwenjie/article/details/46480485">http://blog.csdn.net/yinwenjie/article/details/46480485</a></p></li>
-<li><p>当开启 HTTP 的 gzip 功能时，客户端发出 http 请求时，会通过 headers 中的 Accept-Encoding 属性告诉服务器 “我支持 gzip 解压，解压格式（算法）deflate,sdch 为：”。Accept-Encoding:gzip,deflate,sdch</p></li>
-<li><p>注意，不是 request 说自己支持解压，Nginx 返回 response 数据的时候就一定会压缩。这还要看本次 Nginx 返回数据的格式是什么，如果返回数据的原始数据格式，和设置的 gzip_types 相符合，这时 Nginx 才会进行压缩。</p></li>
-<li><p>Nginx 返回 response headers 是，如果数据被压缩了，就会在 Content-Encoding 属性中标示 gzip，表示接下来返回的 response content 是经过压缩的；并且在 Content-Type 属性中表示数据的原始格式。</p></li>
-<li><p>最后返回经过压缩的 response content 给客户端，客户端再进行解压。这里注意一下，在客户端发送的 headers 里面，有一个 deflate,sdch。这是两种压缩算法，如果读者感兴趣，可以查查相关的资料（我建议查查，了解哈弗曼压缩算法对扩展自己的架构思路很有帮助）</p></li>
-</ul>
+<p>The module will work with this declaration, but we’ll commonly need more information.</p>
 
-<h2 id="toc_2"><a></a>1.2、rewrite</h2>
+<p>That is where the module directives come in.</p>
 
-<p>本小结内容，假定读者了解正则表达式。如果您不清楚正则表达式，请首先 Google 或者百度，正则表达式不在我们讨论的范围内。</p>
+<h3 id="toc_9"><strong>4.1. Requires</strong></h3>
 
-<p>Nginx 的强大在于其对 URL 请求的重写（重定位）。Nginx 的 rewrite 功能依赖于 PCRE Lib，请一定在 Nginx 编译安装时，安装 Pcre lib。请参见我的上一篇文章《架构设计：负载均衡层设计方案（2）——Nginx 安装》<a href="http://blog.csdn.net/yinwenjie/article/details/46620711">http://blog.csdn.net/yinwenjie/article/details/46620711</a></p>
+<p>Our first directive is _requires_. This module directive allows us to declare module dependencies:</p>
 
-<p>我们先从讲解 rewrite 的关键语法，然后出示几个示例，由示例进行讲解。先来说一下 Nginx 中几个关键的语法：</p>
-
-<p><strong>正在表达式匹配：</strong></p>
-
-<ul>
-<li>  ~ 区分大小写进行正则表达式匹配</li>
-<li>  ~* 不区分大小写进行正则表达式匹配</li>
-<li>  !~ 区分大小写进行正则表达式不匹配</li>
-<li>  !~* 不区分大小写进行正则表达式不匹配</li>
-</ul>
-
-<p>举例说明:</p>
-
-<pre><code>示例1：location ~* \.(jpg|gif|png|ioc|jpeg)$
-
-location是Nginx中的关键字，代表当前的URL请求值。
-以上表达式表示对URL进行不区分大小写的匹配，一旦URL以jpg或gif或png或ioc或jpeg结尾时，匹配成功。
-
-示例2：$var1 ~ ^(\d+)$
-
-var1是Nginx中使用set关键字定义的变量，以上语句代表var1和一个整数进行匹配。
-
+<pre><code class="language-java">module my.module {
+    requires module.name;
+}
 </code></pre>
 
-<p><strong>Nginx 中的全局变量：</strong><br/>
-从上面的各个实例中，我们已经发现 Nginx 是支持变量的，Nginx 还内置了一些全局变量，这里列举一些比较重要的全局变量：</p>
+<p>Now, _my.module_ has <strong>both a runtime and a compile-time dependency</strong> on <u>module.name</u>.</p>
 
-<ul>
-<li>  $content_length: 获取 request 中 header 部分的 “Content_Length” 值。</li>
-<li>  $content_type: 获取 request 中 header 部分的 “Content_type” 值。</li>
-<li>  $request_method: 请求方式，常用的有两种请求方式：POST、GET</li>
-<li>  $remote_addr: 发送请求的客户端 ip</li>
-<li>  $remote_port: 发送请求的客户端端口</li>
-<li>  $request_uri: 含有参数的完整的初始 URI</li>
-<li>  $server_addr: request 到达的 server 的 ip。</li>
-<li>  $server_port: 请求到达的服务器的端口号。</li>
-</ul>
+<p>And all public types exported from a dependency are accessible by our module when we use this directive.</p>
 
-<p><strong>rewrite 语法</strong></p>
+<h3 id="toc_10"><strong>4.2. Requires Static</strong></h3>
 
-<pre><code>rewrite regex replacement flag
+<p>Sometimes we write code that references another module, but that users of our library will never want to use.</p>
 
-#regex：表示当前匹配的正则表达式。只有$url大小写相关匹配regex正则表达式，这个$url才会被rewrite进行重定向。
+<p>For instance, we might write a utility function that pretty-prints our internal state when another logging module is present. But, not every consumer of our library will want this functionality, and they don’t want to include an extra logging library.</p>
 
-#replacement：重定向目标规则。这个目标规则支持动态变量绑定，这个问题下文马上用示例来讲。
+<p>In these cases, we want to use an optional dependency. By using the _requires static_ directive, we create a compile-time-only dependency:</p>
 
-#flag：重定向规则。
-
+<pre><code class="language-java">module my.module {
+    requires static module.name;
+}
 </code></pre>
 
-<p><strong>rewrite 中的 Flag 关键字</strong></p>
+<h3 id="toc_11"><strong>4.3. Requires Transitive</strong></h3>
+
+<p>We commonly work with libraries to make our lives easier.</p>
+
+<p>But, we need to make sure that any module that brings in our code will also bring in these extra ‘transitive’ dependencies or they won’t work.</p>
+
+<p>Luckily, we can use the _requires transitive_ directive to force any downstream consumers also to read our required dependencies:</p>
+
+<pre><code class="language-java">module my.module {
+    requires transitive module.name;
+}
+</code></pre>
+
+<p>Now, when a developer <u>requires my.module</u>, they won’t also have also to say _requires module.name_ for our module to still work.</p>
+
+<h3 id="toc_12"><strong>4.4. Exports</strong></h3>
+
+<p><strong>By default, a module doesn’t expose any of its API to other modules.</strong> This _strong encapsulation_ was one of the key motivators for creating the module system in the first place.</p>
+
+<p>Our code is significantly more secure, but now we need to explicitly open our API up to the world if we want it to be usable.</p>
+
+<p><strong>We use the _exports_ directive to expose all public members of the named package:</strong></p>
+
+<pre><code class="language-java">module my.module {
+    exports com.my.package.name;
+}
+</code></pre>
+
+<p>Now, when someone does _requires my.module_, they will have access to the public types in our _com.my.package.name_ package, but not any other package.</p>
+
+<h3 id="toc_13"><strong>4.5. Exports … To</strong></h3>
+
+<p><strong>We can use _exports…to_ to open up our public classes to the world.</strong></p>
+
+<p>But, what if we don’t want the entire world to access our API?</p>
+
+<p><strong>We can restrict which modules have access to our APIs using the _exports…to_ directive.</strong></p>
+
+<p>Similar to the _exports_ directive, we declare a package as exported. But, we also list which modules we are allowing to import this package as a <u>requires</u>. Let’s see what this looks like:</p>
+
+<pre><code class="language-java">module my.module {
+    export com.my.package.name to com.specific.package;
+}
+</code></pre>
+
+<h3 id="toc_14"><strong>4.6. Uses</strong></h3>
+
+<p>A _service_ is an implementation of a specific interface or abstract class that can be _consumed_ by other classes.</p>
+
+<p><strong>We designate the services our module consumes with the _uses_ directive.</strong></p>
+
+<p>Note that <strong>the class name we _use_ is either the interface or abstract class of the service, not the implementation class</strong>:</p>
+
+<pre><code class="language-java">module my.module {
+    uses class.name;
+}
+</code></pre>
+
+<p>We should note here that there’s a difference between a _requires_ directive and the _uses_ directive.</p>
+
+<p>We might <u>require</u> a module that provides a service we want to consume, but that service implements an interface from one of its transitive dependencies.</p>
+
+<p>Instead of forcing our module to require _all_ transitive dependencies just in case, we use the _uses_ directive to add the required interface to the module path.</p>
+
+<h3 id="toc_15"><strong>4.7. Provides … With</strong></h3>
+
+<p><strong>A module can also be a _service provider_ that other modules can consume.</strong></p>
+
+<p>The first part of the directive is the _provides_ keyword. Here is where we put the interface or abstract class name.</p>
+
+<p>Next, we have the _with_ directive where we provide the implementation class name that either <u>implements</u> the interface or _extends_ the abstract class.</p>
+
+<p>Here’s what it looks like put together:</p>
+
+<pre><code class="language-java">module my.module {
+    provides MyInterface with MyInterfaceImpl;
+}
+</code></pre>
+
+<h3 id="toc_16"><strong>4.8. Open</strong></h3>
+
+<p>We mentioned earlier that encapsulation was a driving motivator for the design of this module system.</p>
+
+<p>Before Java 9, it was possible to use reflection to examine every type and member in a package, even the _private_ ones. Nothing was truly encapsulated, which can open up all kinds of problems for developers of the libraries.</p>
+
+<p>Because Java 9 enforces _strong encapsulation_, <strong>we now have to explicitly grant permission for other modules to reflect on our classes.</strong></p>
+
+<p>If we want to continue to allow full reflection as older versions of Java did, we can simply _open_ the entire module up:</p>
+
+<pre><code class="language-java">open module my.module {
+}
+</code></pre>
+
+<h3 id="toc_17"><strong>4.9. Opens</strong></h3>
+
+<p>If we need to allow reflection of private types, but we don’t want all of our code exposed, <strong>we can use the _opens_ directive to expose specific packages.</strong></p>
+
+<p>But remember, this will open the package up to the entire world, so make sure that is what you want:</p>
+
+<pre><code class="language-java">module my.module {
+  opens com.my.package;
+}
+</code></pre>
+
+<h3 id="toc_18"><strong>4.10. Opens … To</strong></h3>
+
+<p>Okay, so reflection is great sometimes, but we still want as much security as we can get from _encapsulation_. <strong>We can selectively open our packages to a pre-approved list of modules, in this case, using the _opens…to_ directive</strong>:</p>
+
+<pre><code class="language-java">module my.module {
+    opens com.my.package to moduleOne, moduleTwo, etc.;
+}
+</code></pre>
+
+<h2 id="toc_19"><strong>5. Command Line Options</strong></h2>
+
+<p>By now, support for Java 9 modules has been added to Maven and Gradle, so you won’t need to do a lot of manual building of your projects. However, it’s still valuable to know _how_ to use the module system from the command line.</p>
+
+<p>We’ll be using the command line for our full example down below to help solidify how the entire system works in our minds.</p>
 
 <ul>
-<li>  redirect：通知客户端重定向到 rewrtie 后面的地址。</li>
-<li>  permanent：通知客户端永久重定向到 rewrtie 后面的地址。</li>
-<li>  last：将 rewrite 后的地址重新在 server 标签执行。</li>
-<li>  break：将 rewrite 后地址重新在当前的 location 标签执行。</li>
+<li>  <u><strong>module-path</strong></u> <strong>–</strong>We use the _–module-path_ option to specify the module path. This is a list of one or more directories that contain your modules.</li>
+<li>  <u><strong>add-reads</strong></u> – Instead of relying on the module declaration file, we can use the command line equivalent of the _requires_ directive; _–add-reads_.</li>
+<li>  <u><strong>add-exports</strong></u> <strong>–</strong>Command line replacement for the <u>exports</u> directive.</li>
+<li>  <u><strong>add-opens</strong></u> <u>–</u>Replace the _open_ clause in the module declaration file.</li>
+<li>  <u><strong>add-modules</strong></u> <u>–</u>Adds the list of modules into the default set of modules</li>
+<li>  <u><strong>list-modules</strong></u> <u>–</u>Prints a list of all modules and their version strings</li>
+<li>  <u><strong>patch-module</strong></u> – Add or override classes in a modules</li>
+<li>  <u><strong>illegal-access=permit|warn|deny</strong></u> – Either relax strong encapsulation by showing a single global warning, shows every warning, or fails with errors. The default is _permit_.</li>
 </ul>
 
-<p>实际上针对客户端来说，其效果是一样的，都是由客户端重新发起 http 请求，请求地址重新定位到 replacement 规则的 URL 地址；这里关键要讲解最常用的 last 和 break 两个关键字：</p>
+<h2 id="toc_20"><strong>6. Visibility</strong></h2>
 
-<pre><code>所有的rewrite语句都是要在server中的location中书写的，如下：
-server {
-    。。。。。。
-    。。。。。。
-    location ... {
-        if(...) {
-            rewirte regex replacement flag;
-        }
-        rewirte regex replacement flag;
+<p>We should spend a little time talking about the visibility of our code.</p>
+
+<p><strong>A lot of libraries depend on reflection to work their magic</strong> (JUnit and Spring come to mind).</p>
+
+<p>By default in Java 9, we will _only_ have access to public classes, methods, and fields in our exported packages. Even if we use reflection to get access to non-public members and call _setAccessible(true), _we won’t be able to access these members.</p>
+
+<p>We can use the _open_, _opens_, and _opens…to_ options to grant runtime-only access for reflection. Note, <strong>this is runtime-only!</strong></p>
+
+<p>We won’t be able to compile against private types, and we should never need to anyway.</p>
+
+<p>If we must have access to a module for reflection, and we’re not the owner of that module (i.e., we can’t use the _opens…to_ directive), then it’s possible to use the command line _–add-opens_ option to allow own modules reflection access to the locked down module at runtime.</p>
+
+<p>The only caveat here’s that you need to have access to the command line arguments that are used to run a module for this to work.</p>
+
+<h2 id="toc_21"><strong>7. Putting It All Together</strong></h2>
+
+<p>Now that we know what a module is and how to use them let’s go ahead and build a simple project to demonstrate all the concepts we just learned.</p>
+
+<p>To keep things simple, we won’t be using Maven or Gradle. Instead, we’ll rely on the command line tools to build our modules.</p>
+
+<h3 id="toc_22"><strong>7.1. Setting Up Our Project</strong></h3>
+
+<p>First, we need to set up our project structure. We’ll create several directories to organize our files.</p>
+
+<p>Start by creating the project folder:</p>
+
+<pre><code class="language-sh">mkdir module-project
+cd module-project
+</code></pre>
+
+<p>This is the base of our whole project, so add files in here such as Maven or Gradle build files, other source directories, and resources.</p>
+
+<p>We also put a directory to hold all our project specific modules.</p>
+
+<p>Next, we create a module directory:</p>
+
+<pre><code class="language-sh">mkdir simple-modules
+</code></pre>
+
+<p>Here’s what our project structure will look like:</p>
+
+<pre><code class="language-txt">module-project
+|- // src if we use the default package
+|- // build files also go at this level
+|- simple-modules
+  |- hello.modules
+    |- com
+      |- baeldung
+        |- modules
+          |- hello
+  |- main.app
+    |- com
+      |- baeldung
+        |- modules
+          |- main
+</code></pre>
+
+<h3 id="toc_23"><strong>7.2. Our First Module</strong></h3>
+
+<p>Now that we have the basic structure in place, let’s add our first module.</p>
+
+<p>Under the _simple-modules _directory, create a new directory called _hello.modules_.</p>
+
+<p><strong>We can name this anything we want but follow package naming rules</strong> (i.e., periods to separate words, etc.). We can even use the name of our main package as the module name if we want, but usually, we want to stick to the same name we would use to create a JAR of this module.</p>
+
+<p>Under our new module, we can create the packages we want. In our case, we are going to create one package structure:</p>
+
+<pre><code>com.baeldung.modules.hello
+</code></pre>
+
+<p>Next, create a new class called _HelloModules.java_ in this package. We will keep the code simple:</p>
+
+<pre><code class="language-java">package com.baeldung.modules.hello;
+ 
+public class HelloModules {
+    public static void doSomething() {
+        System.out.println(&quot;Hello, Modules!&quot;);
     }
 }
-
-那么，break关键字说明重写的replacement地址在当前location的区域马上执行。
-last关键字说明重写的replacement地址在当前server所有的location中重新再做匹配。
-
 </code></pre>
 
-<p>下面我们结合 rewrite 关键字和 rewrite flag 关键字给出典型的示例进行讲解：</p>
+<p>And finally, in the _hello.modules_ root directory, add in our module descriptor; _module-info.java_:</p>
 
-<pre><code>示例1：
-location ~* ^/(.+)/(.+)\.(jpg|gif|png|jpeg)$ {
-    rewrite ^/orderinfo/(.+)\.(jpg|gif|png|jpeg)$   /img/$1.$2   break;
-    root   /cephclient;
+<pre><code class="language-java">module hello.modules {
+    exports com.baeldung.modules.hello;
 }
+</code></pre>
 
-location在不进行大小写区分的情况下利用正则表达式对$url进行匹配。当匹配成功后进行rewrite重定位。
-rewrite进行重写url的规则是：regex表达式第一个括号中的内容对应$1，regex表达式第二个括号中的内容对应$2，以此类推。
-这样重定位的意义就很明确了：将任何目录下的文件名重定位到img目录下的对应文件名，
-并且马上在这个location中（注意是Nginx，而不是客户端）执行这个重写后的URL定位。
+<p>To keep this example simple, all we are doing is exporting all public members of the _com.baeldung.modules.hello _package.</p>
 
-示例2：
-server {
-    。。。。
-    。。。。
-    location ~* ^/orderinfo/(.+)\.(jpg|gif|png|jpeg)$ {
-        rewrite ^/orderinfo/(.+)\.(.+)$  /img/$1.$2   last;
+<h3 id="toc_24"><strong>7.3. Our Second Module</strong></h3>
+
+<p>Our first module is great, but it doesn’t do anything.</p>
+
+<p>We can create a second module that uses it now.</p>
+
+<p>Under our _simple-modules_ directory, create another module directory called _main.app_. We are going to start with the module descriptor this time:</p>
+
+<pre><code class="language-java">module main.app {
+    requires hello.modules;
+}
+</code></pre>
+
+<p>We don’t need to expose anything to the outside world. Instead, all we need to do is depend on our first module, so we have access to the public classes it exports.</p>
+
+<p>Now we can create an application that uses it.</p>
+
+<p>Create a new package structure: _com.baeldung.modules.main_.</p>
+
+<p>Now, create a new class file called _MainApp.java._</p>
+
+<pre><code class="language-java">package com.baeldung.modules.main;
+ 
+import com.baeldung.modules.hello.HelloModules;
+ 
+public class MainApp {
+    public static void main(String[] args) {
+        HelloModules.doSomething();
     }
+}
+</code></pre>
 
-    location / {
-        root   /cephclient;
+<p>And that is all the code we need to demonstrate modules. Our next step is to build and run this code from the command line.</p>
+
+<h3 id="toc_25"><strong>7.4. Building Our Modules</strong></h3>
+
+<p>To build our project, we can create a simple bash script and place it at the root of our project.</p>
+
+<p>Create a file called _compile-simple-modules.sh_:</p>
+
+<pre><code class="language-sh">#!/usr/bin/env bash
+javac -d outDir --module-source-path simple-modules $(find simple-modules -name &quot;*.java&quot;)
+</code></pre>
+
+<p>There are two parts to this command, the _javac_ and _find_ commands.</p>
+
+<p>The _find_ command is simply outputting a list of all ._java_ files under our simple-modules directory. We can then feed that list directly into the Java compiler.</p>
+
+<p>The only thing we have to do differently than the older versions of Java is to provide a _module-source-path_ parameter to inform the compiler that it’s building modules.</p>
+
+<p>Once we run this command, we will have an _outDir_ folder with two compiled modules inside.</p>
+
+<h3 id="toc_26"><strong>7.5. Running Our Code</strong></h3>
+
+<p>And now we can finally run our code to verify modules are working correctly.</p>
+
+<p>Create another file in the root of the project: _run-simple-module-app.sh_.</p>
+
+<pre><code class="language-sh">#!/usr/bin/env bash
+java --module-path outDir -m main.app/com.baeldung.modules.main.MainApp
+</code></pre>
+
+<p>To run a module, we must provide at least the _module-path_ and the main class. If all works, you should see:</p>
+
+<pre><code class="language-sh">$ ./run-simple-module-app.sh 
+Hello, Modules!
+</code></pre>
+
+<h3 id="toc_27"><strong>7.6. Adding a Service</strong></h3>
+
+<p>Now that we have a basic understanding of how to build a module, let’s make it a little more complicated.</p>
+
+<p>We’re going to see how to use the _provides…with_ and _uses_ directives.</p>
+
+<p>Start by defining a new file in the _hello.modules_ module named _HelloInterface__.java_:</p>
+
+<pre><code class="language-java">public interface HelloInterface {
+    void sayHello();
+}
+</code></pre>
+
+<p>To make things easy, we’re going to implement this interface with our existing _HelloModules.java_ class:</p>
+
+<pre><code class="language-java">public class HelloModules implements HelloInterface {
+    public static void doSomething() {
+        System.out.println(&quot;Hello, Modules!&quot;);
+    }
+ 
+    public void sayHello() {
+        System.out.println(&quot;Hello!&quot;);
     }
 }
-
-在server中，有两个location位置，当url需要访问orderinfo目录下的某一个图片时，rewrite将重写这个url，
-并且重新带入这个url到server执行，这样“location /”这个location就会执行了，并找到图片存储的目录。
-
 </code></pre>
 
-<h2 id="toc_3"><a></a>1.3、健康检查模块</h2>
+<p>That is all we need to do to create a _service_.</p>
 
-<p>在本小节我们介绍一个用于 Nginx 对后端 UpStream 集群节点健康状态检查的第三方模块：nginx_upstream_check_module（<a href="https://github.com/yaoweibin/nginx_upstream_check_module">https://github.com/yaoweibin/nginx_upstream_check_module</a>）。这个模块有资料介绍是 TaoBao 团队开发的，但是我在 GitHua 上试图求证时并没有找到直接证据。</p>
+<p>Now, we need to tell the world that our module provides this service.</p>
 
-<p>这里需要说明的是，目前有很多 Nginx 模块实现 Nginx 对后端集群节点的健康监测，不止 nginx_upstream_check_module。Nginx 官方有一个模块 healthcheck_nginx_upstreams 也可以实现对后端节点的健康监测（<a href="https://github.com/cep21/healthcheck_nginx_upstreams">https://github.com/cep21/healthcheck_nginx_upstreams</a> 有详细的安装和使用介绍）</p>
+<p>Add the following to our _module-info.java_:</p>
 
-<p>我们回到对 nginx_upstream_check_module 的讲解，<strong>要使用这个第三方模块首先您需要进行下载，然后通过 patch 命令将补丁打入您原有的 Nginx 源码中，并且重新进行编译安装</strong>。下面我们来重点讲解一下这个模块的安装和使用。</p>
-
-<p><strong>下载 nginx_upstream_check_module 模块：</strong></p>
-
-<pre><code>wget https://codeload.github.com/yaoweibin/nginx_upstream_check_module/zip/master
-
-您也可以直接到GitHua上进行下载，还一个在linux系统上使用git命令进行下载。
-
+<pre><code>provides com.baeldung.modules.hello.HelloInterface with com.baeldung.modules.hello.HelloModules;
 </code></pre>
 
-<p><strong>解压安装，并补丁打入 Nginx 源码</strong></p>
+<p>As we can see, we declare the interface and which class implements it.</p>
 
-<pre><code># unzip ./nginx_upstream_check_module-master.zip
+<p>Next, we need to consume this _service_. In our _main.app_ module, let’s add the following to our _module-info.java_:</p>
 
-注意是将补丁打入Nginx源码，不是Nginx的安装路径：
-
-# cd ./nginx-1.6.2
-
-# patch -p1 &lt; ../nginx_upstream_check_module-master/check_1.5.12+.patch
-
-如果补丁安装成功，您将看到以下的提示信息：
-patching file src/http/modules/ngx_http_upstream_ip_hash_module.c
-patching file src/http/modules/ngx_http_upstream_least_conn_module.c
-patching file src/http/ngx_http_upstream_round_robin.c
-patching file src/http/ngx_http_upstream_round_robin.h
-
-这里请注意：在nginx_upstream_check_module官网的安装说明中，有一个打补丁的注意事项：
-If you use nginx-1.2.1 or nginx-1.3.0, the nginx upstream round robin
-module changed greatly. You should use the patch named
-&#39;check_1.2.1.patch&#39;.
-If you use nginx-1.2.2+ or nginx-1.3.1+, It added the upstream
-least_conn module. You should use the patch named &#39;check_1.2.2+.patch&#39;.
-If you use nginx-1.2.6+ or nginx-1.3.9+, It adjusted the round robin
-module. You should use the patch named &#39;check_1.2.6+.patch&#39;.
-If you use nginx-1.5.12+, You should use the patch named
-&#39;check_1.5.12+.patch&#39;.
-If you use nginx-1.7.2+, You should use the patch named
-&#39;check_1.7.2+.patch&#39;.
-
-这里我们的Nginx的版本是1.6.2，那么就应该打入check_1.5.12+.patch这个补丁
-
+<pre><code class="language-java">uses com.baeldung.modules.hello.HelloInterface;
 </code></pre>
 
-<p><strong>重新编译安装 Nginx：</strong></p>
+<p>Finally, in our main method we can use this service like this:</p>
 
-<pre><code>注意重新编译Nginx，要使用add-module参数将这个第三方模块安装进去：
-
-# ./configure --prefix=/usr/nginx-1.6.2/ --add-module=../nginx_upstream_check_module-master/
-
-# make &amp;&amp; make install
-
+<pre><code class="language-java">HelloModules module = new HelloModules();
+module.sayHello();
 </code></pre>
 
-<p>通过以上的步骤，第三方的 nginx_upstream_check_module 模块就在 Nginx 中准备好了。接下来我们讲解一下如何使用这个模块。首先看一下 upstream 的配置信息：</p>
+<p>Compile and run:</p>
 
-<pre><code>upstream cluster {
-    # simple round-robin
-    server 192.168.0.1:80;
-    server 192.168.0.2:80;
-
-    check interval=5000 rise=1 fall=3 timeout=4000;
-
-    #check interval=3000 rise=2 fall=5 timeout=1000 type=ssl_hello;
-    #check interval=3000 rise=2 fall=5 timeout=1000 type=http;
-    #check_http_send &quot;HEAD / HTTP/1.0\r\n\r\n&quot;;
-    #check_http_expect_alive http_2xx http_3xx;
-}
-
+<pre><code class="language-sh">$ ./run-simple-module-app.sh 
+Hello, Modules!
+Hello!
 </code></pre>
 
-<p>上面的代码中，check 部分就是调用 nginx_upstream_check_module 模块的语法：</p>
+<p>We use these directives to be much more explicit about how our code is to be used.</p>
 
-<pre><code>check interval=milliseconds [fall=count] [rise=count]
-[timeout=milliseconds] [default_down=true|false]
-[type=tcp|http|ssl_hello|mysql|ajp|fastcgi]
+<p>We could put the interface into a private package while exposing the implementation in a public package.</p>
 
-</code></pre>
+<p>This makes our code much more secure with very little extra overhead.</p>
 
-<p>interval：必要参数，检查请求的间隔时间。</p>
+<p>Go ahead and try out some of the other directives to learn more about modules and how they work.</p>
 
-<p>fall：当检查失败次数超过了 fall，这个服务节点就变成 down 状态。</p>
+<h2 id="toc_28"><strong>8. Conclusion</strong></h2>
 
-<p>rise：当检查成功的次数超过了 rise，这个服务节点又会变成 up 状态。</p>
+<p>In this extensive guide, we focused on and covered the basics of the new Java 9 Module system.</p>
 
-<p>timeout：请求超时时间，超过等待时间后，这次检查就算失败。</p>
+<p>We started by talking about what a module is.</p>
 
-<p>default_down：后端服务器的初始状态。默认情况下，检查功能在 Nginx 启动的时候将会把所有后端节点的状态置为 down，检查成功后，在置为 up。</p>
+<p>Next, we talked about how to discover which modules are included in the JDK.</p>
 
-<p>type：这是检查通信的协议类型，默认为 http。以上类型是检查功能所支持的所有协议类型。</p>
+<p>We also covered the module declaration file in detail.</p>
 
-<pre><code>check_http_send http_packet
+<p>We rounded out the theory by talking about the various command line arguments we’ll need to build our modules.</p>
 
-http_packet的默认格式为：&quot;GET / HTTP/1.0\r\n\r\n&quot;
+<p>Finally, we put all our previous knowledge into practice and created a simple application built on top of the module system.</p>
 
-</code></pre>
-
-<p>check_http_send 设置，这个设置描述了检查模块在每次检查时，向后端节点发送什么样的信息</p>
-
-<pre><code>check_http_expect_alive [ http_2xx | http_3xx | http_4xx | http_5xx ]
-
-</code></pre>
-
-<p>这些状态代码表示服务器的 HTTP 响应上是 OK 的，后端节点是可用的。默认情况的设置是：http_2xx | http_3xx</p>
-
-<p>当您根据您的配置要求完成检查模块的配置后，请首先使用 nginx -t 命令监测配置文件是否可用，然后在用 nginx -s reload 重启 nginx。</p>
-
-<h2 id="toc_4"><a></a>1.4、不得不提的 tengine</h2>
-
-<p>Tengine 是由淘宝网发起的 Web 服务器项目。它在 Nginx 的基础上，针对大访问量网站的需求，添加了很多高级功能和特性。Tengine 的性能和稳定性已经在大型的网站如淘宝网，天猫商城等得到了很好的检验。它的最终目标是打造一个高效、稳定、安全、易用的 Web 平台（<a href="http://tengine.taobao.org/">http://tengine.taobao.org/</a>）。</p>
-
-<p>您应该懂了，我建议您根据业务的实际情况，适时在生产环境引入 Tengine。但在本博客发布时，Tengine 的 2.X 版本还不稳定，所以建议实用 1.5.2 的稳定版本。<strong>请记住 Tengine 就是经过升读改造后的 Nginx</strong>。</p>
-
-<h1 id="toc_5"><a></a>2、后文介绍</h1>
-
-<p>花了两篇文章的功夫，终于将我想给大家讲解的 nginx 的实用特性讲完了，但是 nginx 远远不止这些特性。后面有时间我们会再回到 Nginx，重点讲解针对 Nginx 的脚本开发，我们还会讲解 Nginx 和 Lua 的集成。但是为了不扰乱这个系列博文的时间安排，下篇文章我们将开始介绍 LVS 技术，争取用一篇文章的篇幅讲清楚 LVS 核心设计思想、单节点安装和使用。再下篇文章我们介绍 Keepalived 技术，以及 keepalived 和 LVS、Nginx 分别进行集成，敬请关注。</p>
-
-<p><link rel="stylesheet" href="https://csdnimg.cn/release/phoenix/template/css/markdown_views-ea0013b516.css"></p>
+<p>To see this code and more, be sure to <a href="https://github.com/eugenp/tutorials/tree/master/core-java-9">check it out over on Github</a>.</p>
 
                         
                       </div>
@@ -410,10 +632,10 @@ http_packet的默认格式为：&quot;GET / HTTP/1.0\r\n\r\n&quot;
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/6/28</span>
+                    <span class="date">2018/7/28</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Network.html'>Network</a></span>
+          					    <span class="posted-in"><a href='Java.html'>Java</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -503,31 +725,31 @@ http_packet的默认格式为：&quot;GET / HTTP/1.0\r\n\r\n&quot;
 	      
 		      
 			      <li class="post">
-			        <a href="15389311738065.html">重构到更深层的模型</a>
+			        <a href="15459058392039.html">Reliable Domain Events</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389278377243.html">IAM of Google Cloud</a>
+			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389224951575.html">RSocket, a New Application Network Protocol for Reactive Applications, Announced at SpringOne</a>
+			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389220103546.html">如何形象地描述RxJava中的背压和流控机制？</a>
+			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389214670417.html">Modeling Uncertainty with Reactive DDD</a>
+			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
 			      </li>
 		     
 		  

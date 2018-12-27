@@ -105,297 +105,423 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15301813109409.html">
+                <a class="clearlink" href="15332186142588.html">
                 
-                  <h1>架构设计：负载均衡层设计方案（8）——负载均衡层总结上篇</h1>
+                  <h1>Jenkins 的 Pipeline 脚本在美团餐饮 SaaS 中的实践</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://blog.csdn.net/yinwenjie/article/details/47211641">https://blog.csdn.net/yinwenjie/article/details/47211641</a></p>
+<p><a href="https://tech.meituan.com/erp_cd_jenkins_pipeline.html">https://tech.meituan.com/erp_cd_jenkins_pipeline.html</a></p>
+
+<p>张杰 王浩 ·2018-08-02 20:39</p>
 </blockquote>
 
-<h1 id="toc_0"><a></a>1、概述</h1>
+<h2 id="toc_0">一、背景</h2>
 
-<p>很明显通过前面的八篇文章的介绍，并不能覆盖负载均衡层的所有技术，但是可以作为一个引子，告诉各位读者一个学习和使用负载均衡技术的思路。虽然后面我们将转向 “业务层” 和“业务通信”层的介绍，但是对负载均衡层的介绍也不会停止。在后续的时间我们将穿插进行负载均衡层的新文章的发布，包括 Nginx 技术的再介绍、HaProxy、LVS 新的使用场景等等。</p>
+<p>在日常开发中，我们经常会有发布需求，而且还会遇到各种环境，比如：线上环境（Online），模拟环境（Staging），开发环境（Dev）等。最简单的就是手动构建、上传服务器，但这种方式太过于繁琐，使用持续集成可以完美地解决这个问题，推荐了解一下 <a href="https://jenkins.io/">Jenkins</a>。<br/>
+Jenkins 构建也有很多种方式，现在使用比较多的是自由风格的软件项目（Jenkins 构建的一种方式，会结合 SCM 和构建系统来构建你的项目，甚至可以构建软件以外的系统）的方式。针对单个项目的简单构建，这种方式已经足够了，但是针对多个类似且又存在差异的项目，就难以满足要求，否则就需要大量的 job 来支持，这就存在，一个小的变动，就需要修改很多个 job 的情况，难以维护。我们团队之前就存在这样的问题。</p>
 
-<p>这篇文章我们对前面的知识点进行总结，并有意进行一些扩展，以便于各位读者找到新的学习思路。</p>
-
-<h1 id="toc_1"><a></a>2、负载均衡层的核心思想</h1>
-
-<h2 id="toc_2"><a></a>2-1、一致性哈希与 Key 的选取</h2>
-
-<p><img src="https://img-blog.csdn.net/20150703172857890" alt=""/></p>
-
-<p>在<a href="http://blog.csdn.net/yinwenjie/article/details/46620711%20%E6%9E%B6%E6%9E%84%E8%AE%BE%E8%AE%A1%EF%BC%9A%E8%B4%9F%E8%BD%BD%E5%9D%87%E8%A1%A1%E5%B1%82%E8%AE%BE%E8%AE%A1%E6%96%B9%E6%A1%88%EF%BC%882%EF%BC%89%E2%80%94%E2%80%94Nginx%E5%AE%89%E8%A3%85">《架构设计：负载均衡层设计方案（2）——Nginx 安装》</a> 文章中我们详细介绍了一致性哈希算法。并且强调了一致性 Hash 算法是现代系统架构中的最关键算法之一，在分布式计算系统、分布式存储系统、数据分析等众多领域中广泛应用。针对我的博文，在负载均衡层、业务通信层、数据存储层都会有它的身影。</p>
-
-<p>一致性算法的核心是：</p>
+<p>目前，我们团队主要负责开发和维护多个 Android 项目，而且每个项目都需要构建，每个构建流程非常类似但又存在一定的差异。比如构建的流程大概如下：</p>
 
 <ul>
-<li>  使用对象的某一个属性（这个属性可以是服务器的 IP 地址、开放端口 还可以是用户名、某种加密串。凡是你可以想到的有散列意义的属性），算出一个整数，让其分布在 0 至 2 的 32 次方 范围内。</li>
-<li>  一台服务器的某个或者某一些属性当然也可以进行 hash 计算，并且根据计算分布在这个圆环上的某一个点，也就是图中圆环上的蓝色点。</li>
-<li>  一个处理请求到来时，根据这个请求的某一个或者某一些属性进行 hash 计算，并且根据计算记过分布在这个圆环上的某一个点上。也就是上图圆环上的黄色点。</li>
-<li>  我们约定落在某一个蓝点 A 左侧和蓝点 B 右侧的黄色点所代表的请求，都有蓝点 A 所代表的服务器进行处理，这样就完成解决了 “谁来处理” 的问题。在蓝色点稳定存在的前提下，来自于同一个 Hash 约定的请求所落在的位置都是一样的，这就保证了服务处理映射的稳定性。</li>
-<li>  当某一个蓝色点由于某种原因下线，其所影响到的黄色点也是有限的。即下一次客户端的请求将由其他的蓝色点所代表的服务器进行处理。</li>
+<li>  克隆代码；</li>
+<li>  静态代码检查（可选）；</li>
+<li>  单元测试（可选）；</li>
+<li>  编译打包 APK 或者热补丁；</li>
+<li>  APK 分析，获取版本号（VersionCode），包的 Hash 值（apkhash）等；</li>
+<li>  加固；</li>
+<li>  上传测试分发平台；</li>
+<li>  存档（可选）；</li>
+<li>  触发自动化测试（可选）；</li>
+<li>  通知负责人构建结果等。</li>
 </ul>
 
-<h2 id="toc_3"><a></a>2-2、轮询与权</h2>
+<p>整个流程大体上是相同的，但是又存在一些差异。比如有的构建可以没有单元测试，有的构建不用触发自动化测试，而且构建结果通知的负责人也不同。如果使用自由风格软件项目的普通构建，每个项目都要建立一个 job 来处理流程（可能会调用其他 job）。</p>
 
-<p><img src="https://img-blog.csdn.net/20150705093244323" alt=""/></p>
+<p>这种处理方式原本也是可以的，但是必须考虑到，可能会有新的流程接入（比如二次签名），构建流程也可能存在 Bug 等多种问题。无论哪种情况，一旦修改主构建流程，每个项目的 job 都需要修改和测试，就必然会浪费大量的时间。针对这种情况，我们使用了 Pipeline 的构建方式来解决。</p>
+
+<p>当然，如果有项目集成了 React Native，还需要构建 JsBundle。在 Native 修改以后，JsBundle 不一定会有更新，如果是构建 Native 的时候一起构建 JsBundle，就会造成很多资源浪费。并且直接把 JsBundle 这类大文件放在 Native 的 Git 仓库里，也不是特别合适。</p>
+
+<p>本文是分享一种<code>Pipeline</code>的使用经验，来解决这类问题。</p>
+
+<h2 id="toc_1">二、Pipeline 的介绍</h2>
+
+<p>Pipeline 也就是构建流水线，对于程序员来说，最好的解释是：使用代码来控制项目的构建、测试、部署等。使用它的好处有很多，包括但不限于：</p>
 
 <ul>
-<li><p>不加权轮询，就是主控节点（任务来源点）在<strong>不考虑目标节点的任何因素的情况下</strong>（例如 CPU 性能、磁盘性能、网络性能），按照目标节点的列表顺序将任务依次分配下去。这是最简单的轮询，也是对主控节点实现复杂性要求最低的轮询。我之前的博文<a href="http://blog.csdn.net/yinwenjie/article/details/46620711%20%E6%9E%B6%E6%9E%84%E8%AE%BE%E8%AE%A1%EF%BC%9A%E8%B4%9F%E8%BD%BD%E5%9D%87%E8%A1%A1%E5%B1%82%E8%AE%BE%E8%AE%A1%E6%96%B9%E6%A1%88%EF%BC%882%EF%BC%89%E2%80%94%E2%80%94Nginx%E5%AE%89%E8%A3%85">《架构设计：负载均衡层设计方案（2）——Nginx 安装》</a>、<a href="http://blog.csdn.net/yinwenjie/article/details/46845997%20%E6%9E%B6%E6%9E%84%E8%AE%BE%E8%AE%A1%EF%BC%9A%E8%B4%9F%E8%BD%BD%E5%9D%87%E8%A1%A1%E5%B1%82%E8%AE%BE%E8%AE%A1%E6%96%B9%E6%A1%88%EF%BC%884%EF%BC%89%E2%80%94%E2%80%94LVS%E5%8E%9F%E7%90%86">《架构设计：负载均衡层设计方案（4）——LVS 原理》</a> 都对这种最简轮询进行了介绍：例如 LVS 中的 “rr” 参数。</p></li>
-<li><p>加权轮询中的 “权”，您可以看成是“轮询” 依据的意思。“权”可以是很多种可能，可以是目标机器的性能量化值、可以是一个固定的数字（按照固定数字加权）、可以是目标节点的网络速度。例如 LVS 中的 “lc” 参数，就是指按照目标机器，现在已有的 “连接” 数量进行加权：连接数量越少，越有更大的几率获得这个任务的处理权。</p></li>
+<li>  使用 Pipeline 可以非常灵活的控制整个构建过程；</li>
+<li>  可以清楚的知道每个构建阶段使用的时间，方便构建的优化；</li>
+<li>  构建出错，使用 stageView 可以快速定位出错的阶段；</li>
+<li>  一个 job 可以搞定整个构建，方便管理和维护等。</li>
 </ul>
 
-<h2 id="toc_4"><a></a>2-3、租约与健康检查</h2>
+<p><strong>Stage View</strong></p>
 
-<p><img src="https://img-blog.csdn.net/20150830090139148" alt=""/></p>
+<p><img src="media/15332186142588/15332187874743.png" alt=""/></p>
 
-<p>租约协议主要为了保证一个事实：如果服务器对客户端的检查操作在 “最迟时间” 失败后，那么服务器端肯定会注销客户端的登录信息，同时客户端上服务器的连接信息也会消失（并且不在向下提供服务）。每一次检查成功，这个 “最迟时间” 都会向后推移。</p>
+<h2 id="toc_2">三、使用 Pipeline 构建</h2>
 
-<p>租约协议和我们提到的哈希算法一下一样，也是系统架构设计中最基本的设计思想，并且大量运用在各类型的系统中，它的工作原理是每一位架构师都需要掌握的。例如：zookeeper 使用这个协议保证 Flow 节点和 Leader 节点的链路是正常的；分布式存储系统用这个协议保证 datanode 和 namenode 的连接是正常的；</p>
+<p>新建一个 Pipeline 项目，写入 Pipeline 的构建脚本，就像下面这样:</p>
 
-<h1 id="toc_5"><a></a>3、负载均衡层技术汇总</h1>
+<p><img src="media/15332186142588/15332187981437.png" alt=""/></p>
 
-<p>在前面的博文中，我重点介绍了 Nginx、LVS、Keepalived 技术。由于时间有限，这里我们对博文中提到的几种技术进行一个总结，然后再扩展介绍一下 DNS 技术、CDN 技术和硬件负载技术。</p>
-
-<h2 id="toc_6"><a></a>3-1、Nginx 技术</h2>
-
-<p>在负载均衡层这个大的章节中，我有三篇文章都在直接介绍 Nginx 的原理和使用。但是之后有朋友给我反映还想了解更多的 Nginx 知识，特别点名要求我再做一篇文章介绍 Nginx 的动态缓存。是的，我在后面的时间里是有计划介绍 Nginx 的动态缓存技术，还会介绍 Nginx 和多款主流的反向代理软件的性能对比。但这需要时间，特别是我不想去网上找一些已有的性能对比图，还是自己一边做这样的性能测试，一边做性能报告比较靠谱。</p>
-
-<p>下面这些技术是我在博文中已经重点介绍过得，我们再做一下总结：</p>
+<p>对于单个项目来说，使用这样的 Pipeline 来构建能够满足绝大部分需求，但是这样做也有很多缺陷，包括：</p>
 
 <ul>
-<li>  <strong>Nginx 中的连接数限制问题</strong></li>
+<li>  多个项目的 Pipeline 打包脚本不能公用，导致一个项目写一份脚本，维护比较麻烦。一个变动，需要修改多个 job 的脚本；</li>
+<li>  多个人维护构建 job 的时候，可能会覆盖彼此的代码；</li>
+<li>  修改脚本失败以后，无法回滚到上个版本；</li>
+<li>  无法进行构建脚本的版本管理，老版本发修复版本需要构建，可能和现在用的 job 版本已经不一样了，等等。</li>
 </ul>
 
-<p>重要的配置项包括：worker_processes、worker_connections。但是光是配置这些属性是不够的，最关键的是我们要打开操作系统级别的 “最大文件数” 限制问题。使用 “ulimit -n 65535” 设置本次会话的 “最大文件数” 限制；还要使用 “vim /etc/security/limits.conf” 命令，修改内核的配置信息。主要是以下两项：</p>
+<h2 id="toc_3">四、把 Pipeline 当代码写</h2>
 
-<pre><code>* soft nofile 65535 
-* hard nofile 65535
+<p>既然存在缺陷，我们就要找更好的方式，其实 Jenkins 提供了一个更优雅的管理 Pipeline 脚本的方式，在配置项目 Pipeline 的时候，选择<code>Pipeline script from SCM</code>，就像下面这样：</p>
+
+<p><img src="media/15332186142588/15332188225715.png" alt=""/></p>
+
+<p>这样，Jenkins 在启动 job 的时候，首先会去仓库里面拉取脚本，然后再运行这个脚本。在脚本里面，我们规定的构建方式和流程，就会按部就班地执行。构建的脚本，可以实现多人维护，还可以 Review，避免出错。 以上就算搭建好了一个基础，而针对多个项目时，还有一些事情要做，不可能完全一样，以下是构建的结构图：</p>
+
+<p><img src="media/15332186142588/15332188392351.png" alt=""/></p>
+
+<p>如此以来，我们的构建数据来源分为三部分：job UI 界面、仓库的通用 Pipeline 脚本、项目下的特殊配置，我们分别来看一下：</p>
+
+<h3 id="toc_4">job UI 界面（参数化构建）</h3>
+
+<p>在配置 job 的时候，选择参数化构建过程，传入项目仓库地址、分支、构建通知人等等。还可以增加更多的参数 ，这些参数的特点是，可能需要经常修改，比如灵活选择构建的代码分支。</p>
+
+<p><img src="media/15332186142588/15332188481073.png" alt=""/></p>
+
+<h3 id="toc_5">项目配置</h3>
+
+<p>在项目工程里面，放入针对这个项目的配置，一般是一个项目固定，不经常修改的参数，比如项目名字，如下图：</p>
+
+<p><img src="media/15332186142588/15332188580960.png" alt=""/></p>
+
+<h3 id="toc_6">注入构建信息</h3>
+
+<p>QA 提一个 Bug，我们需要确定，这是哪次的构建，或者要知道 commitId，从而方便进行定位。因此在构建时，可以把构建信息注入到 APK 之中。</p>
+
+<ol>
+<li> 把属性注入到<code>gradle.properties</code></li>
+</ol>
+
+<pre><code class="language-properties"># 应用的后端环境
+APP_ENV=Beta
+# CI 打包的编号，方便确定测试的版本，不通过 CI 打包，默认是 0
+CI_BUILD_NUMBER=0
+# CI 打包的时间，方便确定测试的版本，不通过 CI 打包，默认是 0
+CI_BUILD_TIMESTAMP=0
 </code></pre>
 
-<p>另外，还要注意和 nginx 配置项中的 “worker_rlimit_nofile” 属性共同使用：</p>
+<ol>
+<li> 在 build.gradle 里设置 buildConfigField</li>
+</ol>
 
-<pre><code>user root root; 
-worker_processes 4; 
-worker_rlimit_nofile 65535;
+<pre><code class="language-groovy">#使用的是 gradle.properties 里面注入的值
+buildConfigField &quot;String&quot;, &quot;APP_ENV&quot;, &quot;\&quot;${APP_ENV}\&quot;&quot;
+buildConfigField &quot;String&quot;, &quot;CI_BUILD_NUMBER&quot;, &quot;\&quot;${CI_BUILD_NUMBER}\&quot;&quot;
+buildConfigField &quot;String&quot;, &quot;CI_BUILD_TIMESTAMP&quot;, &quot;\&quot;${CI_BUILD_TIMESTAMP}\&quot;&quot;
+buildConfigField &quot;String&quot;, &quot;GIT_COMMIT_ID&quot;, &quot;\&quot;${getCommitId()}\&quot;&quot;
 
-#error_log logs/error.log; 
-#error_log logs/error.log notice; 
-#error_log logs/error.log info;
-
-#pid logs/nginx.pid; 
-events { 
-    use epoll; 
-    worker_connections 65535; 
-}
-</code></pre>
-
-<ul>
-<li>  <strong>Nginx 中的 Gzip 技术</strong></li>
-</ul>
-
-<p>gzip 是 Nginx 进行 HTTP Body 数据压缩的技术。下面这段 Nginx 配置信息是启用 gzip 压缩的实例：</p>
-
-<pre><code>#开启gzip压缩服务， 
-gzip on;
-
-#gzip压缩是要申请临时内存空间的，假设前提是压缩后大小是小于等于压缩前的。例如，如果原始文件大小为10K，那么它超过了8K，所以分配的内存是8 * 2 = 16K;再例如，原始文件大小为18K，很明显16K也是不够的，那么按照 8 * 2 * 2 = 32K的大小申请内存。如果没有设置，默认值是申请跟原始数据相同大小的内存空间去存储gzip压缩结果。 
-gzip_buffers 2 8k;
-
-#进行压缩的原始文件的最小大小值，也就是说如果原始文件小于5K，那么就不会进行压缩了 
-gzip_min_length 5K;
-
-#gzip压缩基于的http协议版本，默认就是HTTP 1.1 
-gzip_http_version 1.1;
-
-# gzip压缩级别1-9，级别越高压缩率越大，压缩时间也就越长CPU越高 
-gzip_comp_level 5;
-
-#需要进行gzip压缩的Content-Type的Header的类型。建议js、text、css、xml、json都要进行压缩；图片就没必要了，gif、jpge文件已经压缩得很好了，就算再压，效果也不好，而且还耗费cpu。 
-gzip_types text/HTML text/plain application/x-javascript text/css application/xml;
-</code></pre>
-
-<p>http 返回数据进行压缩的功能在很多场景下都实用：</p>
-
-<p>a、 如果浏览器使用的是 3G/4G 网络，那么流量对于用户来说就是 money。</p>
-
-<p>b、 压缩可节约服务器机房的对外带宽，为更多用户服务。按照目前的市场价良好的机房带宽资源的一般在 200RMB/Mbps，而服务器方案的压力往往也来自于机房带宽。</p>
-
-<p>c、 不是 Nginx 开启了 gzip 功能，HTTP 响应的数据就一定会被压缩，除了满足 Nginx 设置的 “需要压缩的 http 格式” 以外，客户端（浏览器）也需要支持 gzip（不然它怎么解压呢），一个好消息是，目前大多数浏览器和 API 都支持 http 压缩。</p>
-
-<ul>
-<li>  <strong>Nginx 中的 rewrite（重写）技术</strong></li>
-</ul>
-
-<p>Nginx 的强大在于其对 URL 请求的重写（重定位）。Nginx 的 rewrite 功能依赖于 PCRE Lib，请一定在 Nginx 编译安装时，安装 Pcre lib。</p>
-
-<p>Nginx 的 rewrite 功能在我<a href="http://blog.csdn.net/yinwenjie/article/details/46742661#t2%20%E6%9E%B6%E6%9E%84%E8%AE%BE%E8%AE%A1%EF%BC%9A%E8%B4%9F%E8%BD%BD%E5%9D%87%E8%A1%A1%E5%B1%82%E8%AE%BE%E8%AE%A1%E6%96%B9%E6%A1%88%EF%BC%883%EF%BC%89%E2%80%94%E2%80%94Nginx%E8%BF%9B%E9%98%B6">《架构设计：负载均衡层设计方案（3）——Nginx 进阶》</a> 这边博客中进行了讲解。</p>
-
-<p>下面是一段 rewrite 的示例：</p>
-
-<pre><code>#示例1：
-location ~* ^/(.+)/(.+)\.(jpg|gif|png|jpeg)$ {
-    rewrite ^/orderinfo/(.+)\.(jpg|gif|png|jpeg)$   /img/$1.$2   break;
-    root   /cephclient;
-}
-
-#location在不进行大小写区分的情况下利用正则表达式对$url进行匹配。当匹配成功后进行rewrite重定位。
-#rewrite进行重写url的规则是：regex表达式第一个括号中的内容对应$1，regex表达式第二个括号中的内容对应$2，以此类推。
-#这样重定位的意义就很明确了：将任何目录下的文件名重定位到img目录下的对应文件名，
-#并且马上在这个location中（注意是Nginx，而不是客户端）执行这个重写后的URL定位。
-
-#示例2：
-server {
-    。。。。
-    。。。。
-    location ~* ^/orderinfo/(.+)\.(jpg|gif|png|jpeg)$ {
-        rewrite ^/orderinfo/(.+)\.(.+)$  /img/$1.$2   last;
-    }
-
-    location / {
-        root   /cephclient;
+// 获取当前 Git commitId
+String getCommitId() {
+    try {
+        def commitId = &#39;git rev-parse HEAD&#39;.execute().text.trim()
+        return commitId;
+    } catch (Exception e) {
+        e.printStackTrace();
     }
 }
-
-#在server中，有两个location位置，当url需要访问orderinfo目录下的某一个图片时，rewrite将重写这个url，
-#并且重新带入这个url到server执行，这样“location /”这个location就会执行了，并找到图片存储的目录。
 </code></pre>
 
-<ul>
-<li>  <strong>Nginx 的图片处理模块</strong></li>
-</ul>
+<p>3. 显示构建信息<br/>
+在App里，找个合适的位置，比如开发者选项里面，把刚才的信息显示出来。QA提Bug时，要求他们把这个信息一起带上</p>
 
-<p>http_image_filter_module 是 nginx 的图片处理模块，是使用 nginx 进行静态资源和动态资源分开管理的关键引用技术。通过这个模块可以对静态资源进行缩放、旋转、验证。</p>
-
-<p>需要注意的是，http_image_filter_module 模块所处理的缩率图片是不进行保存的，完全使用节点的 CPU 性能进行计算，使用节点的内存进行临时存储。<strong>所以如果要使用 http_image_filter_module 进行图片处理，一定要根据客户端的请求规模进行 nginx 节点的调整。并且当站点的 PV 达到一定的规模时，一定要使用 CDN 技术进行访问加速、对图片的访问处理手段进行规划。</strong></p>
-
-<p>由于我们在之前涉及 Nginx 的文章中，并没有详细讲解 Nginx 的图片处理模块，只是说了要进行介绍，所以这里我给出一个较为详细的安装和配置示例：</p>
-
-<p>nginx 的 http_image_filter_module 模块由 GD library 进行支持，所以要使用这个图片处理模块，就必须进行第三方依赖包的安装：</p>
-
-<pre><code>yum install gd-devel
+<pre><code class="language-java">mCIIdtv.setText(String.format(&quot;CI 构建号:%s&quot;, BuildConfig.CI_BUILD_NUMBER));
+mCITimetv.setText(String.format(&quot;CI 构建时间:%s&quot;, BuildConfig.CI_BUILD_TIMESTAMP));
+mCommitIdtv.setText(String.format(&quot;Git CommitId:%s&quot;, BuildConfig.GIT_COMMIT_ID));
 </code></pre>
 
-<p>然后，Nginx 要进行重新编译：</p>
+<h3 id="toc_7">仓库的通用 Pipeline 脚本</h3>
 
-<pre><code>configure --with-http_image_filter_module
-make &amp;&amp; make install
-</code></pre>
+<p>通用脚本是抽象出来的构建过程，遇到和项目有关的都需要定义成变量，再从变量里进行读取，不要在通用脚本里写死。</p>
 
-<p>使用图片处理模块的配置示例：</p>
+<pre><code class="language-jenkinsfile">node {
+    try{
+        stage(&#39;检出代码&#39;){//从git仓库中检出代码
+            git branch: &quot;${BRANCH}&quot;,credentialsId: &#39;xxxxx-xxxx-xxxx-xxxx-xxxxxxx&#39;, url: &quot;${REPO_URL}&quot;
+               loadProjectConfig();
+          }
+           stage(&#39;编译&#39;){
+               //这里是构建，你可以调用job入参或者项目配置的参数，比如：
+               echo &quot;项目名字 ${APP_CHINESE_NAME}&quot;
+               //可以判断
+               if (Boolean.valueOf(&quot;${IS_USE_CODE_CHECK}&quot;)) {
+                   echo &quot;需要静态代码检查&quot;
+               } else {
+                   echo &quot;不需要静态代码检查&quot;
+               }
 
-<pre><code>location ~* /(.+)_(\d+)_(\d+)\.(jpg|gif|png|ioc|jpeg)$ {
-    set $h $3;
-    set $w $2;
-    rewrite /(.+)_(\d+)_(\d+)\.(jpg|gif|png|ioc|jpeg)$ /$1.$4 break;
+           }
+           stage(&#39;存档&#39;){//这个演示的Android的项目，实际使用中，请根据自己的产物确定
+               def apk = getShEchoResult (&quot;find ./lineup/build/outputs/apk -name &#39;*.apk&#39;&quot;)
+               def artifactsDir=&quot;artifacts&quot;//存放产物的文件夹
+            sh &quot;mkdir ${artifactsDir}&quot;
+               sh &quot;mv ${apk} ${artifactsDir}&quot;
+               archiveArtifacts &quot;${artifactsDir}/*&quot;
+           }
+           stage(&#39;通知负责人&#39;){
+               emailext body: &quot;构建项目:${BUILD_URL}\r\n构建完成&quot;, subject: &#39;构建结果通知【成功】&#39;, to: &quot;${EMAIL}&quot;
+           }
+    } catch (e) {
+        emailext body: &quot;构建项目:${BUILD_URL}\r\n构建失败，\r\n错误消息：${e.toString()}&quot;, subject: &#39;构建结果通知【失败】&#39;, to: &quot;${EMAIL}&quot;
+    } finally{
+        // 清空工作空间
+        cleanWs notFailBuild: true
+    }
 
-    image_filter resize $w $h;
-    image_filter_buffer 2M;
+}
+
+// 获取 shell 命令输出内容
+def getShEchoResult(cmd) {
+    def getShEchoResultCmd = &quot;ECHO_RESULT=`${cmd}`\necho \${ECHO_RESULT}&quot;
+    return sh (
+        script: getShEchoResultCmd,
+        returnStdout: true
+    ).trim()
+}
+
+//加载项目里面的配置文件
+def loadProjectConfig(){
+    def jenkinsConfigFile=&quot;./jenkins.groovy&quot;
+    if (fileExists(&quot;${jenkinsConfigFile}&quot;)) {
+        load &quot;${jenkinsConfigFile}&quot;
+        echo &quot;找到打包参数文件${jenkinsConfigFile}，加载成功&quot;
+    } else {
+        echo &quot;${jenkinsConfigFile}不存在,请在项目${jenkinsConfigFile}里面配置打包参数&quot;
+        sh &quot;exit 1&quot;
+    }
 }
 </code></pre>
 
-<p>其中关于正则表达式的语法和已经介绍过的 rewrite 的语法就不再进行介绍了，主要看 http_image_filter_module 相关的属性设置：</p>
+<p>轻轻的点两下<code>Build with Parameters</code> -&gt; <code>开始构建</code>，然后等几分钟的时间，就能够收到邮件。</p>
 
-<p>image_filter test：测试图片文件合法性<br/>
-image_filter rotate：进行图片旋转，只能按照 90 | 180 | 270 进行旋转<br/>
-image_filter size：返回图片的 JSON 数据<br/>
-image_filter resize width height：按比例进行图片的等比例缩小，注意，是只能缩小，第二缩小是等比例的。<br/>
-image_filter_buffer：限制图片最大读取大小，没有设置就是 1M；根据不同的系统最好设置为 2M—3M<br/>
-image_filter_jpeg_quality：设置 jpeg 图片的压缩比例（1-99，越高越好）<br/>
-image_filter_transparency：禁用 gif 和 png 图片的透明度。</p>
+<p><img src="media/15332186142588/15332189738099.png" alt=""/></p>
+
+<h2 id="toc_8">五、其他构建结构</h2>
+
+<p>以上，仅仅是针对我们当前遇到问题的一种不错的解决方案，可能并不完全适用于所有场景，但是可以根据上面的结构进行调整，比如：</p>
 
 <ul>
-<li>  <strong>和 Nginx 类似的其他技术 / 软件</strong></li>
+<li>  根据 stage 拆分出不同的 Pipeline 脚本，这样方便 CI 的维护，一个或者几个人维护构建中的一个 stage；</li>
+<li>  把构建过程中的 stage 做成普通的<code>自由风格的软件项目</code>的 job，把它们作为基础服务，在 Pipeline 中调用这些基础服务等。</li>
 </ul>
 
-<p>目前行业内也有很多与 Nginx 解决同类问题的软件，他们分别是 Apache 基金会的 Apache HTTP Server、淘宝开源的 Tengine、Haproxy、包括 Windows 下运行的 IIS，也支持反向代理 。</p>
+<h2 id="toc_9">六、当遇上 React Native</h2>
 
-<p>这里笔者再次重点提到 Tengine，建议各位读者有时间的时候可以使用一下，这个对 Nginx 进行了深度再开发的软件。</p>
+<p>当项目引入了 React Native 以后，因为技术栈的原因，React Native 的页面是由前端团队开发，但容器和原生组件是 Android 团队维护，构建流程也发生了一些变化。</p>
 
-<h2 id="toc_7"><a></a>3-2、LVS 技术</h2>
+<h3 id="toc_10">方案对比</h3>
 
-<p>LVS 是 Linux Virtual Server 的简写，意即 Linux 虚拟服务器，是一个虚拟的服务器集群系统。本项目在 1998 年 5 月由章文嵩博士成立。</p>
+<table>
+<thead>
+<tr>
+<th>方案</th>
+<th>说明</th>
+<th>缺点</th>
+<th>优点</th>
+</tr>
+</thead>
 
-<p>LVS 集群采用 IP 负载均衡技术和基于内容请求分发技术。调度器具有很好的吞吐率，将请求均衡地转移到不同的服务器上执行，且调度器自动屏蔽掉服务器的故障，从而将一组服务器构成一个高性能的、高可用的虚拟服务器。整个服务器集群的结构对客户是透明的，而且无需修改客户端和服务器端的程序。</p>
+<tbody>
+<tr>
+<td>手动拷贝</td>
+<td>等 JsBundle 构建好了，再手动把构建完成的产物，拷贝到 Native 工程里面</td>
+<td>1. 每次手动操作，比较麻烦，效率低，容易出错</td>
+<td></td>
+</tr>
+</tbody>
+</table>
 
-<p>在我的系列文章中，<a href="http://blog.csdn.net/yinwenjie/article/details/46845997%20%E6%9E%B6%E6%9E%84%E8%AE%BE%E8%AE%A1%EF%BC%9A%E8%B4%9F%E8%BD%BD%E5%9D%87%E8%A1%A1%E5%B1%82%E8%AE%BE%E8%AE%A1%E6%96%B9%E6%A1%88%EF%BC%884%EF%BC%89%E2%80%94%E2%80%94LVS%E5%8E%9F%E7%90%86">《架构设计：负载均衡层设计方案（4）——LVS 原理》</a> 、<a href="http://blog.csdn.net/yinwenjie/article/details/47010569%20%E6%9E%B6%E6%9E%84%E8%AE%BE%E8%AE%A1%EF%BC%9A%E8%B4%9F%E8%BD%BD%E5%9D%87%E8%A1%A1%E5%B1%82%E8%AE%BE%E8%AE%A1%E6%96%B9%E6%A1%88%EF%BC%885%EF%BC%89%E2%80%94%E2%80%94LVS%E5%8D%95%E8%8A%82%E7%82%B9%E5%AE%89%E8%A3%85">《架构设计：负载均衡层设计方案（5）——LVS 单节点安装》</a> 、<a href="http://blog.csdn.net/yinwenjie/article/details/47211551%20%E8%B4%9F%E8%BD%BD%E5%9D%87%E8%A1%A1%E5%B1%82%E8%AE%BE%E8%AE%A1%E6%96%B9%E6%A1%88%EF%BC%887%EF%BC%89%E2%80%94%E2%80%94LVS%20+%20Keepalived%20+%20Nginx%E5%AE%89%E8%A3%85%E5%8F%8A%E9%85%8D%E7%BD%AE">《负载均衡层设计方案（7）——LVS + Keepalived + Nginx 安装及配置》</a> 都涉及到 LVS 的讲解。</p>
+<p>2. 涉及到跨端合作，每次要去前端团队主动拿 JsBundle<br/>
+3. Git 不适合管理大文件和二进制文件 | 简单粗暴 |<br/>
+| 使用 submodule 保存构建好的 JsBundle | 直接把 JsBundle 放在 Native 仓库的一个 submodule 里面，由前端团队主动更新，每次更新 Native 的时候，直接就拿到了最新的 JsBundle | 1. 简单无开发成本<br/>
+2. 不方便单独控制 JsBundle 的版本<br/>
+3. Git 不适合管理大文件和二进制文件 | 前端团队可以主动更新 JsBundle |<br/>
+| 使用 submodule 管理 JsBundle 的源码 | 直接把 JsBundle 的源码放在 Native 仓库的一个 submodule 里面，由前端团队开发更新，每次构建 Native 的时候，先构构建 JsBundle | 1. 不方便单独控制 JsBundle 的版本<br/>
+2. 即使 JsBundle 无更新，也需要构建，构建速度慢，浪费资源 | 方便灵活 |<br/>
+| 分开构建，产物存档 | JsBundle 和 Native 分开构建，构建完了的 JsBundle 分版本存档，Native 构建的时候，直接去下载构建好了的 JsBundle 版本 | 1. 通过配置管理 JsBundle，解放 Git<br/>
+2. 方便 Jenkins 构建的时候，动态配置需要的 JsBundle 版本 | 1. 需要花费时间建立流程<br/>
+2. 需要开发 Gradle 的 JsBundle 下载插件 |</p>
 
-<p>这里我们再总结一下 LVS 中的三种工作模式：</p>
+<p>前端团队开发页面，构建后生成 JsBundle，Android 团队拿到前端构建的 JsBundle，一起打包生成最终的产物。 在我们开发过程中，JsBundle 修改以后，不一定需要修改 Native，Native 构建的时候，也不一定每次都需要重新构建 JsBundle。并且这两个部分由两个团队负责，各自独立发版，构建的时候也应该独立构建，不应该融合到一起。</p>
 
-<h3 id="toc_8"><a></a>3-2-1、NAT 模式</h3>
+<p>综合对比，我们选择了使用分开构建的方式来实现。</p>
 
-<p>NAT 方式是一种由 LVS Master 服务节点收到数据报，然后转给下层的 Real Server 节点，当 Real Server 处理完成后回发给 LVS Master 节点然后又由 LVS Master 节点转发出去的工作方式。LVS 的管理程序 IPVSADMIN 负责绑定转发规则，并完成 IP 数据报文和 TCP 数据报文中属性的重写。</p>
+<h3 id="toc_11">分开构建</h3>
 
-<p><img src="https://img-blog.csdn.net/20150716170216002" alt=""/></p>
+<p>因为需要分开发布版本，所以 JsBundle 的构建和 Native 的构建要分开，使用两个不同的 job 来完成，这样也方便两个团队自行操作，避免相互影响。 JsBundle 的构建，也可以参考上文提到的 Pipeline 的构建方式来做，这里不再赘述。<br/>
+在独立构建以后，怎么才能组合到一起呢？我们是这样思考的：JsBundle 构建以后，分版本的储存在一个地方，供 Native 在构建时下载需要版本的 JsBundle，大致的流程如下：</p>
 
-<p>LVS-NAT 模式的优点在于：</p>
+<p><img src="media/15332186142588/15332189883865.png" alt=""/></p>
+
+<p>这个流程有两个核心，一个是构建的 JsBundle 归档存储，一个是在 Native 构建时去下载。</p>
+
+<h3 id="toc_12">JsBundle 归档存储</h3>
+
+<table>
+<thead>
+<tr>
+<th>方案</th>
+<th>缺点</th>
+<th>优点</th>
+</tr>
+</thead>
+
+<tbody>
+<tr>
+<td>直接存档在 Jenkins 上面</td>
+<td>1. JsBundle 不能汇总浏览</td>
+<td></td>
+</tr>
+</tbody>
+</table>
+
+<p>2. Jenkins 很多人可能要下载，命名带有版本号，时间，分支等，命名不统一，不方便构建下载地址<br/>
+3. 下载 Jenkins 上面的产物需要登陆授权，比较麻烦 | 1. 实现简单，一句代码就搞定，成本低 |<br/>
+| 自己构建一个存储服务 | 1. 工程大，开发成本高<br/>
+2. 维护起来麻烦 | 可扩展，灵活性高 |<br/>
+| MSS<br/>
+(美团存储服务) | 无 | 1. 储存空间大<br/>
+2. 可靠性高，配合 CDN 下载速度快<br/>
+3. 维护成本低， 价格便宜 |</p>
+
+<p>这里我们选择了 MSS。 上传文件到 MSS，可以使用<code>s3cmd</code>，但毕竟不是每个 Slave 上面都有安装，通用性不强。为了保证稳定可靠，这里基于 <a href="https://github.com/meituan/mssapi_java">MSS 的 SDK</a> 写个小工具即可，比较简单，几行代码就可以搞定。</p>
+
+<pre><code class="language-java">private static String TenantId = &quot;mss_TenantId==&quot;;
+private static AmazonS3 s3Client;
+
+public static void main(String[] args) throws IOException {
+    if (args == null || args.length != 3) {
+        System.out.println(&quot;请依次输入：inputFile、bucketName、objectName&quot;);
+        return;
+    }
+    s3Client = AmazonS3ClientProvider.CreateAmazonS3Conn();
+    uploadObject(args[0], args[1], args[2]);
+}
+
+public static void uploadObject(String inputFile, String bucketName, String objectName) {
+    try {
+        File file = new File(inputFile);
+        if (!file.exists()) {
+            System.out.println(&quot;文件不存在：&quot; + file.getPath());
+            return;
+        }
+        s3Client.putObject(new PutObjectRequest(bucketName, objectName, file));
+        System.out.printf(&quot;上传%s到MSS成功: %s/v1/%s/%s/%se&quot;, inputFile, AmazonS3ClientProvider.url, TenantId, bucketName, objectName);
+    } catch (AmazonServiceException ase) {
+        System.out.println(&quot;Caught an AmazonServiceException, which &quot; +
+                &quot;means your request made it &quot; +
+                &quot;to Amazon S3, but was rejected with an error response&quot; +
+                &quot; for some reason.&quot;);
+        System.out.println(&quot;Error Message:    &quot; + ase.getMessage());
+        System.out.println(&quot;HTTP Status Code: &quot; + ase.getStatusCode());
+        System.out.println(&quot;AWS Error Code:   &quot; + ase.getErrorCode());
+        System.out.println(&quot;Error Type:       &quot; + ase.getErrorType());
+        System.out.println(&quot;Request ID:       &quot; + ase.getRequestId());
+    } catch (AmazonClientException ace) {
+        System.out.println(&quot;Caught an AmazonClientException, which &quot; +
+                &quot;means the client encountered &quot; +
+                &quot;an internal error while trying to &quot; +
+                &quot;communicate with S3, &quot; +
+                &quot;such as not being able to access the network.&quot;);
+        System.out.println(&quot;Error Message: &quot; + ace.getMessage());
+    }
+}
+</code></pre>
+
+<p>我们直接在 Pipeline 里构建完成后，调用这个工具就可以了。<br/>
+当然，JsBundle 也分类型，在调试的时候可能随时需要更新，这些 JsBundle 不需要永久保存，一段时间后就可以删除了。在删除时，可以参考 <a href="https://www.mtyun.com/doc/sdk/mss-sdk/java/sheng-ming-zhu-qi-guan-li">MSS 生命周期管理</a>。所以，我们在构建 JsBundle 的 job 里，添加一个参数来区分。</p>
+
+<pre><code class="language-jenkinsfile">//根据TYPE，上传到不同的bucket里面
+def bucket = &quot;rn-bundle-prod&quot;
+if (&quot;${TYPE}&quot; == &quot;dev&quot;) {
+    bucket = &quot;rn-bundle-dev&quot; //有生命周期管理，一段时间后自动删除
+}
+echo &quot;开始JsBundle上传到MSS&quot;
+//jar地址需要替换成你自己的
+sh &quot;curl -s -S -L  http://s3plus.sankuai.com/v1/mss_xxxxx==/rn-bundle-prod/rn.bundle.upload-0.0.1.jar -o upload.jar&quot;
+sh &quot;java -jar upload.jar ${archiveZip} ${bucket} ${PROJECT}/${targetZip}&quot;
+echo &quot;上传JsBundle到MSS:${archiveZip}&quot;
+
+</code></pre>
+
+<h3 id="toc_13">Native 构建时 JsBundle 的下载</h3>
+
+<p>为了实现构建时能够自动下载，我们写了一个 Gradle 的插件。<br/>
+首先要在 build.gradle 里面配置插件依赖：</p>
+
+<pre><code class="language-gradle">classpath &#39;com.zjiecode:rn-bundle-gradle-plugin:0.0.1&#39;
+</code></pre>
+
+<p>在需要的 Module 应用插件：</p>
+
+<pre><code class="language-gradle">apply plugin: &#39;mt-rn-bundle-download&#39;
+</code></pre>
+
+<p>在 build.gradle 里面配置 JsBundle 的信息：</p>
+
+<pre><code class="language-jenkinsfile">RNDownloadConfig {
+    //远程文件目录,因为有多种类型，所以这里可以填多个。
+    paths = [
+            &#39;http://msstest-corp.sankuai.com/v1/mss_xxxx==/rn-bundle-dev/xxx/&#39;,
+            &#39;http://msstest-corp.sankuai.com/v1/mss_xxxx==/rn-bundle-prod/xxx/&#39;
+    ]
+    version  = &quot;1&quot;//版本号，这里使用的是打包JsBundle的BUILD_NUMBER
+    fileName = &#39;xxxx.android.bundle-%s.zip&#39; //远程文件的文件名,%s会用上面的version来填充
+    outFile  = &#39;xxxx/src/main/assets/JsBundle/xxxx.android.bundle.zip&#39; // 下载后的存储路径，相对于项目根目录
+}
+
+</code></pre>
+
+<p>插件会在 package 的 task 前面，插入一个下载的 task，task 读取上面的配置信息，在打包阶段检查是否已经存在这个版本的 JsBundle。如果不存在，就会去归档的 JsBundle 里，下载我们需要的 JsBundle。 当然，这里的 version 可以使用上文介绍的<code>注入构建信息</code>的方式，通过 job 参数的方式进行注入。这样在 Jenkins 构建 Native 时，就可以动态地填写需要 JsBundle 的版本了。<br/>
+这个 Gradle 插件，我们已经放到到了 github 仓库，你可以基于此修改，当然，也欢迎 PR。<br/>
+<a href="https://github.com/zjiecode/rn-bundle-gradle-plugin">https://github.com/zjiecode/rn-bundle-gradle-plugin</a></p>
+
+<h2 id="toc_14">六、总结</h2>
+
+<p>我们把一个构建分成了好几个部分，带来的好处如下：</p>
 
 <ul>
-<li><p>配置管理简单。LVS-NAT 的工作方式是 LVS 三种工作模式中最容易理解、最容易配置、最容易管理的工作模式。</p></li>
-<li><p>节省外网 IP 资源，一般机房分配给使用者的 IP 数量是有限的，特别是您购买的机架的数量不多时。LVS-NAT 工作方式将您的系统架构封装在局域网中，只需要 LVS 有一个外网地址或外网地址映射就可以实现访问了。</p></li>
-<li><p>系统架构相对封闭。在内网环境下我们对防火墙的设置要求不会很高，也相对容易进行物理服务器的运维。您可以设置来源于外网的请求需要进行防火墙过滤，而对内网请求开放访问。</p></li>
-<li><p>另外改写后转给 Real Server 的数据报文，Real Server 并不会关心它的真实性，只要 TCP 校验和 IP 校验都能通过，Real Server 就可以进行处理。所以 LVS-NAT 工作模式下 Real Server 可以是任何操作系统，只要它支持 TCP/IP 协议即可。</p></li>
+<li>  核心构建过程，只需要维护一份，减轻维护工作；</li>
+<li>  方便多个人维护构建 CI，避免 Pipeline 代码被覆盖；</li>
+<li>  方便构建 job 的版本管理，比如要修复某个已经发布的版本，可以很方便切换到发布版本时候用的 Pipeline 脚本版本；</li>
+<li>  每个项目，配置也比较灵活，如果项目配置不够灵活，可以尝试定义更多的变量；</li>
+<li>  构建过程可视化，方便针对性优化和错误定位等。</li>
 </ul>
 
-<h3 id="toc_9"><a></a>3-2-2、DR 模式</h3>
-
-<p>LVS 的 DR 工作模式，是目前生产环境中最常用的一种工作模式，网上的资料也是最多的，有的文章对 DR 工作模式的讲解还是比较透彻的：</p>
-
-<p><img src="https://img-blog.csdn.net/20150716210428765" alt=""/></p>
-
-<p>LVS-DR 模式的优点在于：</p>
+<p>当然，Pipeline 也存在一些弊端，比如：</p>
 
 <ul>
-<li><p>解决了 LVS-NAT 工作模式中的转发瓶颈问题，能够支撑规模更大的负载均衡场景。</p></li>
-<li><p>比较耗费网外 IP 资源，机房的外网 IP 资源都是有限的，如果在正式生产环境中确实存在这个问题，可以采用 LVS-NAT 和 LVS-DR 混合使用的方式来缓解。</p></li>
+<li>  语法不够友好，但好在 Jenkins 提供了一个比较强大的帮助工具（Pipeline Syntax）；</li>
+<li>  代码测试繁琐，没有本地运行环境，每次测试都需要提交运行一个 job，等等。</li>
 </ul>
 
-<p>LVS-DR 当然也有缺点：</p>
+<p>当项目集成了 React Native 时，配合 Pipeline，我们可以把 JsBundle 的构建产物上传到 MSS 归档。在构建 Native 的时候 ，可以动态地下载。</p>
+
+<h2 id="toc_15">七、作者</h2>
 
 <ul>
-<li><p>配置工作较 LVS-NAT 方式稍微麻烦一点，您至少需要了解 LVS-DR 模式的基本工作方式才能更好的指导自己进行 LVS-DR 模式的配置和运行过程中问题的解决。</p></li>
-<li><p>由于 LVS-DR 模式的报文改写规则，导致 LVS 节点和 Real Server 节点必须在一个网段，因为二层交换是没法跨子网的。但是这个问题针对大多数系统架构方案来说，实际上并没有本质限制。</p></li>
+<li>张杰，美团点评高级 Android 工程师，2017 年加入餐饮平台成都研发中心，主要负责餐饮平台 B 端应用开发。</li>
+<li>王浩，美团点评高级 Android 工程师，2017 年加入餐饮平台成都研发中心，主要负责餐饮平台 B 端应用开发。</li>
 </ul>
 
-<h3 id="toc_10"><a></a>3-2-3、TUN 模式</h3>
+<h2 id="toc_16">八、招聘广告</h2>
 
-<p>LVS-DR 模式和 LVS-TUN 模式的工作原理完全不一样，工作场景完全不一样。DR 基于数据报文重写，TUN 模式基于 IP 隧道，后者是对数据报文的重新封装：</p>
-
-<p><img src="https://img-blog.csdn.net/20150717160306570" alt=""/></p>
-
-<p>IPIP 隧道。将一个完整的 IP 报文封装成另一个新的 IP 报文的数据部分，并通过路由器传送到指定的地点。在这个过程中路由器并不在意被封装的原始协议的内容。到达目的地点后，由目的地方依靠自己的计算能力和对 IPIP 隧道协议的支持，打开封装协议，取得原始协议：</p>
-
-<p><img src="https://img-blog.csdn.net/20150717135916686" alt=""/></p>
-
-<p>可以说 LVS-TUN 方式基本上具有 LVS-DR 的优点。在此基础上又支持跨子网间穿透。</p>
-
-<h2 id="toc_11"><a></a>3-3、CDN 技术</h2>
-
-<p>CDN 技术 Content Delivery Network：内容分发网络。为什么有时我们访问互联网上的视频资源、图片资源会比较慢，甚至访问失败。其中有一个重要的原因，是资源的物理位置离客户端太远了，可能其中有 4 层 NAT 设备（相当于使用网通的线路访问电信服务器上的资源）。</p>
-
-<p>我们试想一下，如果将我们要访问的资源放到离我们客户端最近的一个服务上（例如在广州的客户端访问的资源就在广州的机房）。那么是不是就解决了这个问题（这个点称为 “边缘节点”）。这就是 CDN 网络解决的问题，如下图所示：</p>
-
-<p><img src="https://img-blog.csdn.net/20150829132418544" alt=""/></p>
-
-<p>目前 CDN 服务不需要我们进行开发，市面上有很多公司都提供免费的 / 付费的 CDN 服务（请直接在 google 或者百度上面输入：CDN，就会有很多 “推广” 信息了，在我的博文中不打广告 <sup>_<sup>）。当然如果您想自行搭建</sup></sup> CDN 网络，可以参考以下技术方案：</p>
-
-<p>Squid：Squid 是一个缓存 internet 数据的一个软件，它接收用户的下载申请，并自动处理所下载的数据。目前，国内很多 CDN 服务商的网络都是基于 Squid 搭建的</p>
-
-<p>利用 Nginx 的 proxy_cache 搭建：Nginx 中的 rewrite 技术实际上就可以实现 URL 请求重写，实现请求转发。而 Nginx 中的 proxy_cache 组件可以使得从远端请求的源数据保存在本地，从而实现一个 CDN 网络的搭建。</p>
-
-<p>自己写：CDN 网络没有特别复杂的技术门槛，如果您有特别的需求，可以自己写一个。当然上图中所介绍的 CDN 网络属于<strong>第一代 CDN 网络</strong>，将<strong>第二代 / 第三代 P2P 技术</strong>加入到 CDN 原理中，可以形成<strong>第二代 CDN 网络</strong>：如下图所示：</p>
-
-<p><img src="https://img-blog.csdn.net/20150829134043600" alt=""/></p>
-
-<p>第三代 P2P 技术又被称为混合型 P2P 技术主要是为了解决元数据服务器的处理压力，加速资源的本地化速度。关于 P2P 技术我会在讲完 “业务系统设计”、“业务通信系统设计” 后，专门做一个新的专题进行介绍。另外提一下，YouTube 的 P2P 网络就是自己做的。</p>
-
-<h1 id="toc_12"><a></a>4、后文介绍</h1>
-
-<p>要总结的内容实在太多了，我决定再开一篇文章《架构设计：负载均衡层设计方案（9）——负载均衡层总结下篇》，继续进行负载均衡层技术的总结。我们将总结 Keepalived、DNS 技术、硬件负载，并且向大家介绍更广义的负载均衡技术。</p>
+<p>本文作者来自美团成都研发中心（是的，我们在成都建研发中心啦）。我们在成都有众多后端、前端和测试的岗位正在招人，欢迎大家投递简历：<a href="mailto:songyanwei@meituan.com">songyanwei@meituan.com</a>。</p>
 
                         
                       </div>
@@ -404,10 +530,10 @@ image_filter_transparency：禁用 gif 和 png 图片的透明度。</p>
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/6/28</span>
+                    <span class="date">2018/8/2</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Network.html'>Network</a></span>
+          					    <span class="posted-in"><a href='Infra.html'>Infra</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -497,31 +623,31 @@ image_filter_transparency：禁用 gif 和 png 图片的透明度。</p>
 	      
 		      
 			      <li class="post">
-			        <a href="15389311738065.html">重构到更深层的模型</a>
+			        <a href="15459058392039.html">Reliable Domain Events</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389278377243.html">IAM of Google Cloud</a>
+			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389224951575.html">RSocket, a New Application Network Protocol for Reactive Applications, Announced at SpringOne</a>
+			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389220103546.html">如何形象地描述RxJava中的背压和流控机制？</a>
+			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389214670417.html">Modeling Uncertainty with Reactive DDD</a>
+			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
 			      </li>
 		     
 		  

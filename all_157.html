@@ -105,421 +105,356 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15248840485977.html">
+                <a class="clearlink" href="15281293926383.html">
                 
-                  <h1>The Basics of Web Workers - HTML5 Rocks</h1>
+                  <h1>在 Spring Boot 中集成 SOFABoot 类隔离能力</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://www.html5rocks.com/en/tutorials/workers/basics/">https://www.html5rocks.com/en/tutorials/workers/basics/</a></p>
+<p>张奇龙 <a href="https://zhuanlan.zhihu.com/p/36909393">https://zhuanlan.zhihu.com/p/36909393</a></p>
 
-<p>Eric Bidelman, July 26th, 2010</p>
+<h2 id="toc_0">SOFABoot 类隔离能力简介</h2>
 </blockquote>
 
-<h2 id="toc_0">The Problem: JavaScript Concurrency</h2>
+<p>SOFABoot 是蚂蚁金服中间件团队开源的基于 Spring Boot 的一个开发框架，其在 Spring Boot 基础能力之上，增加了类隔离能力。蚂蚁金服内部丰富的实践场景表明，类隔离能力对解决类冲突、版本管控有其特殊的优势。</p>
 
-<p>There are a number of bottlenecks preventing interesting applications from being ported (say, from server-heavy implementations) to client-side JavaScript. Some of these include browser compatibility, static typing, accessibility, and performance. Fortunately, the latter is quickly becoming a thing of the past as browser vendors rapidly improve the speed of their JavaScript engines.</p>
+<p>SOFABoot 的类隔离能力由单独的组件 SOFAArk 实现，相比业界遵循 OSGi（<a href="https://link.zhihu.com/?target=https%3A//www.osgi.org/">https://www.osgi.org</a>） 规范的 Equinox 或者 Felix，SOFAArk 专注于类隔离，简化了类加载模型，是一款更加轻量的类隔离框架。</p>
 
-<p>One thing that&#39;s remained a hindrance for JavaScript is actually the language itself. JavaScript is a single-threaded environment, meaning multiple scripts cannot run at the same time. As an example, imagine a site that needs to handle UI events, query and process large amounts of API data, and manipulate the DOM. Pretty common, right? Unfortunately all of that can&#39;t be simultaneous due to limitations in browsers&#39; JavaScript runtime. Script execution happens within a single thread.</p>
+<p>本文将介绍 SOFABoot 类隔离能力的背景及其使用方式。</p>
 
-<p>Developers mimic &#39;concurrency&#39; by using techniques like <code>setTimeout()</code>, <code>setInterval()</code>, <code>XMLHttpRequest</code>, and event handlers. Yes, all of these features run asynchronously, but non-blocking doesn&#39;t necessarily mean concurrency. Asynchronous events are processed after the current executing script has yielded. The good news is that HTML5 gives us something better than these hacks!</p>
+<h2 id="toc_1">1. 背景</h2>
 
-<h2 id="toc_1">Introducing Web Workers: Bring Threading to JavaScript</h2>
+<p>在 Java 世界中，依赖的 JAR 包之间相互冲突永远是一个痛，Spring Boot 采用统一的依赖管理机制规避了大部分依赖冲突问题。理想很美好，现实却很骨感，作为蚂蚁金服这类大体量的公司，各业务线纷繁复杂、基础服务组件繁多，很难做到对所有 JAR 包做统一管控，尤其涉及到多个跨团队模块组件相互依赖时，因为各自技术栈历史包袱的存在，难以有效统一冲突包版本。</p>
 
-<p>The <a href="http://www.whatwg.org/specs/web-workers/current-work/">Web Workers</a> specification defines an API for spawning background scripts in your web application. Web Workers allow you to do things like fire up long-running scripts to handle computationally intensive tasks, but without blocking the UI or other scripts to handle user interactions. They&#39;re going to help put and end to that nasty &#39;unresponsive script&#39; dialog that we&#39;ve all come to love:</p>
+<p>假设如下场景，工程需要引入两个三方组件：A 和 B，组件 A 需要依赖 Hessian 3，组件 B 需要依赖 Hessian 4，因为 Hessian 3 和 Hessian 4 是不兼容的。作为开发者，遇到这种包冲突问题，如果不借助类隔离框架，只能耗费精力升级到统一版本。</p>
 
-<p><img src="/static/images/screenshots/workers/unresponsive_script.gif" alt="Unresponsive script dialog" title="Unresponsive script dialog"/> Common unresponsive script dialog.</p>
+<p><img src="https://pic2.zhimg.com/v2-523ebc71ae694f6bbe1196b458711c38_b.jpg" alt=""/><img src="https://pic2.zhimg.com/v2-523ebc71ae694f6bbe1196b458711c38_r.jpg" alt=""/></p>
 
-<p>Workers utilize thread-like message passing to achieve parallelism. They&#39;re perfect for keeping your UI refresh, performant, and responsive for users.</p>
+<p>为了彻底解决类似的包冲突问题，我们需要借助类隔离机制，使用不同的类加载器加载冲突的三方依赖包，进而做到在同一个应用运行时共存。</p>
 
-<h3 id="toc_2">Types of Web Workers</h3>
+<p>基于此背景，SOFABoot 提供了一个轻量级的类隔离框架，也是本文的主角，SOFAArk。</p>
 
-<p>It&#39;s worth noting that the <a href="http://www.whatwg.org/specs/web-workers/current-work/">specification</a> discusses two kinds of Web Workers, <a href="http://www.whatwg.org/specs/web-workers/current-work/#dedicated-workers-and-the-worker-interface">Dedicated Workers</a> and <a href="http://www.whatwg.org/specs/web-workers/current-work/#sharedworker">Shared Workers</a>. This article will only cover dedicated workers and I&#39;ll refer to them as &#39;web workers&#39; or &#39;workers&#39; throughout.</p>
+<h2 id="toc_2">2. 基本原理</h2>
 
-<h2 id="toc_3">Getting Started</h2>
+<p>在介绍 SOFAArk 类隔离框架使用之前，我们简单了解下其背后的实现原理。正如前文中描述，SOFAArk 是通过独立的类加载器加载相互冲突的三方依赖包，从而做到隔离包冲突。那么我们不禁要问，SOFAArk 是如何区分应用中哪些依赖包是需要单独的类加载器加载呢？原因是 Ark Plugin，它是 SOFAArk 框架定义的一种特殊的 JAR 包文件格式，SOFAArk 框架会自动识别 Ark Plugin 这种特殊依赖。</p>
 
-<p>Web Workers run in an isolated thread. As a result, the code that they execute needs to be contained in a separate file. But before we do that, the first thing to do is create a new <code>Worker</code> object in your main page. The constructor takes the name of the worker script:</p>
+<p>何为 Ark Plugin ? Ark Plugin 本质上是一个 FatJar，借助 SOFABoot 官方提供的 maven 打包插件，开发者可以把若干普通的 JAR 包打包成 Ark Plugin 供应用依赖或者把普通的 Java 模块改造成 Ark Plugin。通常来说，如果把一个普通 JAR 打包成 Ark Plugin，那么该 JAR 包依赖的其他三方包也会被打入同一个 Ark Plugin，默认情况下 SOFABoot 官方打包插件会自动把间接依赖也打入到 Ark Plugin。</p>
 
-<pre><code class="language-js">var worker = new Worker(&#39;task.js&#39;);
-</code></pre>
+<p>应用使用添加 maven 依赖的方式引入 Ark Plugin，运行时，SOFAArk 框架会自动识别应用的三方依赖包中是否含有 Ark Plugin，进而使用单独的类加载器加载。为了更加直观，下图是应用运行时逻辑分层图：</p>
 
-<p>If the specified file exists, the browser will spawn a new worker thread, which is downloaded asynchronously. The worker will not begin until the file has completely downloaded and executed. If the path to your worker returns an 404, the worker will fail silently.</p>
+<p><img src="https://pic3.zhimg.com/v2-af38a66b654feefe65e91996a60a2700_b.jpg" alt=""/><img src="https://pic3.zhimg.com/v2-af38a66b654feefe65e91996a60a2700_r.jpg" alt=""/></p>
 
-<p>After creating the worker, start it by calling the <code>postMessage()</code> method:</p>
+<p>可以看到，在应用运行时，SOFAArk 容器处于最底层，负责启动应用。应用依赖的所有 Ark Plugin 处于中间层，每个 Ark Plugin 都由 SOFAArk 容器使用独立的类加载器加载，相互隔离。应用业务代码及其他非 Ark Plugin 的普通三方依赖包，为了描述简单，统称为 Ark Biz，它运行在最上层，需要依赖中间层的 Ark Plugin。</p>
 
-<pre><code class="language-js">worker.postMessage(); // Start the worker.
-</code></pre>
+<p>一个标准 Ark Plugin 会包含一些配置文件，主要包含导出类和导入类配置。导出类即把 Ark Plugin 中的类导出给 Ark Biz 和其他 Ark Plugin 可见。默认情况下，所有 Ark Plugin 的导出类对于 Ark Biz 来说都是可见的，即 Ark Biz 可以使用 Ark Plugin 的导出类。对于 Ark Plugin 来说，如果需要使用其他 Ark Plugin 的导出类，必须声明为自身的导入类。关于 Ark Plugin 详细说明可以参考文末相关链接。</p>
 
-<h3 id="toc_4">Communicating with a Worker via Message Passing</h3>
+<p>下面我们来演示如何开发一个简单的 Ark Plugin。</p>
 
-<p>Communication between a work and its parent page is done using an event model and the <code>postMessage()</code> method. Depending on your browser/version, <code>postMessage()</code> can accept either a string or JSON object as its single argument. The latest versions of the modern browsers support passing a JSON object.</p>
+<h2 id="toc_3">3. Java 模块改造成 Ark Plugin</h2>
 
-<p>Below is a example of using a string to pass &#39;Hello World&#39; to a worker in doWork.js. The worker simply returns the message that is passed to it.</p>
+<h2 id="toc_4">3.1 新建工程</h2>
 
-<p>Main script:</p>
+<p>Demo <a href="https://link.zhihu.com/?target=https%3A//github.com/QilongZhang/ark-plugin-demo">工程地址</a></p>
 
-<pre><code class="language-js">var worker = new Worker(&#39;doWork.js&#39;);
+<p>运行需要 JDK 6 及以上、 Maven 3.2.5 以上。</p>
 
-worker.addEventListener(&#39;message&#39;, function(e) {
-  console.log(&#39;Worker said: &#39;, e.data);
-}, false);
-
-worker.postMessage(&#39;Hello World&#39;); // Send data to our worker.
-</code></pre>
-
-<p>doWork.js (the worker):</p>
-
-<pre><code class="language-js">self.addEventListener(&#39;message&#39;, function(e) {
-  self.postMessage(e.data);
-}, false);
-</code></pre>
-
-<p>When <code>postMessage()</code> is called from the main page, our worker handles that message by defining an <code>onmessage</code> handler for the <code>message</code> event. The message payload (in this case &#39;Hello World&#39;) is accessible in <code>Event.data</code>. Although this particular example isn&#39;t very exciting, it demonstrates that <code>postMessage()</code> is also your means for passing data back to the main thread. Convenient!</p>
-
-<p>Messages passed between the main page and workers are copied, not shared. For example, in the next example the &#39;msg&#39; property of the JSON message is accessible in both locations. It appears that the object is being passed directly to the worker even though it&#39;s running in a separate, dedicated space. In actuality, what is happening is that the object is being serialized as it&#39;s handed to the worker, and subsequently, de-serialized on the other end. The page and worker do not share the same instance, so the end result is that a duplicate is created on each pass. Most browsers implement this feature by automatically JSON encoding/decoding the value on either end.</p>
-
-<p>The following is a more complex example that passes messages using JSON objects.</p>
-
-<p>Main script:</p>
-
-<pre><code class="language-js">&lt;button onclick=&quot;sayHI()&quot;&gt;Say HI&lt;/button&gt;
-&lt;button onclick=&quot;unknownCmd()&quot;&gt;Send unknown command&lt;/button&gt;
-&lt;button onclick=&quot;stop()&quot;&gt;Stop worker&lt;/button&gt;
-&lt;output id=&quot;result&quot;&gt;&lt;/output&gt;
-
-&lt;script&gt;
-  function sayHI() {
-    worker.postMessage({&#39;cmd&#39;: &#39;start&#39;, &#39;msg&#39;: &#39;Hi&#39;});
-  }
-
-  function stop() {
-    // worker.terminate() from this script would also stop the worker.
-    worker.postMessage({&#39;cmd&#39;: &#39;stop&#39;, &#39;msg&#39;: &#39;Bye&#39;});
-  }
-
-  function unknownCmd() {
-    worker.postMessage({&#39;cmd&#39;: &#39;foobard&#39;, &#39;msg&#39;: &#39;???&#39;});
-  }
-
-  var worker = new Worker(&#39;doWork2.js&#39;);
-
-  worker.addEventListener(&#39;message&#39;, function(e) {
-    document.getElementById(&#39;result&#39;).textContent = e.data;
-  }, false);
-&lt;/script&gt;
-</code></pre>
-
-<p>doWork2.js:</p>
-
-<pre><code class="language-js">self.addEventListener(&#39;message&#39;, function(e) {
-  var data = e.data;
-  switch (data.cmd) {
-    case &#39;start&#39;:
-      self.postMessage(&#39;WORKER STARTED: &#39; + data.msg);
-      break;
-    case &#39;stop&#39;:
-      self.postMessage(&#39;WORKER STOPPED: &#39; + data.msg +
-                       &#39;. (buttons will no longer work)&#39;);
-      self.close(); // Terminates the worker.
-      break;
-    default:
-      self.postMessage(&#39;Unknown command: &#39; + data.msg);
-  };
-}, false);
-</code></pre>
-
-<p><strong>Note</strong>: There are two ways to stop a worker: by calling <code>worker.terminate()</code> from the main page or by calling <code>self.close()</code> inside of the worker itself.</p>
-
-<p><strong>Example</strong>: Run this worker!</p>
-
-<p><button onclick="sayHI()">Say HI</button> <button onclick="unknownCmd()">Send unknown command</button> <button onclick="stop()">Stop worker</button></p>
-
-<h2 id="toc_5">Transferrable objects</h2>
-
-<p>Most browsers implement the <a href="http://updates.html5rocks.com/2011/09/Workers-ArrayBuffer">structured cloning</a> algorithm, which allows you to pass more complex types in/out of Workers such as <code>File</code>, <code>Blob</code>, <code>ArrayBuffer</code>, and JSON objects. However, when passing these types of data using <code>postMessage()</code>, a copy is still made. Therefore, if you&#39;re passing a large 50MB file (for example), there&#39;s a noticeable overhead in getting that file between the worker and the main thread.</p>
-
-<p>Structured cloning is great, but a copy can take hundreds of milliseconds. To combat the perf hit, you can use <a href="http://www.w3.org/html/wg/drafts/html/master/infrastructure.html#transferable-objects">Transferable Objects</a>.</p>
-
-<p>With Transferable Objects, data is transferred from one context to another. It is zero-copy, which vastly improves the performance of sending data to a Worker. Think of it as pass-by-reference if you&#39;re from the C/C++ world. However, unlike pass-by-reference, the &#39;version&#39; from the calling context is no longer available once transferred to the new context. For example, when transferring an ArrayBuffer from your main app to Worker, the original <code>ArrayBuffer</code> is cleared and no longer usable. Its contents are (quiet literally) transferred to the Worker context.</p>
-
-<p>To use transferrable objects, use a slightly different signature of <code>postMessage()</code>:</p>
-
-<pre><code class="language-js">worker.postMessage(arrayBuffer, [arrayBuffer]);
-window.postMessage(arrayBuffer, targetOrigin, [arrayBuffer]);
-</code></pre>
-
-<p>The worker case, the first argument is the data and the second is the list of items that should be transferred. The first argument doesn&#39;t have to be an <code>ArrayBuffer</code> by the way. For example, it can be a JSON object:</p>
-
-<pre><code class="language-js">worker.postMessage({data: int8View, moreData: anotherBuffer},
-                   [int8View.buffer, anotherBuffer]);
-</code></pre>
-
-<p>The important point being: the second argument must be an array of <code>ArrayBuffer</code>s. This is your list of transferrable items.</p>
-
-<p>To see the speed improvement of transferrables, check out this <a href="http://html5-demos.appspot.com/static/workers/transferables/index.html">DEMO</a>. For more information on transferrables, see our <a href="http://updates.html5rocks.com/2011/12/Transferable-Objects-Lightning-Fast">HTML5Rock post</a>.</p>
-
-<h2 id="toc_6">The Worker Environment</h2>
-
-<h3 id="toc_7">Worker Scope</h3>
-
-<p>In the context of a worker, both <code>self</code> and <code>this</code> reference the global scope for the worker. Thus, the previous example could also be written as:</p>
-
-<pre><code class="language-js">addEventListener(&#39;message&#39;, function(e) {
-  var data = e.data;
-  switch (data.cmd) {
-    case &#39;start&#39;:
-      postMessage(&#39;WORKER STARTED: &#39; + data.msg);
-      break;
-    case &#39;stop&#39;:
-  ...
-}, false);
-</code></pre>
-
-<p>Alternatively, you could set the <code>onmessage</code> event handler directly (though <code>addEventListener</code> is always encouraged by JavaScript ninjas).</p>
-
-<pre><code class="language-js">onmessage = function(e) {
-  var data = e.data;
-  ...
-};
-</code></pre>
-
-<h3 id="toc_8">Features Available to Workers</h3>
-
-<p>Due to their multi-threaded behavior, web workers only has access to a subset of JavaScript&#39;s features:</p>
+<p>首先我们在 IDE 里新建一个普通 Maven 工程，并创建三个普通的 Java 模块。以前文描述的 Hessian 冲突为例，在演示工程中定义了三个模快：</p>
 
 <ul>
-<li>  The <code>navigator</code> object</li>
-<li>  The <code>location</code> object (read-only)</li>
-<li>  <code>XMLHttpRequest</code></li>
-<li>  <code>setTimeout()/clearTimeout()</code> and <code>setInterval()/clearInterval()</code></li>
-<li>  The <a href="/tutorials/appcache/beginner/">Application Cache</a></li>
-<li>  Importing external scripts using the <code>importScripts()</code> method</li>
-<li>  <a href="#toc-enviornment-subworkers">Spawning other web workers</a></li>
+<li>  pojo-module: 定义了一个简单的 PoJo 类 SamplePoJo，并设置为导出类，打包成 <code>pojo-ark-plugin</code> 。</li>
+<li>  hessian3-module：定义了一个服务类 Hessian3Service，实现了简单的序列化和反序列逻辑，使用的版本是 Hessian 3，并导入了 SamplePoJo，打包成 <code>hessian3-ark-plugin</code> 。</li>
+<li>  hessian4-module：定义了一个服务类 Hessian4Service，和 Hessian3Service 功能类似，使用的版本是 Hessian 4，并导入了 SamplePoJo，打包成 <code>hessian4-ark-plugin</code> 。</li>
 </ul>
 
-<p>Workers do NOT have access to:</p>
+<p>该用例是为了演示如何将普通的 Java 模块及其三方依赖包打包成 Ark Plugin，以 <code>hessian3-module</code> 模块为例来讲解打包流程。</p>
 
-<ul>
-<li>  The DOM (it&#39;s not thread-safe)</li>
-<li>  The <code>window</code> object</li>
-<li>  The <code>document</code> object</li>
-<li>  The <code>parent</code> object</li>
-</ul>
+<h2 id="toc_5">3.2 编写服务类</h2>
 
-<h3 id="toc_9">Loading External Scripts</h3>
+<p>在 <code>hessian3-module</code>中，提供了一个简单的序列化和反序列化功能类 Hessian3Service：</p>
 
-<p>You can load external script files or libraries into a worker with the <code>importScripts()</code> function. The method takes zero or more strings representing the filenames for the resources to import.</p>
+<pre><code>package com.alipay.sofa.demo.hessian3;
 
-<p>This example loads <code>script1.js</code> and <code>script2.js</code> into the worker:</p>
+import com.caucho.hessian.io.HessianInput;
+import com.caucho.hessian.io.HessianOutput;
 
-<p>worker.js:</p>
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 
-<pre><code class="language-js">importScripts(&#39;script1.js&#39;);
-importScripts(&#39;script2.js&#39;);
-</code></pre>
+/**
+ * @author qilong.zql
+ */
+public class Hessian3Service {
+    public byte[] serialize(Object obj) throws IOException {
+        if(obj==null) throw new NullPointerException();
 
-<p>Which can also be written as a single import statement:</p>
-
-<pre><code class="language-js">importScripts(&#39;script1.js&#39;, &#39;script2.js&#39;);
-</code></pre>
-
-<h3 id="toc_10">Subworkers</h3>
-
-<p>Workers have the ability to spawn child workers. This is great for further breaking up large tasks at runtime. However, subworkers come with a few caveats:</p>
-
-<ul>
-<li>  Subworkers must be hosted within the same origin as the parent page.</li>
-<li>  URIs within subworkers are resolved relative to their parent worker&#39;s location (as opposed to the main page).</li>
-</ul>
-
-<p>Keep in mind most browsers spawn separate processes for each worker. Before you go spawning a worker farm, be cautious about hogging too many of the user&#39;s system resources. One reason for this is that messages passed between main pages and workers are copied, not shared. See <a href="#toc-gettingstarted-workercomm">Communicating with a Worker via Message Passing</a>.</p>
-
-<p>For an sample of how to spawn a subworker, see <a href="http://www.whatwg.org/specs/web-workers/current-work/#delegation">the example</a> in the specification.</p>
-
-<h2 id="toc_11">Inline Workers</h2>
-
-<p>What if you want to create your worker script on the fly, or create a self-contained page without having to create separate worker files? With <code>Blob()</code>, you can &quot;inline&quot; your worker in the same HTML file as your main logic by creating a URL handle to the worker code as a string:</p>
-
-<pre><code class="language-js">var blob = new Blob([&quot;onmessage = function(e) { postMessage(&#39;msg from worker&#39;); }&quot;]);
-
-// Obtain a blob URL reference to our worker &#39;file&#39;.
-var blobURL = window.URL.createObjectURL(blob);
-
-var worker = new Worker(blobURL);
-worker.onmessage = function(e) {
-  // e.data == &#39;msg from worker&#39;
-};
-worker.postMessage(); // Start the worker.
-</code></pre>
-
-<h3 id="toc_12">Blob URLs</h3>
-
-<p>The magic comes with the call to <a href="http://dev.w3.org/2006/webapi/FileAPI/#dfn-createObjectURL"><code>window.URL.createObjectURL()</code></a>. This method creates a simple URL string which can be used to reference data stored in a DOM <code>File</code> or <code>Blob</code> object. For example:</p>
-
-<pre><code class="language-js">blob:http://localhost/c745ef73-ece9-46da-8f66-ebes574789b1
-</code></pre>
-
-<p>Blob URLs are unique and last for the lifetime of your application (e.g. until the <code>document</code> is unloaded). If you&#39;re creating many Blob URLs, it&#39;s a good idea to release references that are no longer needed. You can explicitly release a Blob URLs by passing it to <a href="http://dev.w3.org/2006/webapi/FileAPI/#dfn-revokeObjectURL"><code>window.URL.revokeObjectURL()</code></a>:</p>
-
-<pre><code class="language-js">window.URL.revokeObjectURL(blobURL);
-</code></pre>
-
-<p>In Chrome, there&#39;s a nice page to view all of the created blob URLs: <code>chrome://blob-internals/</code>.</p>
-
-<h3 id="toc_13">Full Example</h3>
-
-<p>Taking this one step further, we can get clever with how the worker&#39;s JS code is inlined in our page. This technique uses a <code>&lt;script&gt;</code> tag to define the worker:</p>
-
-<pre><code class="language-js">&lt;!DOCTYPE html&gt;
-&lt;html&gt;
-&lt;head&gt;
-  &lt;meta charset=&quot;utf-8&quot; /&gt;
-&lt;/head&gt;
-&lt;body&gt;
-
-  &lt;div id=&quot;log&quot;&gt;&lt;/div&gt;
-
-  &lt;script id=&quot;worker1&quot; type=&quot;javascript/worker&quot;&gt;
-    // This script won&#39;t be parsed by JS engines
-    // because its type is javascript/worker.
-    self.onmessage = function(e) {
-      self.postMessage(&#39;msg from worker&#39;);
-    };
-    // Rest of your worker code goes here.
-  &lt;/script&gt;
-
-  &lt;script&gt;
-    function log(msg) {
-      // Use a fragment: browser will only render/reflow once.
-      var fragment = document.createDocumentFragment();
-      fragment.appendChild(document.createTextNode(msg));
-      fragment.appendChild(document.createElement(&#39;br&#39;));
-
-      document.querySelector(&quot;#log&quot;).appendChild(fragment);
+        ByteArrayOutputStream os = new ByteArrayOutputStream();
+        HessianOutput ho = new HessianOutput(os);
+        ho.writeObject(obj);
+        return os.toByteArray();
     }
 
-    var blob = new Blob([document.querySelector(&#39;#worker1&#39;).textContent]);
+    public Object deserialize(byte[] by) throws IOException {
+        if(by==null) throw new NullPointerException();
 
-    var worker = new Worker(window.URL.createObjectURL(blob));
-    worker.onmessage = function(e) {
-      log(&quot;Received: &quot; + e.data);
+        ByteArrayInputStream is = new ByteArrayInputStream(by);
+        HessianInput hi = new HessianInput(is);
+        return hi.readObject();
     }
-    worker.postMessage(); // Start the worker.
-  &lt;/script&gt;
-&lt;/body&gt;
-&lt;/html&gt;
+}
+
 </code></pre>
 
-<p>In my opinion, this new approach is a bit cleaner and more legible. It defines a script tag with <var>id=&quot;worker1&quot;</var> and <var>type=&#39;javascript/worker&#39;</var> (so the browser doesn&#39;t parse the JS). That code is extracted as a string using <code>document.querySelector(&#39;#worker1&#39;).textContent</code> and passed to <code>Blob()</code> to create the file.</p>
+<p>该功能类非常简单，提供了两个方法调用，分别实现对象的序列化和发序列化。</p>
 
-<h3 id="toc_14">Loading External Scripts</h3>
+<h2 id="toc_6">3.3 Ark Plugin 配置</h2>
 
-<p>When using these techniques to inline your worker code, <code>importScripts()</code> will only work if you supply an absolute URI. If you attempt to pass a relative URI, the browser will complain with a security error. The reason being: the worker (now created from a blob URL) will be resolved with a <code>blob:</code> prefix, while your app will be running from a different (presumably <code>http://</code>) scheme. Hence, the failure will be due to cross origin restrictions.</p>
+<p>因为 Ark Plugin 的配置大同小异，在这里以普通的 Java 模块 <code>hessian3-module</code> 打包成 <code>hessian3-ark-plugin</code> 为例，介绍 Ark Plugin 的一般配置。</p>
 
-<p>One way to utilize <code>importScripts()</code> in an inline worker is to &quot;inject&quot; the current url of your main script is running from by passing it to the inline worker and constructing the absolute URL manually. This will insure the external script is imported from the same origin. Assuming your main app is running from <a href="http://example.com/index.html">http://example.com/index.html</a>:</p>
+<p>首先，我们需要添加 SOFABoot 官方提供的 maven 打包插件：</p>
 
-<pre><code class="language-js">...
-&lt;script id=&quot;worker2&quot; type=&quot;javascript/worker&quot;&gt;
-self.onmessage = function(e) {
-  var data = e.data;
+<pre><code>&lt;plugin&gt;
+    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
+    &lt;artifactId&gt;sofa-ark-plugin-maven-plugin&lt;/artifactId&gt;
+    &lt;version&gt;0.2.0&lt;version&gt;
+&lt;/plugin&gt;
 
-  if (data.url) {
-    var url = data.url.href;
-    var index = url.indexOf(&#39;index.html&#39;);
-    if (index != -1) {
-      url = url.substring(0, index);
+</code></pre>
+
+<p>然后在<code>hessian3-module</code> 演示用例中，只需要在模块 <code>pom.xml</code> 文件中添加一个导出类和一个导入类配置，配置如下：</p>
+
+<pre><code>&lt;build&gt;
+    &lt;plugins&gt;
+        &lt;plugin&gt;
+            &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
+            &lt;artifactId&gt;sofa-ark-plugin-maven-plugin&lt;/artifactId&gt;
+            &lt;version&gt;0.2.0&lt;/version&gt;
+            &lt;executions&gt;
+                &lt;execution&gt;
+                    &lt;id&gt;default-cli&lt;/id&gt;
+                    &lt;goals&gt;
+                        &lt;goal&gt;ark-plugin&lt;/goal&gt;
+                    &lt;/goals&gt;
+
+                    &lt;configuration&gt;
+                        &lt;!-- configure imported class --&gt;
+                        &lt;imported&gt;
+                            &lt;!-- configure class-level imported class --&gt;
+                            &lt;classes&gt;
+                                &lt;class&gt;com.alipay.sofa.demo.pojo.SamplePoJo&lt;/class&gt;
+                            &lt;/classes&gt;
+                        &lt;/imported&gt;
+
+                        &lt;!-- configure exported class --&gt;
+                        &lt;exported&gt;
+                            &lt;!-- configure class-level exported class --&gt;
+                            &lt;classes&gt;
+                                &lt;class&gt;com.alipay.sofa.demo.hessian3.Hessian3Service&lt;/class&gt;
+                            &lt;/classes&gt;
+                        &lt;/exported&gt;
+                    &lt;/configuration&gt;
+                &lt;/execution&gt;
+            &lt;/executions&gt;
+        &lt;/plugin&gt;
+    &lt;/plugins&gt;
+&lt;/build&gt;
+
+</code></pre>
+
+<p>可以看到，<code>hessian3-ark-plugin</code> 导入基础实体类 <code>com.alipay.sofa.demo.pojo.SamplePoJo</code>，导出服务类 <code>com.alipay.sofa.demo.hessian3.Hessian3Service</code> 供 Ark Biz 使用。</p>
+
+<p>使用 maven 打包命令 <code>maven package</code> 即可将 <code>hessian3-module</code> 打包成 Ark Plugin，该插件包含模块代码及其依赖包，其 maven 坐标为：</p>
+
+<pre><code>&lt;dependency&gt;
+    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
+    &lt;artifactId&gt;hessian3-ark-plugin&lt;/artifactId&gt;
+    &lt;classifier&gt;ark-plugin&lt;/classifier&gt;
+    &lt;version&gt;1.0.0&lt;/version&gt;
+&lt;/dependency&gt;
+
+</code></pre>
+
+<p>关于 Ark Plugin 的导入、导出类，这里强调一下，在实际开发中，和业务本身无关的实体类或者基础服务类，如果多个 Ark Plugin 和 Ark Biz 都需要统一版本时，可以把这类基础 Jar 统一打包成 Ark Plugin 设置为导出类。在该演示用例中，我们假设 <code>SamplePoJo</code> 是一个基础实体类，和业务逻辑无关，而 <code>hessian3-ark-plugin</code> 和 <code>hessian4-ark-plugin</code> 都需要使用，于是单独打包成了一个 Ark Plugin。</p>
+
+<p>到此为止，这就是一个简单的 Ark Plugin 从开发的步骤，看起来是不是很简单呢？</p>
+
+<p>下面，我们演示下如何在 Spring Boot 工程中，快速集成 SOFABoot 的类隔离能力，并使用这三个 Ark Plugin。</p>
+
+<h2 id="toc_7">4. Spring Boot 工程集成 SOFAArk 组件</h2>
+
+<p>Demo <a href="https://link.zhihu.com/?target=https%3A//github.com/QilongZhang/springboot-ark-demo">工程地址</a></p>
+
+<p>运行需要 JDK 6 及以上、 Maven 3.2.5 以上。Spring Boot 版本要求 1.4.2.RELEASE 以上，目前还不兼容 2.0.0 及以上版本。</p>
+
+<p>该用例工程主要为了演示如何在 Spring Boot 工程中集成 SOFABoot 类隔离能力并使用 Ark Plugin。这里以前文提到的 Ark Plugin 为例，示例工程将会引入三个 Ark Plugin:<code>pojo-ark-plugin</code>，<code>hessian3-ark-plugin</code> 和 <code>hessian4-ark-plugin</code>，并使用后两者的导出类 <code>Hessian3Service</code> 和 <code>Hessian4Service</code>。</p>
+
+<h2 id="toc_8">4.1 新建工程</h2>
+
+<p>在 Spring Boot 官网 <a href="https://link.zhihu.com/?target=https%3A//start.spring.io/">https://start.spring.io</a> 新建一个 web 工程，并设置 Spring Boot 版本号为 1.4.2.RELEASE。在 Spring Boot 工程中集成 SOFABoot 类隔离能力，只需要添加 SOFABoot 提供的类隔离框架 starter。修改 maven 项目的配置文件 <code>pom.xml</code>，将</p>
+
+<pre><code>&lt;parent&gt;
+    &lt;groupId&gt;org.springframework.boot&lt;/groupId&gt;
+    &lt;artifactId&gt;spring-boot-starter-parent&lt;/artifactId&gt;
+    &lt;version&gt;1.4.2.RELEASE&lt;/version&gt;
+    &lt;relativePath/&gt; 
+&lt;/parent&gt;
+
+</code></pre>
+
+<p>替换为：</p>
+
+<pre><code>&lt;parent&gt;
+    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
+    &lt;artifactId&gt;sofaboot-dependencies&lt;/artifactId&gt;
+    &lt;version&gt;2.3.1&lt;/version&gt;
+&lt;/parent&gt;
+
+</code></pre>
+
+<p>并添加如下 SOFAArk Starter 依赖：</p>
+
+<pre><code>&lt;!--ark spring boot starter--&gt;
+&lt;dependency&gt;
+    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
+    &lt;artifactId&gt;sofa-ark-springboot-starter&lt;/artifactId&gt;
+&lt;/dependency&gt;
+
+</code></pre>
+
+<p>如此，一个 Spring Boot 工程便集成了 SOFABoot 提供的类隔离能力。</p>
+
+<h2 id="toc_9">4.2 添加 Ark Plugin 依赖</h2>
+
+<p>前文中提到，将普通 Java 模块打包成 Ark Plugin，其 maven 坐标不会发生变化，但是需要添加 <code>classifier=ark-plugin</code> 标志，因此如下添加三个 Ark Plugin 的依赖：</p>
+
+<pre><code>&lt;!--ark plugin--&gt;
+&lt;dependency&gt;
+    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
+    &lt;artifactId&gt;pojo-ark-plugin&lt;/artifactId&gt;
+    &lt;classifier&gt;ark-plugin&lt;/classifier&gt;
+    &lt;version&gt;1.0.0&lt;/version&gt;
+&lt;/dependency&gt;
+
+&lt;dependency&gt;
+    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
+    &lt;artifactId&gt;hessian3-ark-plugin&lt;/artifactId&gt;
+    &lt;classifier&gt;ark-plugin&lt;/classifier&gt;
+    &lt;version&gt;1.0.0&lt;/version&gt;
+&lt;/dependency&gt;
+
+&lt;dependency&gt;
+    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
+    &lt;artifactId&gt;hessian4-ark-plugin&lt;/artifactId&gt;
+    &lt;classifier&gt;ark-plugin&lt;/classifier&gt;
+    &lt;version&gt;1.0.0&lt;/version&gt;
+&lt;/dependency&gt;
+
+</code></pre>
+
+<p>需要指出的是，因为 ark plugin 是一个 FatJar，为了让应用编译期通过，需要在工程主 <code>pom.xml</code> 中增加如下依赖：</p>
+
+<pre><code>&lt;!--just for compile success--&gt;
+&lt;dependency&gt;
+    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
+    &lt;artifactId&gt;pojo-ark-plugin&lt;/artifactId&gt;
+    &lt;version&gt;1.0.0&lt;/version&gt;
+    &lt;scope&gt;provided&lt;/scope&gt;
+&lt;/dependency&gt;
+
+&lt;dependency&gt;
+    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
+    &lt;artifactId&gt;hessian3-ark-plugin&lt;/artifactId&gt;
+    &lt;version&gt;1.0.0&lt;/version&gt;
+    &lt;scope&gt;provided&lt;/scope&gt;
+&lt;/dependency&gt;
+
+&lt;dependency&gt;
+    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
+    &lt;artifactId&gt;hessian4-ark-plugin&lt;/artifactId&gt;
+    &lt;version&gt;1.0.0&lt;/version&gt;
+    &lt;scope&gt;provided&lt;/scope&gt;
+&lt;/dependency&gt;
+
+</code></pre>
+
+<p>4.3 编写 Rest 接口</p>
+
+<p>为了演示更加直观，编写如下 Rest 接口：</p>
+
+<pre><code>package com.alipay.sofa.springbootarkdemo.controller;
+
+import com.alipay.sofa.demo.hessian3.Hessian3Service;
+import com.alipay.sofa.demo.hessian4.Hessian4Service;
+import com.alipay.sofa.demo.pojo.SamplePoJo;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+import java.io.IOException;
+
+/**
+ * @author qilong.zql
+ */
+@RestController
+public class HelloController {
+
+    @RequestMapping(&quot;/hello-hessian3&quot;)
+    public String hessian3() throws IOException {
+        SamplePoJo samplePoJo = new SamplePoJo(&quot;Hello, hessian3.&quot;);
+        Hessian3Service hessian3Service = new Hessian3Service();
+        byte[] bytes = hessian3Service.serialize(samplePoJo);
+        Object pojo = hessian3Service.deserialize(bytes);
+        return pojo.toString();
     }
-    importScripts(url + &#39;engine.js&#39;);
-  }
-  ...
-};
-&lt;/script&gt;
-&lt;script&gt;
-  var worker = new Worker(window.URL.createObjectURL(bb.getBlob()));
-  worker.postMessage(**{url: document.location}**);
-&lt;/script&gt;
+
+    @RequestMapping(&quot;/hello-hessian4&quot;)
+    public String hessian4() throws IOException {
+        SamplePoJo samplePoJo = new SamplePoJo(&quot;Hello, hessian4.&quot;);
+        Hessian4Service hessian4Service = new Hessian4Service();
+        byte[] bytes = hessian4Service.serialize(samplePoJo);
+        Object pojo = hessian4Service.deserialize(bytes);
+        return pojo.toString();
+    }
+
+}
+
 </code></pre>
 
-<h2 id="toc_15">Handling Errors</h2>
+<p>该 Rest 接口主要为了本地启动应用后，能够直观演示 Ark Plugin 使用结果。启动该 Web Spring 工程，可以看到控制台打印结果：</p>
 
-<p>As with any JavaScript logic, you&#39;ll want to handle any errors that are thrown in your web workers. If an error occurs while a worker is executing, the an <code>ErrorEvent</code> is fired. The interface contains three useful properties for figuring out what went wrong: <code>filename</code> - the name of the worker script that caused the error, <code>lineno</code> - the line number where the error occurred, and <code>message</code> - a meaningful description of the error. Here is an example of setting up an <code>onerror</code> event handler to print the properties of the error:</p>
+<pre><code>...
+2018-05-14 10:04:06.573  INFO 85393 --- [           main] s.b.c.e.t.TomcatEmbeddedServletContainer : Tomcat started on port(s): 8080 (http)
+2018-05-14 10:04:06.577  INFO 85393 --- [           main] c.a.s.s.SpringbootArkDemoApplication     : Started SpringbootArkDemoApplication in 2.111 seconds (JVM running for 3.562)
+2018-05-14 10:04:06,578 INFO  main                             - Finish to start biz: Startup In IDE
+2018-05-14 10:04:06,578 INFO  main                             - Finish to process pipeline stage: com.alipay.sofa.ark.container.pipeline.DeployBizStage
+Ark container started in 2720 ms.
 
-<pre><code class="language-js">&lt;output id=&quot;error&quot; style=&quot;color: red;&quot;&gt;&lt;/output&gt;
-&lt;output id=&quot;result&quot;&gt;&lt;/output&gt;
-
-&lt;script&gt;
-  function onError(e) {
-    document.getElementById(&#39;error&#39;).textContent = [
-      &#39;ERROR: Line &#39;, e.lineno, &#39; in &#39;, e.filename, &#39;: &#39;, e.message
-    ].join(&#39;&#39;);
-  }
-
-  function onMsg(e) {
-    document.getElementById(&#39;result&#39;).textContent = e.data;
-  }
-
-  var worker = new Worker(&#39;workerWithError.js&#39;);
-  worker.addEventListener(&#39;message&#39;, onMsg, false);
-  worker.addEventListener(&#39;error&#39;, onError, false);
-  worker.postMessage(); // Start worker without a message.
-&lt;/script&gt;
 </code></pre>
 
-<p><strong>Example</strong>: workerWithError.js tries to perform 1/x, where x is undefined.</p>
-
-<p><button onclick="startErrorWorker()">Run it</button></p>
-
-<p>workerWithError.js:</p>
-
-<pre><code class="language-js">self.addEventListener(&#39;message&#39;, function(e) {
-  postMessage(1/x); // Intentional error.
-};
-</code></pre>
-
-<h2 id="toc_16">A Word on Security</h2>
-
-<h3 id="toc_17">Restrictions with Local Access</h3>
-
-<p>Due to Google Chrome&#39;s security restrictions, workers will not run locally (e.g. from <code>file://</code>) in the latest versions of the browser. Instead, they fail silently! To run your app from the <code>file://</code> scheme, run Chrome with the <code>--allow-file-access-from-files</code> flag set. <strong>NOTE</strong>: It is not recommended to run your primary browser with this flag set. It should only be used for testing purposes and not regular browsing.</p>
-
-<p>Other browsers do not impose the same restriction.</p>
-
-<h3 id="toc_18">Same Origin Considerations</h3>
-
-<p>Worker scripts must be external files with the same scheme as their calling page. Thus, you cannot load a script from a <code>data:</code> URL or <code>javascript:</code> URL, and an <code>https:</code> page cannot start worker scripts that begin with <code>http:</code> URLs.</p>
-
-<h2 id="toc_19">Use Cases</h2>
-
-<p>So what kind app would utilize web workers? Unfortunately, web workers are still relatively new and the majority of samples/tutorials out there involve computing prime numbers. Although that isn&#39;t very interesting, it&#39;s useful for understanding the concepts of web workers. Here are a few more ideas to get your brain churning:</p>
+<p>可以看到类似 <code>Ark container started in XXXXms</code> 字样，即表示该工程运行在 SOFABoot 类隔离框架之上。访问如下两个请求即可看到工程调用 <code>Hessian3Service</code> 和 <code>Hessian4Service</code> 的调用结果</p>
 
 <ul>
-<li>  Prefetching and/or caching data for later use</li>
-<li>  Code syntax highlighting or other real-time text formatting</li>
-<li>  Spell checker</li>
-<li>  Analyzing video or audio data</li>
-<li>  Background I/O or polling of webservices</li>
-<li>  Processing large arrays or humungous JSON responses</li>
-<li>  Image filtering in <code>&lt;canvas/&gt;</code></li>
-<li>  Updating many rows of a local web database</li>
+<li>  <code>http://localhost:8080/hello-hessian3</code></li>
+<li>  <code>http://localhost:8080/hello-hessian4</code></li>
 </ul>
 
-<h2 id="toc_20">Demos</h2>
+<p>以上就是 Spring Boot 集成 SOFABoot 类隔离框架的一般步骤。可以看到，作为开发者，基本上无需过多关心自身应用是否使用类隔离框架，只需要引入 SOFABoot 提供的类隔离框架 Starter，即可快速完成类隔离能力的集成。</p>
+
+<h2 id="toc_10">5. 总结</h2>
+
+<p>本文主要介绍了 SOFABoot 基于 Spring Boot 开发的类隔离框架组件 SOFAArk。通过两个简单的用例工程，分别介绍了如何开发一个自己的 Ark Plugin 以及在 Spring Boot 快速集成 SOFABoot 的类隔离能力。SOFABoot 官方提供了 SOFARPC 打包的 Ark Plugin，开发者可以按需隔离 SOFARPC 和自身应用。另外，在 SOFAArk 类隔离容器之上，SOFABoot 提供了一整套兼容 JUnit 和 TestNG 测试框架的方案，感兴趣的读者可以下载文末给出的 Demo 工程，并按照官方文档学习。</p>
+
+<h2 id="toc_11">6. 相关资源</h2>
 
 <ul>
-<li>  Example from <a href="http://slides.html5rocks.com/#web-workers">HTML5Rocks slides</a></li>
-<li>  <a href="http://htmlfive.appspot.com/static/tracker1.html">Motion tracker</a></li>
-<li>  <a href="http://people.mozilla.com/%7Eprouget/demos/worker_and_simulatedannealing/index.xhtml">Simulated Annealing</a></li>
-<li>  <a href="http://html5demos.com/worker">HTML5demos sample</a></li>
-</ul>
-
-<h2 id="toc_21">References</h2>
-
-<ul>
-<li>  <a href="http://www.whatwg.org/specs/web-workers/current-work/">Web Workers</a> specification</li>
-<li>  <a href="http://developer.mozilla.org/en/Using_web_workers">&quot;Using web workers&quot;</a> from Mozilla Developer Network</li>
-<li>  <a href="http://dev.opera.com/articles/view/web-workers-rise-up/">&quot;Web Workers rise up!&quot;</a> from Dev.Opera</li>
+<li>  <a href="https://link.zhihu.com/?target=https%3A//github.com/QilongZhang/ark-plugin-demo">ark-plugin-demo</a></li>
+<li>  <a href="https://link.zhihu.com/?target=https%3A//github.com/QilongZhang/springboot-ark-demo">springboot-ark-demo</a></li>
+<li>  <a href="https://link.zhihu.com/?target=https%3A//github.com/alipay/sofa-boot">SOFABoot 源码</a></li>
+<li>  <a href="https://link.zhihu.com/?target=https%3A//github.com/alipay/sofa-rpc">SOFARPC 源码</a></li>
+<li>  <a href="https://link.zhihu.com/?target=https%3A//github.com/alipay/sofa-rpc-boot-projects">SOFARPC Ark Plugin</a></li>
+<li>  <a href="https://link.zhihu.com/?target=https%3A//github.com/alipay/sofa-ark">SOFAArk 源码</a></li>
+<li>  <a href="https://link.zhihu.com/?target=https%3A//alipay.github.io/sofastack.github.io/docs/ark-plugin.html">Ark Plugin 文档</a></li>
 </ul>
 
                         
@@ -529,10 +464,10 @@ self.onmessage = function(e) {
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/4/28</span>
+                    <span class="date">2018/6/5</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Node.js.html'>Node.js</a></span>
+          					    <span class="posted-in"><a href='Microservice.html'>Microservice</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -622,31 +557,31 @@ self.onmessage = function(e) {
 	      
 		      
 			      <li class="post">
-			        <a href="15389311738065.html">重构到更深层的模型</a>
+			        <a href="15459058392039.html">Reliable Domain Events</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389278377243.html">IAM of Google Cloud</a>
+			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389224951575.html">RSocket, a New Application Network Protocol for Reactive Applications, Announced at SpringOne</a>
+			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389220103546.html">如何形象地描述RxJava中的背压和流控机制？</a>
+			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389214670417.html">Modeling Uncertainty with Reactive DDD</a>
+			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
 			      </li>
 		     
 		  

@@ -105,374 +105,241 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15301811967181.html">
+                <a class="clearlink" href="15331745470579.html">
                 
-                  <h1>架构设计：负载均衡层设计方案（6）——Nginx + Keepalived构建高可用的负载层</h1>
+                  <h1>ZooKeeper基本原理</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://blog.csdn.net/yinwenjie/article/details/47130609">https://blog.csdn.net/yinwenjie/article/details/47130609</a></p>
+<p><a href="https://www.cnblogs.com/luxiaoxun/p/4887452.html">https://www.cnblogs.com/luxiaoxun/p/4887452.html</a></p>
+
+<p>作者：<a href="http://www.cnblogs.com/luxiaoxun/">阿凡卢</a></p>
+
+<p>出处：<a href="http://www.cnblogs.com/luxiaoxun/">http://www.cnblogs.com/luxiaoxun/</a></p>
 </blockquote>
 
-<h1 id="toc_0"><a></a>1、概述</h1>
+<p><strong>ZooKeeper</strong> <strong>简介</strong></p>
 
-<p>前两遍文章中，我们一直在说后文要介绍 Nginx + Keepalived 的搭建方式。这篇文章开始，我们就来兑现前文的承诺，后续的两篇文章我们将介绍 Nginx + Keepalived 和 LVS + Keepalived 搭建高可用的负载层系统。如果你还不了解 Nginx 和 LVS 的相关知识，请参见我之前的两篇文章《架构设计：负载均衡层设计方案（2）——Nginx 安装》（<a href="http://blog.csdn.net/yinwenjie/article/details/46620711">http://blog.csdn.net/yinwenjie/article/details/46620711</a>）、《架构设计：负载均衡层设计方案（4）——LVS 原理》（<a href="http://blog.csdn.net/yinwenjie/article/details/46845997">http://blog.csdn.net/yinwenjie/article/details/46845997</a>）</p>
+<p>ZooKeeper 是一个开放源码的分布式应用程序协调服务，它包含一个简单的原语集，分布式应用程序可以基于它实现同步服务，配置维护和命名服务等。</p>
 
-<h1 id="toc_1"><a></a>2、准备工作</h1>
+<p><img src="https://images2015.cnblogs.com/blog/434101/201510/434101-20151019093350567-692728278.jpg" alt=""/></p>
 
-<h2 id="toc_2"><a></a>2.1、准备两台独立工作的 Nginx 系统</h2>
+<p><strong>ZooKeeper 设计目的</strong></p>
 
-<p>准备两台 Nginx 的主机，如果您不知道为什么需要准备两台，没关系，准备就行。保证两台 Nginx 主机能够被外网访问。在我这里，安装两台 Nginx 的虚拟机 IP 地址分别是：</p>
+<p>1. 最终一致性：client 不论连接到哪个 Server，展示给它都是同一个视图，这是 zookeeper 最重要的性能。</p>
 
-<ul>
-<li>  Nginx VM1：192.168.61.129:80</li>
-<li>  Nginx VM2：192.168.61.130:80</li>
-</ul>
+<p>2. 可靠性：具有简单、健壮、良好的性能，如果消息 m 被到一台服务器接受，那么它将被所有的服务器接受。</p>
 
-<p>访问相关的地址，确保两台 Nginx 都是可用的：</p>
+<p>3. 实时性：Zookeeper 保证客户端将在一个时间间隔范围内获得服务器的更新信息，或者服务器失效的信息。但由于网络延时等原因，Zookeeper 不能保证两个客户端能同时得到刚更新的数据，如果需要最新数据，应该在读数据之前调用 sync() 接口。</p>
 
-<ul>
-<li><p>VM1：<br/>
-<img src="https://img-blog.csdn.net/20150730141119869" alt=""/></p></li>
-<li><p>VM2：<br/>
-<img src="https://img-blog.csdn.net/20150730141305112" alt=""/></p></li>
-</ul>
+<p>4. 等待无关（wait-free）：慢的或者失效的 client 不得干预快速的 client 的请求，使得每个 client 都能有效的等待。</p>
 
-<p>Nginx 的安装在我的前文《架构设计：负载均衡层设计方案（2）——Nginx 安装》（<a href="http://blog.csdn.net/yinwenjie/article/details/46620711">http://blog.csdn.net/yinwenjie/article/details/46620711</a>）中已经进行了详细的讲解，所以这里的讲解就一笔带过。</p>
+<p>5. 原子性：更新只能成功或者失败，没有中间状态。</p>
 
-<h2 id="toc_3"><a></a>2.2、再分别独立安装 Keepalived 系统</h2>
+<p>6. 顺序性：包括全局有序和偏序两种：全局有序是指如果在一台服务器上消息 a 在消息 b 前发布，则在所有 Server 上消息 a 都将在消息 b 前被发布；偏序是指如果一个消息 b 在消息 a 后被同一个发送者发布，a 必将排在 b 前面。</p>
 
-<p>我们的目标是 “<strong>在一台工作的 Nginx 崩溃的情况下，系统能够检测到，并自动将请求切换到另外一台备份的 Nginx 服务器上</strong>”。所以，之前安装的两台 Nginx，一台是 Master 服务器是主要的工作服务器，另一台是备份服务器，在 Master 服务器出现问题后，由后者接替其工作。如下图所示（外网的请求使用一个由 keepalived 控制的虚拟的浮动 IP 进行访问）：</p>
+<p><strong>ZooKeeper</strong> <strong>数据模型</strong></p>
 
-<p><img src="https://img-blog.csdn.net/20150730143806220" alt=""/></p>
+<p>Zookeeper 会维护一个具有层次关系的数据结构，它非常类似于一个标准的文件系统，如图所示：</p>
 
-<ul>
-<li><p>请到 <a href="http://www.keepalived.org">www.keepalived.org</a> 下载 keepalived 的稳定版本，我下载的是 1.2.17 版本。</p></li>
-<li><p>解压，并且安装。注意，我在这里制定了 perfix 参数，指定安装位置，这是为了我自己便于管理。您在安装的时候，可以根据自己的情况来决定是不是加这个参数：</p>
+<p><img src="https://images2015.cnblogs.com/blog/434101/201510/434101-20151017140829960-1863595007.jpg" alt=""/></p>
 
-<pre><code>tar -zxvf keepalived-1.2.17.tar.gz
+<p>Zookeeper 这种数据结构有如下这些特点：</p>
 
-./configure --perfix=/usr/keepalived-1.2.17
+<p>1）每个子目录项如 NameService 都被称作为 znode，这个 znode 是被它所在的路径唯一标识，如 Server1 这个 znode 的标识为 / NameService/Server1。</p>
 
-make &amp; make install 
+<p>2）znode 可以有子节点目录，并且每个 znode 可以存储数据，注意 EPHEMERAL（临时的）类型的目录节点不能有子节点目录。</p>
 
-</code></pre></li>
-<li><p>如果您不是安装到默认路径，那么为了将 keepalived 做成系统服务，您需要拷贝一些文件到指定的路径下，如下：</p>
+<p>3）znode 是有版本的（version），每个 znode 中存储的数据可以有多个版本，也就是一个访问路径中可以存储多份数据，version 号自动增加。</p>
 
-<pre><code>cp /usr/keepalived-1.2.17/etc/sysconfig/keepalived  /etc/sysconfig/keepalived
-
-cp /usr/keepalived-1.2.17/sbin/keepalived /usr/sbin/keepalived
-
-cp /usr/keepalived-1.2.17/etc/rc.d/init.d/keepalived  /etc/rc.d/init.d/keepalived
-
-mkdir /etc/keepalived
-
-cp /usr/keepalived-1.2.17/etc/keepalived/keepalived.conf /etc/keepalived/keepalived.conf
-
-</code></pre></li>
-<li><p>然后您可以将 keepalived 做成服务了：</p>
-
-<pre><code>/etc/rc.d/init.d/keepalived
-
-chkconfig keepalived on
-
-</code></pre></li>
-</ul>
-
-<h1 id="toc_4"><a></a>3、检查 Nginx 状态</h1>
-
-<p>在正式介绍 Nginx + Keepalived 的配置前，我们首先介绍一下如何检查 Nginx 的状态。是的，这是为下一小节做准备。<strong>我们只有能够正确检查 Nginx 的状态，才说得上在 Nginx 节点出现问题的情况下，切换到另一台 Nginx 上接替其工作</strong>。</p>
-
-<p>Nginx 为什么会停止响应呢？在我的工作经验中，无非有以下几种情况：</p>
+<p>4）znode 的类型：</p>
 
 <ul>
-<li><p>Nginx 的所有进程被强行终止（或管理进程）。<br/>
-这种情况，是我们需要检查和切换的。无论什么情况下进程被终止了，如果它不能重启，我们就要切换到备机。</p></li>
-<li><p>Nginx 日志盘的挂载点崩溃或者磁盘写满。<br/>
-这个也是我们需要检查和切换的。</p></li>
-<li><p>Nginx 已经达到设置的最大连接数，暂时停止响应。<br/>
-这种情况下，我们不能进行备机切换，因为通过 VIP:192.168.61.100 连接过来的用户请求比较多（在我们优化参数后，可以达到 65535 / 4 的数量），一旦我们进行备机切换，这些用户请求将全部异常。这个问题的解决需要靠增加负载机器，而不是主备切换。</p></li>
-<li><p>Nginx 物理机异常关机。<br/>
-这个肯定是需要进行检查和切换的。</p></li>
+<li>  <strong>_Persistent _</strong>节点，一旦被创建，便不会意外丢失，即使服务器全部重启也依然存在。每个 Persist 节点即可包含数据，也可包含子节点。</li>
+<li><p><strong>_Ephemeral _</strong>节点，在创建它的客户端与服务器间的 Session 结束时自动被删除。服务器重启会导致 Session 结束，因此 Ephemeral 类型的 znode 此时也会自动删除。</p></li>
+<li><p><strong>_Non-sequence _</strong>节点，多个客户端同时创建同一 Non-sequence 节点时，只有一个可创建成功，其它匀失败。并且创建出的节点名称与创建时指定的节点名完全一样。</p></li>
+<li><p><strong>_Sequence _</strong>节点，创建出的节点名在指定的名称之后带有 10 位 10 进制数的序号。多个客户端创建同一名称的节点时，都能创建成功，只是序号不同。</p></li>
 </ul>
 
-<p>我们来看一段 Linux 脚本：</p>
+<p>5）znode 可以被监控，包括这个目录节点中存储的数据的修改，子节点目录的变化等，一旦变化可以通知设置监控的客户端，这个是 Zookeeper 的核心特性，Zookeeper 的很多功能都是基于这个特性实现的。</p>
 
-<pre><code>#!/bin/sh
-if [ $(ps -C nginx --no-header | wc -l) -eq 0 ]; then
-    /usr/nginx-1.6.2/sbin/nginx
-fi
+<p>6）ZXID：每次对 Zookeeper 的状态的改变都会产生一个 zxid（ZooKeeper Transaction Id），zxid 是全局有序的，如果 zxid1 小于 zxid2，则 zxid1 在 zxid2 之前发生。</p>
 
-sleep 2
-if [ $(ps -C nginx --no-header | wc -l) -eq 0 ]; then
-    service keepalived stop
-fi
+<p><strong>ZooKeeper Session</strong></p>
 
-</code></pre>
+<p>Client 和 Zookeeper 集群建立连接，整个 session 状态变化如图所示：</p>
 
-<p>我们大致讲解一下 “ps -C nginx –no-header | wc -l” 这个命令：<br/>
-- ps 这个命令用来进行 Linux 中进程相关的查询，-C 意思是按照进程名称进行查询。查询出来后的结果如下：</p>
+<p><img src="https://images2015.cnblogs.com/blog/434101/201510/434101-20151017140903647-942632156.jpg" alt=""/></p>
 
-<pre><code>[root@vm2 ~]# ps -C nginx
-  PID TTY          TIME CMD
- 3374 ?        00:00:00 nginx
- 3375 ?        00:00:01 nginx
+<p>如果 Client 因为 Timeout 和 Zookeeper Server 失去连接，client 处在 CONNECTING 状态，会自动尝试再去连接 Server，如果在 session 有效期内再次成功连接到某个 Server，则回到 CONNECTED 状态。</p>
 
-</code></pre>
+<p>注意：如果因为网络状态不好，client 和 Server 失去联系，client 会停留在当前状态，会尝试主动再次连接 Zookeeper Server。client 不能宣称自己的 session expired，session expired 是由 Zookeeper Server 来决定的，client 可以选择自己主动关闭 session。</p>
+
+<p><strong>ZooKeeper Watch</strong></p>
+
+<p>Zookeeper watch 是一种监听通知机制。Zookeeper 所有的读操作 getData(), getChildren() 和 exists() 都可以设置监视 (watch)，监视事件可以理解为一次性的触发器，官方定义如下： a watch event is one-time trigger, sent to the client that set the watch, whichoccurs when the data for which the watch was set changes。Watch 的三个关键点：</p>
+
+<p>*（一次性触发）One-time trigger</p>
+
+<p>当设置监视的数据发生改变时，该监视事件会被发送到客户端，例如，如果客户端调用了 getData(&quot;/znode1&quot;, true) 并且稍后 /znode1 节点上的数据发生了改变或者被删除了，客户端将会获取到 /znode1 发生变化的监视事件，而如果 /znode1 再一次发生了变化，除非客户端再次对 / znode1 设置监视，否则客户端不会收到事件通知。</p>
+
+<p>*（发送至客户端）Sent to the client</p>
+
+<p>Zookeeper 客户端和服务端是通过 socket 进行通信的，由于网络存在故障，所以监视事件很有可能不会成功地到达客户端，监视事件是异步发送至监视者的，Zookeeper 本身提供了顺序保证 (ordering guarantee)：即客户端只有首先看到了监视事件后，才会感知到它所设置监视的 znode 发生了变化 (a client will never see a change for which it has set a watch until it first sees the watch event)。网络延迟或者其他因素可能导致不同的客户端在不同的时刻感知某一监视事件，但是不同的客户端所看到的一切具有一致的顺序。</p>
+
+<p>*（被设置 watch 的数据）The data for which the watch was set</p>
+
+<p>这意味着 znode 节点本身具有不同的改变方式。你也可以想象 Zookeeper 维护了两条监视链表：数据监视和子节点监视 (data watches and child watches) getData() 和 exists() 设置数据监视，getChildren()设置子节点监视。或者你也可以想象 Zookeeper 设置的不同监视返回不同的数据，getData() 和 exists() 返回 znode 节点的相关信息，而 getChildren() 返回子节点列表。因此，setData() 会触发设置在某一节点上所设置的数据监视（假定数据设置成功），而一次成功的 create() 操作则会出发当前节点上所设置的数据监视以及父节点的子节点监视。一次成功的 delete 操作将会触发当前节点的数据监视和子节点监视事件，同时也会触发该节点父节点的 child watch。</p>
+
+<p>Zookeeper 中的监视是轻量级的，因此容易设置、维护和分发。当客户端与 Zookeeper 服务器失去联系时，客户端并不会收到监视事件的通知，只有当客户端重新连接后，若在必要的情况下，以前注册的监视会重新被注册并触发，对于开发人员来说这通常是透明的。只有一种情况会导致监视事件的丢失，即：通过 exists() 设置了某个 znode 节点的监视，但是如果某个客户端在此 znode 节点被创建和删除的时间间隔内与 zookeeper 服务器失去了联系，该客户端即使稍后重新连接 zookeeper 服务器后也得不到事件通知。</p>
+
+<p><strong>Consistency Guarantees</strong></p>
+
+<p>Zookeeper 是一个高效的、可扩展的服务，read 和 write 操作都被设计为快速的，read 比 write 操作更快。</p>
+
+<p>顺序一致性（Sequential Consistency）：从一个客户端来的更新请求会被顺序执行。</p>
+
+<p>原子性（Atomicity）：更新要么成功要么失败，没有部分成功的情况。</p>
+
+<p>唯一的系统镜像（Single System Image）：无论客户端连接到哪个 Server，看到系统镜像是一致的。</p>
+
+<p>可靠性（Reliability）：更新一旦有效，持续有效，直到被覆盖。</p>
+
+<p>时间线（Timeliness）：保证在一定的时间内各个客户端看到的系统信息是一致的。</p>
+
+<p><strong>ZooKeeper</strong> <strong>的工作原理</strong></p>
+
+<p>在 zookeeper 的集群中，各个节点共有下面 3 种角色和 4 种状态：</p>
 
 <ul>
-<li><p>如果要去掉统计出来的结果表的头部，那么要使用 –no-header 参数，加上参数后，查询结果如下：</p>
-
-<pre><code>[root@vm2 ~]# ps -C nginx  --no-header
- 3374 ?        00:00:00 nginx
- 3375 ?        00:00:01 nginx
-
-</code></pre></li>
-<li><p>“|”，这是 Linux 中的管道流命令，将上一个命令的输出结果作为下一个命令的输入。</p></li>
-<li><p>wc 统计命令，-l 参数，代表按行数进行统计。所以整个命令的输出结果为：</p>
-
-<pre><code>[root@vm2 ~]# ps -C nginx --no-header | wc -l
-2
-
-</code></pre></li>
+<li>  角色：leader,follower,observer</li>
+<li>  状态：leading,following,observing,looking</li>
 </ul>
 
-<p>清楚了其中最关键的命令，我们再来讲解一下整个脚本的含义：<br/>
-第一个判断说明的是，如果当前 nginx 的进程数量 == 0，那么执行 nginx 的启动命令，试图重新启动 nginx；接下来等待 2 秒（这是为了给 nginx 一定的启动时间），然后再次查看 Nginx 的进程数量，如果仍然 == 0，那么停止这台机器的 keepalived 服务，以便备用的 Keepalived 节点检查到 Keepalived 已经停止这个事件，并将浮动 IP 切换到备用服务器上。</p>
+<p>Zookeeper 的核心是原子广播，这个机制保证了各个 Server 之间的同步。实现这个机制的协议叫做 Zab 协议（ZooKeeper Atomic Broadcast protocol）。Zab 协议有两种模式，它们分别是恢复模式（Recovery 选主）和广播模式（Broadcast 同步）。当服务启动或者在领导者崩溃后，Zab 就进入了恢复模式，当领导者被选举出来，且大多数 Server 完成了和 leader 的状态同步以后，恢复模式就结束了。状态同步保证了 leader 和 Server 具有相同的系统状态。</p>
 
-<p><strong>注意，这段脚本是和我机器上的 Nginx 安装路径、Keepalived 服务的状态有关的，您如果要用的话，请进行相应的更改</strong>。</p>
+<p>为了保证事务的顺序一致性，zookeeper 采用了递增的事务 id 号（zxid）来标识事务。所有的提议（proposal）都在被提出的时候加上了 zxid。实现中 zxid 是一个 64 位的数字，它高 32 位是 epoch 用来标识 leader 关系是否改变，每次一个 leader 被选出来，它都会有一个新的 epoch，标识当前属于那个 leader 的统治时期。低 32 位用于递增计数。</p>
 
-<h1 id="toc_5"><a></a>4、Nginx + Keepalived 最简配置</h1>
+<p>每个 Server 在工作过程中有 4 种状态：</p>
 
-<h2 id="toc_6"><a></a>4.1、请再次确认前提</h2>
+<p>LOOKING：当前 Server 不知道 leader 是谁，正在搜寻。</p>
 
-<p>（首先，为了保证不会出现额外的问题，请首先关闭防火墙，当然正式环境里面，防火墙不能关闭）</p>
+<p>LEADING：当前 Server 即为选举出来的 leader。</p>
 
-<p>外网进行 Nginx 访问的浮动 IP：192.168.61.100</p>
+<p>FOLLOWING：leader 已经选举出来，当前 Server 与之同步。</p>
+
+<p>OBSERVING：observer 的行为在大多数情况下与 follower 完全一致，但是他们不参加选举和投票，而仅仅接受 (observing) 选举和投票的结果。</p>
+
+<p><strong>Leader Election</strong></p>
+
+<p>当 leader 崩溃或者 leader 失去大多数的 follower，这时候 zk 进入恢复模式，恢复模式需要重新选举出一个新的 leader，让所有的 Server 都恢复到一个正确的状态。Zk 的选举算法有两种：一种是基于 basic paxos 实现的，另外一种是基于 fast paxos 算法实现的。系统默认的选举算法为 fast paxos。先介绍 basic paxos 流程：</p>
+
+<p>1. 选举线程由当前 Server 发起选举的线程担任，其主要功能是对投票结果进行统计，并选出推荐的 Server；</p>
+
+<p>2. 选举线程首先向所有 Server 发起一次询问（包括自己）；</p>
+
+<p>3. 选举线程收到回复后，验证是否是自己发起的询问（验证 zxid 是否一致），然后获取对方的 id（myid），并存储到当前询问对象列表中，最后获取对方提议的 leader 相关信息（id,zxid），并将这些信息存储到当次选举的投票记录表中；</p>
+
+<p>4. 收到所有 Server 回复以后，就计算出 zxid 最大的那个 Server，并将这个 Server 相关信息设置成下一次要投票的 Server；</p>
+
+<p>5. 线程将当前 zxid 最大的 Server 设置为当前 Server 要推荐的 Leader，如果此时获胜的 Server 获得 n/2 + 1 的 Server 票数，设置当前推荐的 leader 为获胜的 Server，将根据获胜的 Server 相关信息设置自己的状态，否则，继续这个过程，直到 leader 被选举出来。</p>
+
+<p>通过流程分析我们可以得出：要使 Leader 获得多数 Server 的支持，则 Server 总数必须是奇数 2n+1，且存活的 Server 的数目不得少于 n+1.</p>
+
+<p>每个 Server 启动后都会重复以上流程。在恢复模式下，如果是刚从崩溃状态恢复的或者刚启动的 server 还会从磁盘快照中恢复数据和会话信息，zk 会记录事务日志并定期进行快照，方便在恢复时进行状态恢复。</p>
+
+<p>fast paxos 流程是在选举过程中，某 Server 首先向所有 Server 提议自己要成为 leader，当其它 Server 收到提议以后，解决 epoch 和 zxid 的冲突，并接受对方的提议，然后向对方发送接受提议完成的消息，重复这个流程，最后一定能选举出 Leader。</p>
+
+<p><strong>Leader</strong> <strong>工作流程</strong></p>
+
+<p>Leader 主要有三个功能：</p>
+
+<p>1. 恢复数据；</p>
+
+<p>2. 维持与 follower 的心跳，接收 follower 请求并判断 follower 的请求消息类型；</p>
+
+<p>3.follower 的消息类型主要有 PING 消息、REQUEST 消息、ACK 消息、REVALIDATE 消息，根据不同的消息类型，进行不同的处理。</p>
+
+<p>PING 消息是指 follower 的心跳信息；REQUEST 消息是 follower 发送的提议信息，包括写请求及同步请求；</p>
+
+<p>ACK 消息是 follower 的对提议的回复，超过半数的 follower 通过，则 commit 该提议；</p>
+
+<p>REVALIDATE 消息是用来延长 SESSION 有效时间。</p>
+
+<p><strong>Follower</strong> <strong>工作流程</strong></p>
+
+<p>Follower 主要有四个功能：</p>
+
+<p>1. 向 Leader 发送请求（PING 消息、REQUEST 消息、ACK 消息、REVALIDATE 消息）；</p>
+
+<p>2. 接收 Leader 消息并进行处理；</p>
+
+<p>3. 接收 Client 的请求，如果为写请求，发送给 Leader 进行投票；</p>
+
+<p>4. 返回 Client 结果。</p>
+
+<p>Follower 的消息循环处理如下几种来自 Leader 的消息：</p>
+
+<p>1.PING 消息：心跳消息</p>
+
+<p>2.PROPOSAL 消息：Leader 发起的提案，要求 Follower 投票</p>
+
+<p>3.COMMIT 消息：服务器端最新一次提案的信息</p>
+
+<p>4.UPTODATE 消息：表明同步完成</p>
+
+<p>5.REVALIDATE 消息：根据 Leader 的 REVALIDATE 结果，关闭待 revalidate 的 session 还是允许其接受消息</p>
+
+<p>6.SYNC 消息：返回 SYNC 结果到客户端，这个消息最初由客户端发起，用来强制得到最新的更新。</p>
+
+<p><strong>Zab: Broadcasting State Updates</strong></p>
+
+<p>Zookeeper Server 接收到一次 request，如果是 follower，会转发给 leader，Leader 执行请求并通过 Transaction 的形式广播这次执行。Zookeeper 集群如何决定一个 Transaction 是否被 commit 执行？通过 “两段提交协议”（a two-phase commit）：</p>
+
+<ol>
+<li> Leader 给所有的 follower 发送一个 PROPOSAL 消息。</li>
+<li> 一个 follower 接收到这次 PROPOSAL 消息，写到磁盘，发送给 leader 一个 ACK 消息，告知已经收到。</li>
+<li> 当 Leader 收到法定人数（quorum）的 follower 的 ACK 时候，发送 commit 消息执行。</li>
+</ol>
+
+<p>Zab 协议保证：</p>
 
 <ul>
-<li><p>我们将 192.168.61.129 这台服务器上运行的 Nginx 作为主要的 Nginx，其上的 keepalived 服务我们设置成 Master 方式。</p></li>
-<li><p>我们将 192.168.61.129 这台服务器上运行的 Nginx 作为备用的 Nginx 服务，其上的 keepalived 服务我们设置为 Backup 方式。</p></li>
+<li>  1）  如果 leader 以 T1 和 T2 的顺序广播，那么所有的 Server 必须先执行 T1，再执行 T2。</li>
+<li>  2）  如果任意一个 Server 以 T1、T2 的顺序 commit 执行，其他所有的 Server 也必须以 T1、T2 的顺序执行。</li>
 </ul>
 
-<h2 id="toc_7"><a></a>4.2、正式开始设置</h2>
+<p>“两段提交协议” 最大的问题是如果 Leader 发送了 PROPOSAL 消息后 crash 或暂时失去连接，会导致整个集群处在一种不确定的状态（follower 不知道该放弃这次提交还是执行提交）。Zookeeper 这时会选出新的 leader，请求处理也会移到新的 leader 上，不同的 leader 由不同的 epoch 标识。切换 Leader 时，需要解决下面两个问题：</p>
 
-<p>注意，经过安装，您的 keepalived 配置文件的位置在 “/etc/keepalived/keepalived.conf”（如果没有，请创建一个，但是经过之前的步骤，这个位置肯定是有文件的，如果没有可能是之前您的步骤出现了什么问题）。</p>
+<p>1. Never forget delivered messages</p>
 
-<h2 id="toc_8"><a></a>4.2.1、设置 192.168.61.129 上的 MASTER</h2>
+<p>Leader 在 COMMIT 投递到任何一台 follower 之前 crash，只有它自己 commit 了。新 Leader 必须保证这个事务也必须 commit。</p>
 
-<p>我们先来看看 192.168.61.129 上的原始 ip 信息：</p>
+<p>2. Let go of messages that are skipped</p>
 
-<p><img src="https://img-blog.csdn.net/20150730181017823" alt=""/></p>
+<p>Leader 产生某个 proposal，但是在 crash 之前，没有 follower 看到这个 proposal。该 server 恢复时，必须丢弃这个 proposal。</p>
 
-<p>注意，这个 129 机器上的网卡设备号是 eth1，而不是 eth0，这个参数我们将在配置 keepalived 的时候使用到。</p>
-
-<p>下面是 129 上 keepalived 的最简配置：</p>
-
-<pre><code>! Configuration File for keepalived
-# global setting , notify email setting
-global_defs {
-   #存在于同一个网段中，一组keepalived的各个节点都有不同的名字
-   #在全局设置中，我们还可以设置管理员的email信息等。
-   router_id LVS_V1
-}
-
-#这个是我们在上一小结讲到的nginx检查脚本，我们保存在这个文件中（注意文件权限）
-vrrp_script chknginx {
-    script &quot;/usr/keepalived-1.2.17/bin/checknginx.sh&quot;
-    #每10秒钟，检查一次
-    interval 10
-}
-
-#keepalived实例设置，是最重要的设置信息
-vrrp_instance VI_1 {
-    #state状态MASTER表示是主要工作节点。
-    #一个keepalived组中，最多只有一个MASTER节点，当然也可以没有
-    state MASTER
-    #实例所绑定的网卡设备，我的网卡设备是eth1。您按照您自己的来
-    interface eth1
-    #同一个keepalived组，节点的设置必须一样，这样才会被识别
-    virtual_router_id 52
-    #节点优先级，BACKUP的优先级一定要比MASTER的优先级低
-    priority 100
-    #组播信息发送间隔，两个节点设置必须一样
-    advert_int 1
-    #实际的eth1上的固定ip地址
-    mcast_src_ip=192.168.61.129
-    #验证信息，只有验证信息相同，才能被加入到一个组中。
-    authentication {
-        auth_type PASS
-        auth_pass 1111
-    }
-    #虚拟地址和绑定的端口，如果有多个，就绑定多个
-    #dev 是指定浮动IP要绑定的网卡设备号
-    virtual_ipaddress {
-        192.168.61.100 dev eth1
-    }
-
-    #设置的检查脚本
-    #关联上方的“vrrp_script chknginx”
-    track_script {
-        chknginx
-    }
-}
-
-</code></pre>
-
-<h2 id="toc_9"><a></a>4.2.2、设置 192.168.61.130 上的 BACKUP</h2>
-
-<p>再来看看 192.168.61.130 这个备用节点上 keepalived 的设置：</p>
-
-<pre><code>! Configuration File for keepalived
-# global setting , notify email setting
-global_defs {
-   #这里和master节点不同
-   router_id LVS_V2
-}
-
-#check nginx
-vrrp_script chknginx {
-    script &quot;/usr/keepalived-1.2.17/bin/checknginx.sh&quot;
-    interval 10
-}
-
-# instance setting
-vrrp_instance VI_1 {
-    # 这里和Master节点不一样
-    state BACKUP
-    interface eth1
-    # 这里一定是一样的
-    virtual_router_id 52
-    # 这里的优先级比Master节点低
-    priority 99
-    advert_int 1
-    # 这里和Master节点不一样
-    mcast_src_ip=192.168.61.130
-    authentication {
-        auth_type PASS
-        auth_pass 1111
-    }
-    virtual_ipaddress {
-        192.168.61.100 dev eth1
-    }
-
-    track_script {
-        chknginx
-    }
-}
-
-</code></pre>
-
-<h2 id="toc_10"><a></a>4.3、启动主节点和备用节点</h2>
-
-<p>以上配置中请注意几个关键点：</p>
+<p>Zookeeper 会尽量保证不会同时有 2 个活动的 Leader，因为 2 个不同的 Leader 会导致集群处在一种不一致的状态，所以 Zab 协议同时保证：</p>
 
 <ul>
-<li>  注意 nginx 状态检查的脚本的位置，根据自己创建文件的位置不一样，脚本检查的指定位置也不一样</li>
-<li>  注意优先级，MASTER 节点的优先级一定要高于所有的 BACKUP 节点。</li>
-<li>  <strong>注意局域网的组播地址，一定要可用</strong>。局域网内所有 keepalived 节点都是利用组播方式寻找对方。</li>
-<li>  谁说 BACKUP 节点只能有一个！？</li>
-<li>  最后，keepalived 一定要注册成服务形式，您可以想象上面所有脚本、配置、命令如果重启后再来一次，会是什么情况。</li>
+<li>  1）  在新的 leader 广播 Transaction 之前，先前 Leader commit 的 Transaction 都会先执行。</li>
+<li>  2）  在任意时刻，都不会有 2 个 Server 同时有法定人数（quorum）的支持者。</li>
 </ul>
 
-<p>接下来，我们要开始启动 Master 节点和 Backup 节点了，为了准确的查看日志状态，您需要观察系统日志。系统日志所在的位置：</p>
+<p>这里的 quorum 是一半以上的 Server 数目，确切的说是有投票权力的 Server（不包括 Observer）。</p>
 
-<pre><code>tail -f /var/log/messages
+<p>总结：简单介绍了 Zookeeper 的基本原理，数据模型，Session，Watch 机制，一致性保证，Leader Election，Leader 和 Follower 的工作流程和 Zab 协议。</p>
 
-</code></pre>
+<p>参考：</p>
 
-<p>先启动 Master 节点：</p>
-
-<pre><code>service keepalived start
-
-</code></pre>
-
-<p>再启动 Backup 节点：</p>
-
-<pre><code>service keepalived start
-
-</code></pre>
-
-<p><strong>如果设置和启动都是成功的，您不会在日志信息中收到任何的 keepalived 报错信息</strong>。接下来您就可以使用 192.168.61.100 这个 IP 访问 Nginx 了：</p>
-
-<p><img src="https://img-blog.csdn.net/20150730210724952" alt=""/></p>
-
-<p>另外，这个绑定在 192.168.61.129 上的浮动 ip：192.168.61.100，您通过 ipconfig 命令一般是看不到的，要使用 ip addr 命令进行查看：</p>
-
-<p><img src="https://img-blog.csdn.net/20150730211138410" alt=""/></p>
-
-<p>为了试验，我们主动停止 Master 节点上的 keepalived 服务（注意，杀 Nginx 进程不起作用，因为我们的检查脚本会试图重新启动 Nginx 进程），接下来我们可以看到浮动 IP 漂移到了 130 备机上：</p>
-
-<p><img src="https://img-blog.csdn.net/20150730211530195" alt=""/></p>
-
-<h1 id="toc_11"><a></a>5、Nginx + Keepalived 非抢占模式</h1>
-
-<p>通过第 4 节的详细介绍，相信您对 Nginx + Keepalived 的安装方式有了一个明确的理解。keepalived 的切换可以是自动的，但是却做不到毫秒级别，他怎么都需要几秒钟的时间进行切换。</p>
-
-<p>这就有一个问题，虽然在主节点出现问题我们转向备份节点时，这个延时无可避免，但是在我们修复主节点后，实际上并没有必要再马上做一次切换，所以 Keepalived 提供了一种非抢占模式，来满足这个要求。</p>
-
-<p>下面我们就来介绍一下 Keepalived 的非抢占模式的配置（无 MASTER 节点，全部依据优先级确定哪个节点进行工作）：</p>
-
-<h2 id="toc_12"><a></a>5.1、原来主节点的配置改动</h2>
-
-<pre><code>! Configuration File for keepalived
-# global setting , notify email setting
-global_defs {
-   router_id LVS_V1
-}
-
-vrrp_script chknginx {
-    script &quot;/usr/keepalived-1.2.17/bin/checknginx.sh&quot;
-    interval 10
-    # 一旦节点失效，节点的优先级就减少2
-    # 有多少个keepalived节点，就填写多少数量。
-    # 这样保证这个节点的优先级比其他节点都低
-    weight -2
-    # fall 表示多少次检查失败，就算节点失效。默认1
-    #fall 1
-}
-
-vrrp_instance VI_1 {
-    #state状态都是BACKUP表示是主要工作节点。
-    state BACKUP
-    interface eth1
-    virtual_router_id 52
-    # 这个关键配置项，设置为“非抢占”模式
-    nopreempt
-    # 每个节点的优先级一定要不一样
-    priority 100
-    advert_int 1
-    mcast_src_ip=192.168.61.129
-    authentication {
-        auth_type PASS
-        auth_pass 1111
-    }
-    #虚拟地址和绑定的端口，如果有多个，就绑定多个
-    #dev 是指定浮动IP要绑定的网卡设备号
-    virtual_ipaddress {
-        192.168.61.100 dev eth1
-    }
-
-    #设置的检查脚本
-    #关联上方的“vrrp_script chknginx”
-    track_script {
-        chknginx
-    }
-}
-
-</code></pre>
-
-<p>原来的主节点设置更改完成。</p>
-
-<h2 id="toc_13"><a></a>5.2、原来备份节点的配置改动</h2>
-
-<p>加入 “非抢占” 模式的关键字、更改一个确定的优先级，设置检查失败后优先级的递减量，就行了。</p>
-
-<h1 id="toc_14"><a></a>6、后文介绍</h1>
-
-<p>这是我 8 月份的首篇文章，后文我们将介绍 LVS + Keepalived + Nginx 的安装和配置方式。注意，LVS 被 Keepalived 后，就没有必要在对 Nginx 做 Keepalived 了。</p>
+<ul>
+<li>《ZooKeeper—Distributed Process Coordination》 by FlavioJunqueira and Benjamin Reed</li>
+<li><a href="http://zookeeper.apache.org/doc/current/zookeeperOver.html">http://zookeeper.apache.org/doc/current/zookeeperOver.html</a></li>
+<li><a href="http://www.ibm.com/developerworks/cn/opensource/os-cn-zookeeper/index.html">http://www.ibm.com/developerworks/cn/opensource/os-cn-zookeeper/index.html</a></li>
+<li><a href="https://my.oschina.net/pingpangkuangmo/blog/778927">《ZooKeeper 的一致性算法赏析》</a></li>
+</ul>
 
                         
                       </div>
@@ -481,10 +348,10 @@ vrrp_instance VI_1 {
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/6/28</span>
+                    <span class="date">2018/8/2</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Network.html'>Network</a></span>
+          					    <span class="posted-in"><a href='Orchestrator.html'>Orchestrator</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -574,31 +441,31 @@ vrrp_instance VI_1 {
 	      
 		      
 			      <li class="post">
-			        <a href="15389311738065.html">重构到更深层的模型</a>
+			        <a href="15459058392039.html">Reliable Domain Events</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389278377243.html">IAM of Google Cloud</a>
+			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389224951575.html">RSocket, a New Application Network Protocol for Reactive Applications, Announced at SpringOne</a>
+			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389220103546.html">如何形象地描述RxJava中的背压和流控机制？</a>
+			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389214670417.html">Modeling Uncertainty with Reactive DDD</a>
+			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
 			      </li>
 		     
 		  

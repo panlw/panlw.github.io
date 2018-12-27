@@ -105,315 +105,380 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15320998566522.html">
+                <a class="clearlink" href="15358774987730.html">
                 
-                  <h1>关键系统的JVM参数推荐(2018仲夏版)</h1>
+                  <h1>Java 8 Concurrency Tutorial: Synchronization and Locks</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="http://calvin1978.blogcn.com/?p=1602">http://calvin1978.blogcn.com/?p=1602</a></p>
+<p><a href="https://winterbe.com/posts/2015/04/30/java8-concurrency-tutorial-synchronized-locks-examples/">https://winterbe.com/posts/2015/04/30/java8-concurrency-tutorial-synchronized-locks-examples/</a></p>
 </blockquote>
 
-<p>年更贴，因为两年里遇到的事情，一些想法变了。也补充了不少 <a href="https://github.com/vipshop/vjtools/">VJTools</a> 的内容，比如为伸手党们准备的 <a href="https://github.com/vipshop/vjtools/blob/master/vjstar/src/main/script/jvm-options">jvm-options.sh</a>。</p>
-
-<p>在关键的业务系统里，除了继续追求技术人员最爱的高吞吐与低延时之外，系统的稳定性与排查问题的便捷性也很重要。这是本文的一个原则，后面也会一次又一次的强调。</p>
-
-<h4 id="toc_0">前言 1，资料</h4>
-
-<p>1. 学习开源项目的启动脚本是个不错的主意，比如 <a href="https://github.com/elastic/elasticsearch/blob/master/distribution/src/config/jvm.options">ElasticSearch 家的</a>，<a href="https://github.com/apache/cassandra/blob/trunk/conf/jvm.options">Cassandra 家的</a>， 附送一篇<a href="http://tobert.github.io/pages/als-cassandra-21-tuning-guide.html">解释它的文章</a>。</p>
-
-<p>2. VJTools 的 <a href="https://github.com/vipshop/vjtools/blob/master/vjstar/src/main/script/jvm-options">jvm-options.sh</a>，伸手党们最爱，根据自己需要稍微定制一下就行。</p>
-
-<p>3. <a href="http://hllvm.group.iteye.com/group/topic/27945">JVM 调优的 &quot;标准参数&quot; 的各种陷阱</a> ，R 大的文章，在 JDK6 时写的，年年期待更新。</p>
-
-<h4 id="toc_1">前言 2， -XX:+PrintFlagsFinal 打印参数值</h4>
-
-<p>当你在网上兴冲冲找到一个可优化的参数时，先用 - XX: +PrintFlagsFinal 看看，它可能已经默认打开了，再找到一个，还是默认打开了...</p>
-
-<p>JDK7 与 JDK8，甚至 JDK7 中的不同小版本，有些参数值都不一样，所以不要轻信网上任何文章，一切以生产环境同版本的 JDK 打出来的为准。</p>
-
-<p>经常以类似下面的语句去查看参数，偷懒不起应用，用 - version 代替。有些参数设置后会影响其他参数，所以也要带上。</p>
-
-<blockquote>
-<p>java -Xmx1024m -Xms1024m -XX:+UseConcMarkSweepGC -XX:+PrintFlagsFinal -version| grep ParallelGCThreads</p>
-</blockquote>
-
-<p>对于不同版本里的默认值，建议是顺势而为，JDK 在那个版本默认打开不打开总有它的理由。安全第一，没有很好的因由，不要随便因为网上某篇文章的推荐 (包括你现在在读的这篇) 就去设置。</p>
-
-<h3 id="toc_2">1. 性能篇</h3>
-
-<h4 id="toc_3">1.1 建议的性能参数</h4>
-
-<p><strong>1. 取消偏向锁 -XX:-UseBiasedLocking</strong></p>
-
-<p>JDK1.6 开始默认打开的偏向锁，会尝试把锁赋给第一个访问它的线程，取消同步块上的 synchronized 原语。如果始终只有一条线程在访问它，就成功略过同步操作以获得性能提升。</p>
-
-<p>但一旦有第二条线程访问这把锁，JVM 就要撤销偏向锁恢复到未锁定线程的状态，如果打开安全点日志，可以看到不少 RevokeBiasd 的纪录，像 GC 一样 Stop The World 的干活，虽然只是很短的停顿，但对于多线程并发的应用，取消掉它反而有性能的提升，所以 Cassandra 就取消了它。</p>
-
-<p><strong>2. 加大 Integer Cache -XX:AutoBoxCacheMax=20000</strong></p>
-
-<p><code>Integer i=3;</code>这语句有着 int 自动装箱成 Integer 的过程，JDK 默认只缓存 -128 ~ +127 的 Integer 和 Long，超出范围的数字就要即时构建新的 Integer 对象。设为 20000 后，我们应用的 QPS 有足足 4% 的影响。为什么是 2 万呢，因为 <strong>-XX:+AggressiveOpts</strong> 里也是这个值。详见 <a href="http://blog.csdn.net/chengzhezhijian/article/details/9628251">Java Integer(-128~127) 值的 == 和 equals 比较产生的思考</a>。</p>
-
-<p><strong>3. 启动时访问并置零内存页面 -XX:+AlwaysPreTouch</strong></p>
-
-<p>启动时就把参数里说好了的内存全部舔一遍，可能令得启动时慢上一点，但后面访问时会更流畅，比如页面会连续分配，比如不会在晋升新生代到老生代时才去访问页面使得 GC 停顿时间加长。ElasticSearch 和 Cassandra 都打开了它。</p>
-
-<p><strong>4. SecureRandom 生成加速 -Djava.security.egd=file:/dev/./urandom</strong></p>
-
-<p>此江湖偏方原因为 Tomcat 的 SecureRandom 显式使用 SHA1PRNG 算法时，初始因子默认从 / dev/random 读取会存在堵塞。额外效果是 SecureRandom 的默认算法也变成合适的 SHA1 了。详见 <a href="http://calvin1978.blogcn.com/articles/securerandom.html">SecureRandom 的江湖偏方与真实效果</a></p>
-
-<h4 id="toc_4">1.2 可选的性能参数</h4>
-
-<p><strong>1. -XX:+PerfDisableSharedMem</strong></p>
-
-<p>Cassandra 家的一个参数，一直没留意，直到发生高 IO 时的 JVM 停顿。原来 JVM 经常会默默的在 / tmp/hperf 目录写上一点 statistics 数据，如果刚好遇到 PageCache 刷盘，把文件阻塞了，就不能结束这个 Stop the World 的安全点了。<br/>
-禁止 JVM 写 statistics 数据的代价，是 jps 和 jstat 用不了，只能用 JMX，而 JMX 取新老生代的使用百分比还真没 jstat 方便，VJTools VJTools 里的 <a href="https://github.com/vipshop/vjtools/tree/master/vjmxcli">vjmxcli</a> 弥补了这一点。详见 <a href="http://www.evanjones.ca/jvm-mmap-pause.html">The Four Month Bug: JVM statistics cause garbage collection pauses</a></p>
-
-<p><strong>2. -XX:-UseCounterDecay</strong></p>
-
-<p>禁止 JIT 调用计数器衰减。默认情况下，每次 GC 时会对调用计数器进行砍半的操作，导致有些方法一直温热，永远都达不到触发 C2 编译的 1 万次的阀值。</p>
-
-<p><strong>3. -XX:-TieredCompilation</strong></p>
-
-<p>多层编译是 JDK8 后默认打开的比较骄傲的功能，先以 C1 静态编译，采样足够后 C2 编译。</p>
-
-<p>但我们实测，性能最终略降 2%，可能是因为有些方法 C1 编译后 C2 不再编译了。应用启动时的偶发服务超时也多了，可能是忙于编译。所以我们将它禁止了，但记得打开前面的 - XX:-UseCounterDecay，避免有些温热的方法永远都要解释执行。</p>
-
-<h4 id="toc_5">1.3 不建议的性能参数</h4>
-
-<p><strong>1. -XX:+AggressiveOpts</strong></p>
-
-<p>一些还没默认打开的优化参数集合, -XX:AutoBoxCacheMax 是其中的一项。但如前所述，关键系统里不建议打开。虽然通过 - XX:+AggressiveOpts 与 -XX:-AggressiveOpts 的对比，目前才改变了三个参数，但为免以后某个版本的 JDK 里默默改变更多激进的配置，还是不要打开了。</p>
-
-<p>2. JIT Compile 相关的参数，函数调用多少次之后开始编译的阀值，内联函数大小的阀值等等，不要乱改。</p>
-
-<p>3. <strong>-server</strong>，在 64 位多核的 linux 中，你想设成 - client 都不行的，所以写了也是白写。</p>
-
-<h3 id="toc_6">2. 内存与 GC 篇</h3>
-
-<h4 id="toc_7">2.1 GC 策略</h4>
-
-<p>为了稳健，还是 8G 以下的堆还是 CMS 好了，G1 现在虽然是默认了，但其实在小堆里的表现也没有比 CMS 好，还是 JDK11 的 ZGC 引人期待。</p>
-
-<p><strong>1.CMS 基本写法</strong></p>
-
-<blockquote>
-<p>-XX:+UseConcMarkSweepGC -XX:CMSInitiatingOccupancyFraction=75 -XX:+UseCMSInitiatingOccupancyOnly</p>
-</blockquote>
-
-<p>因为我们的监控系统会通过 JMX 监控内存达到 90% 的状况，所以设置让它 75% 就开始跑了，早点开始也能减少 Full GC 等意外情况 (概念重申，这种主动的 CMS GC，和 JVM 的老生代、永久代、堆外内存完全不能分配内存了而强制 Full GC 是不同的概念)。<br/>
-为了让这个设置生效，还要设置 - XX:+UseCMSInitiatingOccupancyOnly，否则 75％只被用来做开始的参考值，后面还是 JVM 自己算。</p>
-
-<p><strong>2. -XX:MaxTenuringThreshold=2</strong></p>
-
-<p>这是改动效果最明显的一个参数了。对象在 Survivor 区最多熬过多少次 Young GC 后晋升到年老代，JDK8 里 CMS 默认是 6，其他如 G1 是 15。</p>
-
-<p>Young GC 是最大的应用停顿来源，而新生代里 GC 后存活对象的多少又直接影响停顿的时间，所以如果清楚 Young GC 的执行频率和应用里大部分临时对象的最长生命周期，可以把它设的更短一点，让其实不是临时对象的新生代对象赶紧晋升到年老代，别呆着。</p>
-
-<p>用 - XX:+PrintTenuringDistribution 观察下，如果后面几代的大小总是差不多，证明过了某个年龄后的对象总能晋升到老生代，就可以把晋升阈值设小，比如 JMeter 里 2 就足够了。</p>
-
-<p><strong>3. -XX:+ExplicitGCInvokesConcurrent 但不要 - XX:+DisableExplicitGC</strong></p>
-
-<p>​full gc 时，使用 CMS 算法，不是全程停顿，必选。</p>
-
-<p>但像 R 大说的，System GC 是保护机制（如堆外内存满时清理它的堆内引用对象），禁了 system.gc() 未必是好事，只要没用什么特别烂的类库，真有人调了总有调的原因，所以不应该加这个烂大街的参数。</p>
-
-<p><strong>4. ParallelRefProcEnabled 和 CMSParallelInitialMarkEnabled</strong></p>
-
-<p>并行的处理 Reference 对象，如 WeakReference，默认为 false，除非在 GC log 里出现 Reference 处理时间较长的日志，否则效果不会很明显，但我们总是要 JVM 尽量的并行，所以设了也就设了。同理还有 - XX:+CMSParallelInitialMarkEnabled，JDK8 已默认开启，但小版本比较低的 JDK7 甚至不支持。</p>
-
-<p><strong>5. ParGCCardsPerStrideChunk</strong></p>
-
-<p>Linkined 的黑科技， 上一个版本的文章不建议打开，后来发现有些场景的确能减少 YGC 时间，详见<a href="https://toutiao.io/posts/hltb1e/preview">难道他们说的都是真的</a>，简单说就是影响 YGC 时扫描老生代的时间，默认值 256 太小了，但 32K 也未必对，需要自己试验。</p>
-
-<p><code>-XX:+UnlockDiagnosticVMOptions -XX: ParGCCardsPerStrideChunk=1024</code></p>
-
-<h4 id="toc_8">2.2 可选的 GC 参数</h4>
-
-<p><strong>1. 并发收集线程数</strong></p>
-
-<blockquote>
-<p>ParallelGCThreads＝8+(Processor - 8) ( 5/8 )；<br/>
-ConcGCThreads = (ParallelGCThreads + 3)/4</p>
-</blockquote>
-
-<p>比如双 CPU，六核，超线程就是 24 个处理器，小于 8 个处理器时 ParallelGCThreads 按处理器数量，大于时按上述公式 YGC 线程数＝18， CMS GC 线程数＝5。</p>
-
-<p>CMS GC 线程数的公式太怪，也有人提议简单改为 YGC 线程数的 1/2。</p>
-
-<p>一些不在乎停顿时间的后台辅助程序，比如日志收集的 logstash，建议把它减少到 2，避免在 GC 时突然占用太多 CPU 核，影响主应用。</p>
-
-<p>而另一些并不独占服务器的应用，比如旁边跑着一堆 sidecar 的，也建议减少 YGC 线程数。</p>
-
-<p>一个真实的案例，24 核的服务器，默认 18 条 YGC 线程，但因为旁边有个繁忙的 Service Mesh Proxy 在跑着，这 18 条线程并不能 100% 的抢到 CPU，出现了不合理的慢 GC。把线程数降低到 12 条之后，YGC 反而快了很多。 所以那些贪心的把 YGC 线程数＝CPU 核数的，通常弄巧成拙。</p>
-
-<p><strong>2. -XX:－CMSClassUnloadingEnabled</strong></p>
-
-<p>在 CMS 中清理永久代中的过期的 Class 而不等到 Full GC，JDK7 默认关闭而 JDK8 打开。看自己情况，比如有没有运行动态语言脚本如 Groovy 产生大量的临时类。它有时会大大增加 CMS 的暂停时间。所以如果新类加载并不频繁，这个参数还是显式关闭的好。</p>
-
-<p><strong>3. -XX:+CMSScavengeBeforeRemark</strong></p>
-
-<p>默认为关闭，在 CMS remark 前，先执行一次 minor GC 将新生代清掉，这样从老生代的对象引用到的新生代对象的个数就少了，停止全世界的 CMS remark 阶段就短一些。如果打开了，会让一次 YGC 紧接着一次 CMS GC，使得停顿的总时间加长了。</p>
-
-<p>又一个真实案例，CMS GC 的时间和当时新生代的大小成比例，新生代很小时很快完成，新生代 80％时 CMS GC 停顿时间超过一秒，这时候就还是打开了划算。</p>
-
-<h4 id="toc_9">2.3 不建议的 GC 参数</h4>
-
-<p><strong>1. -XX:+UseParNewGC</strong></p>
-
-<p>用了 CMS，新生代收集默认就是，不用自己设。</p>
-
-<p><strong>2. -XX:CMSFullGCsBeforeCompaction</strong><br/>
-默认为 0，即每次 full gc 都对老生代进行碎片整理压缩。Full GC 不同于 老生代 75% 时触发的 CMS GC，只在老生代达到 100%，老生代碎片过大无法分配空间给新晋升的大对象，堆外内存满，这些特殊情况里发生，所以设为每次都进行碎片整理是合适的，详见<a href="http://hllvm.group.iteye.com/group/topic/28854">此贴里 R 大的解释</a>。</p>
-
-<p><strong>3.-XX:+GCLockerInvokesConcurrent</strong></p>
-
-<p>我们犯过的错，不是所有 Concurrent 字样的参数都是好参数，加上之后，原本遇上 JNI GCLocker 只需要补偿 YGC 就够的，变成要执行 YGC ＋ CMS GC 了。</p>
-
-<h4 id="toc_10">2.4 内存大小的设置</h4>
-
-<p>其实 JVM 除了显式设置的 <strong>-Xmx</strong> 堆内存，还有一堆其他占内存的地方 (堆外内存，线程栈，永久代，二进制代码 cache)，在容量规划的时候要留意。</p>
-
-<p>关键业务系统的服务器上内存一般都是够的，所以尽管设得宽松点。</p>
-
-<p><strong>1. -Xmx, -Xms,</strong> <br/>
-堆内存大小，2～4G 均可。</p>
-
-<p><strong>2. -Xmn or -XX:NewSize or -XX:NewRatio</strong></p>
-
-<p>JDK 默认新生代占堆大小的 1/3， 个人喜欢把对半分， 因为增大新生代能减少 GC 的频率，如果老生代里没多少长期对象的话，占 2/3 通常太多了。可以用 - Xmn 直接赋值 (等于 - XX:NewSize and -XX:MaxNewSize 同值的缩写)，或把 NewRatio 设为 1 来对半分。</p>
-
-<p><strong>3. -XX: PermSize=128m -XX:MaxPermSize=512m （JDK7）</strong><br/>
-<strong>-XX:MetaspaceSize=128m -XX:MaxMetaspaceSize=512m（JDK8）</strong></p>
-
-<p>现在的应用有 Hibernate/Spring 这些闹腾的家伙 AOP 之后类都比较多，可以一开始就把初始值从 64M 设到 128M（否则第一次自动扩张会造成大约 3 秒的 JVM 停顿），并设一个更大的 Max 值以求保险。</p>
-
-<p>JDK8 的永生代几乎可用完机器的所有内存，同样设一个 128M 的初始值，512M 的最大值保护一下。</p>
-
-<h4 id="toc_11">2.5 其他内存大小的设置</h4>
-
-<p><strong>1. -Xss</strong></p>
-
-<p>在堆之外，线程占用栈内存，默认每条线程为 1M（以前是 256K）。存放方法调用出参入参的栈，局部变量，标量替换后掉局部变量等，有人喜欢把它设回 256k，节约内存并开更多线程，有人则会在遇到错误后把它再设大点，特别是有很深的 JSON 解析之类的递归调用时。</p>
-
-<p><strong>2. -XX:SurvivorRatio</strong></p>
-
-<p>新生代中每个存活区的大小，默认为 8，即 1/10 的新生代 1/(SurvivorRatio+2)，有人喜欢设小点省点给新生代如 Cassandra，但要避免太小使得存活区放不下临时对象而被迫晋升到老生代，还是从 GC 日志里看实际情况了。</p>
-
-<p><strong>3. -XX:MaxDirectMemorySize</strong></p>
-
-<p>堆外内存的最大值，默认为 Heap 区总内存减去一个 Survivor 区的大小，详见 <a href="http://calvin1978.blogcn.com/articles/directbytebuffer.html">Netty 之堆外内存扫盲篇</a>，如果肯定用不了这么多，也可以把它主动设小，来获得一个比较清晰内存占用预估值，特别是在容器里。</p>
-
-<p><strong>4. -XX:ReservedCodeCacheSize</strong></p>
-
-<p>JIT 编译后二进制代码的存放区，满了之后就不再编译，对性能影响很大。 JDK7 默认不开多层编译 48M，开了 96M，而 JDK8 默认开多层编译 240M。可以在 JMX 里看看 CodeCache 的占用情况，也可以用 VJTools 里的 <a href="https://github.com/vipshop/vjtools/tree/master/vjtop">vjtop</a> 来看，JDK7 下默认的 48M 可以设大点，不抠这么点。</p>
-
-<h3 id="toc_12">3. 监控篇</h3>
-
-<p>JVM 输出的各种日志，如果未指定路径，通常会生成到运行应用的相同目录，为了避免有时候在不同的地方执行启动脚本，一般将日志路径集中设到一个固定的地方。</p>
-
-<h4 id="toc_13">3.1 监控建议配置</h4>
-
-<p><strong>1. -XX:+PrintCommandLineFlags</strong></p>
-
-<p>运维有时会对启动参数做一些临时的更改，将每次启动的参数输出到 stdout，将来有据可查。<br/>
-打印出来的是命令行里设置了的参数以及因为这些参数隐式影响的参数，比如开了 CMS 后，-XX:+UseParNewGC 也被自动打开。</p>
-
-<p><strong>2. -XX:-OmitStackTraceInFastThrow</strong></p>
-
-<p>为异常设置 StackTrace 是个昂贵的操作，所以当应用在相同地方抛出相同的异常 N 次 (两万?) 之后，JVM 会对某些特定异常如 NPE，数组越界等进行优化，不再带上异常栈。此时，你可能会看到日志里一条条 Nul Point Exception，而之前输出完整栈的日志早被滚动到不知哪里去了，也就完全不知道这 NPE 发生在什么地方，欲哭无泪。 所以，将它禁止吧，ElasticSearch 也这样干。</p>
-
-<h4 id="toc_14">3.2 Crash 文件</h4>
-
-<p><strong>1. -XX:ErrorFile</strong></p>
-
-<p>JVM crash 时，hotspot 会生成一个 error 文件，提供 JVM 状态信息的细节。如前所述，将其输出到固定目录，避免到时会到处找这文件。文件名中的 %p 会被自动替换为应用的 PID</p>
-
-<p><code>-XX:ErrorFile=${MYLOGDIR}/hs_err_%p.log</code></p>
-
-<p><strong>2. coredump</strong></p>
-
-<p>当然，更好的做法是生成 coredump，从 CoreDump 能够转出 Heap Dump 和 Thread Dump 还有 crash 的地方，非常实用。</p>
-
-<p>在启动脚本里加上 ulimit -c unlimited 或其他的设置方式，如果有 root 权限，设一下输出目录更好</p>
-
-<p><code>echo &quot;/{MYLOGDIR}/coredump.%p&quot; &gt; /proc/sys/kernel/core_pattern</code></p>
-
-<p>什么？你不知道 coredump 有什么用？看来你是没遇过 JVM Segment Fault 的幸福人。</p>
-
-<p><strong>3. -XX:+HeapDumpOnOutOfMemoryError(可选)</strong></p>
-
-<p>在 Out Of Memory，JVM 快死掉的时候，输出 Heap Dump 到指定文件。不然开发很多时候还真不知道怎么重现错误。</p>
-
-<p>路径只指向目录，JVM 会保持文件名的唯一性，叫 java_pid${pid}.hprof。因为如果指向文件，而文件已存在，反而不能写入。</p>
-
-<p><code>-XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=${LOGDIR}/</code></p>
-
-<p>但在容器环境下，输出 4G 的 HeapDump，在普通硬盘上会造成 20 秒以上的硬盘 IO 跑满，也是个十足的恶邻，影响了同一宿主机上所有其他的容器。</p>
-
-<h4 id="toc_15">3.3 GC 日志</h4>
-
-<p>JDK9 完全不一样了，这里还是写 JDK7/8 的配置。</p>
-
-<p><strong>1. 基本配置</strong></p>
-
-<p><code>-Xloggc:/dev/shm/gc-myapp.log -XX:+PrintGCDateStamps -XX:+PrintGCDetails</code></p>
-
-<p>有人担心写 GC 日志会影响性能，但测试下来实在没什么影响，GC 问题是 Java 里最常见的问题，没日志怎么行。</p>
-
-<p>后来又发现如果遇上高 IO 的情况，GC 时操作系统正在 flush pageCache 到磁盘，也可能导致 GC log 文件被锁住，从而让 GC 结束不了。所以把它指向了 / dev/shm 这种内存中文件系统，避免这种停顿，详见 <a href="%E2%80%9Chttp://engineering.linkedin.com/blog/2016/02/eliminating-large-jvm-gc-pauses-caused-by-background-io-traffic%E2%80%9D">Eliminating Large JVM GC Pauses Caused by Background IO Traffic</a></p>
-
-<p>用 PrintGCDateStamps 而不是 PrintGCTimeStamps，打印可读的日期而不是时间戳。</p>
-
-<p><strong>2. -XX:+PrintGCApplicationStoppedTime</strong></p>
-
-<p>这是个非常非常重要的参数，但它的名字没起好，其实除了打印清晰的完整的 GC 停顿时间外，还可以打印其他的 JVM 停顿时间，比如取消偏向锁，class 被 agent redefine，code deoptimization 等等，有助于发现一些原来没想到的问题。如果真的发现了一些不知是什么的停顿，需要打印安全点日志找原因（见后）。</p>
-
-<p><strong>3. -XX:+PrintGCCause</strong></p>
-
-<p>打印产生 GC 的原因，比如 AllocationFailure 什么的，在 JDK8 已默认打开，JDK7 要显式打开一下。</p>
-
-<p><strong>4. -XX:+PrintPromotionFailure</strong></p>
-
-<p>打开了就知道是多大的新生代对象晋升到老生代失败从而引发 Full GC 时的。</p>
-
-<p><strong>5. GC 日志滚动与备份</strong></p>
-
-<p>GC 日志默认会在重启后清空，有人担心长期运行的应用会把文件弄得很大，所以 &quot;-XX:+UseGCLogFileRotation -XX:NumberOfGCLogFiles=10 -XX:GCLogFileSize=1M&quot; 的参数可以让日志滚动起来。但真正用起来重启后的文件名太混乱太让人头痛，GC 日志再大也达不到哪里去，所以我们没有加滚动，而且自行在启动脚本里对旧日志做备份。</p>
-
-<h4 id="toc_16">3.4 安全点日志</h4>
-
-<p>如果 GC 日志里有非 GC 的 JVM 停顿时间，你得打出安全点日志来知道详情，详见 <a href="http://calvin1978.blogcn.com/articles/safepoint.html">JVM 的 Stop The World，安全点，黑暗的地底世界</a></p>
-
-<p><code>-XX:+PrintSafepointStatistics -XX: PrintSafepointStatisticsCount=1 -XX:+UnlockDiagnosticVMOptions -XX:- DisplayVMOutput -XX:+LogVMOutput -XX:LogFile=/dev/shm/vm-myapp.log</code></p>
-
-<h4 id="toc_17">3.5 JMX</h4>
-
-<blockquote>
-<p>-Dcom.sun.management.jmxremote.port=7001 -Dcom.sun.management.jmxremote -Dcom.sun.management.jmxremote.authenticate=false -Dcom.sun.management.jmxremote.ssl=false -Djava.rmi.server.hostname=127.0.0.1</p>
-</blockquote>
-
-<p>以上设置，只让本地的 Zabbix 之类监控软件通过 JMX 监控 JVM，不允许远程访问。</p>
-
-<p>如果应用忘记了加上述参数，又不想改参数重启服务，可以用 VJTools 的 <a href="https://github.com/vipshop/vjtools/tree/master/vjmxcli">vjmxcli</a> 来救急，它能通过 PID 直接连入目标 JVM 打开 JMX。</p>
-
-<h3 id="toc_18">4. 小结</h3>
-
-<p><a href="https://github.com/vipshop/vjtools/">VJTools</a> 刚刚开源了，里头东西不少，比如 <a href="https://github.com/vipshop/vjtools/blob/master/vjstar/src/main/script/jvm-options">jvm-options.sh</a>，伸手党们最爱，再啰嗦一次，麻烦大家给项目点个 Star。</p>
-
-<p>有什么写得不对的地方，明年再来更新啦。祝大家生产环境里的 JVM 都稳健无比，永远没 bug。</p>
-
-<p><a href="http://calvin1978.blogcn.com/?p=1602">《关键业务系统的 JVM 启动参数推荐》</a>，转载请保留链接。</p>
-
-<h3 id="toc_19">有关的...</h3>
+<p>Welcome to the second part of my Java 8 Concurrency Tutorial out of a series of guides teaching multi-threaded programming in Java 8 with easily understood code examples. In the next 15 min you learn how to synchronize access to mutable shared variables via the synchronized keyword, locks and semaphores.</p>
 
 <ul>
-<li>  2018-06-06 -- <a href="http://calvin1978.blogcn.com/articles/vjtools123.html" title="唯品会Java核心项目VJTools开源了">唯品会 Java 核心项目 VJTools 开源了</a></li>
-<li>  2016-10-29 -- <a href="http://calvin1978.blogcn.com/articles/javatuning.html" title="Java性能优化指南1.8版，及唯品会的实战">Java 性能优化指南 1.8 版，及唯品会的实战</a></li>
-<li>  2016-09-14 -- <a href="http://calvin1978.blogcn.com/articles/btrace1.html" title="Btrace入门到熟练小工完全指南">Btrace 入门到熟练小工完全指南</a></li>
-<li>  2016-08-27 -- <a href="http://calvin1978.blogcn.com/articles/hashmap.html" title="高性能场景下，Map家族的优化使用建议">高性能场景下，Map 家族的优化使用建议</a></li>
+<li>  Part 1: <a href="/posts/2015/04/07/java8-concurrency-tutorial-thread-executor-examples/">Threads and Executors</a></li>
+<li>  Part 2: Synchronization and Locks</li>
+<li>  Part 3: <a href="/posts/2015/05/22/java8-concurrency-tutorial-atomic-concurrent-map-examples/">Atomic Variables and ConcurrentMap</a></li>
+</ul>
+
+<p>The majority of concepts shown in this article also work in older versions of Java. However the code samples focus on Java 8 and make heavy use of lambda expressions and new concurrency features. If you&#39;re not yet familiar with lambdas I recommend reading my <a href="/posts/2014/03/16/java-8-tutorial/">Java 8 Tutorial</a> first.</p>
+
+<p>For simplicity the code samples of this tutorial make use of the two helper methods <code>sleep(seconds)</code> and <code>stop(executor)</code> as defined <a href="https://github.com/winterbe/java8-tutorial/blob/master/src/com/winterbe/java8/samples/concurrent/ConcurrentUtils.java">here</a>.</p>
+
+<h3 id="toc_0">Synchronized<a href="#synchronized" title="Permalink to this section">#</a></h3>
+
+<p>In the <a href="(/posts/2015/04/07/java8-concurrency-tutorial-thread-executor-examples/)">previous tutorial</a> we&#39;ve learned how to execute code in parallel via executor services. When writing such multi-threaded code you have to pay particular attention when accessing shared mutable variables concurrently from multiple threads. Let&#39;s just say we want to increment an integer which is accessible simultaneously from multiple threads.</p>
+
+<p>We define a field <code>count</code> with a method <code>increment()</code> to increase count by one:</p>
+
+<pre><code>int count = 0;
+
+void increment() {
+    count = count + 1;
+}
+
+</code></pre>
+
+<p>When calling this method concurrently from multiple threads we&#39;re in serious trouble:</p>
+
+<pre><code>ExecutorService executor = Executors.newFixedThreadPool(2);
+
+IntStream.range(0, 10000)
+    .forEach(i -&gt; executor.submit(this::increment));
+
+stop(executor);
+
+System.out.println(count);  // 9965
+
+</code></pre>
+
+<p>Instead of seeing a constant result count of 10000 the actual result varies with every execution of the above code. The reason is that we share a mutable variable upon different threads without synchronizing the access to this variable which results in a <a href="http://en.wikipedia.org/wiki/Race_condition">race condition</a>.</p>
+
+<p>Three steps have to be performed in order to increment the number: (i) read the current value, (ii) increase this value by one and (iii) write the new value to the variable. If two threads perform these steps in parallel it&#39;s possible that both threads perform step 1 simultaneously thus reading the same current value. This results in lost writes so the actual result is lower. In the above sample 35 increments got lost due to concurrent unsynchronized access to count but you may see different results when executing the code by yourself.</p>
+
+<p>Luckily Java supports thread-synchronization since the early days via the <code>synchronized</code> keyword. We can utilize <code>synchronized</code> to fix the above race conditions when incrementing the count:</p>
+
+<pre><code>synchronized void incrementSync() {
+    count = count + 1;
+}
+
+</code></pre>
+
+<p>When using <code>incrementSync()</code> concurrently we get the desired result count of 10000. No race conditions occur any longer and the result is stable with every execution of the code:</p>
+
+<pre><code>ExecutorService executor = Executors.newFixedThreadPool(2);
+
+IntStream.range(0, 10000)
+    .forEach(i -&gt; executor.submit(this::incrementSync));
+
+stop(executor);
+
+System.out.println(count);  // 10000
+
+</code></pre>
+
+<p>The <code>synchronized</code> keyword is also available as a block statement.</p>
+
+<pre><code>void incrementSync() {
+    synchronized (this) {
+        count = count + 1;
+    }
+}
+
+</code></pre>
+
+<p>Internally Java uses a so called <u>monitor</u> also known as <a href="https://docs.oracle.com/javase/tutorial/essential/concurrency/locksync.html">monitor lock or intrinsic lock</a> in order to manage synchronization. This monitor is bound to an object, e.g. when using synchronized methods each method share the same monitor of the corresponding object.</p>
+
+<p>All implicit monitors implement the <u>reentrant</u> characteristics. Reentrant means that locks are bound to the current thread. A thread can safely acquire the same lock multiple times without running into deadlocks (e.g. a synchronized method calls another synchronized method on the same object).</p>
+
+<h3 id="toc_1">Locks<a href="#locks" title="Permalink to this section">#</a></h3>
+
+<p>Instead of using implicit locking via the <code>synchronized</code> keyword the Concurrency API supports various explicit locks specified by the <code>Lock</code> interface. Locks support various methods for finer grained lock control thus are more expressive than implicit monitors.</p>
+
+<p>Multiple lock implementations are available in the standard JDK which will be demonstrated in the following sections.</p>
+
+<h4 id="toc_2">ReentrantLock<a href="#reentrantlock" title="Permalink to this section">#</a></h4>
+
+<p>The class <code>ReentrantLock</code> is a mutual exclusion lock with the same basic behavior as the implicit monitors accessed via the <code>synchronized</code> keyword but with extended capabilities. As the name suggests this lock implements reentrant characteristics just as implicit monitors.</p>
+
+<p>Let&#39;s see how the above sample looks like using <code>ReentrantLock</code>:</p>
+
+<pre><code>ReentrantLock lock = new ReentrantLock();
+int count = 0;
+
+void increment() {
+    lock.lock();
+    try {
+        count++;
+    } finally {
+        lock.unlock();
+    }
+}
+
+</code></pre>
+
+<p>A lock is acquired via <code>lock()</code> and released via <code>unlock()</code>. It&#39;s important to wrap your code into a <code>try/finally</code> block to ensure unlocking in case of exceptions. This method is thread-safe just like the synchronized counterpart. If another thread has already acquired the lock subsequent calls to <code>lock()</code> pause the current thread until the lock has been unlocked. Only one thread can hold the lock at any given time.</p>
+
+<p>Locks support various methods for fine grained control as seen in the next sample:</p>
+
+<pre><code>ExecutorService executor = Executors.newFixedThreadPool(2);
+ReentrantLock lock = new ReentrantLock();
+
+executor.submit(() -&gt; {
+    lock.lock();
+    try {
+        sleep(1);
+    } finally {
+        lock.unlock();
+    }
+});
+
+executor.submit(() -&gt; {
+    System.out.println(&quot;Locked: &quot; + lock.isLocked());
+    System.out.println(&quot;Held by me: &quot; + lock.isHeldByCurrentThread());
+    boolean locked = lock.tryLock();
+    System.out.println(&quot;Lock acquired: &quot; + locked);
+});
+
+stop(executor);
+
+</code></pre>
+
+<p>While the first task holds the lock for one second the second task obtains different information about the current state of the lock:</p>
+
+<pre><code>Locked: true
+Held by me: false
+Lock acquired: false
+
+</code></pre>
+
+<p>The method <code>tryLock()</code> as an alternative to <code>lock()</code> tries to acquire the lock without pausing the current thread. The boolean result must be used to check if the lock has actually been acquired before accessing any shared mutable variables.</p>
+
+<h4 id="toc_3">ReadWriteLock<a href="#readwritelock" title="Permalink to this section">#</a></h4>
+
+<p>The interface <code>ReadWriteLock</code> specifies another type of lock maintaining a pair of locks for read and write access. The idea behind read-write locks is that it&#39;s usually safe to read mutable variables concurrently as long as nobody is writing to this variable. So the read-lock can be held simultaneously by multiple threads as long as no threads hold the write-lock. This can improve performance and throughput in case that reads are more frequent than writes.</p>
+
+<pre><code>ExecutorService executor = Executors.newFixedThreadPool(2);
+Map&lt;String, String&gt; map = new HashMap&lt;&gt;();
+ReadWriteLock lock = new ReentrantReadWriteLock();
+
+executor.submit(() -&gt; {
+    lock.writeLock().lock();
+    try {
+        sleep(1);
+        map.put(&quot;foo&quot;, &quot;bar&quot;);
+    } finally {
+        lock.writeLock().unlock();
+    }
+});
+
+</code></pre>
+
+<p>The above example first acquires a write-lock in order to put a new value to the map after sleeping for one second. Before this task has finished two other tasks are being submitted trying to read the entry from the map and sleep for one second:</p>
+
+<pre><code>Runnable readTask = () -&gt; {
+    lock.readLock().lock();
+    try {
+        System.out.println(map.get(&quot;foo&quot;));
+        sleep(1);
+    } finally {
+        lock.readLock().unlock();
+    }
+};
+
+executor.submit(readTask);
+executor.submit(readTask);
+
+stop(executor);
+
+</code></pre>
+
+<p>When you execute this code sample you&#39;ll notice that both read tasks have to wait the whole second until the write task has finished. After the write lock has been released both read tasks are executed in parallel and print the result simultaneously to the console. They don&#39;t have to wait for each other to finish because read-locks can safely be acquired concurrently as long as no write-lock is held by another thread.</p>
+
+<h4 id="toc_4">StampedLock<a href="#stampedlock" title="Permalink to this section">#</a></h4>
+
+<p>Java 8 ships with a new kind of lock called <code>StampedLock</code> which also support read and write locks just like in the example above. In contrast to <code>ReadWriteLock</code> the locking methods of a <code>StampedLock</code> return a stamp represented by a <code>long</code> value. You can use these stamps to either release a lock or to check if the lock is still valid. Additionally stamped locks support another lock mode called <u>optimistic locking</u>.</p>
+
+<p>Let&#39;s rewrite the last example code to use <code>StampedLock</code> instead of <code>ReadWriteLock</code>:</p>
+
+<pre><code>ExecutorService executor = Executors.newFixedThreadPool(2);
+Map&lt;String, String&gt; map = new HashMap&lt;&gt;();
+StampedLock lock = new StampedLock();
+
+executor.submit(() -&gt; {
+    long stamp = lock.writeLock();
+    try {
+        sleep(1);
+        map.put(&quot;foo&quot;, &quot;bar&quot;);
+    } finally {
+        lock.unlockWrite(stamp);
+    }
+});
+
+Runnable readTask = () -&gt; {
+    long stamp = lock.readLock();
+    try {
+        System.out.println(map.get(&quot;foo&quot;));
+        sleep(1);
+    } finally {
+        lock.unlockRead(stamp);
+    }
+};
+
+executor.submit(readTask);
+executor.submit(readTask);
+
+stop(executor);
+
+</code></pre>
+
+<p>Obtaining a read or write lock via <code>readLock()</code> or <code>writeLock()</code> returns a stamp which is later used for unlocking within the finally block. Keep in mind that stamped locks don&#39;t implement reentrant characteristics. Each call to lock returns a new stamp and blocks if no lock is available even if the same thread already holds a lock. So you have to pay particular attention not to run into deadlocks.</p>
+
+<p>Just like in the previous <code>ReadWriteLock</code> example both read tasks have to wait until the write lock has been released. Then both read tasks print to the console simultaneously because multiple reads doesn&#39;t block each other as long as no write-lock is held.</p>
+
+<p>The next example demonstrates <u>optimistic locking</u>:</p>
+
+<pre><code>ExecutorService executor = Executors.newFixedThreadPool(2);
+StampedLock lock = new StampedLock();
+
+executor.submit(() -&gt; {
+    long stamp = lock.tryOptimisticRead();
+    try {
+        System.out.println(&quot;Optimistic Lock Valid: &quot; + lock.validate(stamp));
+        sleep(1);
+        System.out.println(&quot;Optimistic Lock Valid: &quot; + lock.validate(stamp));
+        sleep(2);
+        System.out.println(&quot;Optimistic Lock Valid: &quot; + lock.validate(stamp));
+    } finally {
+        lock.unlock(stamp);
+    }
+});
+
+executor.submit(() -&gt; {
+    long stamp = lock.writeLock();
+    try {
+        System.out.println(&quot;Write Lock acquired&quot;);
+        sleep(2);
+    } finally {
+        lock.unlock(stamp);
+        System.out.println(&quot;Write done&quot;);
+    }
+});
+
+stop(executor);
+
+</code></pre>
+
+<p>An optimistic read lock is acquired by calling <code>tryOptimisticRead()</code> which always returns a stamp without blocking the current thread, no matter if the lock is actually available. If there&#39;s already a write lock active the returned stamp equals zero. You can always check if a stamp is valid by calling <code>lock.validate(stamp)</code>.</p>
+
+<p>Executing the above code results in the following output:</p>
+
+<pre><code>Optimistic Lock Valid: true
+Write Lock acquired
+Optimistic Lock Valid: false
+Write done
+Optimistic Lock Valid: false
+
+</code></pre>
+
+<p>The optimistic lock is valid right after acquiring the lock. In contrast to normal read locks an optimistic lock doesn&#39;t prevent other threads to obtain a write lock instantaneously. After sending the first thread to sleep for one second the second thread obtains a write lock without waiting for the optimistic read lock to be released. From this point the optimistic read lock is no longer valid. Even when the write lock is released the optimistic read locks stays invalid.</p>
+
+<p>So when working with optimistic locks you have to validate the lock every time <u>after</u> accessing any shared mutable variable to make sure the read was still valid.</p>
+
+<p>Sometimes it&#39;s useful to convert a read lock into a write lock without unlocking and locking again. <code>StampedLock</code> provides the method <code>tryConvertToWriteLock()</code> for that purpose as seen in the next sample:</p>
+
+<pre><code>ExecutorService executor = Executors.newFixedThreadPool(2);
+StampedLock lock = new StampedLock();
+
+executor.submit(() -&gt; {
+    long stamp = lock.readLock();
+    try {
+        if (count == 0) {
+            stamp = lock.tryConvertToWriteLock(stamp);
+            if (stamp == 0L) {
+                System.out.println(&quot;Could not convert to write lock&quot;);
+                stamp = lock.writeLock();
+            }
+            count = 23;
+        }
+        System.out.println(count);
+    } finally {
+        lock.unlock(stamp);
+    }
+});
+
+stop(executor);
+
+</code></pre>
+
+<p>The task first obtains a read lock and prints the current value of field <code>count</code> to the console. But if the current value is zero we want to assign a new value of <code>23</code>. We first have to convert the read lock into a write lock to not break potential concurrent access by other threads. Calling <code>tryConvertToWriteLock()</code> doesn&#39;t block but may return a zero stamp indicating that no write lock is currently available. In that case we call <code>writeLock()</code> to block the current thread until a write lock is available.</p>
+
+<h3 id="toc_5">Semaphores<a href="#semaphores" title="Permalink to this section">#</a></h3>
+
+<p>In addition to locks the Concurrency API also supports counting semaphores. Whereas locks usually grant exclusive access to variables or resources, a semaphore is capable of maintaining whole sets of permits. This is useful in different scenarios where you have to limit the amount concurrent access to certain parts of your application.</p>
+
+<p>Here&#39;s an example how to limit access to a long running task simulated by <code>sleep(5)</code>:</p>
+
+<pre><code>ExecutorService executor = Executors.newFixedThreadPool(10);
+
+Semaphore semaphore = new Semaphore(5);
+
+Runnable longRunningTask = () -&gt; {
+    boolean permit = false;
+    try {
+        permit = semaphore.tryAcquire(1, TimeUnit.SECONDS);
+        if (permit) {
+            System.out.println(&quot;Semaphore acquired&quot;);
+            sleep(5);
+        } else {
+            System.out.println(&quot;Could not acquire semaphore&quot;);
+        }
+    } catch (InterruptedException e) {
+        throw new IllegalStateException(e);
+    } finally {
+        if (permit) {
+            semaphore.release();
+        }
+    }
+}
+
+IntStream.range(0, 10)
+    .forEach(i -&gt; executor.submit(longRunningTask));
+
+stop(executor);
+
+</code></pre>
+
+<p>The executor can potentially run 10 tasks concurrently but we use a semaphore of size 5, thus limiting concurrent access to 5. It&#39;s important to use a <code>try/finally</code> block to properly release the semaphore even in case of exceptions.</p>
+
+<p>Executing the above code results in the following output:</p>
+
+<pre><code>Semaphore acquired
+Semaphore acquired
+Semaphore acquired
+Semaphore acquired
+Semaphore acquired
+Could not acquire semaphore
+Could not acquire semaphore
+Could not acquire semaphore
+Could not acquire semaphore
+Could not acquire semaphore
+
+</code></pre>
+
+<p>The semaphores permits access to the actual long running operation simulated by <code>sleep(5)</code> up to a maximum of 5. Every subsequent call to <code>tryAcquire()</code> elapses the maximum wait timeout of one second, resulting in the appropriate console output that no semaphore could be acquired.</p>
+
+<p>This was the second part out of a series of concurrency tutorials. More parts will be released in the near future, so stay tuned. As usual you find all code samples from this article on <a href="https://github.com/winterbe/java8-tutorial">GitHub</a>, so feel free to fork the repo and try it by your own.</p>
+
+<p>I hope you&#39;ve enjoyed this article. If you have any further questions send me your feedback in the comments below. You should also <a href="https://twitter.com/winterbe_">follow me on Twitter</a> for more dev-related stuff!</p>
+
+<ul>
+<li>  Part 1: <a href="/posts/2015/04/07/java8-concurrency-tutorial-thread-executor-examples/">Threads and Executors</a></li>
+<li>  Part 2: Synchronization and Locks</li>
+<li>  Part 3: <a href="/posts/2015/05/22/java8-concurrency-tutorial-atomic-concurrent-map-examples/">Atomic Variables and ConcurrentMap</a></li>
 </ul>
 
                         
@@ -423,7 +488,7 @@ ConcGCThreads = (ParallelGCThreads + 3)/4</p>
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/7/20</span>
+                    <span class="date">2018/9/2</span>
                     <span>posted in&nbsp;</span> 
           				  
           					    <span class="posted-in"><a href='Java.html'>Java</a></span>
@@ -516,31 +581,31 @@ ConcGCThreads = (ParallelGCThreads + 3)/4</p>
 	      
 		      
 			      <li class="post">
-			        <a href="15389311738065.html">重构到更深层的模型</a>
+			        <a href="15459058392039.html">Reliable Domain Events</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389278377243.html">IAM of Google Cloud</a>
+			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389224951575.html">RSocket, a New Application Network Protocol for Reactive Applications, Announced at SpringOne</a>
+			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389220103546.html">如何形象地描述RxJava中的背压和流控机制？</a>
+			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389214670417.html">Modeling Uncertainty with Reactive DDD</a>
+			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
 			      </li>
 		     
 		  

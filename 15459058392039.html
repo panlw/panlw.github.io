@@ -1,0 +1,548 @@
+<!doctype html>
+<html class="no-js" lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>
+    
+  Reliable Domain Events - Junkman
+  
+  </title>
+  
+  
+  <link href="atom.xml" rel="alternate" title="Junkman" type="application/atom+xml">
+    <link rel="stylesheet" href="asset/css/foundation.min.css" />
+    <link rel="stylesheet" href="asset/css/docs.css" />
+    <script src="asset/js/vendor/modernizr.js"></script>
+    <script src="asset/js/vendor/jquery.js"></script>
+  <script src="asset/highlightjs/highlight.pack.js"></script>
+  <link href="asset/highlightjs/styles/github.css" media="screen, projection" rel="stylesheet" type="text/css">
+  <script>hljs.initHighlightingOnLoad();</script>
+<script type="text/javascript">
+  function before_search(){
+    var searchVal = 'site:panlw.github.io ' + document.getElementById('search_input').value;
+    document.getElementById('search_q').value = searchVal;
+    return true;
+  }
+</script>
+  </head>
+  <body class="antialiased hide-extras">
+    
+    <div class="marketing off-canvas-wrap" data-offcanvas>
+      <div class="inner-wrap">
+
+
+<nav class="top-bar docs-bar hide-for-small" data-topbar>
+
+
+  <section class="top-bar-section">
+  <div class="row">
+      <div style="position: relative;width:100%;"><div style="position: absolute; width:100%;">
+        <ul id="main-menu" class="left">
+        
+        <li id=""><a target="self" href="index.html">Home</a></li>
+        
+        <li id=""><a target="_self" href="archives.html">Archives</a></li>
+        
+        </ul>
+
+        <ul class="right" id="search-wrap">
+          <li>
+<form target="_blank" onsubmit="return before_search();" action="http://google.com/search" method="get">
+    <input type="hidden" id="search_q" name="q" value="" />
+    <input tabindex="1" type="search" id="search_input"  placeholder="Search"/>
+</form>
+</li>
+          </ul>
+      </div></div>
+  </div>
+  </section>
+
+</nav>
+
+        <nav class="tab-bar show-for-small">
+  <a href="javascript:void(0)" class="left-off-canvas-toggle menu-icon">
+    <span> &nbsp; Junkman</span>
+  </a>
+</nav>
+
+<aside class="left-off-canvas-menu">
+      <ul class="off-canvas-list">
+       
+       <li><a href="index.html">HOME</a></li>
+    <li><a href="archives.html">Archives</a></li>
+    <li><a href="about.html">ABOUT</a></li>
+
+    <li><label>Categories</label></li>
+
+        
+            <li><a href="Infra.html">Infra</a></li>
+        
+            <li><a href="Coding.html">Coding</a></li>
+        
+            <li><a href="Modeling.html">Modeling</a></li>
+        
+            <li><a href="Archtecting.html">Archtecting</a></li>
+         
+
+      </ul>
+    </aside>
+
+<a class="exit-off-canvas" href="#"></a>
+
+
+        <section id="main-content" role="main" class="scroll-container">
+        
+       
+
+ <script type="text/javascript">
+  $(function(){
+    $('#menu_item_index').addClass('is_active');
+  });
+</script>
+<div class="row">
+  <div class="large-8 medium-8 columns">
+      <div class="markdown-body article-wrap">
+       <div class="article">
+          
+          <h1>Reliable Domain Events</h1>
+     
+        <div class="read-more clearfix">
+          <span class="date">2018/12/27</span>
+
+          <span>posted in&nbsp;</span> 
+          
+              <span class="posted-in"><a href='DTx.html'>DTx</a></span>
+           
+         
+          <span class="comments">
+            
+
+            
+          </span>
+
+        </div>
+      </div><!-- article -->
+
+      <div class="article-content">
+      <pre><code>Written on April 23, 2016
+</code></pre>
+
+<blockquote>
+<p>原文地址 <a href="http://pillopl.github.io/reliable-domain-events/">http://pillopl.github.io/reliable-domain-events/</a></p>
+</blockquote>
+
+<p>We already know that domain events are a great tool to integrate different parts of your system (so called bounded contexts) and decouple them. Instead of directly calling outside component, we can notify our infrastructure, which in turn informs interested parties about what has just occurred. This another form of <strong>Inversion of Control</strong> helps us to achieve our goal. Consider following piece of code:</p>
+
+<pre><code>    class User {
+
+        //...
+
+        @Transactional
+        public void register(LocalDateTime at, RegisteredBy by) {
+            markRegistered();
+            markSuspiciousIfAtNight(at);
+            DomainEventsPublisher.publish(new UserRegistered(this.id(), at));
+        }
+
+    }
+
+    public class UserRegistered implements DomainEvent {
+
+        private final UserRegistered userId;
+        private final LocalDateTime at;
+
+        //getters, constructor
+
+    }
+
+    class DomainEventsPublisher {
+
+        //...
+
+        private final Register handlersRegistry;
+
+        public static void publish(DomainEvent event) {
+            handlersRegistry
+                .getHandlers(event.getClass())
+                .forEach(handler -&gt; handler.handle(event));
+        }
+
+    }
+
+    class SendCommunicationOnUserRegistered implements DomainEventHandler&lt;UserRegistered&gt; {
+
+    @Override
+    public void handle(UserRegistered event) {
+        Communication c = sendRegistrationEmail(event.getUserId());
+        storeCommunication(c);
+    }
+
+</code></pre>
+
+<p>There is a big problem with this simple <strong>Observer</strong> pattern in above example. Namely, everything happens in the same database transaction, which has started at the time of calling <u>register</u> method. This has several implications. First of all, we did not decouple user registration from e-mail sending and we just have mentioned this is what domain events are for. If our mail server is down, registration fails. Why would our user care about an email? He correctly filled registration form and does not even know there is an email coming.</p>
+
+<p>From the <strong>use case</strong> point of view, sending an email should not imply successful invocation. Secondly, even though it looks like the code deals only with users (it registers and marks as suspicious when needed), it modifies another aggregate - communications (communication would be probably modeled as a Generic Subdomain, but to simplify things consider it as another bounded context). The rule of thumb says that we should not modify several aggregates in one transaction, because these concepts should not be so directly related. Sending an email (or any other action done as a consequence of registering user) may take a lot of time, do I/O calls, etc.</p>
+
+<p>But things get worse. Consider situation when everything was fine with our mail server, we want to save user to database and something fails and transaction rollbacks. Now we have a big problem, because confused user got error page as a response, but seconds later successful email with registration greetings.</p>
+
+<p>This clearly shows that those concepts should be unrelated. One may come with an idea to fire all handlers asynchronously (so outside current transaction) but that solves only one issue: we could register users when we cannot send emails. We need something better. Fortunately, we can fire our emails just after transaction commit. Thus, we are sure everything was fine during registration and without doubts we can send the welcoming message. Spring gives us possibility to do that in a few lines of code with <a href="http://docs.spring.io/spring/docs/3.0.6.RELEASE_to_3.1.0.BUILD-SNAPSHOT/3.0.6.RELEASE/org/springframework/transaction/support/TransactionSynchronizationManager.html">TransactionSynchronizationManager</a>:</p>
+
+<pre><code>    class DomainEventsPublisher {
+
+        //...
+
+        public static void publish(DomainEvent event) {
+            handlersRegistry
+                .getHandlers(event.getClass())
+                .forEach(handler -&gt; handleAsynchronously(event, handlers));
+        }
+
+        private static void handleAsynchronously(DomainEvent event, DomainEventHandler handler) {
+            if (TransactionSynchronizationManager.isActualTransactionActive()) {
+                processAfterCommit(event, handler);
+            } else {
+                processNow(event, handler);
+            }
+        }
+
+        private static void processNow(final DomainEvent event, DomainEventHandler handler) {
+            handler.handle(event);
+        }
+
+        private static void processAfterCommit(final DomainEvent event, DomainEventHandler handler) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronizationAdapter() {
+                @Override
+                public void afterCommit() {
+                    handler.handle(event);
+                }
+            });
+        }
+   }
+
+</code></pre>
+
+<p></p></p>
+
+<p>This example could be simplified with Spring 4.2 and <a href="http://docs.spring.io/spring/docs/current/spring-framework-reference/htmlsingle/#transaction-event">@TransactionalEventListener</a>. Thanks to this code, we are fine with cause and effect relationship. Taking advantage of java memory model nomenclature: we know that successful registration <strong>happens before</strong> sending an email. One may argue that there is a slight window of time when we are not consistent. As stated at the beginning, we don&#39;t need to be consistent when working with several bounded context. The important is that they will be <strong>eventually consistent</strong>. Anyway, we still did not solve the problem with unresponsive mail server. When it fails, the information is lost. We can implement something which will retry this operation with a reasonable back-off, but when our application crashes, we still don&#39;t have any mean to recover to former state. We need to deal with that issue.</p>
+
+<p>It gets clearer that we need to store somewhere the <strong>intent</strong> of sending the email. The intent was of course <u>UserRegistered</u> event. By exposing this intent to for example JMS infrastructure, we can implement the retry mechanism. We can go further and store any event coming from a given bounded context. Repository of all domain events is in fact called <strong>Event Store</strong>. Below example contains code that serializes events to JSON and publishes them to JMS. We could publish them anywhere else, for example to a file on a local disk or to an Akka actor.</p>
+
+<pre><code>class ExternalEventStore {
+
+    //...
+
+    private final ProducerTemplate producerTemplate;
+    private final ObjectMapper objectMapper = new ObjectMapper();
+
+    void publish(DomainEvent event) throws JsonProcessingException {
+        final String body = objectMapper.writeValueAsString(event);
+        producerTemplate.sendBody(&quot;queue.url&quot;, InOnly, body);
+    }
+}
+
+</code></pre>
+
+<p>We could invoke <u>ExternalEventStore</u> from our <u>handleNow</u> method from previous example and make some other component consume those messages and send emails. But that would be just delegating the problem from mail server to another part of infrastructure - our queue. Putting a message to a queue might fail and the message would be lost. Moreover, our application can fail somewhere in between commit and invoking this asynchronous transaction listener. We also cannot move this code back to the transaction, because that would make us stuck at the beginning of our problem and queue failures would result in our users not being able to register.</p>
+
+<p>We have to develop a consistent solution in which an <strong>occurrence of an event reflects that it really happened in our system</strong>. Also <strong>when it really happens, it should be followed by an event</strong>. In other words, those two statements should be in bi-conditional logical connective.</p>
+
+<p>The problem is that our JMS component is not backed by the same data source as our domain model. One solution is to use global transaction and two-phase commits. The problem is that it might decrease performance significantly. Plus, not every part of our infrastructure must support that mechanism. More clever idea is to share the same data source for our messaging infrastructure and domain model (if those two parts support this kind of data soure). The side effect here is that we need to share the same schema, which might not be the nicest solution.</p>
+
+<p>In my opinion the best option is to translate our events to our domain model storage and save them in the same transaction. Later on, another pool of threads should process them and publish somewhere else. Now our event store would look as follows:</p>
+
+<pre><code>
+public class InternalEventStore {
+
+    //...
+
+    private final ObjectMapper eventSerializer;
+    private final SessionFactory sessionFactory;
+
+    void store(DomainEvent event) throws JsonProcessingException  {
+        session().save(serialized(event));
+    }
+
+    private PersistentEvent serialized(DomainEvent event) throws JsonProcessingException   {
+        return new PersistentEvent(eventSerializer.writeValueAsString(event));
+    }
+
+    List&lt;PersistentEvent&gt; listPending(int limit) {
+       //...
+    }
+}
+
+public class PersistentEvent {
+
+    public enum Status {
+        PENDING, SENT
+    }
+
+    private Long id;
+
+    private String uuid = UUID.randomUUID().toString();
+
+    private LocalDateTime occuredAt = LocalDateTime.now();
+
+    private LocalDateTime sentAt;
+
+    private String body;
+
+    private Status status = PENDING;
+
+    public void sent(LocalDateTime at) {
+        this.sentAt = at;
+        this.status = SENT;
+    }
+
+    //...
+
+}
+
+</code></pre>
+
+<p>and it would be invoked from <u>DomainEventProcessor</u> in the same transaction (so we came back to synchronous observator pattern):</p>
+
+<pre><code>
+ class DomainEventsPublisher {
+
+    //...
+
+    private final Register handlersRegistry;
+    private final EventStore eventStore;
+
+    public void publish(DomainEvent event) {
+        handlersRegistry
+            .getHandlers(event.getClass())
+            .forEach(handler -&gt; handler.handle(event));
+        eventStore.store(event);
+    }
+}
+
+</code></pre>
+
+<p>Note that we left the register with handlers working under the same transaction. It is fine, because we may need to listen to this event somewhere else in the same bounded context. That way we won&#39;t modify another aggregates.</p>
+
+<p>But we still want our events to appear in our JMS infrastructure. We can run a periodic job which scans list of our events and sends them to a queue or a topic: </p></p>
+
+<pre><code>class PublishPendingEventsScheduler {
+
+    private final ExternalEventStore eventStore;
+    private final ExternalEventStore publisher;
+
+    @Scheduled(initialDelay = 3000, fixedDelayString = &quot;${events.publisher.freq:3000}&quot;)
+    public void sendEvents() {
+        eventStore.listPending(100).forEach(this::publish);
+    }
+
+    private void publish(PersistentEvent event) {
+        publisher.publish(event); // publisher needs to have publish(PersistentEvent event) method
+        event.sent(now());
+    }
+}
+
+</code></pre>
+
+<p>We mark every event as sent, so that it won&#39;t be picked up in further invocation. If our message infrastructure fails, we try again soon. We might argue that this code suffers from the same problem as the whole example. Our database might fails at the time we want to save this event as sent. That is a fair concern, because we already have sent it to JMS. That means it can arrive at consumer side several times. It is important that consumer handles those events in an idempotent way - by for example storing PersistentEvent&#39;s uuid and doing de-duplication. Resending at producer side and idempotency at consumer side gives us <strong>at most once delivery.</strong></p>
+
+<p>In this post I tried to describe reliable domain events mechanism by implementing simple event store. Actually, events stores have much more benefits: we can examine every historical result of commands invoked in our system, run some forecasting algorithms, do event sourcing (reconstructing an aggregate by composing events it has produced) in different bounded contexts.</p>
+
+
+    
+
+      </div>
+
+      <div class="row">
+        <div class="large-6 columns">
+        <p class="text-left" style="padding:15px 0px;">
+      
+        </p>
+        </div>
+        <div class="large-6 columns">
+      <p class="text-right" style="padding:15px 0px;">
+      
+          <a  href="15459049161482.html" 
+          title="Next Post: Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener &raquo;</a>
+      
+      </p>
+        </div>
+      </div>
+      <div class="comments-wrap">
+        <div class="share-comments">
+          <script type="text/javascript" src="//s7.addthis.com/js/300/addthis_widget.js#pubid=ra-5ae58078c0d7b2ab"></script>
+
+          
+
+          
+        </div>
+      </div>
+    </div><!-- article-wrap -->
+  </div><!-- large 8 -->
+
+
+
+
+ <div class="large-4 medium-4 columns">
+  <div class="hide-for-small">
+    <div id="sidebar" class="sidebar">
+          <div id="site-info" class="site-info">
+            
+                <div class="site-a-logo"><img src="./asset/img/logo.jpg" /></div>
+            
+                <h1>Junkman</h1>
+                <div class="site-des">“拾荒者”一词来自凯文・凯利的《失控》中关于机器学习的故事（“收集癖好机”如何完成他的收集工作）。</div>
+                <div class="social">
+
+
+
+
+
+
+
+
+
+<a target="_blank" class="github" target="_blank" href="https://github.com/panlw/" title="GitHub">GitHub</a>
+
+  <a target="_blank" class="rss" href="atom.xml" title="RSS">RSS</a>
+                
+              	 </div>
+          	</div>
+
+             
+
+              <div id="site-categories" class="side-item ">
+                <div class="side-header">
+                  <h2>Categories</h2>
+                </div>
+                <div class="side-content">
+
+      	<p class="cat-list">
+        
+            <a href="Infra.html"><strong>Infra</strong></a>
+        
+            <a href="Coding.html"><strong>Coding</strong></a>
+        
+            <a href="Modeling.html"><strong>Modeling</strong></a>
+        
+            <a href="Archtecting.html"><strong>Archtecting</strong></a>
+         
+        </p>
+
+
+                </div>
+              </div>
+
+              <div id="site-categories" class="side-item">
+                <div class="side-header">
+                  <h2>Recent Posts</h2>
+                </div>
+                <div class="side-content">
+                <ul class="posts-list">
+	      
+		      
+			      <li class="post">
+			        <a href="15459058392039.html">Reliable Domain Events</a>
+			      </li>
+		     
+		  
+		      
+			      <li class="post">
+			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
+			      </li>
+		     
+		  
+		      
+			      <li class="post">
+			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
+			      </li>
+		     
+		  
+		      
+			      <li class="post">
+			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
+			      </li>
+		     
+		  
+		      
+			      <li class="post">
+			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
+			      </li>
+		     
+		  
+		      
+		  
+		      
+		  
+		      
+		  
+		      
+		  
+		      
+		  
+		      
+		  
+		      
+		  
+		      
+		  
+		      
+		  
+		      
+		  
+		      
+		  
+		      
+		  
+		      
+		  
+		      
+		  
+		      
+		   
+		  		</ul>
+                </div>
+              </div>
+        </div><!-- sidebar -->
+      </div><!-- hide for small -->
+</div><!-- large 4 -->
+
+</div><!-- row -->
+
+ <div class="page-bottom clearfix">
+  <div class="row">
+   <p class="copyright">Copyright &copy; 2015
+Powered by <a target="_blank" href="http://www.mweb.im">MWeb</a>,&nbsp; 
+Theme used <a target="_blank" href="http://github.com">GitHub CSS</a>.</p>
+  </div>
+</div>
+
+        </section>
+      </div>
+    </div>
+
+  
+    
+
+    <script src="asset/js/foundation.min.js"></script>
+    <script>
+      $(document).foundation();
+      function fixSidebarHeight(){
+        var w1 = $('.markdown-body').height();
+          var w2 = $('#sidebar').height();
+          if (w1 > w2) { $('#sidebar').height(w1); };
+      }
+      $(function(){
+        fixSidebarHeight();
+      })
+      $(window).load(function(){
+          fixSidebarHeight();
+      });
+     
+    </script>
+
+    <script src="asset/chart/all-min.js"></script><script type="text/javascript">$(function(){    var mwebii=0;    var mwebChartEleId = 'mweb-chart-ele-';    $('pre>code').each(function(){        mwebii++;        var eleiid = mwebChartEleId+mwebii;        if($(this).hasClass('language-sequence')){            var ele = $(this).addClass('nohighlight').parent();            $('<div id="'+eleiid+'"></div>').insertAfter(ele);            ele.hide();            var diagram = Diagram.parse($(this).text());            diagram.drawSVG(eleiid,{theme: 'simple'});        }else if($(this).hasClass('language-flow')){            var ele = $(this).addClass('nohighlight').parent();            $('<div id="'+eleiid+'"></div>').insertAfter(ele);            ele.hide();            var diagram = flowchart.parse($(this).text());            diagram.drawSVG(eleiid);        }    });});</script>
+<script type="text/javascript" src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML"></script><script type="text/x-mathjax-config">MathJax.Hub.Config({TeX: { equationNumbers: { autoNumber: "AMS" } }});</script>
+
+
+  </body>
+</html>

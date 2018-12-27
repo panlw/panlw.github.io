@@ -105,356 +105,315 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15281293926383.html">
+                <a class="clearlink" href="15305085046380.html">
                 
-                  <h1>在 Spring Boot 中集成 SOFABoot 类隔离能力</h1>
+                  <h1>How to Dockerize your End-to-End acceptance tests</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p>张奇龙 <a href="https://zhuanlan.zhihu.com/p/36909393">https://zhuanlan.zhihu.com/p/36909393</a></p>
-
-<h2 id="toc_0">SOFABoot 类隔离能力简介</h2>
+<p><a href="https://medium.freecodecamp.org/how-to-dockerize-your-end-to-end-acceptance-tests-dbb593acb8e0">https://medium.freecodecamp.org/how-to-dockerize-your-end-to-end-acceptance-tests-dbb593acb8e0</a></p>
 </blockquote>
 
-<p>SOFABoot 是蚂蚁金服中间件团队开源的基于 Spring Boot 的一个开发框架，其在 Spring Boot 基础能力之上，增加了类隔离能力。蚂蚁金服内部丰富的实践场景表明，类隔离能力对解决类冲突、版本管控有其特殊的优势。</p>
+<p>This article serves as a “how-to” guide for using Selenium Docker images alongside CodeceptJS and an Express server.</p>
 
-<p>SOFABoot 的类隔离能力由单独的组件 SOFAArk 实现，相比业界遵循 OSGi（<a href="https://link.zhihu.com/?target=https%3A//www.osgi.org/">https://www.osgi.org</a>） 规范的 Equinox 或者 Felix，SOFAArk 专注于类隔离，简化了类加载模型，是一款更加轻量的类隔离框架。</p>
-
-<p>本文将介绍 SOFABoot 类隔离能力的背景及其使用方式。</p>
-
-<h2 id="toc_1">1. 背景</h2>
-
-<p>在 Java 世界中，依赖的 JAR 包之间相互冲突永远是一个痛，Spring Boot 采用统一的依赖管理机制规避了大部分依赖冲突问题。理想很美好，现实却很骨感，作为蚂蚁金服这类大体量的公司，各业务线纷繁复杂、基础服务组件繁多，很难做到对所有 JAR 包做统一管控，尤其涉及到多个跨团队模块组件相互依赖时，因为各自技术栈历史包袱的存在，难以有效统一冲突包版本。</p>
-
-<p>假设如下场景，工程需要引入两个三方组件：A 和 B，组件 A 需要依赖 Hessian 3，组件 B 需要依赖 Hessian 4，因为 Hessian 3 和 Hessian 4 是不兼容的。作为开发者，遇到这种包冲突问题，如果不借助类隔离框架，只能耗费精力升级到统一版本。</p>
-
-<p><img src="https://pic2.zhimg.com/v2-523ebc71ae694f6bbe1196b458711c38_b.jpg" alt=""/><img src="https://pic2.zhimg.com/v2-523ebc71ae694f6bbe1196b458711c38_r.jpg" alt=""/></p>
-
-<p>为了彻底解决类似的包冲突问题，我们需要借助类隔离机制，使用不同的类加载器加载冲突的三方依赖包，进而做到在同一个应用运行时共存。</p>
-
-<p>基于此背景，SOFABoot 提供了一个轻量级的类隔离框架，也是本文的主角，SOFAArk。</p>
-
-<h2 id="toc_2">2. 基本原理</h2>
-
-<p>在介绍 SOFAArk 类隔离框架使用之前，我们简单了解下其背后的实现原理。正如前文中描述，SOFAArk 是通过独立的类加载器加载相互冲突的三方依赖包，从而做到隔离包冲突。那么我们不禁要问，SOFAArk 是如何区分应用中哪些依赖包是需要单独的类加载器加载呢？原因是 Ark Plugin，它是 SOFAArk 框架定义的一种特殊的 JAR 包文件格式，SOFAArk 框架会自动识别 Ark Plugin 这种特殊依赖。</p>
-
-<p>何为 Ark Plugin ? Ark Plugin 本质上是一个 FatJar，借助 SOFABoot 官方提供的 maven 打包插件，开发者可以把若干普通的 JAR 包打包成 Ark Plugin 供应用依赖或者把普通的 Java 模块改造成 Ark Plugin。通常来说，如果把一个普通 JAR 打包成 Ark Plugin，那么该 JAR 包依赖的其他三方包也会被打入同一个 Ark Plugin，默认情况下 SOFABoot 官方打包插件会自动把间接依赖也打入到 Ark Plugin。</p>
-
-<p>应用使用添加 maven 依赖的方式引入 Ark Plugin，运行时，SOFAArk 框架会自动识别应用的三方依赖包中是否含有 Ark Plugin，进而使用单独的类加载器加载。为了更加直观，下图是应用运行时逻辑分层图：</p>
-
-<p><img src="https://pic3.zhimg.com/v2-af38a66b654feefe65e91996a60a2700_b.jpg" alt=""/><img src="https://pic3.zhimg.com/v2-af38a66b654feefe65e91996a60a2700_r.jpg" alt=""/></p>
-
-<p>可以看到，在应用运行时，SOFAArk 容器处于最底层，负责启动应用。应用依赖的所有 Ark Plugin 处于中间层，每个 Ark Plugin 都由 SOFAArk 容器使用独立的类加载器加载，相互隔离。应用业务代码及其他非 Ark Plugin 的普通三方依赖包，为了描述简单，统称为 Ark Biz，它运行在最上层，需要依赖中间层的 Ark Plugin。</p>
-
-<p>一个标准 Ark Plugin 会包含一些配置文件，主要包含导出类和导入类配置。导出类即把 Ark Plugin 中的类导出给 Ark Biz 和其他 Ark Plugin 可见。默认情况下，所有 Ark Plugin 的导出类对于 Ark Biz 来说都是可见的，即 Ark Biz 可以使用 Ark Plugin 的导出类。对于 Ark Plugin 来说，如果需要使用其他 Ark Plugin 的导出类，必须声明为自身的导入类。关于 Ark Plugin 详细说明可以参考文末相关链接。</p>
-
-<p>下面我们来演示如何开发一个简单的 Ark Plugin。</p>
-
-<h2 id="toc_3">3. Java 模块改造成 Ark Plugin</h2>
-
-<h2 id="toc_4">3.1 新建工程</h2>
-
-<p>Demo <a href="https://link.zhihu.com/?target=https%3A//github.com/QilongZhang/ark-plugin-demo">工程地址</a></p>
-
-<p>运行需要 JDK 6 及以上、 Maven 3.2.5 以上。</p>
-
-<p>首先我们在 IDE 里新建一个普通 Maven 工程，并创建三个普通的 Java 模块。以前文描述的 Hessian 冲突为例，在演示工程中定义了三个模快：</p>
+<p>In it, we will cover:</p>
 
 <ul>
-<li>  pojo-module: 定义了一个简单的 PoJo 类 SamplePoJo，并设置为导出类，打包成 <code>pojo-ark-plugin</code> 。</li>
-<li>  hessian3-module：定义了一个服务类 Hessian3Service，实现了简单的序列化和反序列逻辑，使用的版本是 Hessian 3，并导入了 SamplePoJo，打包成 <code>hessian3-ark-plugin</code> 。</li>
-<li>  hessian4-module：定义了一个服务类 Hessian4Service，和 Hessian3Service 功能类似，使用的版本是 Hessian 4，并导入了 SamplePoJo，打包成 <code>hessian4-ark-plugin</code> 。</li>
+<li>  What is E2E acceptance testing?</li>
+<li>  Why use Docker?</li>
+<li>  Loosely coupled testing tools</li>
+<li>  Layers of testing tools</li>
+<li>  Creating a test project</li>
 </ul>
 
-<p>该用例是为了演示如何将普通的 Java 模块及其三方依赖包打包成 Ark Plugin，以 <code>hessian3-module</code> 模块为例来讲解打包流程。</p>
-
-<h2 id="toc_5">3.2 编写服务类</h2>
-
-<p>在 <code>hessian3-module</code>中，提供了一个简单的序列化和反序列化功能类 Hessian3Service：</p>
-
-<pre><code>package com.alipay.sofa.demo.hessian3;
-
-import com.caucho.hessian.io.HessianInput;
-import com.caucho.hessian.io.HessianOutput;
-
-import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
+<h3 id="toc_0">E2E Acceptance Testing</h3>
 
-/**
- * @author qilong.zql
- */
-public class Hessian3Service {
-    public byte[] serialize(Object obj) throws IOException {
-        if(obj==null) throw new NullPointerException();
+<p><a href="https://en.wikipedia.org/wiki/Acceptance_testing">Acceptance testing</a> is a <a href="https://www.tutorialspoint.com/software_testing_dictionary/acceptance_testing.htm">phase</a> in a typical software development process. It covers tests to see if the product has met the overall requirement specifications, and if it is “accepted” as ready for delivery. It is typically the last phase of testing before releasing the product to production. This could include user-based acceptance tests, business-based acceptance tests, or even alpha/beta testing.</p>
 
-        ByteArrayOutputStream os = new ByteArrayOutputStream();
-        HessianOutput ho = new HessianOutput(os);
-        ho.writeObject(obj);
-        return os.toByteArray();
-    }
+<p><a href="http://toolsqa.com/software-testing/what-does-end-to-end-test-mean/">End-to-End</a> (E2E) testing is one implementation of acceptance testing. It is an <u>approach</u> to acceptance testing, but the terms are not synonymous. It allows testing the flow of an application from start to finish to see if it is performing as designed. In the case of a web application, it would involve determining a user scenario and testing each of the steps the user would take in order. The test fails if the scenario is not completed successfully.</p>
 
-    public Object deserialize(byte[] by) throws IOException {
-        if(by==null) throw new NullPointerException();
+<p>Various tools exist to automate this process, simulating user interaction with the application.</p>
 
-        ByteArrayInputStream is = new ByteArrayInputStream(by);
-        HessianInput hi = new HessianInput(is);
-        return hi.readObject();
-    }
-}
+<h3 id="toc_1">Why Docker?</h3>
 
-</code></pre>
+<p>Creating and running E2E tests is often considered a flaky and complex process. It requires a lot of set up that can still easily fail when run on different machines or in a CI (continuous integration) environment. Installing and maintaining different browsers and WebDrivers both for local tests and CI tests takes time. And even when done, it can still fail because of simple issues such as if the <a href="https://medium.com/@garrensmith/consistent-selenium-testing-with-docker-f2d5a24a1bc5">screen resolution on developer’s local machines, or in CI, is different</a>.</p>
 
-<p>该功能类非常简单，提供了两个方法调用，分别实现对象的序列化和发序列化。</p>
+<p>The standard advantages of Docker also apply: not having to deal with OS compatibility or having dependancies installed. To run the Selenium Server you would need Java installed (<a href="https://engineering.thetrainline.com/dockerize-your-webdriverio-environment-to-run-everywhere-4f98e7a1d80e">or at least be started/stopped explicitly</a>). To run Express you would need Node.js, and for Chrome you’d need Chrome itself as well as ChromeDriver.</p>
 
-<h2 id="toc_6">3.3 Ark Plugin 配置</h2>
+<p>When using Docker these dependancies are eliminated. You simply use different containers that already contain these, which will function precisely the same no matter on which machine they are run. When you then think how easy it is to build Docker into your CI, Dockerizing your test process becomes an obvious choice.</p>
 
-<p>因为 Ark Plugin 的配置大同小异，在这里以普通的 Java 模块 <code>hessian3-module</code> 打包成 <code>hessian3-ark-plugin</code> 为例，介绍 Ark Plugin 的一般配置。</p>
+<h3 id="toc_2">Loosely coupled testing tools</h3>
 
-<p>首先，我们需要添加 SOFABoot 官方提供的 maven 打包插件：</p>
+<p>There are several frameworks available when writing E2E tests, and for a newcomer it can be hard to know which to choose and invest time into. If you choose the wrong one, you’ll have wasted a lot of time.</p>
 
-<pre><code>&lt;plugin&gt;
-    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
-    &lt;artifactId&gt;sofa-ark-plugin-maven-plugin&lt;/artifactId&gt;
-    &lt;version&gt;0.2.0&lt;version&gt;
-&lt;/plugin&gt;
+<p>This is where <a href="http://codecept.io/">CodeceptJS</a> comes into the picture. CodeceptJS is a testing framework that takes a scenario-driven, <a href="https://en.wikipedia.org/wiki/Behavior-driven_development">behaviour driven development</a> (BDD) approach, with an API language that is easy for non-engineers to understand and use. However, perhaps even more importantly, it is backend agnostic. It is written on top of several popular testing libraries (WebDriverIO or Puppeteer, for example) and its single high level API communicates to whichever one you choose. It’s <a href="https://hackernoon.com/effective-end-2-end-testing-in-javascript-with-codeceptjs-37c8d7d6a928">creators believe</a> that</p>
 
-</code></pre>
+<blockquote>
+<p>Your tests should not be bound to your execution engine. Whether you choose Selenium or Puppeteer your tests should look almost the same. If you (later) feel the limitation of one engine you can easily switch your tests to other.</p>
+</blockquote>
 
-<p>然后在<code>hessian3-module</code> 演示用例中，只需要在模块 <code>pom.xml</code> 文件中添加一个导出类和一个导入类配置，配置如下：</p>
+<h3 id="toc_3">Layers of testing tools</h3>
 
-<pre><code>&lt;build&gt;
-    &lt;plugins&gt;
-        &lt;plugin&gt;
-            &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
-            &lt;artifactId&gt;sofa-ark-plugin-maven-plugin&lt;/artifactId&gt;
-            &lt;version&gt;0.2.0&lt;/version&gt;
-            &lt;executions&gt;
-                &lt;execution&gt;
-                    &lt;id&gt;default-cli&lt;/id&gt;
-                    &lt;goals&gt;
-                        &lt;goal&gt;ark-plugin&lt;/goal&gt;
-                    &lt;/goals&gt;
+<p><img src="https://cdn-images-1.medium.com/max/1600/1*p0ALhZOLfRFYBvosshCmjQ.png" alt=""/>Some of the different products available at each layer of simulating user interaction with a browser</p>
 
-                    &lt;configuration&gt;
-                        &lt;!-- configure imported class --&gt;
-                        &lt;imported&gt;
-                            &lt;!-- configure class-level imported class --&gt;
-                            &lt;classes&gt;
-                                &lt;class&gt;com.alipay.sofa.demo.pojo.SamplePoJo&lt;/class&gt;
-                            &lt;/classes&gt;
-                        &lt;/imported&gt;
+<p>Let’s take a bottom-up approach to looking at how each layer builds on the last.</p>
 
-                        &lt;!-- configure exported class --&gt;
-                        &lt;exported&gt;
-                            &lt;!-- configure class-level exported class --&gt;
-                            &lt;classes&gt;
-                                &lt;class&gt;com.alipay.sofa.demo.hessian3.Hessian3Service&lt;/class&gt;
-                            &lt;/classes&gt;
-                        &lt;/exported&gt;
-                    &lt;/configuration&gt;
-                &lt;/execution&gt;
-            &lt;/executions&gt;
-        &lt;/plugin&gt;
-    &lt;/plugins&gt;
-&lt;/build&gt;
+<p>It is worth initially referencing <a href="https://www.seleniumhq.org/">Selenium</a>, a long running project with an actively used set of tools, which today is made up of Selenium WebDriver, Grid, Server, and IDE. In creating these tools they have set many industry standards, often confusingly named after the Selenium product they came from. This can be seen in ‘Selenium WebDriver’, and the ‘WebDriver wire protocol’ that was established in its development. Those applicable will be shown in more detail below.</p>
 
-</code></pre>
+<h4 id="toc_4">Browser</h4>
 
-<p>可以看到，<code>hessian3-ark-plugin</code> 导入基础实体类 <code>com.alipay.sofa.demo.pojo.SamplePoJo</code>，导出服务类 <code>com.alipay.sofa.demo.hessian3.Hessian3Service</code> 供 Ark Biz 使用。</p>
+<p>Any web browser: Chrome, Firefox, Internet Explorer, Safari, Opera, and so on. Often referred to as the ‘user agent’ in documentation.</p>
 
-<p>使用 maven 打包命令 <code>maven package</code> 即可将 <code>hessian3-module</code> 打包成 Ark Plugin，该插件包含模块代码及其依赖包，其 maven 坐标为：</p>
+<h4 id="toc_5">W3C’s WebDriver wire protocol</h4>
 
-<pre><code>&lt;dependency&gt;
-    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
-    &lt;artifactId&gt;hessian3-ark-plugin&lt;/artifactId&gt;
-    &lt;classifier&gt;ark-plugin&lt;/classifier&gt;
-    &lt;version&gt;1.0.0&lt;/version&gt;
-&lt;/dependency&gt;
+<p>The WebDriver wire protocol is a platform and language-neutral way of interacting with web browsers. It defines a common <a href="http://www.drdobbs.com/web-development/restful-web-services-a-tutorial/240169069">RESTful web service</a> using JSON over HTTP in request/response pairs. It allows DOM elements to be manipulated from an external source, while also allowing navigation to web pages, user input, JavaScript execution, and more.</p>
 
-</code></pre>
+<p>Initially written by Selenium for the Selenium WebDriver, this protocol has now reached the Editor’s Draft stage in becoming an official <a href="https://w3c.github.io/webdriver/">W3C standard</a>.</p>
 
-<p>关于 Ark Plugin 的导入、导出类，这里强调一下，在实际开发中，和业务本身无关的实体类或者基础服务类，如果多个 Ark Plugin 和 Ark Biz 都需要统一版本时，可以把这类基础 Jar 统一打包成 Ark Plugin 设置为导出类。在该演示用例中，我们假设 <code>SamplePoJo</code> 是一个基础实体类，和业务逻辑无关，而 <code>hessian3-ark-plugin</code> 和 <code>hessian4-ark-plugin</code> 都需要使用，于是单独打包成了一个 Ark Plugin。</p>
+<p>Other protocols do exit, but will not be covered in great detail here. All explanations will assume a backend that implements the WebDriver wire protocol.</p>
 
-<p>到此为止，这就是一个简单的 Ark Plugin 从开发的步骤，看起来是不是很简单呢？</p>
+<p>Another notable protocol is the <a href="https://chromedevtools.github.io/devtools-protocol/">Chrome DevTools protocol</a> used by <a href="https://github.com/GoogleChrome/puppeteer">Puppeteer</a>. Puppeteer does not use Selenium Server, and comes bundled with a recent version of <a href="https://www.howtogeek.com/202825/what%E2%80%99s-the-difference-between-chromium-and-chrome/">Chromium</a> intended for local use. If you wish to run Puppeteer in Docker, you can either use the <a href="https://codecept.io/docker/">CodeceptJS image</a> (that comes with Puppeteer and Nightmare) or follow the official guide to creating a <a href="https://github.com/GoogleChrome/puppeteer/blob/master/docs/troubleshooting.md#running-puppeteer-in-docker">custom image</a> that can support it.</p>
 
-<p>下面，我们演示下如何在 Spring Boot 工程中，快速集成 SOFABoot 的类隔离能力，并使用这三个 Ark Plugin。</p>
+<h4 id="toc_6">Browser WebDrivers</h4>
 
-<h2 id="toc_7">4. Spring Boot 工程集成 SOFAArk 组件</h2>
+<p>These are browser specific implementations of the WebDriver wire protocol, for example <a href="https://sites.google.com/a/chromium.org/chromedriver/home">ChromeDriver</a> for Chrome or <a href="https://github.com/mozilla/geckodriver">GeckoDriver</a> for Firefox. Each acts as a standalone <a href="https://github.com/SeleniumHQ/selenium/wiki/JsonWireProtocol#server">server</a> to receive requests from the <a href="https://github.com/SeleniumHQ/selenium/wiki/JsonWireProtocol#client">client</a> where the WebDriver API is being used (generally where the tests are held). In order to communicate with the intended browser, the correct WebDriver implementation <strong>must</strong> be installed.</p>
 
-<p>Demo <a href="https://link.zhihu.com/?target=https%3A//github.com/QilongZhang/springboot-ark-demo">工程地址</a></p>
+<h4 id="toc_7">Selenium Server</h4>
 
-<p>运行需要 JDK 6 及以上、 Maven 3.2.5 以上。Spring Boot 版本要求 1.4.2.RELEASE 以上，目前还不兼容 2.0.0 及以上版本。</p>
+<p>If the tests are being run on the same machine that they are defined, then the client-side WebDriver API implementation used (described below) can communicate directly with the browser WebDriver and a <a href="https://www.seleniumhq.org/docs/03_webdriver.jsp">Selenium Server is not required</a>.</p>
 
-<p>该用例工程主要为了演示如何在 Spring Boot 工程中集成 SOFABoot 类隔离能力并使用 Ark Plugin。这里以前文提到的 Ark Plugin 为例，示例工程将会引入三个 Ark Plugin:<code>pojo-ark-plugin</code>，<code>hessian3-ark-plugin</code> 和 <code>hessian4-ark-plugin</code>，并使用后两者的导出类 <code>Hessian3Service</code> 和 <code>Hessian4Service</code>。</p>
+<p>However, if tests are to be run on a different machine, whether in CI, in a <a href="https://www.guru99.com/introduction-to-selenium-grid.html">Selenium Grid</a> setup across multiple machines or virtual machines (VMs), on a remote testing platform such as <a href="https://www.browserstack.com/start#os=Windows&amp;os_version=7&amp;browser=IE&amp;browser_version=11.0&amp;zoom_to_fit=true&amp;full_screen=true&amp;resolution=responsive-mode&amp;url=https%3A%2F%2Fwww.skyscanner.net%2Ftransport%2Fflights%2Fedi%2Fde%3Fmigrate%3Dtrue&amp;speed=1">BrowserStack</a> or <a href="https://saucelabs.com/">SauceLabs</a>, or within Docker, then a Selenium Server is used. It acts as a proxy to forward requests from the client-side WebDriver API to the correct browser WebDriver, and passes back the response from the browser.</p>
 
-<h2 id="toc_8">4.1 新建工程</h2>
+<p><img src="https://cdn-images-1.medium.com/max/1600/1*hmr8_c0WIcilEsMdfc-u-w.png" alt=""/>As we’ll see later, ‘machine’ can also be swapped for ‘container’</p>
 
-<p>在 Spring Boot 官网 <a href="https://link.zhihu.com/?target=https%3A//start.spring.io/">https://start.spring.io</a> 新建一个 web 工程，并设置 Spring Boot 版本号为 1.4.2.RELEASE。在 Spring Boot 工程中集成 SOFABoot 类隔离能力，只需要添加 SOFABoot 提供的类隔离框架 starter。修改 maven 项目的配置文件 <code>pom.xml</code>，将</p>
+<h4 id="toc_8">Client-side WebDriver Implementation</h4>
 
-<pre><code>&lt;parent&gt;
-    &lt;groupId&gt;org.springframework.boot&lt;/groupId&gt;
-    &lt;artifactId&gt;spring-boot-starter-parent&lt;/artifactId&gt;
-    &lt;version&gt;1.4.2.RELEASE&lt;/version&gt;
-    &lt;relativePath/&gt; 
-&lt;/parent&gt;
+<p>A variety of tools implement the client-side WebDriver wire protocol. Here the protocol can be seen as an API to send requests to the browser via the layers described above. Many tools using the protocol are full frameworks, such as <a href="http://webdriver.io/guide/getstarted/modes.html">WebDriverIO</a>, that include their own test runners.</p>
 
-</code></pre>
+<p>Other implementations include: the <a href="https://www.swtestacademy.com/selenium-testing-selenium-history/">original</a> Selenium WebDriver, Protractor, Appium, and more.</p>
 
-<p>替换为：</p>
+<p>The libraries of each aim to achieve the same results, but with slightly different focuses and API implementations. This can be as basic as <a href="http://www.protractortest.org/#/tutorial">Protractor’s</a> <code>browser.get(url)</code> versus <a href="http://webdriver.io/api/protocol/url.html">WebDriverIO’s</a> <code>browser.url(url)</code>.</p>
 
-<pre><code>&lt;parent&gt;
-    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
-    &lt;artifactId&gt;sofaboot-dependencies&lt;/artifactId&gt;
-    &lt;version&gt;2.3.1&lt;/version&gt;
-&lt;/parent&gt;
+<h4 id="toc_9">One API to rule them all</h4>
 
-</code></pre>
+<p>As described at the beginning of this section, this is where CodeceptJS comes into play. It refers to other client-side WebDriver protocol (or other) implementations as “<a href="https://codecept.io/helpers/WebDriverIO/">helpers</a>”, and allows you to specify the helper you prefer while using one API language. CodeceptJS does not care which protocol is being used by the helper chosen.</p>
 
-<p>并添加如下 SOFAArk Starter 依赖：</p>
+<p>WebDriverIO, Puppeteer, Protractor, Nightmare and Appium are all current helpers that are available.</p>
 
-<pre><code>&lt;!--ark spring boot starter--&gt;
-&lt;dependency&gt;
-    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
-    &lt;artifactId&gt;sofa-ark-springboot-starter&lt;/artifactId&gt;
-&lt;/dependency&gt;
+<p>In CodeceptJS the previous command would be <code>I.amOnPage(url)</code> no matter which helper was chosen. This means that if you wanted to switch out your backend to one of the other helpers supported, your tests would not have to be re-written. It is possible to <a href="https://codecept.io/helpers/">overwrite or add to</a> the default API methods via custom classes should you wish.</p>
 
-</code></pre>
+<h3 id="toc_10">Creating a test project</h3>
 
-<p>如此，一个 Spring Boot 工程便集成了 SOFABoot 提供的类隔离能力。</p>
+<p>With so many layers this starts to sound complex, but between CodeceptJS’s initialisation script and Docker images, we can quickly have a working example.</p>
 
-<h2 id="toc_9">4.2 添加 Ark Plugin 依赖</h2>
+<h4 id="toc_11">What we will produce</h4>
 
-<p>前文中提到，将普通 Java 模块打包成 Ark Plugin，其 maven 坐标不会发生变化，但是需要添加 <code>classifier=ark-plugin</code> 标志，因此如下添加三个 Ark Plugin 的依赖：</p>
+<p><img src="https://cdn-images-1.medium.com/max/1600/1*wKrNJtA4OpbtHjhTRCsc5w.png" alt=""/>Two containers will be used for now, though this can be extended</p>
 
-<pre><code>&lt;!--ark plugin--&gt;
-&lt;dependency&gt;
-    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
-    &lt;artifactId&gt;pojo-ark-plugin&lt;/artifactId&gt;
-    &lt;classifier&gt;ark-plugin&lt;/classifier&gt;
-    &lt;version&gt;1.0.0&lt;/version&gt;
-&lt;/dependency&gt;
+<p>We will write a simple test in CodeceptJS, specifying a WebDriverIO backend helper, that will communicate with a remote browser within the standalone-firefox Docker container. We will use the Express “hello world” app, but this could be replaced by any app you wish.</p>
 
-&lt;dependency&gt;
-    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
-    &lt;artifactId&gt;hessian3-ark-plugin&lt;/artifactId&gt;
-    &lt;classifier&gt;ark-plugin&lt;/classifier&gt;
-    &lt;version&gt;1.0.0&lt;/version&gt;
-&lt;/dependency&gt;
+<p><img src="https://cdn-images-1.medium.com/max/1600/1*XT4px3Nj57WeVjdv6Rt7mg.png" alt=""/>Soon only two commands will be needed to run the Dockerized app and all test suites</p>
 
-&lt;dependency&gt;
-    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
-    &lt;artifactId&gt;hessian4-ark-plugin&lt;/artifactId&gt;
-    &lt;classifier&gt;ark-plugin&lt;/classifier&gt;
-    &lt;version&gt;1.0.0&lt;/version&gt;
-&lt;/dependency&gt;
-
-</code></pre>
-
-<p>需要指出的是，因为 ark plugin 是一个 FatJar，为了让应用编译期通过，需要在工程主 <code>pom.xml</code> 中增加如下依赖：</p>
-
-<pre><code>&lt;!--just for compile success--&gt;
-&lt;dependency&gt;
-    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
-    &lt;artifactId&gt;pojo-ark-plugin&lt;/artifactId&gt;
-    &lt;version&gt;1.0.0&lt;/version&gt;
-    &lt;scope&gt;provided&lt;/scope&gt;
-&lt;/dependency&gt;
-
-&lt;dependency&gt;
-    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
-    &lt;artifactId&gt;hessian3-ark-plugin&lt;/artifactId&gt;
-    &lt;version&gt;1.0.0&lt;/version&gt;
-    &lt;scope&gt;provided&lt;/scope&gt;
-&lt;/dependency&gt;
-
-&lt;dependency&gt;
-    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
-    &lt;artifactId&gt;hessian4-ark-plugin&lt;/artifactId&gt;
-    &lt;version&gt;1.0.0&lt;/version&gt;
-    &lt;scope&gt;provided&lt;/scope&gt;
-&lt;/dependency&gt;
-
-</code></pre>
-
-<p>4.3 编写 Rest 接口</p>
-
-<p>为了演示更加直观，编写如下 Rest 接口：</p>
-
-<pre><code>package com.alipay.sofa.springbootarkdemo.controller;
-
-import com.alipay.sofa.demo.hessian3.Hessian3Service;
-import com.alipay.sofa.demo.hessian4.Hessian4Service;
-import com.alipay.sofa.demo.pojo.SamplePoJo;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RestController;
-
-import java.io.IOException;
-
-/**
- * @author qilong.zql
- */
-@RestController
-public class HelloController {
-
-    @RequestMapping(&quot;/hello-hessian3&quot;)
-    public String hessian3() throws IOException {
-        SamplePoJo samplePoJo = new SamplePoJo(&quot;Hello, hessian3.&quot;);
-        Hessian3Service hessian3Service = new Hessian3Service();
-        byte[] bytes = hessian3Service.serialize(samplePoJo);
-        Object pojo = hessian3Service.deserialize(bytes);
-        return pojo.toString();
-    }
-
-    @RequestMapping(&quot;/hello-hessian4&quot;)
-    public String hessian4() throws IOException {
-        SamplePoJo samplePoJo = new SamplePoJo(&quot;Hello, hessian4.&quot;);
-        Hessian4Service hessian4Service = new Hessian4Service();
-        byte[] bytes = hessian4Service.serialize(samplePoJo);
-        Object pojo = hessian4Service.deserialize(bytes);
-        return pojo.toString();
-    }
-
-}
-
-</code></pre>
-
-<p>该 Rest 接口主要为了本地启动应用后，能够直观演示 Ark Plugin 使用结果。启动该 Web Spring 工程，可以看到控制台打印结果：</p>
-
-<pre><code>...
-2018-05-14 10:04:06.573  INFO 85393 --- [           main] s.b.c.e.t.TomcatEmbeddedServletContainer : Tomcat started on port(s): 8080 (http)
-2018-05-14 10:04:06.577  INFO 85393 --- [           main] c.a.s.s.SpringbootArkDemoApplication     : Started SpringbootArkDemoApplication in 2.111 seconds (JVM running for 3.562)
-2018-05-14 10:04:06,578 INFO  main                             - Finish to start biz: Startup In IDE
-2018-05-14 10:04:06,578 INFO  main                             - Finish to process pipeline stage: com.alipay.sofa.ark.container.pipeline.DeployBizStage
-Ark container started in 2720 ms.
-
-</code></pre>
-
-<p>可以看到类似 <code>Ark container started in XXXXms</code> 字样，即表示该工程运行在 SOFABoot 类隔离框架之上。访问如下两个请求即可看到工程调用 <code>Hessian3Service</code> 和 <code>Hessian4Service</code> 的调用结果</p>
+<p>Once we have everything set up, we will be able to run only two commands to run the tests:</p>
 
 <ul>
-<li>  <code>http://localhost:8080/hello-hessian3</code></li>
-<li>  <code>http://localhost:8080/hello-hessian4</code></li>
+<li>  <code>docker-compose up --build</code></li>
+<li>  <code>docker exec -it app npm run test:e2e</code></li>
 </ul>
 
-<p>以上就是 Spring Boot 集成 SOFABoot 类隔离框架的一般步骤。可以看到，作为开发者，基本上无需过多关心自身应用是否使用类隔离框架，只需要引入 SOFABoot 提供的类隔离框架 Starter，即可快速完成类隔离能力的集成。</p>
+<p>By running in two side by side terminal windows, we can see the containers running and the test executing in real time.</p>
 
-<h2 id="toc_10">5. 总结</h2>
-
-<p>本文主要介绍了 SOFABoot 基于 Spring Boot 开发的类隔离框架组件 SOFAArk。通过两个简单的用例工程，分别介绍了如何开发一个自己的 Ark Plugin 以及在 Spring Boot 快速集成 SOFABoot 的类隔离能力。SOFABoot 官方提供了 SOFARPC 打包的 Ark Plugin，开发者可以按需隔离 SOFARPC 和自身应用。另外，在 SOFAArk 类隔离容器之上，SOFABoot 提供了一整套兼容 JUnit 和 TestNG 测试框架的方案，感兴趣的读者可以下载文末给出的 Demo 工程，并按照官方文档学习。</p>
-
-<h2 id="toc_11">6. 相关资源</h2>
+<h4 id="toc_12"><u>Prerequisites</u></h4>
 
 <ul>
-<li>  <a href="https://link.zhihu.com/?target=https%3A//github.com/QilongZhang/ark-plugin-demo">ark-plugin-demo</a></li>
-<li>  <a href="https://link.zhihu.com/?target=https%3A//github.com/QilongZhang/springboot-ark-demo">springboot-ark-demo</a></li>
-<li>  <a href="https://link.zhihu.com/?target=https%3A//github.com/alipay/sofa-boot">SOFABoot 源码</a></li>
-<li>  <a href="https://link.zhihu.com/?target=https%3A//github.com/alipay/sofa-rpc">SOFARPC 源码</a></li>
-<li>  <a href="https://link.zhihu.com/?target=https%3A//github.com/alipay/sofa-rpc-boot-projects">SOFARPC Ark Plugin</a></li>
-<li>  <a href="https://link.zhihu.com/?target=https%3A//github.com/alipay/sofa-ark">SOFAArk 源码</a></li>
-<li>  <a href="https://link.zhihu.com/?target=https%3A//alipay.github.io/sofastack.github.io/docs/ark-plugin.html">Ark Plugin 文档</a></li>
+<li>  <a href="https://store.docker.com/search?type=edition&amp;offering=community">Docker</a>, for whichever machine you are developing on.</li>
+<li>  You could also install <a href="https://nodesource.com/blog/installing-nodejs-tutorial-mac-os-x/">Node.js, &amp; npm</a> for local development and debugging, but these can also be fully run within Docker.</li>
+</ul>
+
+<h4 id="toc_13">File structure</h4>
+
+<p>We will be producing the file structure below. You can see a <a href="https://github.com/dominicfraser/CodeceptJSDockerExamples/tree/master/seleniumStandaloneFirefox">working example on Github</a>.</p>
+
+<pre><code>|-- .gitignore 
+|-- output/
+|-- Dockerfile
+|-- app.js
+|-- docker-compose.yml
+|-- package.json
+|-- package-lock.json
+|-- e2eTests/    
+|-- common_test.js    
+|-- docker.conf.js
+</code></pre>
+
+<h4 id="toc_14">Dependencies</h4>
+
+<p>First we will create our <a href="https://docs.nodejitsu.com/articles/getting-started/npm/what-is-the-file-package-json/">package.json</a> with Express as a dependency and CodeceptJS and WebDriverIO as dev dependencies.</p>
+
+<pre><code class="language-json">{
+  &quot;name&quot;: &quot;example-standalone-firefox&quot;,
+  &quot;version&quot;: &quot;1.0.0&quot;,
+  &quot;description&quot;: &quot;Example of Dockerizing E2E testing&quot;,
+  &quot;scripts&quot;: {
+    &quot;start&quot;: &quot;node app.js&quot;,
+    &quot;test:e2e&quot;: &quot;codeceptjs run --steps --verbose --config=./e2eTests/docker.conf.js&quot;
+  },
+  &quot;dependencies&quot;: {
+    &quot;express&quot;: &quot;^4.16.3&quot;
+  },
+  &quot;devDependencies&quot;: {
+    &quot;codeceptjs&quot;: &quot;^1.2.0&quot;,
+    &quot;webdriverio&quot;: &quot;^4.12.0&quot;
+  }
+}
+</code></pre>
+
+<p>We have also included two scripts, one to run the Express app we will add (<code>npm run start</code>), and one to run our CodeceptJS test (<code>npm run test:e2e</code>).</p>
+
+<pre><code class="language-json">codeceptjs run --steps --verbose --config=./e2eTests/docker.conf.js```
+
+`--steps` is great for showing output in the terminal as tests are running, while `--verbose` extends the level of detail even further. `--verbose` is likely not needed as standard, but is good for seeing how the example works. `--config` shows us the path to the backend configuration file, in this case kept in a separate `e2eTests` directory.
+
+#### Our app
+
+Next we need an app to test. For this we will run the Express “[hello world](https://expressjs.com/en/starter/hello-world.html)” app from `app.js`.
+
+```js
+const express = require(&#39;express&#39;);
+const app = express();
+app.get(&#39;/&#39;, (req, res) =&gt; res.send(&#39;Hello World!&#39;));
+const server = app.listen(3000, () =&gt; {
+    const port = server.address().port
+    console.log(`Example app listening on port ${port}`)
+ })
+ ```
+
+You can view this using `npm run start` and then going to `localhost:3000` in your browser.
+
+#### Test configuration
+
+CodeceptJS requires two files, a configuration file and a test file. The test file is extremely simple: it tests that the app can be accessed, saves a screenshot, and checks that the text “Hello” can be seen on the page.
+
+```js
+Feature(&#39;Basic test&#39;);
+Scenario(&#39;navigate to homepage&#39;, I =&gt; {
+  I.amOnPage(&#39;http://app:3000&#39;);
+  I.saveScreenshot(&#39;frontpageScreenshot.png&#39;);
+  I.see(&#39;Hello&#39;);
+});
+</code></pre>
+
+<p>The first indication that we will be using multiple Docker containers is shown here in the use of <code>app:3000</code> rather than <code>localhost:3000</code>. <code>localhost</code> can only be understood from within a single container. If a command is being run from another container (in this case by Firefox in our second Selenium container), then it needs a more definitive reference. We could use the first container’s IP address directly, but using the container’s name is much easier to read.</p>
+
+<p>In this case, <code>app</code> will be the name of the container that is running the app, so we can use <code>app:3000</code>. Don’t worry if you don’t follow this yet, seeing how our <code>docker-compose.yml</code> is structured will help.</p>
+
+<p>We also need a main <a href="https://codecept.io/configuration/">configuration</a> file. This can be written in JSON or JS, but here we use JS. Let’s look at this:</p>
+
+<pre><code class="language-js">exports.config = {
+  tests: &#39;./*_test.js&#39;,    // how to know which files are test files
+  output: &#39;./output&#39;,      // where to save screenshots
+  helpers: {
+   WebDriverIO: {               // which backend helper to use
+     url: &#39;http://app:3000&#39;,    // a base URL to start on
+     host: &#39;firefox-container&#39;, // identifying where selenium runs
+     browser: &#39;firefox&#39;,        // a series of [config options](https://codecept.io/helpers/WebDriverIO/)
+     smartWait: 5000,              
+     waitForTimeout: 10000,
+     desiredCapabilities: {        // for a demo app we do not want 
+         acceptInsecureCerts: true,   to worry about SSL certs
+     }
+   },
+  },
+  name: &#39;codeceptjs-docker&#39;,
+};
+</code></pre>
+
+<h4 id="toc_15">Setting up Docker</h4>
+
+<p>Referring back to the diagram above in the “What we will produce” section, we can see that we will be using two Docker containers. They must be aware of each other and be able to communicate. One will contain our app and tests, and one a Selenium Server, GeckoDriver, and Firefox, so that we do not need Firefox installed on our local machine.</p>
+
+<p><a href="https://docs.docker.com/compose/">Docker Compose</a> is a tool for “defining and running multi-container Docker applications.” It starts Docker containers with the <a href="https://docs.docker.com/compose/reference/overview/">command</a> <code>docker-compose up</code>, and stops them with <code>docker-compose down</code>. If a user defined Dockerfile is being used, <code>--build</code> is used to build it, either the first time <code>docker-compose up</code> is run, or if changes have been made to the Dockerfile. <code>docker-compose.yml</code> is the file that defines what the <code>up</code> command will do.</p>
+
+<p>Our next step is to create this <code>docker-compose.yml</code>. It is heavily dependant on indentation.</p>
+
+<pre><code class="language-yml">version: &quot;2&quot;        // which version of compose syntax you are using
+services:
+  app:
+    container_name: app  // explicit so we can use this for app:3000
+    build: .             // a self defined Dockerfile, see below
+    ports:               // exposes port 3000 (where express runs)
+      - &quot;3000:3000&quot;         to other containers, and to our local       
+    depends_on:             browser
+      - firefox-container
+    volumes:             // maps so changes to these can be seen
+      - ./e2eTests:/e2eTests
+      - ./package.json:/package.json
+      - ./package-lock.json:/package-lock.json
+      - ./.gitignore:/.gitignore
+      - ./app.js:/app.js
+  firefox-container:      // we&#39;ll look at this below
+    container_name: firefox-container
+    image: selenium/standalone-firefox:3.12.0-americium
+    volumes:
+      - /dev/shm:/dev/shm
+    ports:
+      - &quot;4444:4444&quot;
+</code></pre>
+
+<p>For our Selenium Server, drivers, and browser, we use a pre-defined image available from the public <a href="https://hub.docker.com/">Docker Hub</a> called <a href="https://hub.docker.com/r/selenium/standalone-firefox/">selenium/standalone-firefox</a>. We specify which version we want, 3.12.0-americium. If we did not specify this the latest image would be used by default (which is not a bad thing). As <a href="https://github.com/SeleniumHQ/docker-selenium#running-the-images">advised</a>, we configure it to share the host’s memory to prevent the browser being run from crashing, and expose port 4444, the default Selenium port. We also map this to port 4444 on our local machine, allowing us to visit <code>localhost:4444/wd/hub/static/resource/hub.html</code> in our browser.</p>
+
+<p>For our <code>app</code> container, we are not just using an image built by someone else, but are writing a Dockerfile to specify how our app is built. In the same way as the <code>selenium-firefox</code> container we expose a port, 3000 in this case, as that is where Express runs by default. By mapping this using <code>3000:3000</code> we are able to visit <code>localhost:3000</code> while the app is being run in Docker to see it in our local browser.</p>
+
+<p>Our Dockerfile uses the public <code>node:carbon</code> image as a base, sets the working directory, copies some files from our local machine to the container, runs <code>npm install</code> so that the container has all needed dependencies, and then runs the <code>npm start</code> command we specified.</p>
+
+<pre><code class="language-dockerfile">FROM node:carbon
+WORKDIR ./
+COPY ./package.json ./package-lock.json ./app.js ./
+RUN npm install
+CMD [ &quot;npm&quot;, &quot;start&quot; ]
+</code></pre>
+
+<p>This means that when <code>docker-compose up --build</code> is run, it will follow these steps, resulting in our app being ready and running on port 3000.</p>
+
+<p><strong>Note</strong>: The <code>--build</code> flag is only needed the first time <code>docker-compose up</code> is run, or if changes have been made to our Dockerfile or the steps executed within it. For example, if we added another dependency in our <code>package.json</code> then Docker would not know about it if we did not rebuild our image, as <code>npm install</code> is run within the Dockerfile.</p>
+
+<h4 id="toc_16">Running tests</h4>
+
+<p>We now have a simple app, tests written for it, and a Docker Compose configuration that will run both our app, a Selenium Server, and Firefox.</p>
+
+<p>We can start all of these using <code>docker-compose up --build</code>.</p>
+
+<p>To run commands <u>within</u> a running Docker container, <code>docker exec</code> can be used from another terminal window. The format is:</p>
+
+<p><code>docker exex &lt;flags&gt; &lt;container_name&gt; &lt;command&gt;</code></p>
+
+<p>The command we will use is:</p>
+
+<p><code>docker exec [-it](https://docs.docker.com/engine/reference/commandline/exec/#options) app npm run test:e2e</code></p>
+
+<p>We can now see our test running, and see each step as it is performed! From here we can extend what our test does, add additional tests (ending the filenames in <code>_test.js</code>), and use the same two commands to run them. No more setup is needed.</p>
+
+<p>You now have an easily extensible E2E testing setup that can be relied on to run the same way no matter which machine it is run on. It was written with API commands that can be easily understood by both developers and non-developers. All that remains now is to decide which behaviour your app should be capable of, and test it!</p>
+
+<h3 id="toc_17">Final words</h3>
+
+<p>SeleniumHQ also produces Docker <a href="https://github.com/SeleniumHQ/docker-selenium#standalone-chrome-and-firefox">images for Chrome testing</a>, and images for using Selenium Grid for running multiple instances of Chrome and Firefox at one time.</p>
+
+<p>CodeceptJS also has <a href="https://codecept.io/docker/">instructions for running CodeceptJS in Docker</a>, so that it does not need to be specified as a dependency in your app.</p>
+
+<p>A more technical, but still starter level description of how Docker works can be seen in the first section of the post I wrote titled <a href="https://medium.freecodecamp.org/amazon-ecs-terms-and-architecture-807d8c4960fd">_A beginner’s guide to Amazon’s Elastic Container Service_</a>_._</p>
+
+<p>Thanks for reading 😀</p>
+
+<h4 id="toc_18">Resources</h4>
+
+<ul>
+<li>  <a href="https://github.com/dominicfraser/CodeceptJSDockerExamples">Github</a> of CodeceptJS Docker examples</li>
+<li>  <a href="https://codecept.io/quickstart/">CodeceptJS QuickStart guide</a></li>
+<li>  <a href="https://www.youtube.com/watch?v=cDwNfAEo0lA">Selenium WebDriver Architecture</a></li>
+<li>  <a href="https://seleniumjava.com/2015/09/13/how-does-selenium-webdriver-work/">Selenium WebDriver Flow</a></li>
 </ul>
 
                         
@@ -464,10 +423,10 @@ Ark container started in 2720 ms.
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/6/5</span>
+                    <span class="date">2018/7/2</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Microservice.html'>Microservice</a></span>
+          					    <span class="posted-in"><a href='QA.html'>QA</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -557,31 +516,31 @@ Ark container started in 2720 ms.
 	      
 		      
 			      <li class="post">
-			        <a href="15389311738065.html">重构到更深层的模型</a>
+			        <a href="15459058392039.html">Reliable Domain Events</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389278377243.html">IAM of Google Cloud</a>
+			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389224951575.html">RSocket, a New Application Network Protocol for Reactive Applications, Announced at SpringOne</a>
+			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389220103546.html">如何形象地描述RxJava中的背压和流控机制？</a>
+			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389214670417.html">Modeling Uncertainty with Reactive DDD</a>
+			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
 			      </li>
 		     
 		  

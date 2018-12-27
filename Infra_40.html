@@ -105,132 +105,755 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15277814705334.html">
+                <a class="clearlink" href="15278217843680.html">
                 
-                  <h1>有货移动端DevOps-自建APM系统</h1>
+                  <h1>Linux Filesystem Events with inotify</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://mp.weixin.qq.com/s?__biz=MzIzNjUxMzk2NQ==&amp;mid=2247489376&amp;idx=1&amp;sn=2c06cd726d03317ab3b2134e393d101e&amp;chksm=e8d7e8a2dfa061b4b8f4b95a710e7538becf501951ca451c63473e219d9e610c230549ceb709&amp;mpshare=1&amp;scene=23&amp;srcid=0529xDVbCCeY0HgyVSeq5kjF%23rd">原文</a>：曹镏  高效开发运维 2018/05/28</p>
-
-<p>本文概述了有货 App 团队的同学，在资源有限的情况下，自己动手，借助多种数据工具，通过简洁的架构，为有货 App 开发一套多维实时的监控系统，从而更好地完成自己的工作，也给其他团队的小伙伴在自建 APM 的道路上提供一个参考，为移动端的 DevOps 打开一些思路。</p>
+<p>by Charles Fisher on January 8, 2018<br/>
+<a href="https://www.linuxjournal.com/content/linux-filesystem-events-inotify">https://www.linuxjournal.com/content/linux-filesystem-events-inotify</a></p>
 </blockquote>
 
-<p>得益于智能手机的发展，当下我们对用户的体验追求已经到了几乎极致的程度。主流的监控 OneAPM，New Relic… 由于面向广大用户，强调数据共性，很难通过 UDID 或者 UID 来定位一些比较难以复现或局部的问题。同时由于数据保密性等原因，对事件上报的信息量也是非常的有限。随着用户规模的增长，特殊问题，局部问题覆盖的用户越来越来，自建监控就一个必然的选择。</p>
+<p><cite class="">Triggering scripts with incron and systemd.</cite></p>
 
-<p>需求是迫切的，资源是有限的。为了尽快的上线监控系统。有货 iOS 和 Android 的小伙伴们本着 “流自己的汗，吃自己的饭，自己的事情自己干” 的原则，不强调客观条件，自己撸出了一套 App 的 APM 监控系统。</p>
+<p>It is, at times, important to know when things change in the Linux OS. The uses to which systems are placed often include high-priority data that must be processed as soon as it is seen. The conventional method of finding and processing new file data is to poll for it, usually with cron. This is inefficient, and it can tax performance unreasonably if too many polling events are forked too often.</p>
 
-<h2 id="toc_0">设计</h2>
+<p>Linux has an efficient method for alerting user-space processes to changes impacting files of interest. The inotify Linux system calls were first discussed here in <u>Linux Journal</u> in a <a href="http://www.linuxjournal.com/article/8478">2005 article by Robert Love</a> who primarily addressed the behavior of the new features from the perspective of C.</p>
 
-<p>我们把问题处理的流程大致梳理为 “持续监控”、“发现问题” 、“定位问题”、“修复问题”。这往复的四个步骤，其中“监控”，“发现” 和“定位”都依赖于系统的采集和上报。</p>
+<p>However, there also are stable shell-level utilities and new classes of monitoring dæmons for registering filesystem watches and reporting events. Linux installations using systemd also can access basic inotify functionality with path units. The inotify interface does have limitations—it can&#39;t monitor remote, network-mounted filesystems (that is, NFS); it does not report the userid involved in the event; it does not work with /proc or other pseudo-filesystems; and mmap() operations do not trigger it, among other concerns. Even with these limitations, it is a tremendously useful feature.</p>
 
-<p><img src="https://mmbiz.qpic.cn/mmbiz_png/FE4VibF0SjfMusg7SyM0ljwABGInyksDablCiaxacwcMhpe7mshHNYgG6nx8TaOGTPnjoPibnP1wcibNY1QOSvibbKg/640?wx_fmt=png" alt=""/></p>
+<p>This article completes the work begun by Love and gives everyone who can write a Bourne shell script or set a crontab the ability to react to filesystem changes.</p>
 
-<p>通过对需求的分析，我们把数据以事件的形式上报，上报后数据根据场景分为两类：</p>
+<h3 id="toc_0">The inotifywait Utility</h3>
 
-<ol>
-<li> 指标类数据</li>
-<li> 日志类数据</li>
-</ol>
+<p>Working under Oracle Linux 7 (or similar versions of Red Hat/CentOS/Scientific Linux), the inotify shell tools are not installed by default, but you can load them with yum:</p>
 
-<h3 id="toc_1">1. 指标类数据</h3>
+<pre><code>
+ # yum install inotify-tools
+Loaded plugins: langpacks, ulninfo
+ol7_UEKR4                                      | 1.2 kB   00:00
+ol7_latest                                     | 1.4 kB   00:00
+Resolving Dependencies
+--&gt; Running transaction check
+---&gt; Package inotify-tools.x86_64 0:3.14-8.el7 will be installed
+--&gt; Finished Dependency Resolution
 
-<p>指标类数据主要是对用户上报的信息根据我们需要的维度做聚合，便于我们掌握 app 的整体情况，比如用户整体的网络错误，网络延时。从整体的角度观察我们 app 的健康程度。 这个过程概括为 “发现问题”。</p>
+Dependencies Resolved
 
-<h3 id="toc_2">2. 日志类数据</h3>
+==============================================================
+Package         Arch       Version        Repository     Size
+==============================================================
+Installing:
+inotify-tools   x86_64     3.14-8.el7     ol7_latest     50 k
 
-<p>日志类数据则记录完整的上报数据，用于我们对问题的诊断。 这个过程概括为 “定位问题”。<br/>
-围绕这两类数据的采集和分析，我们启动了第一阶段的项目。</p>
+Transaction Summary
+==============================================================
+Install  1 Package
 
-<h2 id="toc_3">第一阶段</h2>
+Total download size: 50 k
+Installed size: 111 k
+Is this ok [y/d/N]: y
+Downloading packages:
+inotify-tools-3.14-8.el7.x86_64.rpm               |  50 kB   00:00
+Running transaction check
+Running transaction test
+Transaction test succeeded
+Running transaction
+Warning: RPMDB altered outside of yum.
+  Installing : inotify-tools-3.14-8.el7.x86_64                 1/1
+  Verifying  : inotify-tools-3.14-8.el7.x86_64                 1/1
 
-<p><img src="https://mmbiz.qpic.cn/mmbiz_png/FE4VibF0SjfMusg7SyM0ljwABGInyksDaGjaAY4ibHZrcU93rkaS4Mrb4DSFRibVMMfXia9e5Pbyfcru4WHIBLaACw/640?wx_fmt=png" alt=""/></p>
+Installed:
+  inotify-tools.x86_64 0:3.14-8.el7
 
-<p>App 将事件数据上报至 OpenResty，在 OpenResty 中对请求进行简单的处理和封装，拆分成指标和日志，然后将处理完成的数据分别写入 InfluxDB 和 MongoDB 中。再通过 Grafana 实现数据可视化。通过一个 Web 页面来查询存储在 MongoDB 中的日志。</p>
+Complete!
 
-<p>App 上报的数据转换为有意义的指标, 这个过程是靠 “聚合” 来实现的。这套系统中 “聚合” 则是借助 InfluxDB 完成的。</p>
+</code></pre>
 
-<h3 id="toc_4">InfluxDB</h3>
+<p>The package will include two utilities (inotifywait and inotifywatch), documentation and a number of libraries. The inotifywait program is of primary interest.</p>
 
-<p>在 InfluxDB 中，我们先将所有数据写入不同类型的事实表中，然后通过多个 Continuous Query 对数据进行聚合处理，把大量的明细数据聚合成一定时间周期的聚合数据（主要的周期为 30 秒或 1 分钟），再通过 Retention Policy 来控制不同类型表的数据有效期，达到资源最高效利用的目的。</p>
+<p>Some derivatives of Red Hat 7 may not include inotify in their base repositories. If you find it missing, you can obtain it from <a href="https://fedoraproject.org/wiki/EPEL">Fedora&#39;s EPEL repository</a>, either by downloading the inotify RPM for manual installation or adding the EPEL repository to yum.</p>
 
-<p><img src="https://mmbiz.qpic.cn/mmbiz_png/FE4VibF0SjfMusg7SyM0ljwABGInyksDaPyFpDrdMAVBjicTsq0VNibcEaDz40Cia8A6RgHOB9hNpSMpGafRfl1LZA/640?wx_fmt=png" alt=""/></p>
+<p>Any user on the system who can launch a shell may register watches—no special privileges are required to use the interface. This example watches the /tmp directory:</p>
 
-<p>数据可视化部分则用 Grafana 来支撑的，我们的 Main Dashboard 通过 20 张的图表来展示整体的健康状况，同时在这 20 张图表背后，还有数个更加详细的图表支撑微观方面数据。</p>
+<pre><code>
+$ inotifywait -m /tmp
+Setting up watches.
+Watches established.
 
-<p>比如有张图表绘制的是当前全网用户设备发生的网络错误率。 通过这个指标和 24 小时前的对比，我们能够直观了解整体的网络健康状况。当该指标超过某个阈值或相比昨天同时段对比有明显上升，则触发告警。实现 “发现问题”。</p>
+</code></pre>
 
-<p><img src="https://mmbiz.qpic.cn/mmbiz_png/FE4VibF0SjfMusg7SyM0ljwABGInyksDaoHzy1BDC7ichtoHqVhdAB7UFB2CgYrGYSiadsNGM8VruT7cwzic8CePoQ/640?wx_fmt=png" alt=""/></p>
+<p>If another session on the system performs a few operations on the files in /tmp:</p>
 
-<p>当出现告警后，通过网络相关的 dashboard 查看是由哪个接口发生的，什么类型的错误。再根据错误类型去日志平台查询日志。完成 “定位问题”。</p>
+<pre><code>
+$ touch /tmp/hello
+$ cp /etc/passwd /tmp
+$ rm /tmp/passwd
+$ touch /tmp/goodbye
+$ rm /tmp/hello /tmp/goodbye
 
-<h3 id="toc_5">MongoDB</h3>
+</code></pre>
 
-<p>对于日志数据我们直接将上报的 json 内容逐条拆分后写入 Mongodb。直接通过 web 页面从 Mongodb 查询对应时间的 App 日志。</p>
+<p>those changes are immediately visible to the user running inotifywait:</p>
 
-<p>这套系统的优势体现在架构非常的轻盈，成本很低。只需要简单的 OpenResty 的开发以及对 InfluxDB 做一些连续查询。在日志量不大的情况下，完全可以满足基本的移动端性能监控以及异常监测的需求。</p>
+<pre><code>
+/tmp/ CREATE hello
+/tmp/ OPEN hello
+/tmp/ ATTRIB hello
+/tmp/ CLOSE_WRITE,CLOSE hello
+/tmp/ CREATE passwd
+/tmp/ OPEN passwd
+/tmp/ MODIFY passwd
+/tmp/ CLOSE_WRITE,CLOSE passwd
+/tmp/ DELETE passwd
+/tmp/ CREATE goodbye
+/tmp/ OPEN goodbye
+/tmp/ ATTRIB goodbye
+/tmp/ CLOSE_WRITE,CLOSE goodbye
+/tmp/ DELETE hello
+/tmp/ DELETE goodbye
 
-<p>在运行了一段时间后，我们有了新的需求。</p>
+</code></pre>
 
-<p>中国有 23 个省，5 个自治区，4 个直辖市，以及香港、澳门 2 个特别行政区。电信、联通、移动三大运营商。网络制式从 2G、3G、4G 到 WiFi，还有各种各样的移动设备。这些条件构成了数量难以想象的场景。当仅仅在个别场景下发生问题，或是部分场景下发生问题的时候。我们 “发现问题” 的即时性会变差，“定位问题”所用的时间也越发的变长。</p>
+<p>A few relevant sections of the manual page explain what is happening:</p>
 
-<p>为了缩短 “定位问题” 的时间。提高发现问题和解决问题的效率。多维分析能力是我们所渴望的，如果在原有的系统上做多维分析，存在如下问题：</p>
+<pre><code>
+$ man inotifywait | col -b | sed -n &#39;/diagnostic/,/helpful/p&#39;
+  inotifywait will output diagnostic information on standard error and
+  event information on standard output. The event output can be config-
+  ured, but by default it consists of lines of the following form:
 
-<ol>
-<li><p>InfluxDB 缺乏合理免费的集群方案，我们在建立了自己的 APM 以后，客户端同学对数据和监测的需求突飞猛进，数据量每天以几何级数增长，再对其进行多维分析，单机的 InfluxDB 很难满足性能要求。</p></li>
-<li><p>MongoDB 在数据量很大的场景下，直接查询速度很慢。由于我们日志数据的多样性，在对多个维度建索引后，整体索引效率很低。</p></li>
-</ol>
+  watched_filename EVENT_NAMES event_filename
 
-<p><section class="" style="font-family: Avenir, -apple-system-font, 微软雅黑, sans-serif;line-height: 1.1;color: rgb(63, 63, 63);font-size: 20px;text-align: center;white-space: normal;background-color: rgb(255, 255, 255);">第二阶段</section></p>
+  watched_filename
+    is the name of the file on which the event occurred. If the
+    file is a directory, a trailing slash is output.
 
-<p><img src="https://mmbiz.qpic.cn/mmbiz_png/FE4VibF0SjfMusg7SyM0ljwABGInyksDaFpHbicibZsT8FMpAf9ibF97iadUDnfFBjvvWcW3CU2gcGP4oTmYk6qVVlw/640?wx_fmt=png" alt=""/></p>
+  EVENT_NAMES
+    are the names of the inotify events which occurred, separated by
+    commas.
 
-<p>为了满足大量（这里暂时不成为海量）数据的多维实时查询的需求，我们对架构中数据库和数据摄入过程进行了升级，InfluxDB 变更为 Druid， MongoDB 变更为 Greenplum， 数据也不再由 OpenResty 直接插入，而是通过了 Kafka 和 log 文件把写入过程解耦，减少数据写入次数，提升处理数据的量级。</p>
+  event_filename
+    is output only when the event occurred on a directory, and in
+    this case the name of the file within the directory which caused
+    this event is output.
 
-<h3 id="toc_6">Druid</h3>
+    By default, any special characters in filenames are not escaped
+    in any way. This can make the output of inotifywait difficult
+    to parse in awk scripts or similar. The --csv and --format
+    options will be helpful in this case.
 
-<p>Druid 是在海量时序数据上面提供实时分析查询的开源 OLAP 数据存储。</p>
+</code></pre>
 
-<p>Druid 本身对于 join 这样的操作很不友好，所以我们没有考虑用一些模型（星型或者雪花型），而是采用大的事实表，其中包含了一次事实关联的所有维度，看着很臃肿，但是查询的性能让人满意。在随时变更维度的情况下，Druid 实时查询依然维持在秒级。这不得不让人刮目相看。</p>
+<p>It also is possible to filter the output by registering particular events of interest with the <code>-e</code> option, the list of which is shown here:</p>
 
-<p>同时丰富的查询组件和聚合函数，让复杂的查询得以简单的实现。所以在查询性能、便捷性、数据量等方面的综合考量下，我们选择了 Druid 作为 InfluxDB 的升级方案。</p>
+<p>| access | create | move_self |<br/>
+| attrib | delete | moved_to |<br/>
+| close_write | delete_self | moved_from |<br/>
+| close_nowrite | modify | open |<br/>
+| close | move | unmount |</p>
 
-<p>不同于 InfluxDB，我们不再通过连续查询来做数据聚合，Druid 自身在摄入的过程中可以对指定的 Dimension 进行 roll-up 操作。极大的压缩了数据量。我们的数据经过 roll-up，每分钟从 25 万条压缩到了 8 万多条，效果比较显著。不过压缩数据是以牺牲原始数据为代价的，预聚合仅保留指定的 Dimension 及 Aggregations 结果，所以请妥善设置 Dimension。 Dimension 会发生 SQL 中 Group By 的效果，参数维度多势必降低聚合效果。尤其需要的注意 Dimension 的选择，如果一不小心选择了高基字段作为 Dimension，那么压缩效率会低的惊人。我们曾经因为数据处理的失误，将一个 Dimension 的 Value 数从 2000 变成了 200W, 直接导致当天的 segments 占用的空间比以往大 22 倍。通过摄入周期的调整，还可以做到更大的压缩比，这个取决 queryGranularity 字段，它决定了压缩后的数据最小时间粒度，目前我们使用的是分钟。</p>
+<p>A common application is testing for the arrival of new files. Since inotify must be given the name of an existing filesystem object to watch, the directory containing the new files is provided. A trigger of interest is also easy to provide—new files should be complete and ready for processing when the <code>close_write</code> trigger fires. Below is an example script to watch for these events:</p>
 
-<p>在使用 Grafana 接入 Druid 的时候还是遇到一些小坑，由于 Grafana 官方集成的 Druid 插件实在是功能太有限，比如对 Time Range 的限制，我们不得不在源码的基础上做了部分调整。</p>
+<pre><code>
+#!/bin/sh
+unset IFS                                 # default of space, tab and nl
+                                          # Wait for filesystem events
+inotifywait -m -e close_write \
+   /tmp /var/tmp /home/oracle/arch-orcl/ |
+while read dir op file
+do [[ &quot;${dir}&quot; == &#39;/tmp/&#39; &amp;&amp; &quot;${file}&quot; == *.txt ]] &amp;&amp;
+      echo &quot;Import job should start on $file ($dir $op).&quot;
 
-<p><section class="" style="font-family: Avenir, -apple-system-font, 微软雅黑, sans-serif;line-height: 1.1;color: rgb(63, 63, 63);font-size: 16px;text-align: center;white-space: normal;background-color: rgb(255, 255, 255);">Kafka</section></p>
+   [[ &quot;${dir}&quot; == &#39;/var/tmp/&#39; &amp;&amp; &quot;${file}&quot; == CLOSE_WEEK*.txt ]] &amp;&amp;
+      echo Weekly backup is ready.
 
-<p>Druid 两种数据摄入源:</p>
+   [[ &quot;${dir}&quot; == &#39;/home/oracle/arch-orcl/&#39; &amp;&amp; &quot;${file}&quot; == *.ARC ]]
+&amp;&amp;
+      su - oracle -c &#39;ORACLE_SID=orcl ~oracle/bin/log_shipper&#39; &amp;
 
-<ol>
-<li> 流式数据</li>
-<li> 静态文件数据</li>
-</ol>
+   [[ &quot;${dir}&quot; == &#39;/tmp/&#39; &amp;&amp; &quot;${file}&quot; == SHUT ]] &amp;&amp; break
 
-<p>这两种数据源又都有两种方式摄入，分别为 pull 方式和 push 方式。我们采用了 real time index（push 的一种）方式，启动实时 task 来从 kafka 中摄取数据。</p>
+   ((step+=1))
+done
 
-<h3 id="toc_7">Greenplum</h3>
+echo We processed $step events.
 
-<p>Greenplum 相比我们原先使用的 MongoDB, 支持列式存储, 并行查询效率更高。在不建索引的情况下，50 列千万级别的数据在 1，2 秒能查完，完全满足我们对日志查询的需求。</p>
+</code></pre>
 
-<p>起初我们使用 Http 的方式批量插入 Greenplum，但是当写入速度超过 6 千条每秒时，查询速度直线下降。</p>
+<p>There are a few problems with the script as presented—of all the available shells on Linux, only ksh93 (that is, the AT&amp;T Korn shell) will report the &quot;step&quot; variable correctly at the end of the script. All the other shells will report this variable as null.</p>
 
-<p>明显写入不是 Greenplum 的强项，为了解决这个问题，我们是把日志以文件的形式写入 NFS 中, 由 Greenplum 定时摄入。</p>
+<p>The reason for this behavior can be found in a brief explanation on the manual page for Bash: &quot;Each command in a pipeline is executed as a separate process (i.e., in a subshell).&quot; The MirBSD clone of the Korn shell has a slightly longer explanation:</p>
 
-<p>同时为了保证性能和简化写入，还对 OpenResty 的写入进行了优化，利用 nginx 的 subrequest 写 access.log 的功能来实现日志写入，并且整个过程封装到协程中执行。调整后每分钟能够轻松写入 50 万条。</p>
+<pre><code>
+# man mksh | col -b | sed -n &#39;/The parts/,/do so/p&#39;
+  The parts of a pipeline, like below, are executed in subshells. Thus,
+  variable assignments inside them fail. Use co-processes instead.
 
-<p><img src="https://mmbiz.qpic.cn/mmbiz_png/FE4VibF0SjfMusg7SyM0ljwABGInyksDaHan3wopRd9Jujiay2MExXXoq7zpGiaRwhmHJjdh0NwWnAclbFzqB1VJg/640?wx_fmt=png" alt=""/></p>
+  foo | bar | read baz          # will not change $baz
+  foo | bar |&amp; read -p baz      # will, however, do so
 
-<h2 id="toc_8">总结</h2>
+</code></pre>
 
-<p>这套系统对个性问题，共性问题的快速甄别起到了关键性的作用，也极大的提升了定位问题的速度。在针对某些维度或特征做针对性的优化的时候，效果也更容易监控。</p>
+<p>And, the pdksh documentation in Oracle Linux 5 (from which MirBSD mksh emerged) has several more mentions of the subject:</p>
 
-<p>通过不同类型事件的采集，我们还实现了页面响应时间（多维）、http 请求分阶段响应时间（多维）、页面卡顿分析、页面加载性能监控等多方位的监控系统，为我们的优化工作指明了方向。对于 iOS 或者 Android 开发的同学，这样一套系统既能满足需求，也易于开发，相比传统 ELK 日志分析在实时性和简易性都提升很多。</p>
+<pre><code>
+General features of at&amp;t ksh88 that are not (yet) in pdksh:
+  - the last command of a pipeline is not run in the parent shell
+  - `echo foo | read bar; echo $bar&#39; prints foo in at&amp;t ksh, nothing
+    in pdksh (ie, the read is done in a separate process in pdksh).
+  - in pdksh, if the last command of a pipeline is a shell builtin, it
+    is not executed in the parent shell, so &quot;echo a b | read foo bar&quot;
+    does not set foo and bar in the parent shell (at&amp;t ksh will).
+    This may get fixed in the future, but it may take a while.
 
-<p>如果技术团队的资源比较紧张，移动端的同学自己动手实践下 DevOps 也是不错的选择。</p>
+$ man pdksh | col -b | sed -n &#39;/BTW, the/,/aware/p&#39;
+  BTW, the most frequently reported bug is
+    echo hi | read a; echo $a   # Does not print hi
+  I&#39;m aware of this and there is no need to report it.
+
+</code></pre>
+
+<p>This behavior is easy enough to demonstrate—running the script above with the default bash shell and providing a sequence of example events:</p>
+
+<pre><code>
+$ cp /etc/passwd /tmp/newdata.txt
+$ cp /etc/group /var/tmp/CLOSE_WEEK20170407.txt
+$ cp /etc/passwd /tmp/SHUT
+
+</code></pre>
+
+<p>gives the following script output:</p>
+
+<pre><code>
+# ./inotify.sh
+Setting up watches.
+Watches established.
+Import job should start on newdata.txt (/tmp/ CLOSE_WRITE,CLOSE).
+Weekly backup is ready.
+We processed events.
+
+</code></pre>
+
+<p>Examining the process list while the script is running, you&#39;ll also see two shells, one forked for the control structure:</p>
+
+<pre><code>
+$ function pps { typeset a IFS=\| ; ps ax | while read a
+do case $a in *$1*|+([!0-9])) echo $a;; esac; done }
+
+$ pps inot
+  PID TTY      STAT   TIME COMMAND
+ 3394 pts/1    S+     0:00 /bin/sh ./inotify.sh
+ 3395 pts/1    S+     0:00 inotifywait -m -e close_write /tmp /var/tmp
+ 3396 pts/1    S+     0:00 /bin/sh ./inotify.sh
+
+</code></pre>
+
+<p>As it was manipulated in a subshell, the &quot;step&quot; variable above was null when control flow reached the echo. Switching this from #/bin/sh to #/bin/ksh93 will correct the problem, and only one shell process will be seen:</p>
+
+<pre><code>
+# ./inotify.ksh93
+Setting up watches.
+Watches established.
+Import job should start on newdata.txt (/tmp/ CLOSE_WRITE,CLOSE).
+Weekly backup is ready.
+We processed 2 events.
+
+$ pps inot
+  PID TTY      STAT   TIME COMMAND
+ 3583 pts/1    S+     0:00 /bin/ksh93 ./inotify.sh
+ 3584 pts/1    S+     0:00 inotifywait -m -e close_write /tmp /var/tmp
+
+</code></pre>
+
+<p>Although ksh93 behaves properly and in general handles scripts far more gracefully than all of the other Linux shells, it is rather large:</p>
+
+<pre><code>
+$ ll /bin/[bkm]+([aksh93]) /etc/alternatives/ksh
+-rwxr-xr-x. 1 root root  960456 Dec  6 11:11 /bin/bash
+lrwxrwxrwx. 1 root root      21 Apr  3 21:01 /bin/ksh -&gt;
+                                               /etc/alternatives/ksh
+-rwxr-xr-x. 1 root root 1518944 Aug 31  2016 /bin/ksh93
+-rwxr-xr-x. 1 root root  296208 May  3  2014 /bin/mksh
+lrwxrwxrwx. 1 root root      10 Apr  3 21:01 /etc/alternatives/ksh -&gt;
+                                                    /bin/ksh93
+
+</code></pre>
+
+<p>The mksh binary is the smallest of the Bourne implementations above (some of these shells may be missing on your system, but you can install them with yum). For a long-term monitoring process, mksh is likely the best choice for reducing both processing and memory footprint, and it does not launch multiple copies of itself when idle assuming that a coprocess is used. Converting the script to use a Korn coprocess that is friendly to mksh is not difficult:</p>
+
+<pre><code>
+#!/bin/mksh
+unset IFS                              # default of space, tab and nl
+                                       # Wait for filesystem events
+inotifywait -m -e close_write \
+   /tmp/ /var/tmp/ /home/oracle/arch-orcl/ \
+   2&lt;/dev/null |&amp;                      # Launch as Korn coprocess
+
+while read -p dir op file              # Read from Korn coprocess
+do [[ &quot;${dir}&quot; == &#39;/tmp/&#39; &amp;&amp; &quot;${file}&quot; == *.txt ]] &amp;&amp;
+      print &quot;Import job should start on $file ($dir $op).&quot;
+
+   [[ &quot;${dir}&quot; == &#39;/var/tmp/&#39; &amp;&amp; &quot;${file}&quot; == CLOSE_WEEK*.txt ]] &amp;&amp;
+      print Weekly backup is ready.
+
+   [[ &quot;${dir}&quot; == &#39;/home/oracle/arch-orcl/&#39; &amp;&amp; &quot;${file}&quot; == *.ARC ]]
+&amp;&amp;
+      su - oracle -c &#39;ORACLE_SID=orcl ~oracle/bin/log_shipper&#39; &amp;
+
+   [[ &quot;${dir}&quot; == &#39;/tmp/&#39; &amp;&amp; &quot;${file}&quot; == SHUT ]] &amp;&amp; break
+
+   ((step+=1))
+done
+
+echo We processed $step events.
+
+</code></pre>
+
+<p>Note that <a></a>the Korn and Bolsky reference on the Korn shell outlines the following requirements in a program operating as a coprocess:</p>
+
+<blockquote>
+<p><strong>Caution:</strong> The co-process must:</p>
+
+<ul>
+<li><p>Send each output message to standard output.</p></li>
+<li><p>Have a Newline at the end of each message.</p></li>
+<li><p>Flush its standard output whenever it writes a message.</p></li>
+</ul>
+</blockquote>
+
+<p>An <code>fflush(NULL)</code> is found in the main processing loop of the inotifywait source, and these requirements appear to be met.</p>
+
+<p>The mksh version of the script is the most reasonable compromise for efficient use and correct behavior, and I have explained it at some length here to save readers trouble and frustration—it is important to avoid control structures executing in subshells in most of the Borne family. However, hopefully all of these ersatz shells someday fix this basic flaw and implement the Korn behavior correctly.</p>
+
+<h3 id="toc_1">A Practical Application—Oracle Log Shipping</h3>
+
+<p>Oracle databases that are configured for hot backups produce a stream of &quot;archived redo log files&quot; that are used for database recovery. These are the most critical backup files that are produced in an Oracle database.</p>
+
+<p>These files are numbered sequentially and are written to a log directory configured by the DBA. An inotifywatch can trigger activities to compress, encrypt and/or distribute the archived logs to backup and disaster recovery servers for safekeeping. You can configure Oracle RMAN to do most of these functions, but the OS tools are more capable, flexible and simpler to use.</p>
+
+<p>There are a number of important design parameters for a script handling archived logs:</p>
+
+<ul>
+<li><p>A &quot;critical section&quot; must be established that allows only a single process to manipulate the archived log files at a time. Oracle will sometimes write bursts of log files, and inotify might cause the handler script to be spawned repeatedly in a short amount of time. Only one instance of the handler script can be allowed to run—any others spawned during the handler&#39;s lifetime must immediately exit. This will be achieved with a textbook application of the flock program from the util-linux package.</p></li>
+<li><p>The optimum compression available for production applications appears to be <a href="http://www.nongnu.org/lzip">lzip</a>. The author claims that the integrity of his archive format is <a href="http://www.nongnu.org/lzip/xz_inadequate.html">superior to many more well known utilities</a>, both in compression ability and also structural integrity. The lzip binary is not in the standard repository for Oracle Linux—it is available in EPEL and is easily compiled from source.</p></li>
+<li><p>Note that <a href="http://www.7-zip.org">7-Zip</a> uses the same LZMA algorithm as lzip, and it also will perform AES encryption on the data after compression. Encryption is a desirable feature, as it will exempt a business from <a href="http://www.ncsl.org/research/telecommunications-and-information-technology/security-breach-notification-laws.aspx">breach disclosure laws</a> in most US states if the backups are lost or stolen and they contain &quot;Protected Personal Information&quot; (PPI), such as birthdays or Social Security Numbers. The author of lzip does have harsh things to say regarding the quality of 7-Zip archives using LZMA2, and the <code>openssl enc</code> program can be used to apply AES encryption after compression to lzip archives or any other type of file, as I discussed in a <a href="http://www.linuxjournal.com/content/flat-file-encryption-openssl-and-gpg">previous article</a>. I&#39;m foregoing file encryption in the script below and using lzip for clarity.</p></li>
+<li><p>The current log number will be recorded in a dot file in the Oracle user&#39;s home directory. If a log is skipped for some reason (a rare occurrence for an Oracle database), log shipping will stop. A missing log requires an immediate and full database backup (either cold or hot)—successful recoveries of Oracle databases cannot skip logs.</p></li>
+<li><p>The <code>scp</code> program will be used to copy the log to a remote server, and it should be called repeatedly until it returns successfully.</p></li>
+<li><p>I&#39;m calling the genuine &#39;93 Korn shell for this activity, as it is the most capable scripting shell and I don&#39;t want any surprises.</p></li>
+</ul>
+
+<p>Given these design parameters, this is an implementation:</p>
+
+<pre><code>
+# cat ~oracle/archutils/process_logs
+
+#!/bin/ksh93
+
+set -euo pipefail
+IFS=$&#39;\n\t&#39;  # http://redsymbol.net/articles/unofficial-bash-strict-mode/
+
+(
+ flock -n 9 || exit 1          # Critical section-allow only one process.
+
+ ARCHDIR=~oracle/arch-${ORACLE_SID}
+
+ APREFIX=${ORACLE_SID}_1_
+
+ ASUFFIX=.ARC
+
+ CURLOG=$(&lt;~oracle/.curlog-$ORACLE_SID)
+
+ File=&quot;${ARCHDIR}/${APREFIX}${CURLOG}${ASUFFIX}&quot;
+
+ [[ ! -f &quot;$File&quot; ]] &amp;&amp; exit
+
+ while [[ -f &quot;$File&quot; ]]
+ do ((NEXTCURLOG=CURLOG+1))
+
+    NextFile=&quot;${ARCHDIR}/${APREFIX}${NEXTCURLOG}${ASUFFIX}&quot;
+
+    [[ ! -f &quot;$NextFile&quot; ]] &amp;&amp; sleep 60  # Ensure ARCH has finished
+
+    nice /usr/local/bin/lzip -9q &quot;$File&quot;
+
+    until scp &quot;${File}.lz&quot; &quot;yourcompany.com:~oracle/arch-$ORACLE_SID&quot;
+    do sleep 5
+    done
+
+    CURLOG=$NEXTCURLOG
+
+    File=&quot;$NextFile&quot;
+ done
+
+ echo $CURLOG &gt; ~oracle/.curlog-$ORACLE_SID
+
+) 9&gt;~oracle/.processing_logs-$ORACLE_SID
+
+</code></pre>
+
+<p>The above script can be executed manually for testing even while the inotify handler is running, as the flock protects it.</p>
+
+<p>A standby server, or a DataGuard server in primitive standby mode, can apply the archived logs at regular intervals. The script below forces a 12-hour delay in log application for the recovery of dropped or damaged objects, so inotify cannot be easily used in this case—cron is a more reasonable approach for delayed file processing, and a run every 20 minutes will keep the standby at the desired recovery point:</p>
+
+<pre><code>
+# cat ~oracle/archutils/delay-lock.sh
+
+#!/bin/ksh93
+
+(
+ flock -n 9 || exit 1              # Critical section-only one process.
+
+ WINDOW=43200                      # 12 hours
+
+ LOG_DEST=~oracle/arch-$ORACLE_SID
+
+ OLDLOG_DEST=$LOG_DEST-applied
+
+ function fage { print $(( $(date +%s) - $(stat -c %Y &quot;$1&quot;) ))
+  } # File age in seconds - Requires GNU extended date &amp; stat
+
+ cd $LOG_DEST
+
+ of=$(ls -t | tail -1)             # Oldest file in directory
+
+ [[ -z &quot;$of&quot; || $(fage &quot;$of&quot;) -lt $WINDOW ]] &amp;&amp; exit
+
+ for x in $(ls -rt)                    # Order by ascending file mtime
+ do if [[ $(fage &quot;$x&quot;) -ge $WINDOW ]]
+    then y=$(basename $x .lz)          # lzip compression is optional
+
+         [[ &quot;$y&quot; != &quot;$x&quot; ]] &amp;&amp; /usr/local/bin/lzip -dkq &quot;$x&quot;
+
+         $ORACLE_HOME/bin/sqlplus &#39;/ as sysdba&#39; &gt; /dev/null 2&gt;&amp;1 &lt;&lt;-EOF
+                recover standby database;
+                $LOG_DEST/$y
+                cancel
+                quit
+                EOF
+
+         [[ &quot;$y&quot; != &quot;$x&quot; ]] &amp;&amp; rm &quot;$y&quot;
+
+         mv &quot;$x&quot; $OLDLOG_DEST
+    fi
+
+ done
+) 9&gt; ~oracle/.recovering-$ORACLE_SID
+
+</code></pre>
+
+<p>I&#39;ve covered these specific examples here because they introduce tools to control concurrency, which is a common issue when using inotify, and they advance a few features that increase reliability and minimize storage requirements. Hopefully enthusiastic readers will introduce many improvements to these approaches.</p>
+
+<h3 id="toc_2">The incron System</h3>
+
+<p>Lukas Jelinek is the author of the incron package that allows users to specify tables of inotify events that are executed by the master incrond process. Despite the reference to &quot;cron&quot;, the package does not schedule events at regular intervals—it is a tool for filesystem events, and the cron reference is slightly misleading.</p>
+
+<p>The incron package is available from EPEL. If you have installed the repository, you can load it with yum:</p>
+
+<pre><code>
+# yum install incron
+Loaded plugins: langpacks, ulninfo
+Resolving Dependencies
+--&gt; Running transaction check
+---&gt; Package incron.x86_64 0:0.5.10-8.el7 will be installed
+--&gt; Finished Dependency Resolution
+
+Dependencies Resolved
+
+=================================================================
+ Package       Arch       Version           Repository    Size
+=================================================================
+Installing:
+ incron        x86_64     0.5.10-8.el7      epel          92 k
+
+Transaction Summary
+==================================================================
+Install  1 Package
+
+Total download size: 92 k
+Installed size: 249 k
+Is this ok [y/d/N]: y
+Downloading packages:
+incron-0.5.10-8.el7.x86_64.rpm                      |  92 kB   00:01
+Running transaction check
+Running transaction test
+Transaction test succeeded
+Running transaction
+  Installing : incron-0.5.10-8.el7.x86_64                          1/1
+  Verifying  : incron-0.5.10-8.el7.x86_64                          1/1
+
+Installed:
+  incron.x86_64 0:0.5.10-8.el7
+
+Complete!
+
+</code></pre>
+
+<p>On a systemd distribution with the appropriate service units, you can start and enable incron at boot with the following commands:</p>
+
+<pre><code>
+# systemctl start incrond
+# systemctl enable incrond
+Created symlink from
+   /etc/systemd/system/multi-user.target.wants/incrond.service
+to /usr/lib/systemd/system/incrond.service.
+
+</code></pre>
+
+<p>In the default configuration, any user can establish incron schedules. The incrontab format uses three fields:</p>
+
+<pre><code>
+&lt;path&gt; &lt;mask&gt; &lt;command&gt;
+
+</code></pre>
+
+<p>Below is an example entry that was set with the <code>-e</code> option:</p>
+
+<pre><code>
+$ incrontab -e        #vi session follows
+
+$ incrontab -l
+/tmp/ IN_ALL_EVENTS /home/luser/myincron.sh $@ $% $#
+
+</code></pre>
+
+<p>You can record a simple script and mark it with execute permission:</p>
+
+<pre><code>
+$ cat myincron.sh
+#!/bin/sh
+
+echo -e &quot;path: $1 op: $2 \t file: $3&quot; &gt;&gt; ~/op
+
+$ chmod 755 myincron.sh
+
+</code></pre>
+
+<p>Then, if you repeat the original /tmp file manipulations at the start of this article, the script will record the following output:</p>
+
+<pre><code>
+$ cat ~/op
+
+path: /tmp/ op: IN_ATTRIB        file: hello
+path: /tmp/ op: IN_CREATE        file: hello
+path: /tmp/ op: IN_OPEN          file: hello
+path: /tmp/ op: IN_CLOSE_WRITE   file: hello
+path: /tmp/ op: IN_OPEN          file: passwd
+path: /tmp/ op: IN_CLOSE_WRITE   file: passwd
+path: /tmp/ op: IN_MODIFY        file: passwd
+path: /tmp/ op: IN_CREATE        file: passwd
+path: /tmp/ op: IN_DELETE        file: passwd
+path: /tmp/ op: IN_CREATE        file: goodbye
+path: /tmp/ op: IN_ATTRIB        file: goodbye
+path: /tmp/ op: IN_OPEN          file: goodbye
+path: /tmp/ op: IN_CLOSE_WRITE   file: goodbye
+path: /tmp/ op: IN_DELETE        file: hello
+path: /tmp/ op: IN_DELETE        file: goodbye
+
+</code></pre>
+
+<p>While the <code>IN_CLOSE_WRITE</code> event on a directory object is usually of greatest interest, most of the standard inotify events are available within incron, which also offers several unique amalgams:</p>
+
+<pre><code>
+$ man 5 incrontab | col -b | sed -n &#39;/EVENT SYMBOLS/,/child process/p&#39;
+
+EVENT SYMBOLS
+
+These basic event mask symbols are defined:
+
+IN_ACCESS          File was accessed (read) (*)
+IN_ATTRIB          Metadata changed (permissions, timestamps, extended
+                   attributes, etc.) (*)
+IN_CLOSE_WRITE     File opened for writing was closed (*)
+IN_CLOSE_NOWRITE   File not opened for writing was closed (*)
+IN_CREATE          File/directory created in watched directory (*)
+IN_DELETE          File/directory deleted from watched directory (*)
+IN_DELETE_SELF     Watched file/directory was itself deleted
+IN_MODIFY          File was modified (*)
+IN_MOVE_SELF       Watched file/directory was itself moved
+IN_MOVED_FROM      File moved out of watched directory (*)
+IN_MOVED_TO        File moved into watched directory (*)
+IN_OPEN            File was opened (*)
+
+When monitoring a directory, the events marked with an asterisk (*)
+above can occur for files in the directory, in which case the name
+field in the returned event data identifies the name of the file within
+the directory.
+
+The IN_ALL_EVENTS symbol is defined as a bit mask of all of the above
+events. Two additional convenience symbols are IN_MOVE, which is a com-
+bination of IN_MOVED_FROM and IN_MOVED_TO, and IN_CLOSE, which combines
+IN_CLOSE_WRITE and IN_CLOSE_NOWRITE.
+
+The following further symbols can be specified in the mask:
+
+IN_DONT_FOLLOW     Don&#39;t dereference pathname if it is a symbolic link
+IN_ONESHOT         Monitor pathname for only one event
+IN_ONLYDIR         Only watch pathname if it is a directory
+
+Additionally, there is a symbol which doesn&#39;t appear in the inotify sym-
+bol set. It is IN_NO_LOOP. This symbol disables monitoring events until
+the current one is completely handled (until its child process exits).
+
+</code></pre>
+
+<p>The incron system likely presents the most comprehensive interface to inotify of all the tools researched and listed here. Additional configuration options can be set in /etc/incron.conf to tweak incron&#39;s behavior for those that require a non-standard configuration.</p>
+
+<h3 id="toc_3">Path Units under systemd</h3>
+
+<p>When your Linux installation is running systemd as PID 1, limited inotify functionality is available through &quot;path units&quot; as is discussed in a lighthearted <a href="http://www.ocsmag.com/2015/09/02/monitoring-file-access-for-dummies">article by Paul Brown</a> at <u>OCS-Mag</u>.</p>
+
+<p>The relevant manual page has useful information on the subject:</p>
+
+<pre><code>
+$ man systemd.path | col -b | sed -n &#39;/Internally,/,/systems./p&#39;
+
+Internally, path units use the inotify(7) API to monitor file systems.
+Due to that, it suffers by the same limitations as inotify, and for
+example cannot be used to monitor files or directories changed by other
+machines on remote NFS file systems.
+
+</code></pre>
+
+<p>Note that when a systemd path unit spawns a shell script, the <code>$HOME</code> and tilde (<code>~</code>) operator for the owner&#39;s home directory may not be defined. Using the tilde operator to reference another user&#39;s home directory (for example, ~nobody/) does work, even when applied to the self-same user running the script. The Oracle script above was explicit and did not reference ~ without specifying the target user, so I&#39;m using it as an example here.</p>
+
+<p>Using inotify triggers with systemd path units requires two files. The first file specifies the filesystem location of interest:</p>
+
+<pre><code>
+$ cat /etc/systemd/system/oralog.path
+
+[Unit]
+Description=Oracle Archivelog Monitoring
+Documentation=http://docs.yourserver.com
+
+[Path]
+PathChanged=/home/oracle/arch-orcl/
+
+[Install]
+WantedBy=multi-user.target
+
+</code></pre>
+
+<p>The <code>PathChanged</code> parameter above roughly corresponds to the <code>close-write</code> event used in my previous direct inotify calls. The full collection of inotify events is not (currently) supported by systemd—it is limited to <code>PathExists</code>, <code>PathChanged</code> and <code>PathModified</code>, which are described in <code>man systemd.path</code>.</p>
+
+<p>The second file is a service unit describing a program to be executed. It must have the same name, but a different extension, as the path unit:</p>
+
+<pre><code>
+$ cat /etc/systemd/system/oralog.service
+
+[Unit]
+Description=Oracle Archivelog Monitoring
+Documentation=http://docs.yourserver.com
+
+[Service]
+Type=oneshot
+Environment=ORACLE_SID=orcl
+ExecStart=/bin/sh -c &#39;/root/process_logs &gt;&gt; /tmp/plog.txt 2&gt;&amp;1&#39;
+
+</code></pre>
+
+<p>The <code>oneshot</code> parameter above alerts systemd that the program that it forks is expected to exit and should not be respawned automatically—the restarts are limited to triggers from the path unit. The above service configuration will provide the best options for logging—divert them to /dev/null if they are not needed.</p>
+
+<p>Use <code>systemctl start</code> on the path unit to begin monitoring—a common error is using it on the service unit, which will directly run the handler only once. Enable the path unit if the monitoring should survive a reboot.</p>
+
+<p>Although this limited functionality may be enough for some casual uses of inotify, it is a shame that the full functionality of inotifywait and incron are not represented here. Perhaps it will come in time.</p>
+
+<h3 id="toc_4">Conclusion</h3>
+
+<p>Although the inotify tools are powerful, they do have limitations. To repeat them, inotify cannot monitor remote (NFS) filesystems; it cannot report the userid involved in a triggering event; it does not work with /proc or other pseudo-filesystems; mmap() operations do not trigger it; and the inotify queue can overflow resulting in lost events, among other concerns.</p>
+
+<p>Even with these weaknesses, the efficiency of inotify is superior to most other approaches for immediate notifications of filesystem activity. It also is quite flexible, and although the close-write directory trigger should suffice for most usage, it has ample tools for covering special use cases.</p>
+
+<p>In any event, it is productive to replace polling activity with inotify watches, and system administrators should be liberal in educating the user community that the classic crontab is not an appropriate place to check for new files. Recalcitrant users should be confined to Ultrix on a VAX until they develop sufficient appreciation for modern tools and approaches, which should result in more efficient Linux systems and happier administrators.</p>
+
+<h3 id="toc_5">Sidenote: Archiving /etc/passwd</h3>
+
+<p>Tracking changes to the password file involves many different types of inotify triggering events. The <code>vipw</code> utility commonly will make changes to a temporary file, then clobber the original with it. This can be seen when the inode number changes:</p>
+
+<pre><code>
+# ll -i /etc/passwd
+199720973 -rw-r--r-- 1 root root 3928 Jul  7 12:24 /etc/passwd
+
+# vipw
+[ make changes ]
+You are using shadow passwords on this system.
+Would you like to edit /etc/shadow now [y/n]? n
+
+# ll -i /etc/passwd
+203784208 -rw-r--r-- 1 root root 3956 Jul  7 12:24 /etc/passwd
+
+</code></pre>
+
+<p>The destruction and replacement of /etc/passwd even occurs with setuid binaries called by unprivileged users:</p>
+
+<pre><code>
+$ ll -i /etc/passwd
+203784196 -rw-r--r-- 1 root root 3928 Jun 29 14:55 /etc/passwd
+
+$ chsh
+Changing shell for fishecj.
+Password:
+New shell [/bin/bash]: /bin/csh
+Shell changed.
+
+$ ll -i /etc/passwd
+199720970 -rw-r--r-- 1 root root 3927 Jul  7 12:23 /etc/passwd
+
+</code></pre>
+
+<p>For this reason, all inotify triggering events should be considered when tracking this file. If there is concern with an inotify queue overflow (in which events are lost), then the <code>OPEN</code>, <code>ACCESS</code> and <code>CLOSE_NOWRITE,CLOSE</code> triggers likely can be immediately ignored.</p>
+
+<p>All other inotify events on /etc/passwd might run the following script to version the changes into an RCS archive and mail them to an administrator:</p>
+
+<pre><code>
+#!/bin/sh
+
+# This script tracks changes to the /etc/passwd file from inotify.
+# Uses RCS for archiving. Watch for UID zero.
+
+PWMAILS=Charlie.Root@openbsd.org
+
+TPDIR=~/track_passwd
+
+cd $TPDIR
+
+if diff -q /etc/passwd $TPDIR/passwd
+then exit                                         # they are the same
+else sleep 5                                      # let passwd settle
+     diff /etc/passwd $TPDIR/passwd 2&gt;&amp;1 |        # they are DIFFERENT
+     mail -s &quot;/etc/passwd changes $(hostname -s)&quot; &quot;$PWMAILS&quot;
+     cp -f /etc/passwd $TPDIR                     # copy for checkin
+
+#    &quot;SCCS, the source motel! Programs check in and never check out!&quot;
+#     -- Ken Thompson
+
+     rcs -q -l passwd                            # lock the archive
+     ci -q -m_ passwd                            # check in new ver
+     co -q passwd                                # drop the new copy
+fi &gt; /dev/null 2&gt;&amp;1
+
+</code></pre>
+
+<p>Here is an example email from the script for the above <code>chfn</code> operation:</p>
+
+<pre><code>
+-----Original Message-----
+From: root [mailto:root@myhost.com]
+Sent: Thursday, July 06, 2017 2:35 PM
+To: Fisher, Charles J. &lt;Charles.Fisher@myhost.com&gt;;
+Subject: /etc/passwd changes myhost
+
+57c57
+&lt; fishecj:x:123:456:Fisher, Charles J.:/home/fishecj:/bin/bash
+---
+&gt; fishecj:x:123:456:Fisher, Charles J.:/home/fishecj:/bin/csh
+
+</code></pre>
+
+<p>Further processing on the third column of /etc/passwd might detect UID zero (a root user) or other important user classes for emergency action. This might include a rollback of the file from RCS to /etc and/or SMS messages to security contacts.</p>
 
                         
                       </div>
@@ -239,10 +862,10 @@
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/5/31</span>
+                    <span class="date">2018/6/1</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Container.html'>Container</a></span>
+          					    <span class="posted-in"><a href='Storage.html'>Storage</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -332,31 +955,31 @@
 	      
 		      
 			      <li class="post">
-			        <a href="15389311738065.html">重构到更深层的模型</a>
+			        <a href="15459058392039.html">Reliable Domain Events</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389278377243.html">IAM of Google Cloud</a>
+			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389224951575.html">RSocket, a New Application Network Protocol for Reactive Applications, Announced at SpringOne</a>
+			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389220103546.html">如何形象地描述RxJava中的背压和流控机制？</a>
+			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389214670417.html">Modeling Uncertainty with Reactive DDD</a>
+			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
 			      </li>
 		     
 		  

@@ -105,213 +105,136 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15262240665064.html">
+                <a class="clearlink" href="15309736200535.html">
                 
-                  <h1>Spring Boot で WebSocket (STOMPではなく、TextWebSocketHandler)を試してみる</h1>
+                  <h1>Asynchronous timeouts with CompletableFutures in Java 8 and Java 9</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p>2017-05-10<br/>
-<a href="http://blog.enjoyxstudy.com/entry/2017/05/10/000000">http://blog.enjoyxstudy.com/entry/2017/05/10/000000</a></p>
+<p>原文地址 <a href="http://iteratrlearning.com/java9/2016/09/13/java9-timeouts-completablefutures.html">http://iteratrlearning.com/java9/2016/09/13/java9-timeouts-completablefutures.html</a></p>
 </blockquote>
 
-<p>こないだSTOMP over WebSocketを試してみましたが、今度はSTOMPを使わずに、<code>TextWebSocketHandler</code>を使ったWebSocketを試してみます。題材も同じくチャットです。</p>
+<p><u>Written on September 13, 2016</u></p>
 
-<ul>
-<li>  <a href="https://github.com/onozaty/sandbox-spring-boot/tree/master/spring-boot-websocket">sandbox-spring-boot/spring-boot-websocket at master · onozaty/sandbox-spring-boot · GitHub</a></li>
-</ul>
+<p>Java 8 introduced <code>CompletableFuture&lt;T&gt;</code> as an enhancement to <code>Future&lt;T&gt;</code>. It is a new class which lets you express the flow of information from different tasks using a callback driven style. A <code>CompletableFuture</code> is used for defining computations on singular events, which is a different use case than computations on streams of events (e.g. <code>Observable</code> using RxJava). In this article, you will learn about the problem with timeouts in Java 8’s CompletableFuture and the improvements that Java 9 brings.</p>
 
-<p>ルームの情報をどのように渡そうか悩みました。コードを書き始めるまでは、WebSocketで接続する先にヘッダとかで渡せばいいかなと思っていましたが、調べてみたら渡せなかったので、やもえずURLのクエリパラメータとして渡すようにしました。</p>
+<h2 id="toc_0">Combining two services</h2>
 
-<h2 id="toc_0">コード</h2>
+<p>For the purpose of this article, let’s say you’d like to combine the result of two services over the network:</p>
 
-<p>テキストでのやり取りを行うので、<code>TextWebSocketHandler</code> を利用します。<code>TextWebSocketHandler</code>の各メソッドをoverrideして必要な処理を実装するだけです。</p>
+<ol>
+<li> A best price finder for a flight route</li>
+<li> An exchange service that converts USD to GBP</li>
+</ol>
 
-<p>ルームの情報は、URLのクエリとしてクライアントから送っているので、接続が確立したタイミング(<code>afterConnectionEstablished</code>)にて、ルーム毎に<code>WebSocketSession</code>を保持するようにします。 メッセージを受け取ったら、自分のルームと同じ<code>WebSocketSession</code>に対して、メッセージを送るだけです。</p>
+<p>Both of these services will introduce a certain delay before responding back with a result. This is due to the costs of network communication with the service.</p>
 
-<pre><code class="language-java">package com.example;
+<p>You could solve this problem by making use of CompletableFuture as follows (by default a CompletableFuture uses the <a href="https://docs.oracle.com/javase/8/docs/api/java/util/concurrent/ForkJoinPool.html">common thread pool</a> but this can be parametrised with an <code>Executor</code> using an overload of <code>supplyAsync</code>):</p>
 
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.CopyOnWriteArraySet;
+<pre><code class="language-java">BigDecimal amount = 
+    CompletableFuture.supplyAsync(() -&gt; findBestPrice(&quot;LDN - NYC&quot;))
+                     .thenCombine(CompletableFuture.supplyAsync(() -&gt; queryExchangeRateFor(&quot;GBP&quot;)), 
+                                                 this::convert)
+                     .get();
 
-import org.springframework.stereotype.Component;
-import org.springframework.web.socket.CloseStatus;
-import org.springframework.web.socket.TextMessage;
-import org.springframework.web.socket.WebSocketSession;
-import org.springframework.web.socket.handler.TextWebSocketHandler;
+</code></pre>
 
-@Component
-public class ChatHandler extends TextWebSocketHandler {
+<p>In the code above, the method <code>convert</code> takes the two BigDecimal results from <code>findBestPrice</code> and <code>queryExchangeRateFor</code> and calculates the final amount. You can refer to the <a href="https://docs.oracle.com/javase/8/docs/api/java/util/concurrent/CompletableFuture.html">javadoc</a> for a more detailed description of the methods available using <code>CompletableFuture</code>.</p>
 
-    private ConcurrentHashMap&lt;String, Set&lt;WebSocketSession&gt;&gt; roomSessionPool = new ConcurrentHashMap&lt;&gt;();
+<h2 id="toc_1">Timeout mechanism</h2>
 
-    @Override
-    public void afterConnectionEstablished(WebSocketSession session) throws Exception {
+<p>However, there are a few problems associated with this code. First, <code>get()</code> is a blocking call. This means that the main thread will have to wait until the result is ready before it can progress. Ideally, you’d like the main thread to do other useful work while the result is calculated in the background. Second, the main thread could be blocking indefinitely because there isn’t a timeout specified. What if one of the service is overloaded and doesn’t respond? To add a timeout mechanism, you can use the other version of <code>get</code> inherited from Future which throws a <code>TimeoutException</code> when the overall pipeline takes longer than a certain amount of time to return the result:</p>
 
-        String roomName = session.getUri().getQuery();
+<pre><code class="language-java">BigDecimal result = 
+    CompletableFuture.supplyAsync(() -&gt; findBestPrice(&quot;LDN - NYC&quot;), executorService)
+                     .thenCombine(CompletableFuture.supplyAsync(() -&gt; queryExchangeRateFor(&quot;GBP&quot;)), 
+                                                 this::convert)
+                     .get(1, TimeUnit.SECONDS);
 
-        roomSessionPool.compute(roomName, (key, sessions) -&gt; {
+</code></pre>
 
-            if (sessions == null) {
-                sessions = new CopyOnWriteArraySet&lt;&gt;();
-            }
-            sessions.add(session);
+<p>Unfortunately this code is still blocking and prevents the main thread from doing useful work in the meantime! To tackle this issue, you can refactor the above code to use <code>thenAccept</code> and provide a callback which is executed when the result is finally available:</p>
 
-            return sessions;
-        });
-    }
+<pre><code class="language-java">CompletableFuture.supplyAsync(() -&gt; findBestPrice(&quot;LDN - NYC&quot;), executorService)
+                         .thenCombine(CompletableFuture.supplyAsync(() -&gt; queryExchangeRateFor(&quot;GBP&quot;)),  
+                                                 this::convert)
+                         .thenAccept(amount -&gt; System.out.println(&quot;The price is: &quot; + amount + &quot;GBP&quot;));
 
-    @Override
-    protected void handleTextMessage(WebSocketSession session, TextMessage message) throws Exception {
+</code></pre>
 
-        String roomName = session.getUri().getQuery();
+<p>However, using this approach we lost the timeout functionality! Ideally we’d like to specify a timeout using a non-blocking method. Unfortunately there isn’t a built-in elegant support to solve this problem in Java 8. Solutions available include using <code>acceptEither()</code> or <code>applyToEither</code> together with the <code>CompletableFuture</code> you are waiting the result for and another <code>CompletableFuture</code> which wraps up a <code>ScheduledThreadpoolExecutor</code> that throws a <code>TimeoutException</code> after a certain time:</p>
 
-        for (WebSocketSession roomSession : roomSessionPool.get(roomName)) {
-            roomSession.sendMessage(message);
-        }
-    }
+<pre><code class="language-java">CompletableFuture.supplyAsync(() -&gt; findBestPrice(&quot;LDN - NYC&quot;), executorService)
+                         .thenCombine(CompletableFuture.supplyAsync(() -&gt; queryExchangeRateFor(&quot;GBP&quot;)),  
+                                                 this::convert)
+                         .acceptEither(timeoutAfter(1, TimeUnit.SECONDS), 
+                                       amount -&gt; System.out.println(&quot;The price is: &quot; + amount + &quot;GBP&quot;));
 
-    @Override
-    public void afterConnectionClosed(WebSocketSession session, CloseStatus status) throws Exception {
+</code></pre>
 
-        String roomName = session.getUri().getQuery();
+<p>A simple implementation of <code>timeoutAfter</code> is as follows where <code>delayer</code> is an instance of a <code>ScheduledThreadPoolExecutor</code>:</p>
 
-        roomSessionPool.compute(roomName, (key, sessions) -&gt; {
-
-            sessions.remove(session);
-            if (sessions.isEmpty()) {
-                // 1件もない場合はMapからクリア
-                sessions = null;
-            }
-
-            return sessions;
-        });
-    }
+<pre><code>public &lt;T&gt; CompletableFuture&lt;T&gt; timeoutAfter(long timeout, TimeUnit unit) {
+    CompletableFuture&lt;T&gt; result = new CompletableFuture&lt;T&gt;();
+    delayer.schedule(() -&gt; result.completeExceptionally(new TimeoutException()), timeout, unit);
+    return result;
 }
+
 </code></pre>
 
-<p>WebSocketの設定として、URLとHandlerを紐付けます。</p>
+<h2 id="toc_2">Java 9 improvements</h2>
 
-<pre><code class="language-java">package com.example;
+<p>Java 9’s <code>CompletableFuture</code> introduces several new methods amongst which are <code>orTimeout</code> and <code>completeOnTimeOut</code> that provide built-in support for dealing with timeouts.</p>
 
-import org.springframework.context.annotation.Configuration;
-import org.springframework.web.socket.config.annotation.EnableWebSocket;
-import org.springframework.web.socket.config.annotation.WebSocketConfigurer;
-import org.springframework.web.socket.config.annotation.WebSocketHandlerRegistry;
+<p>The method <code>orTimeout</code> has the following signature:</p>
 
-import lombok.AllArgsConstructor;
+<pre><code class="language-java">public CompletableFuture&lt;T&gt; orTimeout(long timeout, TimeUnit unit)
 
-@Configuration
-@EnableWebSocket
-@AllArgsConstructor
-public class WebSocketConfig implements WebSocketConfigurer {
-
-    private final ChatHandler chatHandler;
-
-    @Override
-    public void registerWebSocketHandlers(WebSocketHandlerRegistry registry) {
-        registry.addHandler(chatHandler, &quot;/endpoint&quot;);
-    }
-
-}
 </code></pre>
 
-<p>クライアント側では、下記のようなコードになりました。</p>
+<p>It internally uses a <code>ScheduledThreadExecutor</code> and completes the CompletableFuture with a <code>TimeoutException</code> after the specified timeout has elapsed. It also returns another CompletableFuture, meaning you can further chain your computation pipeline and deal with the <code>TimeoutException</code> by providing a friendly message back. Note that <code>whenComplete</code> in the code below could report other exceptional completions that might occur before the timeout occurs.</p>
 
-<pre><code class="language-html">&lt;!DOCTYPE html&gt;
-&lt;html lang=&quot;ja&quot;&gt;
-&lt;head&gt;
-&lt;meta charset=&quot;UTF-8&quot; /&gt;
-&lt;title&gt;チャット&lt;/title&gt;
-&lt;link rel=&quot;stylesheet&quot; href=&quot;/webjars/bootstrap/3.3.7/css/bootstrap.min.css&quot; /&gt;
-&lt;link rel=&quot;stylesheet&quot; href=&quot;/webjars/bootstrap/3.3.7/css/bootstrap-theme.min.css&quot; /&gt;
-&lt;/head&gt;
-&lt;body&gt;
-  &lt;div class=&quot;container&quot;&gt;
-    &lt;h2&gt;チャット&lt;/h2&gt;
-    &lt;div class=&quot;form-horizontal&quot;&gt;
-      &lt;div class=&quot;form-group&quot;&gt;
-        &lt;label for=&quot;roomName&quot; class=&quot;col-sm-2 control-label&quot;&gt;ルーム&lt;/label&gt;
-        &lt;div class=&quot;col-sm-2&quot;&gt;
-          &lt;input id=&quot;roomName&quot; type=&quot;text&quot; class=&quot;form-control&quot; value=&quot;example&quot; /&gt;
-        &lt;/div&gt;
-        &lt;div class=&quot;col-sm-3&quot;&gt;
-          &lt;button id=&quot;connectButton&quot; type=&quot;button&quot; class=&quot;btn btn-default&quot;&gt;接続&lt;/button&gt;
-          &lt;button id=&quot;disconnectButton&quot; class=&quot;btn btn-default&quot;&gt;切断&lt;/button&gt;
-        &lt;/div&gt;
-      &lt;/div&gt;
-      &lt;div class=&quot;form-group&quot;&gt;
-        &lt;label for=&quot;message&quot; class=&quot;col-sm-2 control-label&quot;&gt;メッセージ&lt;/label&gt;
-        &lt;div class=&quot;col-sm-4&quot;&gt;
-          &lt;input id=&quot;message&quot; type=&quot;text&quot; class=&quot;form-control&quot; /&gt;
-        &lt;/div&gt;
-        &lt;div class=&quot;col-sm-2&quot;&gt;
-          &lt;button id=&quot;sendButton&quot; type=&quot;button&quot; class=&quot;btn btn-default&quot;&gt;送信&lt;/button&gt;
-        &lt;/div&gt;
-      &lt;/div&gt;
-      &lt;div class=&quot;row&quot;&gt;
-        &lt;div class=&quot;col-sm-4 col-sm-offset-2&quot;&gt;
-          &lt;ul id=&quot;messageList&quot; class=&quot;list-unstyled&quot;&gt;
-          &lt;/ul&gt;
-        &lt;/div&gt;
-      &lt;/div&gt;
-    &lt;/div&gt;
-  &lt;/div&gt;
-  &lt;script src=&quot;/webjars/jquery/1.12.4/jquery.min.js&quot;&gt;&lt;/script&gt;
-  &lt;script src=&quot;/webjars/bootstrap/3.3.7/js/bootstrap.min.js&quot;&gt;&lt;/script&gt;
-  &lt;script&gt;
-    $(function() {
-      var endpoint = &#39;ws://&#39; + location.host + &#39;/endpoint&#39;;
-      var webSocket = null;
+<p>For example:</p>
 
-      $(&#39;#connectButton&#39;).click(function() {
+<pre><code class="language-java">CompletableFuture.supplyAsync(() -&gt; findBestPrice(&quot;LDN - NYC&quot;), executorService)
+                         .thenCombine(CompletableFuture.supplyAsync(() -&gt; queryExchangeRateFor(&quot;GBP&quot;)),  
+                                                 this::convert)
+                         .orTimeout(1, TimeUnit.SECONDS)
+                         .whenComplete((amount, error) -&gt; {
+                                        if (error == null) {
+                                            System.out.println(&quot;The price is: &quot; + amount + &quot;GBP&quot;);
+                                        } else {
+                                            System.out.println(&quot;Sorry, we could not return you a result&quot;);
+                                        }
+                         });
 
-        $(&quot;#messageList&quot;).empty();
-
-        webSocket = new WebSocket(endpoint + &#39;?&#39; + encodeURIComponent($(&#39;#roomName&#39;).val()));
-        webSocket.onopen = function() {
-          $(&#39;#roomName&#39;).prop(&#39;disabled&#39;, true);
-          $(&#39;#connectButton&#39;).prop(&#39;disabled&#39;, true);
-          $(&#39;#disconnectButton&#39;).prop(&#39;disabled&#39;, false);
-        };
-        webSocket.onclose = function() {
-        };
-        webSocket.onmessage = function(message) {
-          $(&#39;#messageList&#39;).prepend($(&#39;&lt;li&gt;&#39;).text(message.data));
-        };
-        webSocket.onerror = function() {
-          alert(&#39;エラーが発生しました。&#39;);
-        };
-      });
-
-      $(&#39;#disconnectButton&#39;).click(function() {
-
-        webSocket.close();
-        webSocket = null;
-
-        $(&#39;#roomName&#39;).prop(&#39;disabled&#39;, false);
-        $(&#39;#connectButton&#39;).prop(&#39;disabled&#39;, false);
-        $(&#39;#disconnectButton&#39;).prop(&#39;disabled&#39;, true);
-      });
-
-      $(&#39;#sendButton&#39;).click(function() {
-        if (!webSocket) {
-          alert(&#39;未接続です。&#39;);
-          return;
-        }
-
-        webSocket.send($(&#39;#message&#39;).val());
-      });
-    });
-  &lt;/script&gt;
-&lt;/body&gt;
-&lt;/html&gt;
 </code></pre>
 
-<p>STOMPの時のほうが、いろいろシンプルに書けるので、ブラウザがクライアントならば、STOMPを使わない理由はないかなと思っています。</p>
+<p>The method <code>completeOnTimeout</code> has the following signature:</p>
+
+<pre><code class="language-java">public CompletableFuture&lt;T&gt; completeOnTimeout(T value, long timeout, TimeUnit unit)
+
+</code></pre>
+
+<p>It also uses a <code>ScheduledThreadExecutor</code> internally but in contrast to <code>orTimeout</code>, it provides a default value in the case that the CompletableFuture pipeline times out. You can conceptually relate this method to <code>orElse()</code> using <code>java.util.Optional</code>.</p>
+
+<pre><code class="language-java">CompletableFuture.supplyAsync(() -&gt; findBestPrice(&quot;LDN - NYC&quot;), executorService)
+                         .thenCombine(CompletableFuture.supplyAsync(() -&gt; queryExchangeRateFor(&quot;GBP&quot;)),  
+                                                 this::convert)
+                         .completeOnTimeout(DEFAULT_PRICE, 1, TimeUnit.SECONDS)
+                         .thenAccept(amount -&gt; {
+                             System.out.println(&quot;The price is: &quot; + amount + &quot;GBP&quot;);
+                         });
+
+</code></pre>
+
+<p>In the code above, if the services are slow to respond, a default price is provided otherwise the result of combining the two services is returned.</p>
+
+<p>If you are curious about the internal implementation details of these methods, you can view the source of <code>CompletableFuture</code> in JDK9 <a href="http://hg.openjdk.java.net/jdk9/jdk9/jdk/file/tip/src/java.base/share/classes/java/util/concurrent/CompletableFuture.java">here</a>.</p>
+
+<p>If you interested to learn more about this asynchronous style of programming check out our <a href="http://iteratrlearning.com/javareactive">intensive Asynchronous and Reactive Java in-house course</a>. For everything Java 8 related, we also teach a popular <a href="http://iteratrlearning.com/java8">two-day Modern Development using Java 8 course</a>.</p>
 
                         
                       </div>
@@ -320,7 +243,7 @@ public class WebSocketConfig implements WebSocketConfigurer {
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/5/13</span>
+                    <span class="date">2018/7/7</span>
                     <span>posted in&nbsp;</span> 
           				  
           					    <span class="posted-in"><a href='Java.html'>Java</a></span>
@@ -413,31 +336,31 @@ public class WebSocketConfig implements WebSocketConfigurer {
 	      
 		      
 			      <li class="post">
-			        <a href="15389311738065.html">重构到更深层的模型</a>
+			        <a href="15459058392039.html">Reliable Domain Events</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389278377243.html">IAM of Google Cloud</a>
+			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389224951575.html">RSocket, a New Application Network Protocol for Reactive Applications, Announced at SpringOne</a>
+			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389220103546.html">如何形象地描述RxJava中的背压和流控机制？</a>
+			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389214670417.html">Modeling Uncertainty with Reactive DDD</a>
+			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
 			      </li>
 		     
 		  

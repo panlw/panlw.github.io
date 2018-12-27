@@ -105,93 +105,84 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15376981994343.html">
+                <a class="clearlink" href="15419493182627.html">
                 
-                  <h1>Kafka实践：到底该不该把不同类型的消息放在同一个主题中？</h1>
+                  <h1>Java 测试</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
-                        	<pre><code>作者 Martin Kleppmann，译者 无明  发布于 2018年8月22日
-</code></pre>
+                        	<h2 id="toc_0">66、线程的基本状态以及状态之间的关系？</h2>
 
-<blockquote>
-<p><a href="http://www.infoq.com/cn/articles/event-types-in-kafka-topic">http://www.infoq.com/cn/articles/event-types-in-kafka-topic</a></p>
+<p><img src="media/15419493182627/15419493198188.jpg" alt=""/></p>
 
-<p>英文原文：<a href="http://martin.kleppmann.com/2018/01/18/event-types-in-kafka-topic.html">http://martin.kleppmann.com/2018/01/18/event-types-in-kafka-topic.html</a></p>
-</blockquote>
-
-<p>如果你使用了像 <a href="http://kafka.apache.org/">Kafka</a> 这样的流式处理平台，就要搞清楚一件事情：你需要用到哪些主题？特别是如果你要将一堆不同的事件作为消息发布到 Kafka，是将它们放在同一个主题中，还是将它们拆分到不同的主题中？</p>
-
-<p>Kafka 主题最重要的一个功能是可以让消费者指定它们想要消费的消息子集。在极端情况下，将所有数据放在同一个主题中可能不是一个好主意，因为这样消费者就无法选择它们感兴趣的事件——它们需要消费所有的消息。另一种极端情况，拥有数百万个不同的主题也不是一个好主意，因为 Kafka 的每个主题都是有成本的，拥有大量主题会损害性能。</p>
-
-<p>实际上，从性能的角度来看，分区数量才是关键因素。在 Kafka 中，每个主题至少对应一个分区，如果你有 n 个主题，至少会有 n 个分区。不久之前，Jun Rao 写了一篇<a href="https://www.confluent.io/blog/how-to-choose-the-number-of-topicspartitions-in-a-kafka-cluster/">博文</a>，解释了拥有多个分区的成本（端到端延迟、文件描述符、内存开销、发生故障后的恢复时间）。根据经验，如果你关心延迟，那么每个节点分配几百个分区就可以了。如果每个节点的分区数量超过成千上万个，就会造成较大的延迟。</p>
-
-<p>关于性能的讨论为设计主题结构提供了一些指导：如果你发现自己有数千个主题，那么将一些细粒度、低吞吐量的主题合并到粗粒度主题中可能是个明智之举，这样可以避免分区数量蔓延。</p>
-
-<p>然而，性能并不是我们唯一关心的问题。在我看来，更重要的是主题结构的数据完整性和数据模型。我们将在本文的其余部分讨论这些内容。</p>
-
-<h2 id="toc_0">主题等于相同类型事件的集合？</h2>
-
-<p>人们普遍认为应该将相同类型的事件放在同一主题中，不同的事件类型应该使用不同的主题。这种思路让我们联想到关系型数据库，其中表是相同类型记录的集合，于是我们就有了数据库表和 Kafka 主题之间的类比。</p>
-
-<p><a href="https://docs.confluent.io/current/schema-registry/docs/index.html">Confluent Avro Schema Registry</a> 进一步强化了这种概念，因为它鼓励你对主题的所有消息使用相同的 Avro 模式（schema）。模式可以在保持兼容性的同时进行演化（例如通过添加可选字段），但所有消息都必须符合某种记录类型。稍后我会再回过头来讨论这个问题。</p>
-
-<p>对于某些类型的流式数据，例如活动事件，要求同一主题中所有消息都符合相同的模式，这是合理的。但是，有些人把 Kafka 当成了数据库来用，例如<a href="https://docs.microsoft.com/en-us/azure/architecture/patterns/event-sourcing">事件溯源</a>，或者<a href="https://www.confluent.io/blog/build-services-backbone-events/">在微服务之间交换数据</a>。对于这种情况，我认为是否将主题定义为具有相同模式的消息集合就不那么重要了。这个时候，更重要的是主题分区中的消息必须是有序的。</p>
-
-<p>想象一下这样的场景：你有一个实体（比如客户），这个实体可能会发生许多不同的事情，比如创建客户、客户更改地址、客户向帐户中添加新的信用卡、客户发起客服请求，客户支付账单、客户关闭帐户。</p>
-
-<p>这些事件之间的顺序很重要。例如，我们希望其他事件必须在创建客户之后才能发生，并且在客户关闭帐户之后不能再发生其他事件。在使用 Kafka 时，你可以将它们全部放在同一个主题分区中来保持它们的顺序。在这个示例中，你可以使用客户 ID 作为分区的键，然后将所有事件放在同一个主题中。它们必须位于同一主题中，因为不同的主题对应不同的分区，而 Kafka 是不保证分区之间的顺序的。</p>
-
-<h2 id="toc_1">顺序问题</h2>
-
-<p>如果你为 customerCreated、customerAddressChanged 和 customerInvoicePaid 事件使用了不同的主题，那么这些主题的消费者可能就看不到这些事件之间的顺序。例如，消费者可能会看到一个不存在的客户做出的地址变更（这个客户尚未创建，因为相应的 customerCreated 事件可能发生了延迟）。</p>
-
-<p>如果消费者暂停一段时间（比如进行维护或部署新版本），那么事件出现乱序的可能性就更高了。在消费者停止期间，事件继续发布，并且这些事件被存储在特定定的主题分区中。当消费者再次启动时，它会消费所有积压在分区中的事件。如果消费者只消费一个分区，那就没问题：积压的事件会按照它们存储的顺序依次被处理。但是，如果消费者同时消费几个主题，就会按任意顺序读取主题中数据。它可以先读取积压在一个主题上的所有数据，然后再读取另一个主题上积压的数据，或者交错地读取多个主题的数据。</p>
-
-<p>因此，如果你将 customerCreated、customerAddressChanged 和 customerInvoicePaid 事件放在三个单独的主题中，那么消费者可能会在看到 customerCreated 事件之前先看到 customerAddressChanged 事件。因此，消费者很可能会看到一个客户的 customerAddressChanged 事件，但这个客户却未被创建。</p>
-
-<p>你可能会想到为每条消息附加时间戳，并用它来对事件进行排序。如果你将事件导入数据仓库，再对事件进行排序，或许是没有问题的。但在流数据中只使用时间戳是不够的：在你收到一个具有特定时间戳的事件时，你不知道是否需要等待具有较早时间戳的事件，或者所有之前的事件是否已经在当前事情之前到达。依靠时钟进行同步通常会导致噩梦，有关时钟问题的更多详细信息，请参阅 “Designing Data-Intensive Applications” 的第 8 章。</p>
-
-<h2 id="toc_2">何时拆分主题，何时合并主题？</h2>
-
-<p>基于这个背景，我将给出一些经验之谈，帮你确定哪些数据应该放在同一主题中，以及哪些数据应该放在不同的主题中。</p>
-
-<ol>
-<li><p>首先，需要保持固定顺序的事件必须放在同一主题中（并且需要使用相同的分区键）。如果事件属于同一实体，那么事件的顺序就很重要。因此，我们可以说，同一实体的所有事件都应该保存在同一主题中。</p>
-
-<p>如果你使用事件溯源进行数据建模，事件的排序尤为重要。聚合对象的状态是通过以特定的顺序重放事件日志而得出的。因此，即使可能存在不同的事件类型，聚合所需要的所有事件也必须在同一主题中。</p></li>
-<li><p>对于不同实体的事件，它们应该保存在相同的主题中还是不同的主题中？我想说，如果一个实体依赖于另一个实体（例如一个地址属于一个客户），或者经常需要同时用到它们，那么它们也应该保存在同一主题中。另一方面，如果它们不相关，并且属于不同的团队，那么最好将它们放在不同的主题中。</p>
-
-<p>另外，这也取决于事件的吞吐量：如果一个实体类型的事件吞吐量比其他实体要高很多，那么最好将它分成几个主题，以免让只想消费低吞吐量实体的消费者不堪重负（参见第 4 点）。不过，可以将多个具有低吞吐量的实体合并起来。</p></li>
-<li><p>如果一个事件涉及多个实体该怎么办？例如，订单涉及到产品和客户，转账至少涉及到两个账户。</p>
-
-<p>我建议在一开始将这些事件记录为单个原子消息，而不是将其分成几个属于不同主题的消息。在记录事件时，最好可以保持原封不动，即尽可能保持数据的原始形式。你可以随后使用流式处理器来拆分复合事件，但如果过早进行拆分，想要重建原始事件会难得多。如果能够为初始事件分配一个唯一 ID（例如 UUID）就更好了，之后如果你要拆分原始事件，可以带上这个 ID，从而可以追溯到每个事件的起源。</p></li>
-<li><p>看看消费者需要订阅的主题数量。如果几个消费者都订阅了一组特定的主题，这表明可能需要将这些主题合并在一起。</p>
-
-<p>如果将细粒度的主题合并成粗粒度的主题，一些消费者可能会收到他们不需要的事件，需要将其忽略。这不是什么大问题：消费消息的成本非常低，即使最终忽略了一大半的事件，总的成本可能也不会很大。只有当消费者需要忽略绝大多数消息（例如 99.9％是不需要的）时，我才建议将大容量事件流拆分成小容量事件流。</p></li>
-<li><p>用作 Kafka Streams 状态存储（KTable）的变更日志主题应该与其他主题分开。在这种情况下，这些主题由 Kafka Streams 流程来管理，所以不应该包含其他类型的事件。</p>
-
-<p>最后，如果基于上述的规则依然无法做出正确的判断，该怎么办？那么就按照类型对事件进行分组，把相同类型的事件放在同一个主题中。不过，我认为这条规则是最不重要的。</p></li>
-</ol>
-
-<h2 id="toc_3">模式管理</h2>
-
-<p>如果你的数据是普通文本（如 JSON），而且没有使用静态的模式，那么就可以轻松地将不同类型的事件放在同一个主题中。但是，如果你使用了模式编码（如 Avro），那么在单个主题中保存多种类型的事件则需要考虑更多的事情。</p>
-
-<p>如上所述，基于 Avro 的 Kafka Confluent Schema Registry 假设了一个前提，即每个主题都有一个模式（更确切地说，一个模式用于消息的键，一个模式用于消息的值）。你可以注册新版本的模式，注册表会检查模式是否向前和向后兼容。这样设计的一个好处是，你可以让不同的生产者和消费者同时使用不同版本的模式，并且仍然保持彼此的兼容性。</p>
-
-<p>Confluent 的 Avro 序列化器通过 subject 名称在注册表中注册模式。默认情况下，消息键的 subject 为 <topic>-key，消息值的 subject 为 &lt; topic&gt;-value。模式注册表会检查在特定 subject 下注册的所有模式的相互兼容性。</p>
-
-<p>最近，我为 Avro 序列化器提供了一个补丁（<a href="https://github.com/confluentinc/schema-registry/pull/680">https://github.com/confluentinc/schema-registry/pull/680</a>），让兼容性检查变得更加灵活。这个补丁添加了两个新的配置选项：key.subject.name.strategy（用于定义如何构造消息键的 subject 名称）和 value.subject.name.strategy（用于定义如何构造消息值的 subject 名称）。它们的值可以是如下几个：</p>
+<h2 id="toc_1">80、事务的ACID是指什么？</h2>
 
 <ul>
-<li>  io.confluent.kafka.serializers.subject.TopicNameStrategy（默认）：消息键的 subject 名称为 <topic>-key，消息值为 &lt; topic&gt;-value。这意味着主题中所有消息的模式必须相互兼容。</li>
-<li>  io.confluent.kafka.serializers.subject.RecordNameStrategy：subject 名称是 Avro 记录类型的完全限定名。因此，模式注册表会检查特定记录类型的兼容性，而不管是哪个主题。这个设置允许同一主题包含不同类型的事件。</li>
-<li>  io.confluent.kafka.serializers.subject.TopicRecordNameStrategy：subject 名称是 <topic>-<type>，其中 &lt; topic &gt; 是 Kafka 主题名，<type > 是 Avro 记录类型的完全限定名。这个设置允许同一主题包含不同类型的事件，并进一步对当前主题进行兼容性检查。</li>
+<li>原子性(Atomic)：事务中各项操作，要么全做要么全不做，任何一项操作的失败都会导致整个事务的失败；</li>
+<li>一致性(Consistent)：事务结束后系统状态是一致的；</li>
+<li>隔离性(Isolated)：并发执行的事务彼此无法看到对方的中间状态；</li>
+<li>持久性(Durable)：事务完成后所做的改动都会被持久化，即使发生灾难性的失败。通过日志和同步备份可以在故障发生后重建数据。</li>
 </ul>
 
-<p>有了这个新特性，你就可以轻松地将属于特定实体的所有不同类型的事件放在同一个主题中。现在，你可以自由选择主题的粒度，而不仅限于一个类型对应一个主题。</p>
+<blockquote>
+<p>补充：关于事务，在面试中被问到的概率是很高的，可以问的问题也是很多的。首先需要知道的是，只有存在并发数据访问时才需要事务。当多个事务访问同一数据时，可能会存在5类问题，包括3类数据读取问题（脏读、不可重复读和幻读）和2类数据更新问题（第1类丢失更新和第2类丢失更新）。</p>
+</blockquote>
+
+<ul>
+<li>脏读（Dirty Read）：A事务读取B事务尚未提交的数据并在此基础上操作，而B事务执行回滚，那么A读取到的数据就是脏数据。</li>
+<li>幻读（Phantom Read）：事务A重新执行一个查询，返回一系列符合查询条件的行，发现其中插入了被事务B提交的行。</li>
+<li>第1类丢失更新：事务A撤销时，把已经提交的事务B的更新数据覆盖了。</li>
+<li>第2类丢失更新：事务A覆盖事务B已经提交的数据，造成事务B所做的操作丢失。</li>
+</ul>
+
+<table>
+<thead>
+<tr>
+<th>隔离级别</th>
+<th>脏读</th>
+<th>不可重复读</th>
+<th>幻读</th>
+<th>第一类丢失更新</th>
+<th>第二类丢失更新</th>
+</tr>
+</thead>
+
+<tbody>
+<tr>
+<td>READ UNCOMMITED</td>
+<td>允许</td>
+<td>允许</td>
+<td>允许</td>
+<td>不允许</td>
+<td>允许</td>
+</tr>
+<tr>
+<td>READ COMMITTED</td>
+<td>不允许</td>
+<td>允许</td>
+<td>允许</td>
+<td>不允许</td>
+<td>允许</td>
+</tr>
+<tr>
+<td>REPEATABLE READ</td>
+<td>不允许</td>
+<td>不允许</td>
+<td>允许</td>
+<td>不允许</td>
+<td>不允许</td>
+</tr>
+<tr>
+<td>SERIALIZABLE</td>
+<td>不允许</td>
+<td>不允许</td>
+<td>不允许</td>
+<td>不允许</td>
+<td>不允许</td>
+</tr>
+</tbody>
+</table>
 
                         
                       </div>
@@ -200,10 +191,10 @@
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/9/23</span>
+                    <span class="date">2018/11/11</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='MQ.html'>MQ</a></span>
+          					    <span class="posted-in"><a href='Java.html'>Java</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -293,31 +284,31 @@
 	      
 		      
 			      <li class="post">
-			        <a href="15389311738065.html">重构到更深层的模型</a>
+			        <a href="15459058392039.html">Reliable Domain Events</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389278377243.html">IAM of Google Cloud</a>
+			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389224951575.html">RSocket, a New Application Network Protocol for Reactive Applications, Announced at SpringOne</a>
+			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389220103546.html">如何形象地描述RxJava中的背压和流控机制？</a>
+			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389214670417.html">Modeling Uncertainty with Reactive DDD</a>
+			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
 			      </li>
 		     
 		  

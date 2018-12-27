@@ -105,403 +105,156 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15277861393795.html">
+                <a class="clearlink" href="15293215099975.html">
                 
-                  <h1>深入浅出Netty - EventLoop, EventLoopGroup</h1>
+                  <h1>从节省Redis内存空间说开去</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p>DECEMBER 24 2016 <a href="https://caorong.github.io/2016/12/24/head-first-netty-1/">原文地址</a></p>
+<p><a href="https://mp.weixin.qq.com/s/tsZxYwoFtWwzOH1E28y6zg">https://mp.weixin.qq.com/s/tsZxYwoFtWwzOH1E28y6zg</a><br/>
+<a href="https://blog.csdn.net/clevercode/article/details/46691645">https://blog.csdn.net/clevercode/article/details/46691645</a></p>
 </blockquote>
 
-<p>近年来netty 十分流行，至于为何那么流行，因为它性能好，能更有效的利用系统资源。</p>
+<p><strong>前言</strong></p>
 
-<p>但是， netty 很容易上手， 但是很多时候却无法理解设计的初衷， 比如为什么会有 EventLoop 这个东东， 本文从历史阐述原因。</p>
+<p>上周部门会议上讨论的一个议题是如何节省 Redis 内存空间，其中有个小伙伴提到可以从压缩字符串入手，我觉得这是一个可以尝试的思路。因为有时候我们存在 Redis 中的值比较大，如果能对这些大字符串进行压缩，那么节省的内存空间还是很可观的。接下来将介绍几种常见的数据压缩算法，供大家参考。</p>
 
-<h2 id="toc_0"><a href="#%E5%90%8C%E6%AD%A5%E7%BD%91%E7%BB%9C%E6%A8%A1%E5%9E%8B" title="同步网络模型"></a>同步网络模型</h2>
+<h1 id="toc_0">1 RLE</h1>
 
-<p>首先说说同步模型， 也就是常说的 bio， bio 是基于 stream 的。 网上找到一个图如下</p>
+<p>RLE 又叫 Run Length Encoding ，是一个针对无损压缩的非常简单的算法。它用重复字节和重复的次数来简单描述来代替重复的字节。尽管简单并且对于通常的压缩非常低效，但它有的时候却非常有用（例如， JPEG 就使用它）。</p>
 
-<p><img src="media/15277861393795/15277864485883.jpg" alt=""/></p>
+<h2 id="toc_1">1.1 原理</h2>
 
-<p>从图可知，对于bio 来说，我的程序何时处理完需要靠 看 datasource 何时发完数据。</p>
+<p>图 2.1 显示了一个如何使用 RLE 算法来对一个数据流编码的例子，其中出现六次的符号‘ 93 ’已经用 3 个字节来代替：一个标记字节（‘ 0 ’在本例中）重复的次数（‘ 6 ’）和符号本身（‘ 93 ’）。</p>
 
-<p>这是非常坑爹的， 举个例子， 如果我的服务是一个多线程的 bio 的服务(比如 10个线程)，然后某个黑客建10个 telnet 连上你的server， holding住 不发数据，那么你的服务就down了。</p>
+<p>RLE 解码器遇到符号‘ 0 ’ 的时候，它表明后面的两个字节决定了需要输出哪个符号以及输出多少次。</p>
 
-<p>那么如何解决这种问题？ 如果 waiting client 发的数据不阻塞 worker 线程不就行了？</p>
+<p><img src="https://mmbiz.qpic.cn/mmbiz_jpg/XA3sPCPib1l6jia5WKgazEEVDPjibKHOz8rslINaKDFMvfr4bOibjNz1LLxJSDU1oI34BCTibPjokcy8BgFbKjwXHNg/640?wx_fmt=jpeg" alt=""/></p>
 
-<p>于是出现了 异步网络模型</p>
+<p>1.2 实现</p>
 
-<h2 id="toc_1"><a href="#%E5%BC%82%E6%AD%A5%E7%BD%91%E7%BB%9C%E6%A8%A1%E5%9E%8B" title="异步网络模型"></a>异步网络模型</h2>
+<p>RLE 可以使用很多不同的方法。基本压缩库中详细实现的方式是非常有效的一个。一个特殊的标记字节用来指示重复节的开始，而不是对于重复非重复节都 coding run 。</p>
 
-<p>异步网络模型， 也就是非阻塞IO， 在java 中由于 jdk1.4 之后才被引入所以被称之为 Nio (New IO)</p>
+<p>因此非重复节可以有任意长度而不被控制字节打断，除非指定的标记字节出现在非重复节（顶多以两个字节来编码）的稀有情况下。为了最优化效率，标记字节应该是输入流中最少出现的符号（或许就不存在）。</p>
 
-<p>网上同样找到个图</p>
+<p>重复 runs 能够在 32768 字节的时候运转。少于 129 字节的要求 3 个字节编码（标记 + 次数 + 符号），而大雨 128 字节要求四个字节（标记 + 次数的高 4 位 |0x80+ 次数的低 4 位）。这是通常所有采用的压缩的做法，并且也是相比较三个字节固定编码（允许使用 3 个字节来编码 256 个字节）而言非常少见的有损压缩率的方法。</p>
 
-<p><img src="media/15277861393795/15277864586815.jpg" alt=""/></p>
+<p>在这种模式下，最坏的压缩结果是：</p>
 
-<p>由图可知， 实现异步的原理是 系统帮你给每一个连接(channel) 都维护了一个 <code>buffer</code>。<br/>
-将 client 发来的数据暂存到 <code>buffer</code> 中, 待 java 进程需要的时候一次性做一次内存拷贝，在 java 进程中使用。</p>
+<p>输出大小 =257/256* 输入大小 +1</p>
 
-<p>当然， 写出也是同样的 写到 <code>buffer</code> 中，当 <code>buffer</code> 满 或者 手动调用 <code>flush</code> 写出去。</p>
+<h1 id="toc_2">2 哈夫曼</h1>
 
-<p>下面有个简单的 非阻塞 echo server demo， 当读到 q 时关闭连接。</p>
+<p>哈夫曼编码是无损压缩当中最好的方法。它使用预先二进制描述来替换每个符号，长度由特殊符号出现的频率决定。常见的符号需要很少的位来表示，而不常见的符号需要很多位来表示。</p>
 
-<pre><code class="language-java">ServerSocketChannel serverSocketChannel = ServerSocketChannel.open();
-
-serverSocketChannel.socket().bind(new InetSocketAddress(9999));
-serverSocketChannel.configureBlocking(false);
-
-final List&lt;SocketChannel&gt; socketChannelList = Lists.newLinkedList();
-
-new Thread(new Runnable() {
-  @Override
-  public void run() {
-    while (true) {
-      // 处理 每个连接是否可读, 这里的逻辑是 读4个字节后切断连接
-      for (SocketChannel socketChannel : Lists.newArrayList(socketChannelList)) {
-        try {
-          ByteBuffer buf = ByteBuffer.allocate(4);
-          int readed = socketChannel.read(buf);
-          System.out.println(readed);
-          System.out.println(Arrays.toString(buf.array()));
-          if (readed &gt; 0 &amp;&amp; buf.array()[0] == &#39;q&#39;) {
-            // close
-            socketChannel.close();
-            // remove from list
-            socketChannelList.remove(socketChannel);
-          }
-        } catch (Throwable e) {
-          e.printStackTrace();
-        }
-      }
-      try {
-        Thread.sleep(100);
-      } catch (InterruptedException e) {
-      }
-    }
-  }
-}, &quot;server-handler-thread&quot;).start();
-
-// 等待新连接连进来
-while (true) {
-  SocketChannel socketChannel = serverSocketChannel.accept();
-  if (socketChannel != null) {
-    socketChannelList.add(socketChannel);
-  }
-  Thread.sleep(1000);
-}
-</code></pre>
-
-<p>简单分析下上面的代码，</p>
-
-<ol>
-<li> 由于 accept 是非阻塞的， 所以我们要一直轮询 判断是否有新连接进来。</li>
-<li> 连接进来后，由于我们不知道 client 何时能发完数据， 所以我们维护了一个列表 <code>socketChannelList</code> 定期去轮询列表，看是否有数据可读。</li>
-</ol>
-
-<p>但是后来大家发现， 每当用 nonblocking socket 的时候都要做类似的操作， 于是想把它们提出来，提取成一个通用模块， 让代码实现更容易，</p>
-
-<p>在 <a href="https://en.wikipedia.org/wiki/Berkeley_sockets">berkeley socket</a> 中这个模块被称为 select, poll, epoll. (后面2个是加强版)</p>
-
-<p>而在java中， java 在他们之上抽象成 Selector</p>
-
-<h2 id="toc_2"><a href="#Selector-select-poll-epoll" title="Selector(select, poll, epoll)"></a>Selector(select, poll, epoll)</h2>
-
-<p>既然 select 是一个使用 nonblocking io 的通用封装， 那么在 linux 中， 为什么要有 select, poll, epoll 这么多的选择呢？</p>
-
-<p>我猜测，最早其实只有 select， 然后由于linux 是一个开源， 所以， 后来别人实现了性能更好的 poll, 再之后 epoll 也是这样。</p>
-
-<p>但是, 由于它们都在 linux 2.6.12 之前就已经被实现了， 在github上 都看不到具体提交历史了。。</p>
-
-<p><a href="https://github.com/torvalds/linux/commits/a379f71a30dddbd2e7393624e455ce53c87965d1/fs/select.c?after=Y3Vyc29yOqN59xow3dvS5zk2JORVzlPIeWXRKzY5">select.c</a>,<br/>
-<a href="https://github.com/torvalds/linux/commits/5924bbecd0267d87c24110cbe2041b5075173a25/include/linux/poll.h">poll.h</a>,<br/>
-<a href="https://github.com/torvalds/linux/commits/5924bbecd0267d87c24110cbe2041b5075173a25/include/linux/eventpoll.h">eventpoll.h</a></p>
-
-<p>我们再来看看 使用了 selector 后的非阻塞 IO 的编码, 同样实现一个 echo server</p>
-
-<pre><code class="language-java">Selector selector = Selector.open();
-ServerSocketChannel servChannel = ServerSocketChannel.open();
-servChannel.configureBlocking(false);
-// 建立一个server socket，到本地端口9999， backlog 1024
-servChannel.socket().setReuseAddress(true);
-servChannel.socket().bind(new InetSocketAddress(9999), 1024);
-// selector 关心 server 上的 ACCEPT 事件
-servChannel.register(selector, SelectionKey.OP_ACCEPT); 
-
-while (start) {
-  try {
-    // 阻塞等待 直到有IO事件可读(系统IO事件队列不为空)
-    selector.select();
-    // 获取 事件 以及 事件所对应的 channel (client server 的连接)
-    Set&lt;SelectionKey&gt; selectedKeys = selector.selectedKeys();
-    Iterator&lt;SelectionKey&gt; it = selectedKeys.iterator();
-    SelectionKey key = null;
-    while (it.hasNext()) {
-      key = it.next();
-      it.remove();
-      try {
-        if (key.isValid()) {
-          // OP_ACCEPT 事件 表示有个新client 完成了三次握手。连接上了本服务器
-          if (key.isAcceptable()) {
-            // Accept the new connection
-            ServerSocketChannel ssc = (ServerSocketChannel) key.channel();
-            SocketChannel sc = ssc.accept();
-            sc.configureBlocking(false);
-            // 将该连接的可读事件 注册到 selector， 到时候他发起请求的时候，我会收到新事件
-            sc.register(selector, SelectionKey.OP_READ);
-          }
-          // OP_READ 事件 说明 client 发的数据已经发到了系统缓冲区，server 可以去读了。
-          if (key.isReadable()) {
-            SocketChannel sc = (SocketChannel) key.channel();
-            // 分配用户台空间, 将数据从内核态 拷贝到 用户态
-            ByteBuffer readBuffer = ByteBuffer.allocate(4);
-            int readBytes = sc.read(readBuffer);
-            if (readBytes &gt; 0) {
-              // 切换读写模式 详见下面的图, 表示自己目前可以读 [position, limit]
-              readBuffer.flip();
-              byte[] bytes = new byte[readBuffer.remaining()];
-              // 将buffer 数据拷贝到 bytes 数组
-              // 如果这里只收到一半的数据怎么办？
-              String body = new String(bytes, &quot;UTF-8&quot;);
-              System.out.println(body);
-              // 将 read的数据 写回去
-              ByteBuffer writeBuffer = ByteBuffer.allocate(bytes.length);
-              writeBuffer.put(bytes);
-              writeBuffer.flip();
-              sc.write(writeBuffer);
-            } else if (readBytes &lt; 0) {
-              // 对端链路关闭
-              key.cancel();
-              sc.close();
-            } else
-              ;
-          }
-        }
-      } catch (Exception e) {
-        if (key != null) {
-          key.cancel();
-          if (key.channel() != null)
-            key.channel().close();
-        }
-      }
-    }
-  } catch (Exception e) {
-    throw e;
-  }
-}
-</code></pre>
-
-<pre><code class="language-sh">~ ᐅ nc localhost 9999
-1
-1
-2
-2
-</code></pre>
-
-<p>但是， 很奇怪的是，代码更长了。。。</p>
-
-<p>因为其实真正的 selector 将所有的socket 的时间都封装进去了。</p>
-
-<p>带来的结果是， java 层的代码 只要一个线程就能处理所有了，(我之前的实现需要2个线程)。</p>
-
-<p>当然还有个问题是， 及时用了 selector， 我们依然认为代码可读性非常差， 代码容易写错。</p>
-
-<p>于是， netty 登场了， 他在 selector 之上， 又封装了一层， 让我们先看下 同样实现 netty 的代码。</p>
-
-<h2 id="toc_3"><a href="#netty-echo-server" title="netty echo server"></a>netty echo server</h2>
-
-<pre><code class="language-java">public class Netty4Demo {
-  public class EchoHandler extends SimpleChannelInboundHandler {
-    @Override
-    public void channelRead0(ChannelHandlerContext ctx, Object msg) throws Exception {
-      // 为什么 这里可以强转String？
-      String in = (String) msg;
-      System.out.print(in);
-      // 将数据写回
-      ctx.writeAndFlush(in);
-    }
-  }
-
-  public void run() throws Exception {
-    EventLoopGroup acceptGroup = new NioEventLoopGroup(1); // 指定 Acceptor 线程池大小
-    EventLoopGroup ioGroup = new NioEventLoopGroup(1); // 指定 NIO线程池大小
-    try {
-      ServerBootstrap b = new ServerBootstrap(); // 创建 ServerBootstrap 对象，他是Netty 用于启动NIO 服务端的辅助启动类，目的是降低服务端的开发复杂度。
-      b.group(acceptGroup, ioGrou).channel(
-          NioServerSocketChannel.class) // 指定使用 java 的NioServerSocketChannel
-          .childHandler(new ChannelInitializer&lt;SocketChannel&gt;() { // 创建 IOThread 的 pipeline
-            @Override
-            public void initChannel(SocketChannel ch) throws Exception {
-              ch.pipeline()
-                .addLast(new StringDecoder())
-                .addLast(new StringEncoder()); // 添加echo Handler
-                .addLast(new EchoHandler())
-            }
-          }).option(ChannelOption.SO_BACKLOG, 128)          // server socket config backlog 设置为 128
-          .childOption(ChannelOption.SO_KEEPALIVE, true); // client socket config 设置 keepalive = true
-      // 绑定端口，开始接收进来的连接
-      ChannelFuture f = b.bind(9999).sync(); // 同步等待绑定本地端口
-
-      // 等待服务器  socket 关闭 。
-      // 在这个例子中，这不会发生，但你可以优雅地关闭你的服务器。
-      f.channel().closeFuture().sync();
-    } finally {
-      // 释放两个线程池
-      acceptGroup.shutdownGracefully();
-      ioGrou.shutdownGracefully();
-    }
-  }
-
-  public static void main(String[] args) throws Exception {
-    new Netty4Demo().run();
-  }
-}
-</code></pre>
-
-<pre><code class="language-sh">~ ᐅ nc localhost 9999
-1
-1
-2
-2
-3
-3
-</code></pre>
-
-<p>代码短了一些， 关键是少了很多 if 判断， 代码可读性更好了。</p>
-
-<p>但是， 可读性提高(抽象)的同时， 又带出了了问题， EventLoop 是什么 , EventloopGroup 是什么？ 为什么要有它们？</p>
-
-<p>这里要解释以上的问题， 要先从 线程模型说起</p>
-
-<h2 id="toc_4"><a href="#%E7%BA%BF%E7%A8%8B%E6%A8%A1%E5%9E%8B" title="线程模型"></a>线程模型</h2>
-
-<p>首先是 单线程模型， 如下图</p>
-
-<p><img src="media/15277861393795/15277864778610.jpg" alt=""/></p>
-
-<p>上面直接用 selector 实现的 echo server 就是单线程模型，<br/>
-还有类似存在 GIL 问题的语言比如 python 的 tornado 也是 单线程模型。</p>
-
-<p>然后是多线程模型</p>
-
-<p><img src="media/15277861393795/15277864864829.jpg" alt=""/></p>
-
-<p>多线程模型的区别就是 让接收连接 和 对连接读写的处理 分别用不同的线程处理。 比如上面的 echo server demo 就可以被称为一个 多线程模型。<br/>
-只不过扩展性差了些。。。</p>
-
-<p>netty 的 EventloopGroup 其实就是线程池， 通过它来配置 接收连接 和 处理连接读写 的线程池大小。</p>
-
-<h2 id="toc_5"><a href="#netty-%E4%B9%8B-EventloopGroup" title="netty 之 EventloopGroup"></a>netty 之 EventloopGroup</h2>
-
-<p><img src="media/15277861393795/15277864950859.jpg" alt=""/></p>
-
-<p>上图就是 EventLoopGroup 的大致模块图。</p>
-
-<p>Boss EventloopGroup 和 worker EventloopGroup 分别 处理 接收连接， 和读写。</p>
-
-<p>而 Eventloop 里则封装了类似上面单线程的 echo server 的模块下面会详细说。</p>
-
-<p>对于开发者来说，主要关心紫色圈出部分。 其余的都已经封装完毕</p>
-
-<p>有几个关键点。</p>
-
-<ol>
-<li> Eventloopsize 建议设置为 2 的次方，dispatch 使用位移，更快。</li>
-<li> 侦听一个端口，只会绑定到 BossEventLoopGroup 中的一个 Eventloop，所以， BossEventLoopGroup 配置多个也无用。</li>
-</ol>
-
-<h2 id="toc_6"><a href="#EventLoop" title="EventLoop"></a>EventLoop</h2>
-
-<p>如果只使用 tcp 和 异步阻塞的话主要关心以下2个 EventLoop (本文也只介绍这2个)</p>
-
-<p>NioEventLoop - 基于java 原生nio</p>
-
-<pre><code>level-triggered （水平触发）
-
-</code></pre>
-
-<p>EpollEventLoop - native jni 直接调用 epoll, only work on linux</p>
-
-<pre><code>edge-triggered （边缘触发）更少的系统调用
-C代码，更少GC，更少synchronized
-暴露了更多的Socket配置参数
-
-</code></pre>
-
-<h3 id="toc_7"><a href="#%E6%B5%81%E7%A8%8B%E5%9B%BE" title="流程图"></a>流程图</h3>
-
-<p><img src="media/15277861393795/15277865072620.jpg" alt=""/></p>
-
-<p>关键点</p>
-
-<ol>
-<li> 整个loop 干的事情就是 <code>select -&gt; processIO -&gt; runAllTask</code></li>
-<li> 这是一个死循环</li>
-<li> 那么这个loop 如何自己优雅退出？ noway，只能通过外部添加 CloseTask， 比如添加到 MpscQueue</li>
-<li> deadline 为 定时任务的触发时间，避免 select 阻塞, 让 定时任务不能及时执行。</li>
-<li> 在select 这一步 解决 epollbug</li>
-</ol>
-
-<p>关于解决 epoll bug的原理是 应当 “阻塞”的 select 变得不再阻塞。<br/>
-所以只需要统计下 select 次数就行了</p>
-
-<p>部分关键代码:</p>
-
-<pre><code class="language-java">for(;;){
-    int selectedKeys = selector.select(timeoutMillis); // select with timeout
-    selectCnt ++;
-    // 我由于 select 阻塞 而等待了 timeoutMillis 毫秒， 说明， 我阻塞了，说明没有bug
-    if (time - TimeUnit.MILLISECONDS.toNanos(timeoutMillis) &gt;= currentTimeNanos) {
-        selectCnt = 1;
-    } else if (SELECTOR_AUTO_REBUILD_THRESHOLD &gt; 0 &amp;&amp;
-            selectCnt &gt;= SELECTOR_AUTO_REBUILD_THRESHOLD) {
-        // 在小于 timeoutMillis 毫秒的时间内 select 的次数超过了 阀值(512) 次
-        rebuildSelector();
-        selector = this.selector;
-
-        selector.selectNow();// Select again
-        selectCnt = 1;
-        break;
-    }
-}
-</code></pre>
-
-<h2 id="toc_8"><a href="#other" title="other"></a>other</h2>
-
-<h3 id="toc_9"><a href="#Selector-wakeup" title="Selector.wakeup()"></a>Selector.wakeup()</h3>
-
-<p>java 的 Selector 在原生的 select api 之上 增加了个 Selector.wakeup()</p>
-
-<p>她的目的是唤醒 阻塞在 <code>select()</code> 的线程, (通过写一个字节)</p>
-
-<p>为什么要唤醒？ 什么时候需要唤醒？</p>
-
-<ol>
-<li>注册了新的 channel 或者事件。</li>
-<li>channel 关闭， 取消注册。</li>
-<li>优先级更高的事件触发（如定时器事件）， 希望及时处理。</li>
-</ol>
-
-<h4 id="toc_10"><a href="#%E5%8E%9F%E7%90%86" title="原理"></a>原理</h4>
-
-<p>Linux上利用pipe调用创建一个管道，Windows上则是一个loopback的tcp连接。这是因为win32的管道无法加入select的fd set，将管道或者TCP连接加入select fd set。</p>
-
-<p>wakeup往管道或者连接写入一个字节，阻塞的select因为有I/O事件就绪，立即返回。可见，wakeup的调用开销不可忽视。</p>
-
-<p>之前看到的 coolshell 也分析过 –&gt; Java NIO类库Selector机制解析（<a href="http://blog.csdn.net/haoel/archive/2008/03/27/2224055.aspx">上</a>，<a href="http://blog.csdn.net/haoel/archive/2008/03/27/2224069.aspx">下</a>，<a href="http://blog.csdn.net/haoel/archive/2008/05/04/2379586.aspx">续</a>）</p>
-
-<h1 id="toc_11"><a href="#reference" title="reference"></a>reference</h1>
-
-<p><a href="http://www.infoq.com/cn/articles/netty-threading-model">http://www.infoq.com/cn/articles/netty-threading-model</a></p>
-
-<p><a href="http://calvin1978.blogcn.com/articles/netty-performance.html">http://calvin1978.blogcn.com/articles/netty-performance.html</a></p>
-
-<p><a href="http://calvin1978.blogcn.com/articles/netty-performance2.html">http://calvin1978.blogcn.com/articles/netty-performance2.html</a></p>
-
-<p><a href="http://tech.meituan.com/nio.html">http://tech.meituan.com/nio.html</a></p>
+<p>哈夫曼算法在改变任何符号二进制编码引起少量密集表现方面是最佳的。然而，它并不处理符号的顺序和重复或序号的序列。</p>
+
+<h2 id="toc_3">2.1 原理</h2>
+
+<p>我不打算探究哈夫曼编码的所有实际的细节，但基本的原理是为每个符号找到新的二进制表示，从而通常符号使用很少的位，不常见的符号使用较多的位。</p>
+
+<p>简短的说，这个问题的解决方案是为了查找每个符号的通用程度，我们建立一个未压缩数据的柱状图；通过递归拆分这个柱状图为两部分来创建一个二叉树，每个递归的一半应该和另一半具有同样的权（权是 ∑ <sup style="box-sizing: border-box;outline: 0px;word-break: break-all;">N </sup><sub style="box-sizing: border-box;outline: 0px;word-break: break-all;">K </sub>=<sub style="box-sizing: border-box;outline: 0px;word-break: break-all;">1</sub> 符号数 <sub style="box-sizing: border-box;outline: 0px;word-break: break-all;">k </sub>, N 是分之中符号的数量，符号数 <sub style="box-sizing: border-box;outline: 0px;word-break: break-all;">k </sub>是符号 k 出现的次数 ）</p>
+
+<p>这棵树有两个目的：</p>
+
+<p>1．   编码器使用这棵树来找到每个符号最优的表示方法<br/>
+2．   解码器使用这棵树唯一的标识在压缩流中每个编码的开始和结束，其通过在读压缩数据位的时候自顶向底的遍历树，选择基于数据流中的每个独立位的分支，一旦一个到达叶子节点，解码器知道一个完整的编码已经读出来了。</p>
+
+<p>我们来看一个例子会让我们更清楚。图 2.2 显示了一个 10 个字节的未压缩的数据。</p>
+
+<p>根据符号频率，哈夫曼编码器生成哈夫曼树（图 2.4 ）和相应的编码表示（图 2.3 ）。</p>
+
+<p><img src="https://mmbiz.qpic.cn/mmbiz_jpg/XA3sPCPib1l6jia5WKgazEEVDPjibKHOz8rN4YBTn5M9deDfQ84oS1YicO18tc4XJVmgZcpCSGQP0nEnn1FDgf6O4w/640?wx_fmt=jpeg" alt=""/></p>
+
+<p>你可以看到，常见的符号接近根，因此只要少数位来表示。于是最终的压缩数据流如图 2.5 所示。</p>
+
+<p><img src="https://mmbiz.qpic.cn/mmbiz_jpg/XA3sPCPib1l6jia5WKgazEEVDPjibKHOz8rN5XbjThAK0X8TjTjvx1sATgTetFwyn6jL9sA8HFBX35RVOTHooYt1A/640?wx_fmt=jpeg" alt=""/></p>
+
+<p><img src="https://mmbiz.qpic.cn/mmbiz_jpg/XA3sPCPib1l6jia5WKgazEEVDPjibKHOz8rpfNt5vdooNB0tu2XO2wrByeZzTdHxlxeJWKsjyAB0EFUv0ibvC7W9Hg/640?wx_fmt=jpeg" alt=""/></p>
+
+<p>压缩后的数据流是 24 位（三个字节），原来是 80 位（ 10 个字节）。当然，我应该存储哈夫曼树，这样解码器就能够解码出对应的压缩流了，这就使得该例子中的真正数据流比输入的流数据量大。这是相对较短的数据上的副作用。对于大数据量来说，上面的哈夫曼树就不占太多比例了。</p>
+
+<p><img src="https://mmbiz.qpic.cn/mmbiz_jpg/XA3sPCPib1l6jia5WKgazEEVDPjibKHOz8rwpdS3euibfb2eNiaAWD0PpCeF3qppC2KQbaZz2Zv7fVdts3becE6LYJw/640?wx_fmt=jpeg" alt=""/></p>
+
+<p>解码的时候，从上到下遍历树，为压缩的流选择从左 / 右分支，每次碰到一个叶子节点的时候，就可以将对应的字节写到解压输出流中，然后再从根开始遍历。</p>
+
+<h2 id="toc_4">2.2 实现</h2>
+
+<p>哈夫曼编码器可以在基本压缩库中找到，其是非常直接的实现。</p>
+
+<p>这个实现的基本缺陷是：</p>
+
+<p>1．   慢位流实现<br/>
+2．   相当慢的解码（比编码慢）<br/>
+3．   最大的树深度是 32 （编码器在任何超过 32 位大小的时候退出）。如果我不是搞错的话，这是不可能的，除非输出的数据大于 2 <sup style="box-sizing: border-box;outline: 0px;word-break: break-all;">32</sup> 字节。</p>
+
+<p>另一方面，这个实现有几个优点：</p>
+
+<p>1．   哈夫曼树以一个紧密的形式每个符号要求 12 位（对于 8 位的符号）的方式存储，这意味着最大的头为 384 。<br/>
+2．   编码相当容易理解</p>
+
+<p>哈夫曼编码在数据有噪音的情况（不是有规律的，例如 RLE ）下非常好，这中情况下大多数基于字典方式的编码器都有问题。</p>
+
+<h1 id="toc_5">3 Rice</h1>
+
+<p>对于由大 word （例如： 16 或 32 位）组成的数据和较低的数据值， Rice 编码能够获得较好的压缩比。音频和高动态变化的图像都是这种类型的数据，它们被预处理过（例如 delta 相邻的采样）。</p>
+
+<p>尽管哈夫曼编码处理这种数据是最优的，却由于几个原因而不适合处理这种数据（例如： 32 位大小要求 16GB 的柱状图缓冲区来进行哈夫曼树编码）。因此一个比较动态的方式更适合由大 word 组成的数据。</p>
+
+<h2 id="toc_6">3.1 原理</h2>
+
+<p>Rice 编码背后的基本思想是尽可能的用较少的位来存储多个字（正像使用哈夫曼编码一样）。实际上，有人可能想到 Rice 是静态的哈夫曼编码（例如，编码不是由实际数据内容的统计信息决定，而是由小的值比高的值常见的假定决定）。</p>
+
+<p>编码非常简单：将值 X 用 X 个‘ 1 ’位之后跟一个 0 位来表示。</p>
+
+<h2 id="toc_7">3.2 实现</h2>
+
+<p>在基本压缩库针对 Rice 做了许多优化：</p>
+
+<p>1．   每个字最没有意义的位被存储为 k 和最有意义的 N-k 位用 Rice 编码。 K 作为先前流中少许采样的位平均数。这是通常最好使用 Rice 编码的方法，隐藏噪音且对于动态变化的范围并不导致非常长的 Rice 编码。<br/>
+2．   如果 rice 编码比固定的开端长， T ，一个可选的编码：输出 T 个‘ 1 ’位，紧跟（ log2(X-T) ）个‘ 1 ’和一个‘ 0 ’位，接着是 X-T （最没有意义的 (log2(X-T))-1 位）。这对于大值来说都是比较高效的代码并且阻止可笑的长 Rice 编码（最坏的情况，对于一个 32 位 word 单个 Rice 编码可能变成 2 <sup style="box-sizing: border-box;outline: 0px;word-break: break-all;">32 </sup>位或 512MB ）。</p>
+
+<p>如果开端是 4 ，下面是结果编码表：</p>
+
+<p><img src="https://mmbiz.qpic.cn/mmbiz_png/XA3sPCPib1l6jia5WKgazEEVDPjibKHOz8rOOibqB37z6QKMg3grXJh2GSTCkVFrLo5oIy3J9oxc8OORZ3nib9yCd9w/640?wx_fmt=png" alt=""/></p>
+
+<p>就像你看到的一样，在这个实现中使用 threshold 方法仅仅两个编码导致一个最坏的情况；剩下的编码产生比标准 Rice 编码还要短的编码。</p>
+
+<h1 id="toc_8">4 Lempel-Ziv (LZ77)</h1>
+
+<p>Lempel-Ziv 压缩模式有许多不同的变量。基本压缩库有清晰的 LZ77 算法的实现（ Lempel-Ziv ， 1977 ），执行的很好，源代码也非常容易理解。</p>
+
+<p>LZ 编码器能用来通用目标的压缩，特别对于文本执行的很好。它也在 RLE 和哈夫曼编码器（ RLE ， LZ ，哈夫曼）中使用来大多数情况下获得更多的压缩。</p>
+
+<h2 id="toc_9">4.1 原理</h2>
+
+<p>在 LZ 压缩算法的背后是使用 RLE 算法用先前出现的相同字节序列的引用来替代。</p>
+
+<p>简单的讲， LZ 算法被认为是字符串匹配的算法。例如：在一段文本中某字符串经常出现，并且可以通过前面文本中出现的字符串指针来表示。当然这个想法的前提是指针应该比字符串本身要短。</p>
+
+<p>例如，在上一段短语 “字符串” 经常出现，可以将除第一个字符串之外的所有用第一个字符串引用来表示从而节省一些空间。</p>
+
+<p>一个字符串引用通过下面的方式来表示：</p>
+
+<p>1．   唯一的标记<br/>
+2．   偏移数量<br/>
+3．   字符串长度</p>
+
+<p>由编码的模式决定引用是一个固定的或变动的长度。后面的情况经常是首选，因为它允许编码器用引用的大小来交换字符串的大小（例如，如果字符串相当长，增加引用的长度可能是值得的）。</p>
+
+<h2 id="toc_10">4.2 实现</h2>
+
+<p>使用 LZ77 的一个问题是由于算法需要字符串匹配，对于每个输入流的单个字节，每个流中此字节前面的哪个字节都必须被作为字符串的开始从而尽可能的进行字符串匹配，这意味着算法非常慢。</p>
+
+<p>另一个问题是为了最优化压缩而调整字符串引用的表示形式并不容易。例如，必须决定是否所有的引用和非压缩字节应该在压缩流中的字节边界发生。</p>
+
+<p>基本压缩库使用一个清晰的实现来保证所有的符号和引用是字节对齐的，因此牺牲了压缩比率，并且字符串匹配程序并不是最优化的（没有缓存、历史缓冲区或提高速度的小技巧），这意味着程序非常慢。</p>
+
+<p>另一方面，解压缩程序非常简单。</p>
+
+<p>一个提高 LZ77 速度的试验已经进行了，这个试验中使用数组索引来加速字符串匹配的过程。然而，它还是比通常的压缩程序慢。</p>
 
                         
                       </div>
@@ -510,10 +263,10 @@ C代码，更少GC，更少synchronized
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/6/1</span>
+                    <span class="date">2018/6/18</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Network.html'>Network</a></span>
+          					    <span class="posted-in"><a href='Middleware.html'>Middleware</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -603,31 +356,31 @@ C代码，更少GC，更少synchronized
 	      
 		      
 			      <li class="post">
-			        <a href="15389311738065.html">重构到更深层的模型</a>
+			        <a href="15459058392039.html">Reliable Domain Events</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389278377243.html">IAM of Google Cloud</a>
+			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389224951575.html">RSocket, a New Application Network Protocol for Reactive Applications, Announced at SpringOne</a>
+			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389220103546.html">如何形象地描述RxJava中的背压和流控机制？</a>
+			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389214670417.html">Modeling Uncertainty with Reactive DDD</a>
+			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
 			      </li>
 		     
 		  

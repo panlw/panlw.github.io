@@ -105,296 +105,225 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15274389377310.html">
+                <a class="clearlink" href="15287284144985.html">
                 
-                  <h1>Kubernetes API 使用文档</h1>
+                  <h1>Code Review Best Practices</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.10/">原文地址</a></p>
+<p><a href="https://medium.com/palantir/code-review-best-practices-19e02780015f">https://medium.com/palantir/code-review-best-practices-19e02780015f</a></p>
 </blockquote>
 
-<h2 id="toc_0">API 概述</h2>
+<p><img src="https://cdn-images-1.medium.com/max/800/1*6u51C_pl-UH3X3CbggmCjA.png" alt=""/><br/>
+<a href="https://xkcd.com/1513/">XKCD ‘Code Quality’, copied under CC BY-NC 2.5</a></p>
 
-<h4 id="toc_1">※ 资源分类</h4>
+<p>The Internet provides a wealth of material on code reviews: <a href="https://blog.fullstory.com/what-we-learned-from-google-code-reviews-arent-just-for-catching-bugs/">on the effect of code reviews on company culture</a>, <a href="https://www.owasp.org/images/2/2e/OWASP_Code_Review_Guide-V1_1.pdf">on formal security reviews</a>, <a href="https://github.com/thoughtbot/guides/tree/master/code-review">shorter guides</a>, <a href="https://www.codeproject.com/Articles/524235/Codeplusreviewplusguidelines">longer checklists</a>, <a href="http://www.processimpact.com/articles/humanizing_reviews.html">humanized reviews</a>, <a href="https://smartbear.com/learn/code-review/why-review-code/">reasons for doing code reviews in the first place</a>, <a href="https://smartbear.com/learn/code-review/best-practices-for-peer-code-review/">best practices</a>, <a href="https://www.atlassian.com/agile/software-development/code-reviews">more best practices</a>, <a href="https://blog.codinghorror.com/code-reviews-just-do-it/">statistics on code review effectiveness for catching bugs</a>, and <a href="https://blog.fogcreek.com/effective-code-reviews-9-tips-from-a-converted-skeptic/">examples of code reviews gone wrong</a>. Oh, and of course there are <a href="https://books.google.com/books/about/Peer_Reviews_in_Software.html?id=d7BQAAAAMAAJ">books</a>, too. Long story short, this blog post presents Palantir’s take on code reviews. Organizations with deep cultural reluctance to peer reviews may want to consult Karl E. Wiegers’ excellent essay on <a href="http://www.processimpact.com/articles/humanizing_reviews.html">Humanizing Peer Reviews</a> before trying to follow this guide.</p>
 
-<p>这是对 Kubernetes API 及其主要功能提供的基本资源类型的高级概述。</p>
-
-<ul>
-<li>  <strong>Workloads</strong>： 用于在集群中管理和运行容器；</li>
-<li>  <strong>Discovery &amp; LB</strong>：用于将 Workloads “缝合” 到一个可从外部访问的负载均衡的服务中；</li>
-<li>  <strong>Config &amp; Storage</strong>：用于将初始化数据注入到应用程序中，并保留容器外部的数据；</li>
-<li>  <strong>Cluster</strong>：用于定义如何配置集群，这些通常仅由集群运营商使用；</li>
-<li>  <strong>Metadata</strong>：用于配置群集内其他资源的行为，例如用于扩展 Workloads 的 HorizontalPodAutoscaler</li>
-</ul>
-
-<h4 id="toc_2">※ 资源对象</h4>
-
-<p>资源对象通常包含 3 个组件：</p>
+<p>This post is copied from the <a href="https://github.com/palantir/gradle-baseline/tree/develop/docs">best practices guides</a> of our Java Code Quality tool chain, <a href="https://github.com/palantir/gradle-baseline">Baseline</a>, and covers the following topics:</p>
 
 <ul>
-<li>  <strong>ResourceSpec</strong>：这由用户定义并描述系统所期望的状态，在创建或更新对象时填写；</li>
-<li>  <strong>ResourceStatus</strong>：这由服务器填写并报告系统的当前状态，只有 Kubernetes 组件才能填写此内容；</li>
-<li>  <strong>Resource ObjectMeta</strong>：这是关于资源的元数据，例如 name / type / api version / annotations / labels，包含可能由后端用户和系统更新的字段（如 annotations）</li>
+<li>  Why, what, and when to do code reviews</li>
+<li>  Preparing code for review</li>
+<li>  Performing code reviews</li>
+<li>  Code review examples</li>
 </ul>
 
-<h4 id="toc_3">※ 资源操作</h4>
+<h3 id="toc_0">Motivation</h3>
 
-<p>大部分资源提供如下操作：</p>
-
-<p><strong>▶ Create</strong></p>
-
-<p>Create 操作会在存储后端创建资源。资源创建后，系统将应用所期望的状态。</p>
-
-<p><strong>▶ Update</strong></p>
-
-<p>更新有 2 种形式：<strong>Replace</strong> 和 <strong>Patch</strong></p>
-
-<p><strong>Replace</strong>：替换资源对象将通过提供的 spec 替换现有的 spec 来更新资源。对于读写操作，这是安全的，因为如果资源在读和写之间被修改，则会发生乐观锁定失败。注意：ResourceStatus 将被系统忽略，并且不会被更新，要更新状态，必须调用特定的状态更新操作。</p>
-
-<p>注意：替换资源对象可能不会立即传播到下游对象。例如，替换 ConfigMap 或 Secret 资源不会导致所有 Pod 看到更改，除非 Pod 在带外重新启动。</p>
-
-<p><strong>Patch</strong>：Patch 会更改特定字段，如何合并更改是每个字段定义的。列表可以被替换或合并，合并列表不会保留排序。</p>
-
-<p><strong>Patch 操作永远不会导致乐观锁定失败，并且最后一次写入会获胜。</strong>如果在更新之前未读取完整状态，或者乐观锁定失败不可取，则建议使用 patch 操作。修补复杂 types、arrays 和 maps 时，如何应用修补程序是以每个字段为基础定义的，并可以替换字段的当前值，也可以将内容合并到当前值中。</p>
-
-<p><strong>▶ Read</strong></p>
-
-<p>读取有 3 种方式：<strong>Get</strong> 、 <strong>List</strong> 和 <strong>Watch</strong></p>
-
-<p><strong>Get</strong>： 按名称检索特定的资源对象；</p>
-
-<p><strong>List</strong>：检索命名空间内特定类型的所有资源对象，并且结果可以限制为与选择器查询结果匹配的资源；</p>
-
-<p><strong>List All Namespaces</strong>：像 List 一样，但是跨所有命名空间检索资源；</p>
-
-<p><strong>Watch</strong>：Watch 将在对象更新时汇出结果，类似于回调，watch 用于响应资源的更改。</p>
-
-<p><strong>▶ Delete</strong></p>
-
-<p>Delete 将删除资源。根据特定的资源，子对象可能会或可能不会被服务器当做垃圾收集，详情请参阅特定资源对象的注释。</p>
-
-<p><strong>▶ 额外操作</strong></p>
-
-<p>资源可以定义特定于该资源类型的附加操作。</p>
-
-<p><strong>Rollback</strong>：将 PodTemplate 回滚到以前的版本，仅适用于某些资源类型；</p>
-
-<p><strong>Read / Write Scale</strong>：读取或更新给定资源的副本数量，仅适用于某些资源类型；</p>
-
-<p><strong>Read / Write Status</strong>：读取或更新资源对象的状态，状态只能通过这些更新操作进行更改。</p>
-
-<h2 id="toc_4">WORKLOADS</h2>
-
-<p>Workloads 资源负责管理和运行集群上的容器。容器（Containers）由控制器（Controllers）通过 Pod 创建，Pods 运行容器并提供环境依赖，如注入到容器中的共享或永久存储卷、配置或加密数据。</p>
-
-<p>最常见的控制器是：</p>
+<p>We perform code reviews (CRs) in order to improve code quality and benefit from <a href="https://blog.fullstory.com/what-we-learned-from-google-code-reviews-arent-just-for-catching-bugs">positive effects on team and company culture</a>. For example:</p>
 
 <ul>
-<li>  Deployments 无状态持久应用（如 http servers）</li>
-<li>  StatefulSets 有状态持久应用（如 database）</li>
-<li>  Jobs 运行至完成的应用 （如 batch jobs）</li>
-</ul>
-
-<h2 id="toc_5">DISCOVERY &amp; LOAD BALANCING</h2>
-
-<p>Discovery and Load Balancing 负责将 Workloads “缝合” 到一个可从外部访问的负载均衡的服务中。默认情况下，Workloads 只能在群集内访问，它们必须通过 LoadBalancer 或 NodePort Service 暴露到外部。对于开发，可以使用 <code>kubectl proxy</code>命令通过代理 api 主机访问内部可访问的 Workloads 。</p>
-
-<p>常用的资源类型：</p>
+<li>  <strong>Committers are motivated</strong> by the notion of a set of reviewers who will look over the change request: the committer tends to clean up loose ends, consolidate TODOs, and generally improve the commit. Recognition of coding expertise through peers is a source of pride for many programmers.</li>
+<li>  <strong>Sharing knowledge</strong> helps development teams in several ways:
 
 <ul>
-<li>  Services 提供跨多个 Workload 副本的负载均衡的单个 IP 端点。</li>
-<li>  Ingress 提供路由到一个或多个服务的 https(s) 端点</li>
+<li>A CR explicitly communicates added/altered/removed functionality to team members who can subsequently build on the work done.</li>
+<li>The committer may use a technique or algorithm that reviewers can learn from. More generally, code reviews help <a href="https://blog.fullstory.com/what-we-learned-from-google-code-reviews-arent-just-for-catching-bugs/">raise the quality bar across the organization</a>.</li>
+<li>Reviewers may possess knowledge about programming techniques or the code base that can help improve or consolidate the change; for example, someone else may be concurrently working on a similar feature or fix.</li>
+<li>Positive interaction and communication strengthens social bonds between team members.</li>
+</ul></li>
+<li>  <strong>Consistency</strong> in a code base makes code easier to read and understand, helps prevent bugs, and facilitates collaboration between regular and migratory developer species.</li>
+<li>  <strong>Legibility</strong> of code fragments is hard to judge for the author whose brain child it is, and easy to judge for a reviewer who does not have the full context. Legible code is more reusable, bug-free, and future-proof.</li>
+<li>  <strong>Accidental errors</strong> (e.g., typos) as well as <strong>structural errors</strong> (e.g., dead code, logic or algorithm bugs, performance or architecture concerns) are often much easier to spot for critical reviewers with an outside perspective. Studies have found that even short and informal code reviews have significant <a href="https://blog.codinghorror.com/code-reviews-just-do-it/">impact on code quality and bug frequency</a>.</li>
+<li>  <strong>Compliance</strong> and regulatory environments often demand reviews. CRs are a great way to avoid common security traps. If your feature or environment has significant security requirements it will benefit from (and probably require) review by your local security curmudgeons (<a href="https://www.owasp.org/index.php/Code_Review_Introduction">OWASP’s guide</a> is a good example of the process).</li>
 </ul>
 
-<h2 id="toc_6">CONFIG &amp; STORAGE</h2>
+<h3 id="toc_1">What to review</h3>
 
-<p>Config and Storage 资源负责将数据注入到应用程序中，并保留容器外部的数据。</p>
+<p>There is no eternally true answer to this question and each development team should agree on its own approach. Some teams prefer to review every change merged into the main branch, while others will have a “triviality” threshold under which a review is not required. The trade-off is between effective use of engineers’ (both authors’ and reviewers’) time and maintaining code quality. In certain regulatory environments, code review may be required even for trivial changes.</p>
 
-<p>常用的资源类型：</p>
+<p>Code reviews are classless: being the most senior person on the team does not imply that your code does not need review. Even if, in the rare case, code is flawless, the review provides an opportunity for mentorship and collaboration, and, minimally, diversifies the understanding of code in the code base.</p>
+
+<h3 id="toc_2">When to review</h3>
+
+<p>Code reviews should happen after automated checks (tests, style, other CI) have completed successfully, but before the code merges to the repository’s mainline branch. We generally don’t perform formal code review of aggregate changes since the last release.</p>
+
+<p>For complex changes that should merge into the mainline branch as a single unit but are too large to fit into one reasonable CR, consider a stacked CR model: Create a primary branch <code>feature/big-feature</code> and a number of secondary branches (e.g., <code>feature/big-feature-api</code>, <code>feature/big-feature-testing</code>, etc.) that each encapsulate a subset of the functionality and that get individually code-reviewed against the <code>feature/big-feature</code> branch. Once all secondary branches are merged into <code>feature/big-feature</code>, create a CR for merging the latter into the main branch.</p>
+
+<h3 id="toc_3">Preparing code for review</h3>
+
+<p>It is the author’s responsibility to submit CRs that are easy to review in order not to waste reviewers’ time and motivation:</p>
 
 <ul>
-<li>  ConfigMaps 通过环境变量、命令行参数或文件提供注入应用的 K-V 键值对</li>
-<li>  Secrets 通过文件提供注入应用的二进制数据</li>
-<li>  Volumes 提供容器外部的文件系统。 可能在同一个 Pod 中跨 Container 容器共享，并且其寿命持续超出 Container 或 Pod。</li>
-</ul>
-
-<h2 id="toc_7">METADATA</h2>
-
-<p>Metadata resources 负责集群内其他资源的行为。</p>
-
-<p>常用的资源类型：</p>
+<li>  <strong>Scope and size</strong>. Changes should have a narrow, well-defined, self-contained scope that they cover exhaustively. For example, a change may implement a new feature or fix a bug. Shorter changes are preferred over longer ones. If a CR makes substantive changes to more than ~5 files, or took longer than 1–2 days to write, or would take more than 20 minutes to review, consider splitting it into multiple self-contained CRs. For example, a developer can submit one change that defines the API for a new feature in terms of interfaces and documentation, and a second change that adds implementations for those interfaces.</li>
+<li>  Only submit <strong>complete, self-reviewed</strong> (by diff), and <strong>self-tested</strong> CRs. In order to save reviewers’ time, test the submitted changes (i.e., run the test suite) and make sure they pass all builds as well as all tests and code quality checks, both locally and on the CI servers, <u>before assigning reviewers</u>.</li>
+<li>  <strong>Refactoring changes</strong> should not alter behavior; conversely, a behavior-changing changes should avoid refactoring and code formatting changes. There are multiple good reasons for this:
 
 <ul>
-<li>  HorizontalPodAutoscaler 自动缩放 workloads 的副本数量以响应加载</li>
-<li>  PodDisruptionBudget 在执行维护时，可以配置给定 workloads 中的多少副本可能同时不可用</li>
-<li>  ThirdPartyResource 使用自己的类型扩展 Kubernetes API</li>
-<li>  Event 群集中资源生命周期事件的通知</li>
+<li>Refactoring changes often touch many lines and files and will consequently be <a href="https://smartbear.com/learn/code-review/best-practices-for-peer-code-review/">reviewed with less attention</a>. Unintended behavior changes can leak into the code base without anyone noticing.</li>
+<li>Large refactoring changes break cherry-picking, rebasing, and other source control magic. It is very onerous to undo a behavior change that was introduced as part of a repository-wide refactoring commit.</li>
+<li>Expensive human review time should be spent on the program logic rather than style, syntax, or formatting debates. We prefer settling those with automated tooling like <a href="http://checkstyle.sourceforge.net/">Checkstyle</a>, <a href="https://github.com/palantir/tslint">TSLint</a>, <a href="https://github.com/palantir/gradle-baseline">Baseline</a>, <a href="https://github.com/prettier/prettier">Prettier</a>, etc.</li>
+</ul></li>
 </ul>
 
-<h2 id="toc_8">API 调用方式</h2>
+<h3 id="toc_4">Commit messages</h3>
 
-<p><strong>▶ kubectl</strong></p>
+<p>The following is an example of a good commit message following a <a href="http://tbaggery.com/2008/04/19/a-note-about-git-commit-messages.html">widely quoted standard</a>:</p>
 
-<p>示例：创建 Deployment</p>
-
-<pre><code>1.  `$ echo &#39;apiVersion: apps/v1`
-
-2.  `kind: Deployment`
-
-3.  `metadata:`
-
-4.  `name: deployment-example`
-
-5.  `spec:`
-
-6.  `replicas: 3`
-
-7.  `revisionHistoryLimit: 10`
-
-8.  `template:`
-
-9.  `metadata:`
-
-10.  `labels:`
-
-11.  `app: nginx`
-
-12.  `spec:`
-
-13.  `containers:`
-
-14.  `- name: nginx`
-
-15.  `image: nginx:1.10`
-
-16.  `ports:`
-
-17.  `- containerPort: 80`
-
-18.  `&#39; | kubectl create -f -`
-
+<pre><code>Capitalized, short (80 chars or less) summary
 </code></pre>
 
-<p>yaml 文件编写的规则拆解如下图：</p>
+<pre><code>More detailed explanatory text, if necessary. Wrap it to about 120 characters or so. In some contexts, the firstline is treated as the subject of an email and the rest of the text as the body. The blank line separating thesummary from the body is critical (unless you omit the body entirely); tools like rebase can get confused if you runthe two together.
+</code></pre>
 
-<p><img src="https://mmbiz.qpic.cn/mmbiz_png/wbiax4xEAl5xuUnZt7eHIfEe51sP9P3DjdKKVzb6BmPcZAQzsLM5ZM6SsD46djF4siaLHADeaQnrT6qOJDGSCkibw/640?wx_fmt=png" alt=""/></p>
+<pre><code>Write your commit message in the imperative: &quot;Fix bug&quot; and not &quot;Fixed bug&quot; or &quot;Fixes bug.&quot; This convention matchesup with commit messages generated by commands like git merge and git revert.
+</code></pre>
 
-<p><img src="https://mmbiz.qpic.cn/mmbiz_png/wbiax4xEAl5xuUnZt7eHIfEe51sP9P3DjrdW9EOgJy7BickNuoCKaX7R5t1TZHqDF8RN8qSCRzse8nRDO23IA66w/640?wx_fmt=png" alt=""/></p>
+<pre><code>Further paragraphs come after blank lines.
+</code></pre>
 
-<p><img src="https://mmbiz.qpic.cn/mmbiz_png/wbiax4xEAl5xuUnZt7eHIfEe51sP9P3DjEr3QHuRt71DVQHpNZHibDhFnDibRvT6ghUdMvCOLqSuUIZYO7YXWZyLg/640?wx_fmt=png" alt=""/></p>
+<pre><code>- Bullet points are okay, too
+</code></pre>
 
-<p><img src="https://mmbiz.qpic.cn/mmbiz_png/wbiax4xEAl5xuUnZt7eHIfEe51sP9P3Djl2MJd16ycvpxFCy7ibcQmaqMVo0ndFic3xlVqvyzwFtl4VTw6y3WuRdg/640?wx_fmt=png" alt=""/></p>
+<p>Try to describe both what the commit changes and how it does it:</p>
 
-<p>其他资源的创建或其他操作，都可以按照这种方式来操作。</p>
+<pre><code>&gt; BAD. Don&#39;t do this.Make compile again
+</code></pre>
 
-<p><strong>▶ curl</strong></p>
+<pre><code>&gt; Good.Add jcsv dependency to fix IntelliJ compilation
+</code></pre>
 
-<p>需要使用 <code>kubectl proxy</code></p>
+<h3 id="toc_5">Finding reviewers</h3>
 
-<pre data-initialized="true" data-gclp-id="6" style="box-sizing: border-box;margin-top: 0px;margin-bottom: 0px;padding: 8px 0px 6px;background-color: rgb(241, 239, 238);border-radius: 0px;overflow-y: auto;color: rgb(80, 97, 109);font-size: 10px;line-height: 12px;">
+<p>It is customary for the committer to propose one or two reviewers who are familiar with the code base. Often, one of the reviewers is the project lead or a senior engineer. Project owners should consider subscribing to their projects in order to get notified of new CRs. Code reviews among more than three parties are often unproductive or even counter-productive since different reviewers may propose contradictory changes. This may indicate fundamental disagreement on the correct implementation and should be resolved outside a code review in a higher-bandwidth forum, for example in person or in a video conference with all involved parties.</p>
 
-1.  `$ kubectl proxy`
+<h3 id="toc_6">Performing code reviews</h3>
 
-2.  `$ curl -X POST -H 'Content-Type: application/yaml' --data '`
+<p>A code review is a synchronization point among different team members and thus has the potential to block progress. Consequently, code reviews need to be prompt (on the order of hours, not days), and team members and leads need to be aware of the time commitment and prioritize review time accordingly. If you don’t think you can complete a review in time, please let the committer know right away so they can find someone else.</p>
 
-3.  `apiVersion: apps/v1beta1`
+<p>A review should be thorough enough that the reviewer could explain the change at a reasonable level of detail to another developer. This ensures that the details of the code base are known to more than a single person.</p>
 
-4.  `kind: Deployment`
+<p>As a reviewer, it is your responsibility to enforce coding standards and keep the quality bar up. Reviewing code is more of an art than a science. The only way to learn it is to do it; an experienced reviewer should consider putting other less experienced reviewers on their changes and have them do a review first. Assuming the author has followed the guidelines above (especially with respect to self-review and ensuring the code runs), here’s an list of things a reviewer should pay attention to in a code review:</p>
 
-5.  `metadata:`
+<h4 id="toc_7">Purpose</h4>
 
-6.  `name: deployment-example`
+<ul>
+<li>  <strong>Does this code accomplish the author’s purpose?</strong> Every change should have a specific reason (new feature, refactor, bugfix, etc). Does the submitted code actually accomplish this purpose?</li>
+<li>  <strong>Ask questions.</strong> Functions and classes should exist for a reason. When the reason is not clear to the reviewer, this may be an indication that the code needs to be rewritten or supported with comments or tests.</li>
+</ul>
 
-7.  `spec:`
+<h4 id="toc_8">Implementation</h4>
 
-8.  `replicas: 3`
+<ul>
+<li>  <strong>Think about how you would have solved the problem.</strong> If it’s different, why is that? Does your code handle more (edge) cases? Is it shorter/easier/cleaner/faster/safer yet functionally equivalent? Is there some underlying pattern you spotted that isn’t captured by the current code?</li>
+<li>  <strong>Do you see potential for useful abstractions?</strong> Partially duplicated code often indicates that a more abstract or general piece of functionality can be extracted and then reused in different contexts.</li>
+<li>  <strong>Think like an adversary, but be nice about it.</strong> Try to “catch” authors taking shortcuts or missing cases by coming up with problematic configurations/input data that breaks their code.</li>
+<li>  <strong>Think about libraries or existing product code.</strong> When someone re-implements existing functionality, more often than not it’s simply because they don’t know it already exists. Sometimes, code or functionality is duplicated on purpose, e.g., in order to avoid dependencies. In such cases, a code comment can clarify the intent. Is the introduced functionality already provided by an existing library?</li>
+<li>  <strong>Does the change follow standard patterns?</strong> Established code bases often exhibit patterns around naming conventions, program logic decomposition, data type definitions, etc. It is usually desirable that changes are implemented in accordance with existing patterns.</li>
+<li>  <strong>Does the change add compile-time or run-time dependencies (especially between sub-projects)?</strong> We want to keep our products loosely coupled, with as few dependencies as possible. Changes to dependencies and the build system should be scrutinized heavily.</li>
+</ul>
 
-9.  `revisionHistoryLimit: 10`
+<h4 id="toc_9">Legibility and style</h4>
 
-10.  `template:`
+<ul>
+<li>  <strong>Think about your reading experience.</strong> Did you grasp the concepts in a reasonable amount of time? Was the flow sane and were variable and methods names easy to follow? Were you able to keep track through multiple files or functions? Were you put off by inconsistent naming?</li>
+<li>  <strong>Does the code adhere to coding guidelines and code style?</strong> Is the code consistent with the project in terms of style, API conventions, etc.? As mentioned above, we prefer to settle style debates with automated tooling.</li>
+<li>  <strong>Does this code have TODOs?</strong> TODOs just pile up in code, and become stale over time. Have the author submit a ticket on GitHub Issues or JIRA and attach the issue number to the TODO. The proposed code change should not contain commented-out code.</li>
+</ul>
 
-11.  `metadata:`
+<h4 id="toc_10">Maintainability</h4>
 
-12.  `labels:`
+<ul>
+<li>  <strong>Read the tests.</strong> If there are no tests and there should be, ask the author to write some. Truly untestable features are rare, while untested implementations of features are unfortunately common. Check the tests themselves: are they covering interesting cases? Are they readable? Does the CR lower overall test coverage? Think of ways this code could break. Style standards for tests are often different than core code, but still important.</li>
+<li>  <strong>Does this CR introduce the risk of breaking test code, staging stacks, or integrations tests?</strong> These are often not checked as part of the pre-commit/merge checks, but having them go down is painful for everyone. Specific things to look for are: removal of test utilities or modes, changes in configuration, and changes in artifact layout/structure.</li>
+<li>  <strong>Does this change break backward compatibility?</strong> If so, is it OK to merge the change at this point or should it be pushed into a later release? Breaks can include database or schema changes, public API changes, user workflow changes, etc.</li>
+<li>  <strong>Does this code need integration tests?</strong> Sometimes, code can’t be adequately tested with unit tests alone, especially if the code interacts with outside systems or configuration.</li>
+<li>  <strong>Leave feedback on code-level documentation, comments, and commit messages.</strong> Redundant comments clutter the code, and terse commit messages mystify future contributors. This isn’t always applicable, but quality comments and commit messages will pay for themselves down the line. (Think of a time you saw an excellent, or truly terrible, commit message or comment.)</li>
+<li>  <strong>Was the external documentation updated?</strong> If your project maintains a README, CHANGELOG, or other documentation, was it updated to reflect the changes? Outdated documentation can be more confusing than none, and it will be more costly to fix it in the future than to update it now.</li>
+</ul>
 
-13.  `app: nginx`
+<p>Don’t forget to praise concise/readable/efficient/elegant code. Conversely, declining or disapproving a CR is not rude. If the change is redundant or irrelevant, decline it with an explanation. If you consider it unacceptable due to one or more fatal flaws, disapprove it, again with an explanation. Sometimes the right outcome of a CR is “let’s do this a totally different way” or even “let’s not do this at all.”</p>
 
-14.  `spec:`
+<p>Be respectful to the reviewees. While adversarial thinking is handy, it’s not your feature and you can’t make all the decisions. If you can’t come to an agreement with your reviewee with the code as is, switch to real-time communication or seek a third opinion.</p>
 
-15.  `containers:`
+<h4 id="toc_11">Security</h4>
 
-16.  `- name: nginx`
+<p>Verify that API endpoints perform appropriate authorization and authentication consistent with the rest of the code base. Check for other common weaknesses, e.g., weak configuration, malicious user input, missing log events, etc. When in doubt, refer the CR to an application security expert.</p>
 
-17.  `image: nginx:1.10`
+<h4 id="toc_12">Comments: concise, friendly, actionable</h4>
 
-18.  `ports:`
+<p>Reviews should be concise and written in neutral language. Critique the code, not the author. When something is unclear, ask for clarification rather than assuming ignorance. Avoid possessive pronouns, in particular in conjunction with evaluations: “_my_ code worked before <u>your</u> change”, “_your_ method has a bug”, etc. Avoid absolute judgements: “this can <u>never</u> work”, “the result is <u>always</u> wrong”.</p>
 
-19.  `- containerPort: 80`
+<p>Try to differentiate between suggestions (e.g., “Suggestion: extract method to improve legibility”), required changes (e.g., “Add @Override”), and points that need discussion or clarification (e.g., “Is this really the correct behavior? If so, please add a comment explaining the logic.”). Consider providing links or pointers to in-depth explanations of a problem.</p>
 
-20.  `' http://127.0.0.1:8001/apis/apps/v1/namespaces/default/deployments` 
+<p>When you’re done with a code review, indicate to what extent you expect the author to respond to your comments and whether you would like to re-review the CR after the changes have been implemented (e.g., “Feel free to merge after responding to the few minor suggestions” vs. “Please consider my suggestions and let me know when I can take another look.”).</p>
 
-</pre>
+<h3 id="toc_13">Responding to reviews</h3>
 
-<p><section class="" powered-by="xiumi.us" style="white-space: normal;box-sizing: border-box;"></p>
+<p>Part of the purpose of the code review is improve the author’s change request; consequently, don’t be offended by your reviewer’s suggestions and take them seriously even if you don’t agree. Respond to every comment, even if it’s only a simple “ACK” or “done.” Explain why you made certain decisions, why some function exists, etc. If you can’t come to an agreement with the reviewer, switch to real-time communication or seek an outside opinion.</p>
 
-<p><section class="" style="box-sizing: border-box;"></p>
+<p>Fixes should be pushed to the same branch, but in a separate commit. Squashing commits during the review process makes it hard for the reviewer to follow up on changes.</p>
 
-<p><section class="" style="font-size: 14px;box-sizing: border-box;"></p>
+<p>Different teams have different merge policies: some teams allow only project owners to merge, while other teams allow the contributor to merge after a positive code review.</p>
 
-<p>推荐：<a href="http://mp.weixin.qq.com/s?__biz=MzU0MDEwMjgwNA==&amp;mid=2247484509&amp;idx=1&amp;sn=e8b7f12fb3660d15379e2087c2e0e5c6&amp;chksm=fb3f1da6cc4894b0421d62ebecd16c9de11a3abf919d2c506643d3b864d0357ffc4eec1bfd29&amp;scene=21#wechat_redirect">译：基于注解的控制器：Spring Web/WebFlux 和 测试</a></p>
+<h4 id="toc_14">In-person code reviews</h4>
 
-<p>上一篇：<a href="http://mp.weixin.qq.com/s?__biz=MzU0MDEwMjgwNA==&amp;mid=2247484512&amp;idx=1&amp;sn=4130871a4e6360b4f1b8c1b4dac4b101&amp;chksm=fb3f1d9bcc48948d5430ce9e1cef224c40421241d3a925a891bb1cf2c1753d90db040529848a&amp;scene=21#wechat_redirect">Spring-5-webflux 和阻塞与非阻塞 JDBC</a></p>
+<p>For the majority of code reviews, asynchronous diff-based tools such as Reviewable, Gerrit or, GitHub are a great choice. Complex changes, or reviews between parties with very different expertise or experience can be more efficient when performed in person, either in front of the same screen or projector, or remotely via VTC or screen share tools.</p>
 
-<p></section></p>
+<h3 id="toc_15">Examples</h3>
 
-<p></section></p>
+<p>In the following examples, suggested review comments are indicated by <code>//R: ...</code> comments in the code blocks.</p>
 
-<p></section></p>
+<h4 id="toc_16">Inconsistent naming</h4>
 
-<p><section class="" powered-by="xiumi.us" style="white-space: normal;box-sizing: border-box;"></p>
+<pre>class MyClass {
+  private int countTotalPageVisits; //R: name variables consistently
+  private int uniqueUsersCount;
+}</pre>
 
-<p><section class="" style="box-sizing: border-box;"></p>
+<h4 id="toc_17">Inconsistent method signatures</h4>
 
-<p><section class="" style="display: inline-block;vertical-align: top;width: 279px;box-sizing: border-box;"></p>
+<pre>interface MyInterface {
+  /** Returns {@link Optional#empty} if s cannot be extracted. */
+  public Optional<String> extractString(String s);</pre>
 
-<p><section class="" powered-by="xiumi.us" style="box-sizing: border-box;"></p>
+<pre>  /** Returns null if {@code s} cannot be rewritten. */
+  //R: should harmonize return values: use Optional<> here, too
+  public String rewriteString(String s);
+}</pre>
 
-<p><section class="" style="box-sizing: border-box;"></p>
+<h4 id="toc_18">Library use</h4>
 
-<p><section class="" style="text-align: center;color: rgb(160, 160, 160);font-size: 14px;box-sizing: border-box;"></p>
+<pre>//R: remove and replace by Guava's MapJoiner
+String joinAndConcatenate(Map<String, String> map, String keyValueSeparator, String keySeparator);</pre>
 
-<p>最好的赞赏</p>
+<h4 id="toc_19">Personal taste</h4>
 
-<p>就是你的关注</p>
+<pre>int dayCount; //R: nit: I usually prefer numFoo over fooCount; up to you, but we should keep it consistent in this project</pre>
 
-<p></section></p>
+<h4 id="toc_20">Bugs</h4>
 
-<p></section></p>
+<pre>//R: This performs numIterations+1 iterations, is that intentional?
+//   If it is, consider changing the numIterations semantics?
+for (int i = 0; i <= numIterations; ++i) {
+  ...
+}</pre>
 
-<p></section></p>
+<h4 id="toc_21">Architectural concerns</h4>
 
-<p></section></p>
-
-<p><section class="" style="display: inline-block;vertical-align: top;width: 279px;box-sizing: border-box;"></p>
-
-<p><section class="" powered-by="xiumi.us" style="box-sizing: border-box;"></p>
-
-<p><section class="" style="margin-top: 10px;margin-bottom: 10px;text-align: center;box-sizing: border-box;"></p>
-
-<p><section class="" style="max-width: 100%;vertical-align: middle;display: inline-block;box-sizing: border-box;overflow: hidden !important;"><img src="https://mmbiz.qpic.cn/mmbiz_jpg/wbiax4xEAl5zQkzvFqgk7DUAem1u05eybPdhEythAoe3O0FxUHy0tmzgytKI7tJaiaDsEWib43ZFSYmEROK4MNNAQ/640?wx_fmt=jpeg" alt=""/></section></p>
-
-<p></section></p>
-
-<p></section></p>
-
-<p></section></p>
-
-<p></section></p>
-
-<p></section></p>
+<pre>otherService.call(); //R: I think we should avoid the dependency on OtherService. Can we discuss this in person?</pre>
 
                         
                       </div>
@@ -403,10 +332,10 @@
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/5/28</span>
+                    <span class="date">2018/6/11</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Container.html'>Container</a></span>
+          					    <span class="posted-in"><a href='QA.html'>QA</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -496,31 +425,31 @@
 	      
 		      
 			      <li class="post">
-			        <a href="15389311738065.html">重构到更深层的模型</a>
+			        <a href="15459058392039.html">Reliable Domain Events</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389278377243.html">IAM of Google Cloud</a>
+			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389224951575.html">RSocket, a New Application Network Protocol for Reactive Applications, Announced at SpringOne</a>
+			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389220103546.html">如何形象地描述RxJava中的背压和流控机制？</a>
+			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389214670417.html">Modeling Uncertainty with Reactive DDD</a>
+			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
 			      </li>
 		     
 		  

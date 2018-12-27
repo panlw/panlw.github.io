@@ -105,319 +105,383 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15244030785891.html">
+                <a class="clearlink" href="15277824520436.html">
                 
-                  <h1>Advanced Node.js Project Structure Tutorial</h1>
+                  <h1>【RPC 专栏】深入理解 RPC 之动态代理篇</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://blog.codeship.com/advanced-node-js-project-structure-tutorial/">https://blog.codeship.com/advanced-node-js-project-structure-tutorial/</a></p>
-
-<p><u>This article was originally published on <a href="https://blog.risingstack.com/node-js-project-structure-tutorial-node-js-at-scale/">the RisingStack blog</a> by <a href="https://twitter.com/@tthndrs">András Tóth</a>. With their kind permission, we’re sharing it here for Codeship readers.</u></p>
+<p>原文地址 <a href="https://www.cnkirito.moe/rpc-dynamic-proxy/">https://www.cnkirito.moe/rpc-dynamic-proxy/</a></p>
 </blockquote>
 
-<p>Project structuring is an important topic because the way you bootstrap your application can determine the whole development experience throughout the life of the project.</p>
+<p>提到 JAVA 中的动态代理，大多数人都不会对 JDK 动态代理感到陌生，Proxy，InvocationHandler 等类都是 J2SE 中的基础概念。动态代理发生在服务调用方/客户端，RPC 框架需要解决的一个问题是：像调用本地接口一样调用远程的接口。于是如何组装数据报文，经过网络传输发送至服务提供方，屏蔽远程接口调用的细节，便是动态代理需要做的工作了。RPC 框架中的代理层往往是单独的一层，以方便替换代理方式（如 motan 代理层位于<code>com.weibo.api.motan.proxy</code> ，dubbo代理层位于 <code>com.alibaba.dubbo.common.bytecode</code> ）。</p>
 
-<p>In this Node.js project structure tutorial I’ll answer some of the most common questions we receive at <a href="https://trace.risingstack.com/">RisingStack</a> about structuring advanced Node applications, and help you with structuring a complex project.</p>
-
-<p><strong>These are the goals that we are aiming for:</strong></p>
+<p>实现动态代理的方案有下列几种：</p>
 
 <ul>
-<li>  Writing an application that is easy to scale and maintain.</li>
-<li>  The config is well separated from the business logic.</li>
-<li>  Our application can consist of multiple process types.</li>
+<li>  jdk 动态代理</li>
+<li>  cglib 动态代理</li>
+<li>  javassist 动态代理</li>
+<li>  ASM 字节码</li>
+<li>  javassist 字节码</li>
 </ul>
+
+<p>其中 cglib 底层实现依赖于 ASM，javassist 自成一派。由于 ASM 和 javassist 需要程序员直接操作字节码，导致使用门槛相对较高，但实际上他们的应用是非常广泛的，如 Hibernate 底层使用了 javassist（默认）和 cglib，Spring 使用了 cglib 和 jdk 动态代理。</p>
+
+<p>RPC 框架无论选择何种代理技术，所需要完成的任务其实是固定的，不外乎‘整理报文’，‘确认网络位置’，‘序列化’,’网络传输’，‘反序列化’，’返回结果’…</p>
+
+<h2 id="toc_0"><a href="#%E6%8A%80%E6%9C%AF%E9%80%89%E5%9E%8B%E7%9A%84%E5%BD%B1%E5%93%8D%E5%9B%A0%E7%B4%A0" title="技术选型的影响因素"></a>技术选型的影响因素</h2>
+
+<p>框架中使用何种动态代理技术，影响因素也不少。</p>
+
+<h3 id="toc_1"><a href="#%E6%80%A7%E8%83%BD" title="性能"></a>性能</h3>
+
+<p>从早期 dubbo 的作者梁飞的博客 <a href="http://javatar.iteye.com/blog/814426">http://javatar.iteye.com/blog/814426</a> 中可以得知 dubbo 选择使用 javassist 作为动态代理方案主要考虑的因素是<strong>性能</strong>。</p>
+
+<p>从其博客的测试结果来看 javassist &gt; cglib &gt; jdk 。但实际上他的测试过程稍微有点瑕疵：在 cglib 和 jdk 代理对象调用时，走的是反射调用，而在 javassist 生成的代理对象调用时，走的是直接调用（可以先阅读下梁飞大大的博客）。这意味着 cglib 和 jdk 慢的原因并不是由动态代理产生的，而是由反射调用产生的（顺带一提，很多人认为 jdk 动态代理的原理是反射，其实它的底层也是使用的字节码技术）。而最终我的测试结果，结论如下： javassist ≈ cglib &gt; jdk 。javassist 和 cglib 的效率基本持平 ，而他们两者的执行效率基本可以达到 jdk 动态代理的2倍（这取决于测试的机器以及 jdk 的版本，jdk1.8 相较于 jdk1.6 动态代理技术有了质的提升，所以并不是传闻中的那样：cglib 比 jdk 快 10倍）。文末会给出我的测试代码。</p>
+
+<h3 id="toc_2"><a href="#%E4%BE%9D%E8%B5%96" title="依赖"></a>依赖</h3>
 
 <blockquote>
-<p><strong>Node.js at Scale</strong> is <a href="http://chapters">a collection of articles</a> focusing on the needs of companies with bigger Node.js installations and advanced Node developers.</p>
+<p>motan默认的实现是jdk动态代理，代理方案支持SPI扩展，可以自行扩展其他实现方式。</p>
+
+<p>使用jdk做为默认，主要是减少core包依赖，性能不是唯一考虑因素。另外使用字节码方式javaassist性能比较优秀，动态代理模式下jdk性能也不会差多少。</p>
+
+<p>– <strong>rayzhang0603</strong>(motan贡献者)</p>
 </blockquote>
 
-<h2 id="toc_0">The Node.js Project Structure</h2>
+<p>motan 选择使用 jdk 动态代理，原因主要有两个：减少 motan-core 的依赖，方便。至于扩展性，dubbo 并没有预留出动态代理的扩展接口，而是写死了 bytecode ，这点上 motan 做的较好。</p>
 
-<p>Our example application is listening on Twitter tweets and tracks certain keywords. In case of a keyword match, the tweet will be sent to a RabbitMQ queue, which will be processed and saved to Redis. We will also have a REST API exposing the tweets we have saved.</p>
+<h3 id="toc_3"><a href="#%E6%98%93%E7%94%A8%E6%80%A7" title="易用性"></a>易用性</h3>
 
-<p>You can take a look at the code on <a href="https://github.com/RisingStack/multi-process-nodejs-example">GitHub</a>. The file structure for this project looks like the following:</p>
+<p>从 dubbo 和 motan 的源码中便可以直观的看出两者的差距了，dubbo 为了使用 javassist 技术花费不少的精力，而 motan 使用 jdk 动态代理只用了一个类。dubbo 的设计者为了追求极致的性能而做出的工作是值得肯定的，motan 也预留了扩展机制，两者各有千秋。</p>
 
-<pre><code>.
-|-- config
-|   |-- components
-|   |   |-- common.js
-|   |   |-- logger.js
-|   |   |-- rabbitmq.js
-|   |   |-- redis.js
-|   |   |-- server.js
-|   |   `-- twitter.js
-|   |-- index.js
-|   |-- social-preprocessor-worker.js
-|   |-- twitter-stream-worker.js
-|   `-- web.js
-|-- models
-|   |-- redis
-|   |   |-- index.js
-|   |   `-- redis.js
-|   |-- tortoise
-|   |   |-- index.js
-|   |   `-- tortoise.js
-|   `-- twitter
-|       |-- index.js
-|       `-- twitter.js
-|-- scripts
-|-- test
-|   `-- setup.js
-|-- web
-|   |-- middleware
-|   |   |-- index.js
-|   |   `-- parseQuery.js
-|   |-- router
-|   |   |-- api
-|   |   |   |-- tweets
-|   |   |   |   |-- get.js
-|   |   |   |   |-- get.spec.js
-|   |   |   |   `-- index.js
-|   |   |   `-- index.js
-|   |   `-- index.js
-|   |-- index.js
-|   `-- server.js
-|-- worker
-|   |-- social-preprocessor
-|   |   |-- index.js
-|   |   `-- worker.js
-|   `-- twitter-stream
-|       |-- index.js
-|       `-- worker.js
-|-- index.js
-`-- package.json
-</code></pre>
+<h2 id="toc_4"><a href="#%E5%8A%A8%E6%80%81%E4%BB%A3%E7%90%86%E5%85%A5%E9%97%A8%E6%8C%87%E5%8D%97" title="动态代理入门指南"></a>动态代理入门指南</h2>
 
-<p>In this example we have 3 processes:</p>
+<p>为了方便对比几种动态代理技术，先准备一个统一接口。</p>
 
-<ul>
-<li>  <code>twitter-stream-worker</code>: The process is listening on Twitter for keywords and sends the tweets to a RabbitMQ queue.</li>
-<li>  <code>social-preprocessor-worker</code>: The process is listening on the RabbitMQ queue and saves the tweets to Redis and removes old ones.</li>
-<li>  <code>web</code>: The process is serving a REST API with a single endpoint: <code>GET /api/v1/tweets?limit&amp;offset</code>.</li>
-</ul>
-
-<p>We will get to what differentiates a <code>web</code> and a <code>worker</code> process, but let’s start with the config.</p>
-
-<h3 id="toc_1">How to handle different environments and configurations</h3>
-
-<p>Load your deployment specific configurations from environment variables and never add them to the codebase as constants. These are the configurations that can vary between deployments and runtime environments, like CI, staging or production. Basically, you can have the same code running everywhere.</p>
-
-<p>A good test for whether the config is correctly separated from the application internals is that the codebase could be made public at any moment. This means that you can be protected from accidentally leaking secrets or compromising credentials on version control.</p>
-
-<p><a href="https://twitter.com/share?text=A+config+is+properly+separated+from+an+app%27s+internals+if+the+code+could+go+public+at+any+moment.&amp;url=https://blog.codeship.com/advanced-node-js-project-structure-tutorial/">A config is properly separated from an app’s internals if the code could go public at any moment.</a></p>
-
-<p><a href="https://twitter.com/share?text=A+config+is+properly+separated+from+an+app%27s+internals+if+the+code+could+go+public+at+any+moment.&amp;url=https://blog.codeship.com/advanced-node-js-project-structure-tutorial/">Click To Tweet</a></p>
-
-<p>The environment variables can be accessed via the <code>process.env</code> object. Keep in mind that all the values have a type of <code>String</code>, so you might need to use type conversions.</p>
-
-<pre><code>// config/config.js
-&#39;use strict&#39;
-
-// required environment variables
-[
-  &#39;NODE_ENV&#39;,
-  &#39;PORT&#39;
-].forEach((name) =&gt; {
-  if (!process.env[name]) {
-    throw new Error(`Environment variable ${name} is missing`)
-  }
-})
-
-const config = {
-  env: process.env.NODE_ENV,
-  logger: {
-    level: process.env.LOG_LEVEL || &#39;info&#39;,
-    enabled: process.env.BOOLEAN ? process.env.BOOLEAN.toLowerCase() === &#39;true&#39; : false
-  },
-  server: {
-    port: Number(process.env.PORT)
-  }
-  // ...
-}
-
-module.exports = config
-</code></pre>
-
-<h3 id="toc_2">Config validation</h3>
-
-<p>Validating environment variables is also a quite useful technique. It can help you catching configuration errors on startup before your application does anything else. You can read more about the benefits of early error detection of configurations by <a href="https://blog.acolyer.org/2016/11/29/early-detection-of-configuration-errors-to-reduce-failure-damage/">Adrian Colyer in this blog post</a>.</p>
-
-<p>This is how our improved config file looks like with schema validation using the <code>joi</code> validator:</p>
-
-<pre><code>// config/config.js
-&#39;use strict&#39;
-
-const joi = require(&#39;joi&#39;)
-
-const envVarsSchema = joi.object({
-  NODE_ENV: joi.string()
-    .allow([&#39;development&#39;, &#39;production&#39;, &#39;test&#39;, &#39;provision&#39;])
-    .required(),
-  PORT: joi.number()
-    .required(),
-  LOGGER_LEVEL: joi.string()
-    .allow([&#39;error&#39;, &#39;warn&#39;, &#39;info&#39;, &#39;verbose&#39;, &#39;debug&#39;, &#39;silly&#39;])
-    .default(&#39;info&#39;),
-  LOGGER_ENABLED: joi.boolean()
-    .truthy(&#39;TRUE&#39;)
-    .truthy(&#39;true&#39;)
-    .falsy(&#39;FALSE&#39;)
-    .falsy(&#39;false&#39;)
-    .default(true)
-}).unknown()
-  .required()
-
-const { error, value: envVars } = joi.validate(process.env, envVarsSchema)
-if (error) {
-  throw new Error(`Config validation error: ${error.message}`)
-}
-
-const config = {
-  env: envVars.NODE_ENV,
-  isTest: envVars.NODE_ENV === &#39;test&#39;,
-  isDevelopment: envVars.NODE_ENV === &#39;development&#39;,
-  logger: {
-    level: envVars.LOGGER_LEVEL,
-    enabled: envVars.LOGGER_ENABLED
-  },
-  server: {
-    port: envVars.PORT
-  }
-  // ...
-}
-
-module.exports = config
-</code></pre>
-
-<h3 id="toc_3">Config splitting</h3>
-
-<p>Splitting the configuration by components can be a good solution to forego a single, growing config file.</p>
-
-<pre><code>// config/components/logger.js
-&#39;use strict&#39;
-
-const joi = require(&#39;joi&#39;)
-
-const envVarsSchema = joi.object({
-  LOGGER_LEVEL: joi.string()
-    .allow([&#39;error&#39;, &#39;warn&#39;, &#39;info&#39;, &#39;verbose&#39;, &#39;debug&#39;, &#39;silly&#39;])
-    .default(&#39;info&#39;),
-  LOGGER_ENABLED: joi.boolean()
-    .truthy(&#39;TRUE&#39;)
-    .truthy(&#39;true&#39;)
-    .falsy(&#39;FALSE&#39;)
-    .falsy(&#39;false&#39;)
-    .default(true)
-}).unknown()
-  .required()
-
-const { error, value: envVars } = joi.validate(process.env, envVarsSchema)
-if (error) {
-  throw new Error(`Config validation error: ${error.message}`)
-}
-
-const config = {
-  logger: {
-    level: envVars.LOGGER_LEVEL,
-    enabled: envVars.LOGGER_ENABLED
-  }
-}
-
-module.exports = config
-</code></pre>
-
-<p>Then in the <code>config.js</code> file, we only need to combine the components.</p>
-
-<pre><code>// config/config.js
-&#39;use strict&#39;
-
-const common = require(&#39;./components/common&#39;)
-const logger = require(&#39;./components/logger&#39;)
-const redis = require(&#39;./components/redis&#39;)
-const server = require(&#39;./components/server&#39;)
-
-module.exports = Object.assign({}, common, logger, redis, server)
-</code></pre>
-
-<p>You should never group your config together into “environment” specific files, like config/production.js for production. It doesn’t scale well as your app expands into more deployments over time.</p>
-
-<p><a href="https://twitter.com/share?text=Never+group+your+config+together+into+environment+specific+files.+It+doesn%E2%80%99t+scale+well%21&amp;url=https://blog.codeship.com/advanced-node-js-project-structure-tutorial/">Never group your config together into environment specific files. It doesn’t scale well!</a></p>
-
-<p><a href="https://twitter.com/share?text=Never+group+your+config+together+into+environment+specific+files.+It+doesn%E2%80%99t+scale+well%21&amp;url=https://blog.codeship.com/advanced-node-js-project-structure-tutorial/">Click To Tweet</a></p>
-
-<h3 id="toc_4">How to organize a multi-process application</h3>
-
-<p>The process is the main building block of a modern application. An app can have multiple stateless processes, just like in our example. HTTP requests can be handled by a web process and long-running or scheduled background tasks by a worker. They are stateless, because any data that needs to be persisted is stored in a stateful database. For this reason, adding more concurrent processes are very simple. These processes can be independently scaled based on the load or other metrics.</p>
-
-<p>In the previous section, we saw how to break down the config into components. This comes very handy when having different process types. Each type can have its own config only requiring the components it needs, without expecting unused environment variables.</p>
-
-<p>In the <code>config/index.j</code>s file:</p>
-
-<pre><code>// config/index.js
-&#39;use strict&#39;
-
-const processType = process.env.PROCESS_TYPE
-
-let config
-try {
-  config = require(`./${processType}`)
-} catch (ex) {
-  if (ex.code === &#39;MODULE_NOT_FOUND&#39;) {
-    throw new Error(`No config for process type: ${processType}`)
-  }
-
-  throw ex
-}
-
-module.exports = config
-</code></pre>
-
-<p>In the root <code>index.js</code> file, we start the process selected with the <code>PROCESS_TYPE</code> environment variable:</p>
-
-<pre><code>// index.js
-&#39;use strict&#39;
-
-const processType = process.env.PROCESS_TYPE
-
-if (processType === &#39;web&#39;) {
-  require(&#39;./web&#39;)
-} else if (processType === &#39;twitter-stream-worker&#39;) {
-  require(&#39;./worker/twitter-stream&#39;)
-} else if (processType === &#39;social-preprocessor-worker&#39;) {
-  require(&#39;./worker/social-preprocessor&#39;)
-} else {
-  throw new Error(`${processType} is an unsupported process type. Use one of: &#39;web&#39;, &#39;twitter-stream-worker&#39;, &#39;social-preprocessor-worker&#39;!`)
+<pre><code class="language-java">public interface BookApi {
+    void sell();
 }
 </code></pre>
 
-<p>The nice thing about this is that we still got one application, but we have managed to split it into multiple, independent processes. Each of them can be started and scaled individually, without influencing the other parts. You can achieve this without sacrificing your DRY codebase, because parts of the code, like the models, can be shared between the different processes.</p>
+<h3 id="toc_5"><a href="#JDK%E5%8A%A8%E6%80%81%E4%BB%A3%E7%90%86" title="JDK动态代理"></a>JDK动态代理</h3>
 
-<h3 id="toc_5">How to organize your test files</h3>
+<pre><code class="language-java">private static BookApi createJdkDynamicProxy(final BookApi delegate) {
+        BookApi jdkProxy = (BookApi) Proxy.newProxyInstance(ClassLoader.getSystemClassLoader(),
+                new Class[]{BookApi.class}, new JdkHandler(delegate));
+        return jdkProxy;
+}
 
-<p>Place your test files next to the tested modules using some kind of naming convention, like <code>&lt;module_name&gt;.spec.js</code> and <code>&lt;/module_name&gt;&lt;module_name&gt;.e2e.spec.js</code>. Your tests should live together with the tested modules, keeping them in sync. It would be really hard to find and maintain the tests and the corresponding functionality when the test files are completely separated from the business logic.</p>
+private static class JdkHandler implements InvocationHandler {
 
-<p><a href="https://twitter.com/share?text=Place+your+test+files+next+to+the+tested+modules+using+some+kind+of+naming+convention.&amp;url=https://blog.codeship.com/advanced-node-js-project-structure-tutorial/">Place your test files next to the tested modules using some kind of naming convention.</a></p>
+        final Object delegate;
 
-<p><a href="https://twitter.com/share?text=Place+your+test+files+next+to+the+tested+modules+using+some+kind+of+naming+convention.&amp;url=https://blog.codeship.com/advanced-node-js-project-structure-tutorial/">Click To Tweet</a></p>
+        JdkHandler(Object delegate) {
+            this.delegate = delegate;
+        }
 
-<p>A separated <code>/test</code> folder can hold all the additional test setup and utilities not used by the application itself.</p>
+        @Override
+        public Object invoke(Object object, Method method, Object[] objects)
+                throws Throwable {
+            //添加代理逻辑&lt;1&gt;
+            if(method.getName().equals(&quot;sell&quot;)){
+                System.out.print(&quot;&quot;);
+            }
+            return null;
+//            return method.invoke(delegate, objects);
+        }
+</code></pre>
 
-<h3 id="toc_6">Where to put your build and script files</h3>
+<p><1> 在真正的 RPC 调用中 ，需要填充‘整理报文’，‘确认网络位置’，‘序列化’,’网络传输’，‘反序列化’，’返回结果’等逻辑。</p>
 
-<p>We tend to create a <code>/scripts</code> folder where we put our bash and node scripts for database synchronization, front-end builds and so on. This folder separates them from your application code and prevents you from putting too many script files into the root directory. List them in your <a href="https://docs.npmjs.com/misc/scripts">npm scripts</a> for easier usage.</p>
+<h3 id="toc_6"><a href="#Cglib%E5%8A%A8%E6%80%81%E4%BB%A3%E7%90%86" title="Cglib动态代理"></a>Cglib动态代理</h3>
 
-<h3 id="toc_7">Conclusion</h3>
+<pre><code class="language-java">private static BookApi createCglibDynamicProxy(final BookApi delegate) throws Exception {
+        Enhancer enhancer = new Enhancer();
+        enhancer.setCallback(new CglibInterceptor(delegate));
+        enhancer.setInterfaces(new Class[]{BookApi.class});
+        BookApi cglibProxy = (BookApi) enhancer.create();
+        return cglibProxy;
+    }
 
-<p>I hope you enjoyed this article on project structuring. I highly recommend to check out our previous article on the subject, where we laid out the <a href="https://blog.risingstack.com/node-hero-node-js-project-structure-tutorial/">5 fundamentals of Node.js project structuring</a>.</p>
+    private static class CglibInterceptor implements MethodInterceptor {
 
-<p>If you have any questions, please let me know in the comments. In the next chapter of the Node.js at Scale series, we’re going to dive deep into <a href="https://blog.risingstack.com/javascript-clean-coding-best-practices-node-js-at-scale/">JavaScript clean coding</a>.</p>
+        final Object delegate;
 
-<p><a href="https://twitter.com/share?text=%22Advanced+Node.js+Project+Structure+Tutorial%22+via+%40tthndrs&amp;url=https://blog.codeship.com/advanced-node-js-project-structure-tutorial/">“Advanced Node.js Project Structure Tutorial” via @tthndrs</a></p>
+        CglibInterceptor(Object delegate) {
+            this.delegate = delegate;
+        }
 
-<p><a href="https://twitter.com/share?text=%22Advanced+Node.js+Project+Structure+Tutorial%22+via+%40tthndrs&amp;url=https://blog.codeship.com/advanced-node-js-project-structure-tutorial/">Click To Tweet</a></summery></p>
+        @Override
+        public Object intercept(Object object, Method method, Object[] objects,
+                                MethodProxy methodProxy) throws Throwable {
+            //添加代理逻辑
+            if(method.getName().equals(&quot;sell&quot;)) {
+                System.out.print(&quot;&quot;);
+            }
+            return null;
+//            return methodProxy.invoke(delegate, objects);
+        }
+    }
+</code></pre>
+
+<p>和 JDK 动态代理的操作步骤没有太大的区别，只不过是替换了 cglib 的API而已。</p>
+
+<p>需要引入 cglib 依赖：</p>
+
+<pre><code class="language-xml">&lt;dependency&gt;
+    &lt;groupId&gt;cglib&lt;/groupId&gt;
+    &lt;artifactId&gt;cglib&lt;/artifactId&gt;
+    &lt;version&gt;3.2.5&lt;/version&gt;
+&lt;/dependency&gt;
+</code></pre>
+
+<h3 id="toc_7"><a href="#Javassist%E5%AD%97%E8%8A%82%E7%A0%81" title="Javassist字节码"></a>Javassist字节码</h3>
+
+<p>到了 javassist，稍微有点不同了。因为它是通过直接操作字节码来生成代理对象。</p>
+
+<pre><code class="language-java">private static BookApi createJavassistBytecodeDynamicProxy() throws Exception {
+    ClassPool mPool = new ClassPool(true);
+    CtClass mCtc = mPool.makeClass(BookApi.class.getName() + &quot;JavaassistProxy&quot;);
+    mCtc.addInterface(mPool.get(BookApi.class.getName()));
+    mCtc.addConstructor(CtNewConstructor.defaultConstructor(mCtc));
+    mCtc.addMethod(CtNewMethod.make(
+            &quot;public void sell() { System.out.print(\&quot;\&quot;) ; }&quot;, mCtc));
+    Class&lt;?&gt; pc = mCtc.toClass();
+    BookApi bytecodeProxy = (BookApi) pc.newInstance();
+    return bytecodeProxy;
+}
+</code></pre>
+
+<p>需要引入 javassist 依赖：</p>
+
+<pre><code class="language-xml">&lt;dependency&gt;
+    &lt;groupId&gt;org.javassist&lt;/groupId&gt;
+    &lt;artifactId&gt;javassist&lt;/artifactId&gt;
+    &lt;version&gt;3.21.0-GA&lt;/version&gt;
+&lt;/dependency&gt;
+</code></pre>
+
+<h2 id="toc_8"><a href="#%E5%8A%A8%E6%80%81%E4%BB%A3%E7%90%86%E6%B5%8B%E8%AF%95" title="动态代理测试"></a>动态代理测试</h2>
+
+<p>测试环境：window i5 8g jdk1.8 cglib3.2.5 javassist3.21.0-GA</p>
+
+<p>动态代理其实分成了两步：代理对象的创建，代理对象的调用。坊间流传的动态代理性能对比主要指的是后者；前者一般不被大家考虑，如果远程Refer的对象是单例的，其只会被创建一次，而如果是原型模式，多例对象的创建其实也是性能损耗的一个考虑因素（只不过远没有调用占比大）。</p>
+
+<blockquote>
+<p>Create JDK Proxy: 21 ms</p>
+
+<p>Create CGLIB Proxy: 342 ms</p>
+
+<p>Create Javassist Bytecode Proxy: 419 ms</p>
+</blockquote>
+
+<p>可能出乎大家的意料，JDK 创建动态代理的速度比后两者要快10倍左右。</p>
+
+<p>下面是调用速度的测试：</p>
+
+<blockquote>
+<p>case 1:</p>
+
+<p>JDK Proxy invoke cost 1912 ms</p>
+
+<p>CGLIB Proxy invoke cost 1015 ms</p>
+
+<p>JavassistBytecode Proxy invoke cost 1280 ms</p>
+
+<p>case 2:</p>
+
+<p>JDK Proxy invoke cost 1747 ms</p>
+
+<p>CGLIB Proxy invoke cost 1234 ms</p>
+
+<p>JavassistBytecode Proxy invoke cost 1175 ms</p>
+
+<p>case 3:</p>
+
+<p>JDK Proxy invoke cost 2616 ms</p>
+
+<p>CGLIB Proxy invoke cost 1373 ms</p>
+
+<p>JavassistBytecode Proxy invoke cost 1335 ms</p>
+</blockquote>
+
+<p>Jdk 的执行速度一定会慢于 Cglib 和 Javassist，但最慢也就2倍，并没有达到数量级的差距；Cglib 和 Javassist不相上下，差距不大（测试中偶尔发现Cglib实行速度会比平时慢10倍，不清楚是什么原因）</p>
+
+<p>所以出于易用性和性能，私以为使用 Cglib 是一个很好的选择（性能和 Javassist 持平，易用性和 Jdk 持平）。</p>
+
+<h2 id="toc_9"><a href="#%E5%8F%8D%E5%B0%84%E8%B0%83%E7%94%A8" title="反射调用"></a>反射调用</h2>
+
+<p>既然提到了动态代理和 cglib ，顺带提一下反射调用如何加速的问题。RPC 框架中在 Provider 服务端需要根据客户端传递来的 className + method + param 来找到容器中的实际方法执行反射调用。除了反射调用外，还可以使用 Cglib 来加速。</p>
+
+<h3 id="toc_10"><a href="#JDK%E5%8F%8D%E5%B0%84%E8%B0%83%E7%94%A8" title="JDK反射调用"></a>JDK反射调用</h3>
+
+<pre><code class="language-java">Method method = serviceClass.getMethod(methodName, new Class[]{});
+method.invoke(delegate, new Object[]{});
+</code></pre>
+
+<h3 id="toc_11"><a href="#Cglib%E8%B0%83%E7%94%A8" title="Cglib调用"></a>Cglib调用</h3>
+
+<pre><code class="language-java">FastClass serviceFastClass = FastClass.create(serviceClass);
+FastMethod serviceFastMethod = serviceFastClass.getMethod(methodName, new Class[]{});
+serviceFastMethod.invoke(delegate, new Object[]{});
+</code></pre>
+
+<p>但实测效果发现 Cglib 并不一定比 JDK 反射执行速度快，还会跟具体的方法实现有关(大雾)。</p>
+
+<h2 id="toc_12"><a href="#%E6%B5%8B%E8%AF%95%E4%BB%A3%E7%A0%81" title="测试代码"></a>测试代码</h2>
+
+<pre><code class="language-java">public class Main {
+
+    public static void main(String[] args) throws Exception {
+
+        BookApi delegate = new BookApiImpl();
+        long time = System.currentTimeMillis();
+        BookApi jdkProxy = createJdkDynamicProxy(delegate);
+        time = System.currentTimeMillis() - time;
+        System.out.println(&quot;Create JDK Proxy: &quot; + time + &quot; ms&quot;);
+
+        time = System.currentTimeMillis();
+        BookApi cglibProxy = createCglibDynamicProxy(delegate);
+        time = System.currentTimeMillis() - time;
+        System.out.println(&quot;Create CGLIB Proxy: &quot; + time + &quot; ms&quot;);
+
+        time = System.currentTimeMillis();
+        BookApi javassistBytecodeProxy = createJavassistBytecodeDynamicProxy();
+        time = System.currentTimeMillis() - time;
+        System.out.println(&quot;Create JavassistBytecode Proxy: &quot; + time + &quot; ms&quot;);
+
+        for (int i = 0; i &lt; 10; i++) {
+            jdkProxy.sell();//warm
+        }
+        long start = System.currentTimeMillis();
+        for (int i = 0; i &lt; 10000000; i++) {
+            jdkProxy.sell();
+        }
+        System.out.println(&quot;JDK Proxy invoke cost &quot; + (System.currentTimeMillis() - start) + &quot; ms&quot;);
+
+        for (int i = 0; i &lt; 10; i++) {
+            cglibProxy.sell();//warm
+        }
+        start = System.currentTimeMillis();
+        for (int i = 0; i &lt; 10000000; i++) {
+            cglibProxy.sell();
+        }
+        System.out.println(&quot;CGLIB Proxy invoke cost &quot; + (System.currentTimeMillis() - start) + &quot; ms&quot;);
+
+        for (int i = 0; i &lt; 10; i++) {
+            javassistBytecodeProxy.sell();//warm
+        }
+        start = System.currentTimeMillis();
+        for (int i = 0; i &lt; 10000000; i++) {
+            javassistBytecodeProxy.sell();
+        }
+        System.out.println(&quot;JavassistBytecode Proxy invoke cost &quot; + (System.currentTimeMillis() - start) + &quot; ms&quot;);
+
+        Class&lt;?&gt; serviceClass = delegate.getClass();
+        String methodName = &quot;sell&quot;;
+        for (int i = 0; i &lt; 10; i++) {
+            cglibProxy.sell();//warm
+        }
+        // 执行反射调用
+        for (int i = 0; i &lt; 10; i++) {//warm
+            Method method = serviceClass.getMethod(methodName, new Class[]{});
+            method.invoke(delegate, new Object[]{});
+        }
+        start = System.currentTimeMillis();
+        for (int i = 0; i &lt; 10000000; i++) {
+            Method method = serviceClass.getMethod(methodName, new Class[]{});
+            method.invoke(delegate, new Object[]{});
+        }
+        System.out.println(&quot;反射 invoke cost &quot; + (System.currentTimeMillis() - start) + &quot; ms&quot;);
+
+        // 使用 CGLib 执行反射调用
+        for (int i = 0; i &lt; 10; i++) {//warm
+            FastClass serviceFastClass = FastClass.create(serviceClass);
+            FastMethod serviceFastMethod = serviceFastClass.getMethod(methodName, new Class[]{});
+            serviceFastMethod.invoke(delegate, new Object[]{});
+        }
+        start = System.currentTimeMillis();
+        for (int i = 0; i &lt; 10000000; i++) {
+            FastClass serviceFastClass = FastClass.create(serviceClass);
+            FastMethod serviceFastMethod = serviceFastClass.getMethod(methodName, new Class[]{});
+            serviceFastMethod.invoke(delegate, new Object[]{});
+        }
+        System.out.println(&quot;CGLIB invoke cost &quot; + (System.currentTimeMillis() - start) + &quot; ms&quot;);
+
+    }
+
+    private static BookApi createJdkDynamicProxy(final BookApi delegate) {
+        BookApi jdkProxy = (BookApi) Proxy.newProxyInstance(ClassLoader.getSystemClassLoader(),
+                new Class[]{BookApi.class}, new JdkHandler(delegate));
+        return jdkProxy;
+    }
+
+    private static class JdkHandler implements InvocationHandler {
+
+        final Object delegate;
+
+        JdkHandler(Object delegate) {
+            this.delegate = delegate;
+        }
+
+        @Override
+        public Object invoke(Object object, Method method, Object[] objects)
+                throws Throwable {
+            //添加代理逻辑
+            if(method.getName().equals(&quot;sell&quot;)){
+                System.out.print(&quot;&quot;);
+            }
+            return null;
+//            return method.invoke(delegate, objects);
+        }
+    }
+
+    private static BookApi createCglibDynamicProxy(final BookApi delegate) throws Exception {
+        Enhancer enhancer = new Enhancer();
+        enhancer.setCallback(new CglibInterceptor(delegate));
+        enhancer.setInterfaces(new Class[]{BookApi.class});
+        BookApi cglibProxy = (BookApi) enhancer.create();
+        return cglibProxy;
+    }
+
+    private static class CglibInterceptor implements MethodInterceptor {
+
+        final Object delegate;
+
+        CglibInterceptor(Object delegate) {
+            this.delegate = delegate;
+        }
+
+        @Override
+        public Object intercept(Object object, Method method, Object[] objects,
+                                MethodProxy methodProxy) throws Throwable {
+            //添加代理逻辑
+            if(method.getName().equals(&quot;sell&quot;)) {
+                System.out.print(&quot;&quot;);
+            }
+            return null;
+//            return methodProxy.invoke(delegate, objects);
+        }
+    }
+
+    private static BookApi createJavassistBytecodeDynamicProxy() throws Exception {
+        ClassPool mPool = new ClassPool(true);
+        CtClass mCtc = mPool.makeClass(BookApi.class.getName() + &quot;JavaassistProxy&quot;);
+        mCtc.addInterface(mPool.get(BookApi.class.getName()));
+        mCtc.addConstructor(CtNewConstructor.defaultConstructor(mCtc));
+        mCtc.addMethod(CtNewMethod.make(
+                &quot;public void sell() { System.out.print(\&quot;\&quot;) ; }&quot;, mCtc));
+        Class&lt;?&gt; pc = mCtc.toClass();
+        BookApi bytecodeProxy = (BookApi) pc.newInstance();
+        return bytecodeProxy;
+    }
+
+}
+</code></pre>
 
                         
                       </div>
@@ -426,10 +490,10 @@ if (processType === &#39;web&#39;) {
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/4/22</span>
+                    <span class="date">2018/6/1</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Node.js.html'>Node.js</a></span>
+          					    <span class="posted-in"><a href='Java.html'>Java</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -519,31 +583,31 @@ if (processType === &#39;web&#39;) {
 	      
 		      
 			      <li class="post">
-			        <a href="15389311738065.html">重构到更深层的模型</a>
+			        <a href="15459058392039.html">Reliable Domain Events</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389278377243.html">IAM of Google Cloud</a>
+			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389224951575.html">RSocket, a New Application Network Protocol for Reactive Applications, Announced at SpringOne</a>
+			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389220103546.html">如何形象地描述RxJava中的背压和流控机制？</a>
+			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389214670417.html">Modeling Uncertainty with Reactive DDD</a>
+			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
 			      </li>
 		     
 		  

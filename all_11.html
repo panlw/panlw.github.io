@@ -105,156 +105,289 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15381224274794.html">
+                <a class="clearlink" href="15425204595510.html">
                 
-                  <h1>How To Back Up, Restore, and Migrate a MongoDB Database on Ubuntu 14.04</h1>
+                  <h1>Spring Boot cache with Redis</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
-                        	<pre><code>April 15, 2016, Anatoliy Dimitrov
+                        	<blockquote>
+<p><a href="https://medium.com/@MatthewFTech/spring-boot-cache-with-redis-56026f7da83a">https://medium.com/@MatthewFTech/spring-boot-cache-with-redis-56026f7da83a</a></p>
+</blockquote>
+
+<p>Each of us met the situation when application was working slowly. Even the best code will fall on knees at high load. Caching can be fast and relatively cheap way to increase performance and reduce response time.<br/>
+<img src="media/15425204595510/15425206105845.jpg" alt=""/></p>
+
+<p>In simple words caching is one of performance strategies when you must face with long running services. Invocation result can be placed inside fast <br/>
+in-memory storage and used next time without expensive method execution. Following the green flow, you may notice if we found requested data in cache (called <u>“cache hit”)</u> we save time and resources. Red flow represents worst scenario (called <u>“cache miss”</u>) when cache doesn’t store expected data and you need to load and recalculate it from the beginning with an extra trip to cache which increases response time. So how it works underneath?<br/>
+<img src="media/15425204595510/15425206180856.jpg" alt=""/></p>
+
+<p>With big simplification when new data arrives, they are placed in the first empty bucket, but when cache is full, cleaning process is performed according to selected eviction algorithm. Some data are safe, they are used very often or meet other conditions for chosen algorithm. Rest of the data are candidates to remove. In ideal world cache will evict only old data until it found place for new ones. With Spring and Redis we will try to build simple app and consider how different factors can impact on our caching layer.</p>
+
+<p></section></p>
+
+<p><section></p>
+
+<hr/>
+
+<h3 id="toc_0">A Piece of Code</h3>
+
+<p>A little bit of background. Lets imagine that you work with social site where users are able to create own content, top most read posts are good candidates to find place in cache. Post structure will look more and less like code below, pretty simple but enough in this case.</p>
+
+<pre><code class="language-java">public class Post implements Serializable {
+
+    private String id;
+    private String title;
+    private String description;
+    private String image;
+    private int shares;
+    private Author author;
+    //getters setters and constructors
+}
 </code></pre>
 
 <blockquote>
-<p>原文地址 <a href="https://www.digitalocean.com/community/tutorials/how-to-back-up-restore-and-migrate-a-mongodb-database-on-ubuntu-14-04">https://www.digitalocean.com/community/tutorials/how-to-back-up-restore-and-migrate-a-mongodb-database-on-ubuntu-14-04</a></p>
+<p><a href="https://gist.github.com/matthewfrank/2030aad230ca40d6c6a6e25e2d83ef7c#file-postchunk-java">https://gist.github.com/matthewfrank/2030aad230ca40d6c6a6e25e2d83ef7c#file-postchunk-java</a></p>
 </blockquote>
 
-<p>MongoDB is one of the most popular NoSQL database engines. It is famous for being scalable, powerful, reliable and easy to use. In this article we&#39;ll show you how to back up, restore, and migrate your MongoDB databases.</p>
+<h4 id="toc_1">Configuration and dependencies</h4>
 
-<p>Importing and exporting a database means dealing with data in a human-readable format, compatible with other software products. In contrast, the backup and restore operations create or use MongoDB-specific binary data, which preserves not only the consistency and integrity of your data but also its specific MongoDB attributes. Thus, for migration its usually preferable to use backup and restore as long as the source and target systems are compatible.</p>
+<p>Spring need <code>spring-boot-started-data-redis</code> as cache dependency. <br/>
+Basic configuration can be set from <a href="https://docs.spring.io/spring-boot/docs/current/reference/html/common-application-properties.html">properties</a> level.</p>
 
-<h2 id="toc_0">Prerequisites</h2>
+<pre>spring.cache.type=redis
+spring.redis.host=192.168.99.100
+spring.redis.port=6379</pre>
 
-<p>Before following this tutorial, please make sure you complete the following prerequisites:</p>
+<h4 id="toc_2">Cache abstraction</h4>
+
+<p>Spring Framework provides an abstraction layer with set of annotations for caching support and can work together with various cache implementation like Redis, EhCache, Hazelcast, Infinispan and <a href="http://docs.spring.io/spring-boot/docs/current/reference/html/boot-features-caching.html">many more</a>. Loose coupling is always very welcome :)</p>
+
+<p><strong>@Cacheable — </strong>Fulfill cache after method execution, next invocation with the same arguments will be omitted and result will be loaded from cache. Annotation provide useful feature called conditional caching. In some case no all data should be cached e.g. you want store in memory only most popular posts.</p>
+
+<pre><code class="language-java">@Cacheable(value = &quot;post-single&quot;, key = &quot;#id&quot;, unless = &quot;#result.shares &lt; 500&quot;)
+@GetMapping(&quot;/{id}&quot;)
+public Post getPostByID(@PathVariable String id) throws PostNotFoundException {
+    log.info(&quot;get post with id {}&quot;, id);
+    return postService.getPostByID(id);
+}
+@Cacheable(value = &quot;post-top&quot;)
+@GetMapping(&quot;/top&quot;)
+public List&lt;Post&gt; getTopPosts() {
+    return postService.getTopPosts();
+}
+</code></pre>
+
+<blockquote>
+<p><a href="https://gist.github.com/matthewfrank/7e67901a2122b23df3ddd5d6f7864305#file-cacheablecontrollermethods-java">https://gist.github.com/matthewfrank/7e67901a2122b23df3ddd5d6f7864305#file-cacheablecontrollermethods-java</a></p>
+</blockquote>
+
+<p><strong>@CachePut — </strong>Annotation allows to update entry in cache and support same options like Cacheable annotation. Code below updates post and return it for cache provider to change entry with new value.</p>
+
+<pre><code class="language-java">@CachePut(value = &quot;post-single&quot;, key = &quot;#post.id&quot;)
+@PutMapping(&quot;/update&quot;)
+public Post updatePostByID(@RequestBody Post post) throws PostNotFoundException {
+    log.info(&quot;update post with id {}&quot;, post.getId());
+    postService.updatePost(post);
+    return post;
+}
+</code></pre>
+
+<blockquote>
+<p><a href="https://gist.github.com/matthewfrank/fdc85c0c04be6697cce39eebddc05eb0#file-cacheputcontrollermethod-java">https://gist.github.com/matthewfrank/fdc85c0c04be6697cce39eebddc05eb0#file-cacheputcontrollermethod-java</a></p>
+</blockquote>
+
+<p><strong>@CacheEvict — </strong>Remove entry from cache, can be both conditional and global to all entries in specific cache.</p>
+
+<pre><code class="language-java">@CacheEvict(value = &quot;post-single&quot;, key = &quot;#id&quot;)
+@DeleteMapping(&quot;/delete/{id}&quot;)
+public void deletePostByID(@PathVariable String id) throws PostNotFoundException {
+    log.info(&quot;delete post with id {}&quot;, id);
+    postService.deletePost(id);
+}
+
+@CacheEvict(value = &quot;post-top&quot;)
+@GetMapping(&quot;/top/evict&quot;)
+public void evictTopPosts() {
+    log.info(&quot;Evict post-top&quot;);
+}
+</code></pre>
+
+<blockquote>
+<p><a href="https://gist.github.com/matthewfrank/84797873672c189823d59eb61c0b37fb#file-cacheevictcontrollermethod-java">https://gist.github.com/matthewfrank/84797873672c189823d59eb61c0b37fb#file-cacheevictcontrollermethod-java</a></p>
+</blockquote>
+
+<p><strong>@EnableCaching — </strong>Annotation ensure that post processor will check all beans trying to find demarcated methods and will create proxy to intercept all invocations.</p>
+
+<p><strong>@Caching — </strong>Aggregate multiple annotations of the same type when e.g. you need to use different conditions and caches.</p>
+
+<p><strong>@CacheConfig — </strong>Class level annotation allows to specify global values for annotations like cache name or key generator.</p>
+
+<h3 id="toc_3">Redis cache</h3>
+
+<p>Redis is popular open source in-memory data store used as a database, message broker and cache, for now only last use-case is important for us. <br/>
+Download official Redis image from docker hub typing <code>docker pull redis</code> after this command new image should be present in your local repository (type <code>docker images</code> to check it). Of course it can installed on bare metal but for our case docker internal overhead is negligible. Standard Redis image will work well as storage but for cache we should consider few important things like maximum memory, eviction algorithms and durability.</p>
+
+<p><strong>Maximum memory — </strong>By default redis have no memory limits on 64-bit systems and 3 GB on 32-bit systems. Large memory can contain more data and increase hit ratio, one of the most important metrics but at a certain limit of memory the hit rate will be at the same level.</p>
+
+<p><strong>Eviction algorithms — </strong>When cache size reaches the memory limit, old data is removed to make place for new one. Access pattern is a keyword when you thinking about eviction policies, each strategy will be good for specific case:</p>
 
 <ul>
-<li>  Ubuntu 14.04 Droplet</li>
-<li>  Non-root sudo user. Check out <a href="https://www.digitalocean.com/community/tutorials/initial-server-setup-with-ubuntu-14-04">Initial Server Setup with Ubuntu 14.04</a> for details.</li>
-<li>  MongoDB installed and configured using the article <a href="https://www.digitalocean.com/community/tutorials/how-to-install-mongodb-on-ubuntu-14-04">How to Install MongoDB on Ubuntu 14.04</a>.</li>
-<li>  Example MongoDB database imported using the instructions in <a href="https://www.digitalocean.com/community/tutorials/how-to-import-and-export-a-mongodb-database-on-ubuntu-14-04">How To Import and Export a MongoDB Database on Ubuntu 14.04</a></li>
+<li>  <strong>Last Recently Used (LRU)</strong> track when key was used last time. So probably it will be still used in future, but what if it was only <u>‘one shot’</u> before long idle time? Key will be stored to next eviction cycle.</li>
+<li>  <strong>Least Frequently Used (LFU)[Available from Redis 4.0]</strong> will count how many times key was used. The most popular keys will survive eviction cycle. Problem appears when key was used very often some time ago. Another key starts to being requested but it still have smaller counter and will be candidate to eviction (Redis team solved problem with long lived keys by decreasing counter after some period of time).</li>
 </ul>
 
-<p>Except otherwise noted, all of the commands that require root privileges in this tutorial should be run as a non-root user with sudo privileges.</p>
+<p><strong>Durability — </strong>For some reasons you may want to persist your cache. After startup, cache is initially empty, it will be useful to fulfill it with snapshot data in case of recovery after outage. Redis support three types of persistence:</p>
 
-<h2 id="toc_1">Understanding the Basics</h2>
+<ul>
+<li>  <strong>RDB</strong> point-in-time snapshots after specific interval of time or amount of writes. Rare snapshots should not harm performance but it will be a good task trying to find balance between snapshot interval and to avoid serving obsolete data after outage.</li>
+<li>  <strong>AOF</strong> create persistence logs with every write operation. If you consider this level of durability, you should read about different fsync policies under <code>appendfsync</code> configuration parameter.</li>
+<li>  Both RDB and AOF.</li>
+</ul>
 
-<p>Before continue further with this article some basic understanding on the matter is needed. If you have experience with popular relational database systems such as MySQL, you may find some similarities when working with MongoDB.</p>
+<p>Every additional fork or other operations like <u>fsync()</u> will consume power, <br/>
+if warming-up is not important, disable all persistence options.</p>
 
-<p>The first thing you should know is that MongoDB uses <a href="http://json.org/">json</a> and bson (binary json) formats for storing its information. Json is the human-readable format which is perfect for exporting and, eventually, importing your data. You can further manage your exported data with any tool which supports json, including a simple text editor.</p>
+<p></section></p>
 
-<p>An example json document looks like this:</p>
+<p><section></p>
 
-<p>Example of json Format</p>
+<hr/>
 
-<pre><code class="language-json">{&quot;address&quot;:[
-    {&quot;building&quot;:&quot;1007&quot;, &quot;street&quot;:&quot;Park Ave&quot;},
-    {&quot;building&quot;:&quot;1008&quot;, &quot;street&quot;:&quot;New Ave&quot;},
-]}
-</code></pre>
+<h4 id="toc_4">Redis configuration</h4>
 
-<p>Json is very convenient to work with, but it does not support all the data types available in bson. This means that there will be the so called &#39;loss of fidelity&#39; of the information if you use json. For backing up and restoring, it&#39;s better to use the binary bson.</p>
+<p>All aspects mentioned before are configurable from <a href="http://download.redis.io/redis-stable/redis.conf">redis.conf</a> level. Its up to you how much memory you will allocate and what type of eviction algorithm you will choose. Eviction policy can be switched on the fly, but Redis will need some time to collect all keys metadata proper for chosen algorithm.</p>
 
-<p>Second, you don&#39;t have to worry about explicitly creating a MongoDB database. If the database you specify for import doesn&#39;t already exist, it is automatically created. Even better is the case with the collections&#39; (database tables) structure. In contrast to other database engines, in MongoDB the structure is again automatically created upon the first document (database row) insert.</p>
+<pre>**#memory limit up to 128MB (up to you)**
+maxmemory 128mb
+**#remove the last recently used (LRU) keys first**
+maxmemory-policy allkeys-lru
+**#eviction precision (up to you)**
+`maxmemory-samples 10`</pre>
 
-<p>Third, in MongoDB reading or inserting large amounts of data, such as for the tasks of this article, can be resource intensive and consume much of the CPU, memory, and disk space. This is something critical considering that MongoDB is frequently used for large databases and Big Data. The simplest solution to this problem is to run the exports and backups during the night or during non-peak hours.</p>
+<p></section></p>
 
-<p>Fourth, information consistency could be problematic if you have a busy MongoDB server where the information changes during the database export or backup process. There is no simple solution to this problem, but at the end of this article, you will see recommendations to further read about replication.</p>
+<p><section></p>
 
-<p>While you can use the <a href="https://www.digitalocean.com/community/tutorials/how-to-import-and-export-a-mongodb-database-on-ubuntu-14-04">import and export functions</a> to backup and restore your data, there are better ways to ensure the full integrity of your MongoDB databases. To backup your data you should use the command <code>mongodump</code>. For restoring, use <code>mongorestore</code>. Let&#39;s see how they work.</p>
+<hr/>
 
-<h2 id="toc_2">Backing Up a MongoDB Database</h2>
+<h4 id="toc_5">Metrics worth to track</h4>
 
-<p>Let&#39;s cover backing up your MongoDB database first.</p>
+<p><strong>Hit/miss ratio — </strong>Describes cache efficiency and give us relevant information about rightness of our approach. Low hit ratio is a signal to reflect on nature of stored data. It’s easy to fall into the trap of premature optimization at the early stages of project when you can only guess relying on experience what data should be cached.</p>
 
-<p>An important argument to <code>mongodump</code> is <code>--db</code>, which specifies the name of the database which you want to back up. If you don&#39;t specify a database name, <code>mongodump</code> backups all of your databases. The second important argument is <code>--out</code> which specifies the directory in which the data will be dumped. Let&#39;s take an example with backing up the <code>newdb</code> database and storing it in the <code>/var/backups/mongobackups</code> directory. Ideally, we&#39;ll have each of our backups in a directory with the current date like <code>/var/backups/mongobackups/01-20-16</code> (20th January 2016). First, let&#39;s create that directory <code>/var/backups/mongobackups</code> with the command:</p>
+<pre>**λ:** redis-cli info stats
+**...
+keyspace_hits:142   #Successful lookups
+keyspace_misses:26  #Failed lookups
+...**</pre>
 
-<pre><code class="language-bash">sudo mkdir /var/backups/mongobackups
-</code></pre>
+<p>Redis delivers information about amount of lookups, ratio can be calculated using below formula.</p>
 
-<p>Then our backup command should look like this:</p>
+<pre>**hit_ratio ** =(keyspace_hits)/(keyspace_hits + keyspace_misses)
+**miss_ratio =** (keyspace_misses)/(keyspace_hits + keyspace_misses)</pre>
 
-<pre><code class="language-bash">sudo mongodump --db newdb --out /var/backups/mongobackups/`date +&quot;%m-%d-%y&quot;`
+<p><strong>Latency —</strong> Maximum delay between request and respond. First place where we can find if something bad happen with your cache. Many factors can impact on latency like VM overhead, slow commands or I/O operations.</p>
 
-</code></pre>
+<pre>**λ:** redis-cli --latency -h 127.0.0.1 -p 6379
+min: 0, max: 16, avg: 0.15 (324531 samples)...</pre>
 
-<p>A successfully executed backup will have an output such as:</p>
+<p><strong>Fragmentation Ratio —</strong> Redis will always use more memory than you declared in <code>maxmemory</code> for himself and e.g. to keeps keys metadata but high ratio can be first signal of memory fragmentation.</p>
 
-<p>Output of mongodump</p>
+<ul>
+<li>  ratio &lt;1.0 —Memory allocator need more than you can give him. Old data will be swapped to disk what occurs resources consumption and increase latency. (In case of cache usage, swapping should be disabled)</li>
+<li>  ratio &gt; ~1.5 — Operation system slice memory segment into pieces, Redis use more physical memory than he requested for.</li>
+</ul>
 
-<pre><code class="language-log">2016-01-20T10:11:57.685-0500    writing newdb.restaurants to /var/backups/mongobackups/01-20-16/newdb/restaurants.bson
-2016-01-20T10:11:57.907-0500    writing newdb.restaurants metadata to /var/backups/mongobackups/01-20-16/newdb/restaurants.metadata.json
-2016-01-20T10:11:57.911-0500    done dumping newdb.restaurants (25359 documents)
-2016-01-20T10:11:57.911-0500    writing newdb.system.indexes to /var/backups/mongobackups/01-20-16/newdb/system.indexes.bson
-</code></pre>
+<pre>**λ:** redis-cli info memory
+**...** used_memory_human:41.22M
+**...**
+used_memory_rss_human:50.01M
+...
+**mem_fragmentation_ratio:1.21 #used_memory_rss/used_memory
+...**</pre>
 
-<p>Note that in the above directory path we have used <code>date +&quot;%m-%d-%y&quot;</code> which gets the current date automatically. This will allow us to have the backups inside the directory <code>/var/backups/01-20-16/</code>. This is especially convenient when we automate the backups.</p>
+<p><strong>Evicted keys — </strong>When cache size exceeds <code>maxmemory</code> limit Redis removes data using chosen eviction policy. Constantly fast growing value can be signal of insufficient cache size.</p>
 
-<p>At this point you have a complete backup of the <code>newdb</code> database in the directory <code>/var/backups/mongobackups/01-20-16/newdb/</code>. This backup has everything to restore the <code>newdb</code> properly and preserve its so called &quot;fidelity&quot;.</p>
+<pre>**λ:** redis-cli info stats
+**...
+evicted_keys:14 #14 keys removed since operation time
+...**</pre>
 
-<p>As a general rule, you should make regular backups, such as on a daily basis, and preferably during a time when the server is least loaded. Thus, you can set the <code>mongodump</code> command as a cron job so that it&#39;s run regularly, e.g. every day at 03:03 AM. To accomplish this open crontab, cron&#39;s editor like this:</p>
+<p></section></p>
 
-<pre><code class="language-bash">sudo crontab -e
-</code></pre>
+<p><section></p>
 
-<p>Note that when you run <code>sudo crontab</code> you will be editing the cron jobs for the root user. This is recommended because if you set the crons for your user, they might not be executed properly, especially if your sudo profile requires password verification.</p>
+<hr/>
 
-<p>Inside the crontab prompt insert the following <code>mongodump</code> command:</p>
+<h4 id="toc_6">Run and Test</h4>
 
-<p>Crontab window</p>
+<p>Docker knowledge will be advantage. In short words, commands below will download redis image and run container with custom configuration. Container will run as daemon, last two command runs bash and redis-cli.</p>
 
-<pre><code class="language-cron">3 3 * * * mongodump --out /var/backups/mongobackups/`date +&quot;%m-%d-%y&quot;`
-</code></pre>
+<pre>**λ:** docker pull redis
+**λ:** docker run -p 6379:6379 -d --name redis-cache       
+   \-v /usr/configs:/usr/redis_config 
+   \redis redis-server /usr/redis_config/redis.conf
+**λ:** docker exec -it redis-cache /bin/bash
+**λ:** redis-cli</pre>
 
-<p>In the above command we are omitting the <code>--db</code> argument on purpose because typically you will want to have all of your databases backed up.</p>
+<p>Example application is available on GitHub <a href="https://github.com/matthewfrank/spring-boot-redis-cache">here</a>.</p>
 
-<p>Depending on your MongoDB database sizes you may soon run out of disk space with too many backups. That&#39;s why it&#39;s also recommended to clean the old backups regularly or to compress them. For example, to delete all the backups older than 7 days you can use the following bash command:</p>
+<pre>**λ:** for /l %N in (1 1 5) do
+   \curl -o /dev/null -s -w "%{time_total}\n"  
+   \localhost:8080/post/IDX001
+...
+**1.012 #cache miss**
+0.009 **#cache hit**
+0.009 **#cache hit**
+0.011 **#cache hit**
+0.010 **#cache hit**</pre>
 
-<pre><code class="language-bash">find /var/backups/mongobackups/ -mtime +7 -exec rm -rf {} \;
-</code></pre>
+<p>It’s good time to check what is exactly stored by Redis. For more human readable key name, please check other <code>RedisSerializer.java</code> implementations.</p>
 
-<p>Similarly to the previous <code>mongodump</code> command, this one can be also added as a cron job. It should run just before you start the next backup, e.g. at 03:01 AM. For this purpose open again crontab:</p>
+<pre>**λ:** redis-cli keys * **#Or more efficient scan 0 instead of** **keys ***
+1) "post-single:\xac\xed\x00\x05t\x00\x06IDX001"</pre>
 
-<pre><code class="language-bash">sudo crontab -e
-</code></pre>
+<p>Application work like we expected, after first invocation cache is fulfilled for given key, next request use cached data.</p>
 
-<p>After that insert the following line:</p>
+<hr/>
 
-<p>Crontab window</p>
+<h4 id="toc_7">Traps</h4>
 
-<pre><code class="language-cron">3 1 * * * find /var/backups/mongobackups/ -mtime +7 -exec rm -rf {} \;
+<p><strong>Stale data.</strong> High dynamic data become outdated very quickly. Without update or expiration mechanism cache will serve obsolete content.</p>
 
-</code></pre>
+<p><strong>Large memory is not always equal bigger hit ratio.</strong> When you reach specific amount of memory, hit ratio will not increase. In this place many things will depend on eviction policies and nature of data.</p>
 
-<p>Completing all the tasks in this step will ensure a good backup solution for your MongoDB databases.</p>
+<p><strong>Premature optimization.</strong> Let test your services without cache, may be your fears will proved groundless, <u>“Premature optimization is the root of all evil”.</u></p>
 
-<h2 id="toc_3">Restoring and Migrating a MongoDB Database</h2>
+<p><strong>Hiding bad performance.</strong> Cache is not always an answer for slow services, try to optimize them before, because when you put them after cache layer, you will hide possible architectural mistakes.</p>
 
-<p>By restoring your MongoDB database from a previous backup (such as one from the previous step) you will be able to have the exact copy of your MongoDB information taken at a certain time, including all the indexes and data types. This is especially useful when you want to migrate your MongoDB databases. For restoring MongoDB we&#39;ll be using the command <code>mongorestore</code> which works with the binary backup produced by <code>mongodump</code>.</p>
+<p><strong>Don’t share your redis cache.</strong> Redis works on single thread. Other teams may use your store for other extensive purposes. Every data bumps, heavy commands (KEYS, SORT etc.) may block your cache and increase execution time. In case of performance problems, check <a href="https://redis.io/commands/slowlog">SLOWLOG</a> command.</p>
 
-<p>Let&#39;s continue our examples with the <code>newdb</code> database and see how we can restore it from the previously taken backup. As arguments we&#39;ll specify first the name of the database with the <code>--db</code> argument. Then with <code>--drop</code> we&#39;ll make sure that the target database is first dropped so that the backup is restored in a clean database. As a final argument we&#39;ll specify the directory of the last backup <code>/var/backups/mongobackups/01-20-16/newdb/</code>. So the whole command will look like this (replace with the date of the backup you wish to restore):</p>
+<p><strong>Config param [maxmemory].</strong> If you consider run your cache with snapshot persistence you should use less than half of available memory as <code>maxmemory</code> to avoid memory errors.</p>
 
-<pre><code class="language-bash">sudo mongorestore --db newdb --drop /var/backups/mongobackups/01-20-16/newdb/
-</code></pre>
+<p><strong>Monitoring.</strong> You should monitor your cache, from time to time <a href="https://redis.io/commands/info">INFO</a> will not generate performance issues but <a href="https://redis.io/commands/monitor">MONITOR</a> can reduce the throughput dramatically.</p>
 
-<p>A successful execution will show the following output:</p>
+<h4 id="toc_8">Repository</h4>
 
-<p>Output of mongorestore</p>
+<p><a href="https://github.com/matthewfrank/spring-boot-redis-cache" title="https://github.com/matthewfrank/spring-boot-redis-cache"><strong>matthewfrank/spring-boot-redis-cache</strong><br/>
+<u>Contribute to spring-boot-redis-cache development by creating an account on GitHub.</u>github.com</a><a href="https://github.com/matthewfrank/spring-boot-redis-cache"></a></p>
 
-<pre><code class="language-log">2016-01-20T10:44:47.876-0500    building a list of collections to restore from /var/backups/mongobackups/01-20-16/newdb/ dir
-2016-01-20T10:44:47.908-0500    reading metadata file from /var/backups/mongobackups/01-20-16/newdb/restaurants.metadata.json
-2016-01-20T10:44:47.909-0500    restoring newdb.restaurants from file /var/backups/mongobackups/01-20-16/newdb/restaurants.bson
-2016-01-20T10:44:48.591-0500    restoring indexes for collection newdb.restaurants from metadata
-2016-01-20T10:44:48.592-0500    finished restoring newdb.restaurants (25359 documents)
-2016-01-20T10:44:48.592-0500    done
-</code></pre>
+<h4 id="toc_9">Further Reading</h4>
 
-<p>In the above case we are restoring the data on the same server where the backup has been created. If you wish to migrate the data to another server and use the same technique, you should just copy the backup directory, which is <code>/var/backups/mongobackups/01-20-16/newdb/</code> in our case, to the other server.</p>
-
-<h2 id="toc_4">Conclusion</h2>
-
-<p>This article has introduced you to the essentials of managing your MongoDB data in terms of backing up, restoring, and migrating databases. You can continue further reading on <a href="https://www.digitalocean.com/community/tutorials/how-to-set-up-a-scalable-mongodb-database">How To Set Up a Scalable MongoDB Database</a> in which MongoDB replication is explained.</p>
-
-<p>Replication is not only useful for scalability, but it&#39;s also important for the current topics. Replication allows you to continue running your MongoDB service uninterrupted from a slave MongoDB server while you are restoring the master one from a failure. Part of the replication is also the <a href="https://docs.mongodb.org/manual/core/replica-set-oplog/">operations log (oplog)</a>, which records all the operations that modify your data. You can use this log, just as you would use the binary log in MySQL, to restore your data after the last backup has taken place. Recall that backups usually take place during the night, and if you decide to restore a backup in the evening you will be missing all the updates since the last backup.</p>
+<ul>
+<li>  <a href="https://docs.spring.io/spring/docs/current/spring-framework-reference/html/cache.html">Cache Abstraction in Spring</a></li>
+<li>  <a href="https://spring.io/guides/gs/caching/">Caching Data with Spring</a></li>
+<li>  <a href="https://redis.io/topics/lru-cache">Using Redis as an LRU cache</a></li>
+<li>  <a href="https://redis.io/topics/latency">Redis latency</a></li>
+<li>  <a href="https://redis.io/topics/persistence">Redis persistence</a></li>
+<li>  <a href="http://oldblog.antirez.com/post/redis-as-LRU-cache.html">Redis as an LRU cache</a></li>
+<li><p><a href="http://oldblog.antirez.com/post/redis-persistence-demystified.html">Redis persistence demystified</a></p></li>
+<li><p><a href="https://medium.com/tag/redis?source=post">Redis</a></p></li>
+<li><p><a href="https://medium.com/tag/spring-boot?source=post">Spring Boot</a></p></li>
+<li><p><a href="https://medium.com/tag/cache?source=post">Cache</a></p></li>
+<li><p><a href="https://medium.com/tag/java?source=post">Java</a></p></li>
+</ul>
 
                         
                       </div>
@@ -263,10 +396,10 @@
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/9/28</span>
+                    <span class="date">2018/11/18</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Database.html'>Database</a></span>
+          					    <span class="posted-in"><a href='Spring.html'>Spring</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -356,31 +489,31 @@
 	      
 		      
 			      <li class="post">
-			        <a href="15389311738065.html">重构到更深层的模型</a>
+			        <a href="15459058392039.html">Reliable Domain Events</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389278377243.html">IAM of Google Cloud</a>
+			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389224951575.html">RSocket, a New Application Network Protocol for Reactive Applications, Announced at SpringOne</a>
+			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389220103546.html">如何形象地描述RxJava中的背压和流控机制？</a>
+			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389214670417.html">Modeling Uncertainty with Reactive DDD</a>
+			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
 			      </li>
 		     
 		  

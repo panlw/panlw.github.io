@@ -105,96 +105,669 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15389187307729.html">
+                <a class="clearlink" href="15407346259853.html">
                 
-                  <h1>PolicyServer</h1>
+                  <h1>Spring 整合 Shiro 使用 EL 表达式</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://solliance.net/products/policyserver">https://solliance.net/products/policyserver</a></p>
+<p><a href="http://elim.iteye.com/blog/2411557">http://elim.iteye.com/blog/2411557</a></p>
 </blockquote>
 
-<p>PolicyServer is an authorization solution for modern applications. It supports the necessary patterns to achieve the separation of authentication and authorization - including a management application, management APIs and a runtime engine that deals with advanced scenarios around policy design, policy hierarchy, and integration with identity.<br/>
-<img src="media/15389187307729/15389187593403.jpg" alt="" style="width:500px;"/></p>
+<p>Shiro 是一个轻量级的权限控制框架，应用非常广泛。本文的重点是介绍 Spring 整合 Shiro，并通过扩展使用 Spring 的 EL 表达式，使 @RequiresRoles 等支持动态的参数。对 Shiro 的介绍则不在本文的讨论范围之内，读者如果有对 shiro 不是很了解的，可以通过其<a href="http://shiro.apache.org/index.html">官方网站</a>了解相应的信息。infoq 上也有一篇文章对 shiro 介绍比较全面的，也是官方推荐的，其地址是 <a href="https://www.infoq.com/articles/apache-shiro">https://www.infoq.com/articles/apache-shiro</a>。</p>
 
-<h2 id="toc_0">IDENTITY != PERMISSIONS</h2>
+<h2 id="toc_0">Shiro 整合 Spring</h2>
 
-<p><img src="media/15389187307729/15389187731668.jpg" alt="" style="width:358px;"/></p>
+<p>首先需要在你的工程中加入 shiro-spring-xxx.jar，如果是使用 Maven 管理你的工程，则可以在你的依赖中加入以下依赖，笔者这里是选择的当前最新的 1.4.0 版本。</p>
 
-<p>Authorization is hard - and authorization is all too often conflated with authentication and identity. These concerns should be clearly separated. Managing &quot;Identity and Access Management&quot; using a single product or solution leads to problems as your software becomes more complex.</p>
+<pre><code class="language-xml">&lt;dependency&gt;
+    &lt;groupId&gt;org.apache.shiro&lt;/groupId&gt;
+    &lt;artifactId&gt;shiro-spring&lt;/artifactId&gt;
+    &lt;version&gt;1.4.0&lt;/version&gt;
+&lt;/dependency&gt;
+</code></pre>
 
-<p>Identity has it&#39;s own complexities including integration workflows with different protocols and external identity providers. In addition, while proof of authentication from an identity system produces identity claims, possibly including role claims from that system - these &quot;identity roles&quot; are not typically meaningful to applications in a solution - and thus are not a good fit for authorization.</p>
+<p>接下来需要在你的 web.xml 中定义一个 shiroFilter，应用它来拦截所有的需要权限控制的请求，通常是配置为<code>/*</code>。另外该 Filter 需要加入最前面，以确保请求进来后最先通过 shiro 的权限控制。这里的 Filter 对应的 class 配置的是 DelegatingFilterProxy，这是 Spring 提供的一个 Filter 的代理，可以使用 Spring bean 容器中的一个 bean 来作为当前的 Filter 实例，对应的 bean 就会取<code>filter-name</code>对应的那个 bean。所以下面的配置会到 bean 容器中寻找一个名为 shiroFilter 的 bean。</p>
 
-<h2 id="toc_1">IDENTITY + PERMISSIONS == AUTHORIZATION</h2>
+<pre><code class="language-xml">&lt;filter&gt;
+    &lt;filter-name&gt;shiroFilter&lt;/filter-name&gt;
+    &lt;filter-class&gt;org.springframework.web.filter.DelegatingFilterProxy&lt;/filter-class&gt;
+    &lt;init-param&gt;
+        &lt;param-name&gt;targetFilterLifecycle&lt;/param-name&gt;
+        &lt;param-value&gt;true&lt;/param-value&gt;
+    &lt;/init-param&gt;
+&lt;/filter&gt;
 
-<p>Identity is universal. Permissions are application specific. This is why the identity system should not define permissions. Instead, identity should be one of the inputs to an authorization system. The combination of identity and an application-specific policy produces the actual permissions for the application.</p>
+&lt;filter-mapping&gt;
+    &lt;filter-name&gt;shiroFilter&lt;/filter-name&gt;
+    &lt;url-pattern&gt;/*&lt;/url-pattern&gt;
+&lt;/filter-mapping&gt;
+</code></pre>
 
-<p>While there are many ways to model authorization, the concept of roles and permissions are the most prevelant. Despite the simplicity of these concepts, modeling authorization is a design-intensive activity - not to be taken lightly - that requires tools to simplify modeling and the execution of application policy.</p>
+<blockquote>
+<p>独立使用 Shiro 时通常会定义一个<code>org.apache.shiro.web.servlet.ShiroFilter</code>来做类似的事。</p>
+</blockquote>
 
-<h2 id="toc_2">A FLEXIBLE POLICY MODELING SOLUTION</h2>
+<p>接下来就是在 bean 容器中定义我们的 shiroFilter 了。如下我们定义了一个 ShiroFilterFactoryBean，其会产生一个 AbstractShiroFilter 类型的 bean。通过 ShiroFilterFactoryBean 我们可以指定一个 SecurityManager，这里使用的 DefaultWebSecurityManager 需要指定一个 Realm，如果需要指定多个 Realm 则通过 realms 指定。这里简单起见就直接使用基于文本定义的 TextConfigurationRealm。通过 loginUrl 指定登录地址、successUrl 指定登录成功后需要跳转的地址，unauthorizedUrl 指定权限不足时的提示页面。filterChainDefinitions 则定义 URL 与需要使用的 Filter 之间的关系，等号右边的是 filter 的别名，默认的别名都定义在<code>org.apache.shiro.web.filter.mgt.DefaultFilter</code>这个枚举类中。</p>
 
-<p>PolicyServer supports simple role-based policies, granular permission-based policies and complex policy hierarchies.</p>
+<pre><code class="language-xml">&lt;bean id=&quot;shiroFilter&quot; class=&quot;org.apache.shiro.spring.web.ShiroFilterFactoryBean&quot;&gt;
+    &lt;property /&gt;
+    &lt;property /&gt;
+    &lt;property /&gt;
+    &lt;property /&gt;
+    &lt;property &gt;
+        &lt;value&gt;
+            /admin/** = authc, roles[admin]
+            /logout = logout
+            # 其它地址都要求用户已经登录了
+            /** = authc,logger
+        &lt;/value&gt;
+    &lt;/property&gt;
+&lt;/bean&gt;
+
+&lt;bean id=&quot;securityManager&quot; class=&quot;org.apache.shiro.web.mgt.DefaultWebSecurityManager&quot;&gt;
+    &lt;property /&gt;
+&lt;/bean&gt;
+&lt;bean id=&quot;lifecycleBeanPostProcessor&quot; class=&quot;org.apache.shiro.spring.LifecycleBeanPostProcessor&quot;/&gt;
+
+&lt;!-- 简单起见，这里就使用基于文本的Realm实现 --&gt;
+&lt;bean id=&quot;realm&quot; class=&quot;org.apache.shiro.realm.text.TextConfigurationRealm&quot;&gt;
+    &lt;property &gt;
+        &lt;value&gt;
+            user1=pass1,role1,role2
+            user2=pass2,role2,role3
+            admin=admin,admin
+        &lt;/value&gt;
+    &lt;/property&gt;
+&lt;/bean&gt;
+</code></pre>
+
+<p>如果需要在 filterChainDefinitions 定义中使用自定义的 Filter，则可以通过 ShiroFilterFactoryBean 的 filters 指定自定义的 Filter 及其别名映射关系。比如下面这样我们新增了一个别名为 logger 的 Filter，并在 filterChainDefinitions 中指定了<code>/**</code>需要应用别名为 logger 的 Filter。</p>
+
+<pre><code class="language-xml">&lt;bean id=&quot;shiroFilter&quot; class=&quot;org.apache.shiro.spring.web.ShiroFilterFactoryBean&quot;&gt;
+    &lt;property /&gt;
+    &lt;property /&gt;
+    &lt;property /&gt;
+    &lt;property /&gt;
+    &lt;property &gt;
+        &lt;util:map&gt;
+            &lt;entry key=&quot;logger&quot;&gt;
+                &lt;bean class=&quot;com.elim.chat.shiro.filter.LoggerFilter&quot;/&gt;
+            &lt;/entry&gt;
+        &lt;/util:map&gt;
+    &lt;/property&gt;
+    &lt;property &gt;
+        &lt;value&gt;
+            /admin/** = authc, roles[admin]
+            /logout = logout
+            # 其它地址都要求用户已经登录了
+            /** = authc,logger
+        &lt;/value&gt;
+    &lt;/property&gt;
+&lt;/bean&gt;
+</code></pre>
+
+<p>其实我们需要应用的 Filter 别名定义也可以不直接通过 ShiroFilterFactoryBean 的 setFilters() 来指定，而是直接在对应的 bean 容器中定义对应的 Filter 对应的 bean。因为默认情况下，ShiroFilterFactoryBean 会把 bean 容器中的所有的 Filter 类型的 bean 以其 id 为别名注册到 filters 中。所以上面的定义等价于下面这样。</p>
+
+<pre><code class="language-xml">&lt;bean id=&quot;shiroFilter&quot; class=&quot;org.apache.shiro.spring.web.ShiroFilterFactoryBean&quot;&gt;
+    &lt;property /&gt;
+    &lt;property /&gt;
+    &lt;property /&gt;
+    &lt;property /&gt;
+    &lt;property &gt;
+        &lt;value&gt;
+            /admin/** = authc, roles[admin]
+            /logout = logout
+            # 其它地址都要求用户已经登录了
+            /** = authc,logger
+        &lt;/value&gt;
+    &lt;/property&gt;
+&lt;/bean&gt;
+
+&lt;bean id=&quot;logger&quot; class=&quot;com.elim.chat.shiro.filter.LoggerFilter&quot;/&gt;
+</code></pre>
+
+<p>经过以上几步，Shiro 和 Spring 的整合就完成了，这个时候我们请求工程的任意路径都会要求我们登录，且会自动跳转到<code>loginUrl</code>指定的路径让我们输入用户名 / 密码登录。这个时候我们应该提供一个表单，通过 username 获得用户名，通过 password 获得密码，然后提交登录请求的时候请求需要提交到<code>loginUrl</code>指定的地址，但是请求方式需要变为 POST。登录时使用的用户名 / 密码是我们在 TextConfigurationRealm 中定义的用户名 / 密码，基于我们上面的配置则可以使用 user1/pass1、admin/admin 等。登录成功后就会跳转到<code>successUrl</code>参数指定的地址了。如果我们是使用 user1/pass1 登录的，则我们还可以试着访问一下<code>/admin/index</code>，这个时候会因为权限不足跳转到<code>unauthorized.jsp</code>。</p>
+
+<h2 id="toc_1">启用基于注解的支持</h2>
+
+<p>基本的整合需要我们把 URL 需要应用的权限控制都定义在 ShiroFilterFactoryBean 的 filterChainDefinitions 中。这有时候会没那么灵活。Shiro 为我们提供了整合 Spring 后可以使用的注解，它允许我们在需要进行权限控制的 Class 或 Method 上加上对应的注解以定义访问 Class 或 Method 需要的权限，如果是定义中 Class 上的，则表示调用该 Class 中所有的方法都需要对应的权限（注意需要是外部调用，这是动态代理的局限）。要使用这些注解我们需要在 Spring 的 bean 容器中添加下面两个 bean 定义，这样才能在运行时根据注解定义来判断用户是否拥有对应的权限。这是通过 Spring 的 AOP 机制来实现的，关于 Spring Aop 如果有不是特别了解的，可以参考笔者写在 iteye 的<a href="http://www.iteye.com/blogs/subjects/springaop">《Spring Aop 介绍专栏》</a>。下面的两个 bean 定义，<code>AuthorizationAttributeSourceAdvisor</code>是定义了一个 Advisor，其会基于 Shiro 提供的注解配置的方法进行拦截，校验权限。<code>DefaultAdvisorAutoProxyCreator</code>则是提供了为标注有 Shiro 提供的权限控制注解的 Class 创建代理对象，并在拦截到目标方法调用时应用<code>AuthorizationAttributeSourceAdvisor</code>的功能。当拦截到了用户的一个请求，而该用户没有对应方法或类上标注的权限时，将抛出<code>org.apache.shiro.authz.AuthorizationException</code>异常。</p>
+
+<pre><code class="language-xml">&lt;bean class=&quot;org.springframework.aop.framework.autoproxy.DefaultAdvisorAutoProxyCreator&quot; 
+    depends-on=&quot;lifecycleBeanPostProcessor&quot;/&gt;
+&lt;bean class=&quot;org.apache.shiro.spring.security.interceptor.AuthorizationAttributeSourceAdvisor&quot;&gt;
+    &lt;property /&gt;
+&lt;/bean&gt;
+</code></pre>
+
+<blockquote>
+<p>如果我们的 bean 容器中已经定义了<code>&lt;aop:config/&gt;</code>或<code>&lt;aop:aspectj-autoproxy/&gt;</code>，则可以不再定义<code>DefaultAdvisorAutoProxyCreator</code>。因为前面两种情况都会自动添加与<code>DefaultAdvisorAutoProxyCreator</code>类似的 bean。关于<code>DefaultAdvisorAutoProxyCreator</code>的更多介绍也可以参考笔者的 <a href="/blog/2398725">Spring Aop 自动创建代理对象的原理</a>这篇博客。</p>
+</blockquote>
+
+<p>Shiro 提供的权限控制注解如下：</p>
 
 <ul>
-<li><p>Role-Based Authorization<br/>
-<img src="media/15389187307729/15389188554351.png" alt="" style="width:87px;"/></p></li>
-<li><p>Permission-Based Authorization<br/>
-<img src="media/15389187307729/15389188622382.png" alt="" style="width:87px;"/></p></li>
-<li><p>Policy Hierarchies<br/>
-<img src="media/15389187307729/15389188700368.png" alt="" style="width:87px;"/></p></li>
+<li>  RequiresAuthentication：需要用户在当前会话中是被认证过的，即需要通过用户名 / 密码登录过，不包括 RememberMe 自动登录。</li>
+<li>  RequiresUser：需要用户是被认证过的，可以是在本次会话中通过用户名 / 密码登录认证，也可以是通过 RememberMe 自动登录。</li>
+<li>  RequiresGuest：需要用户是未登录的。</li>
+<li>  RequiresRoles：需要用户拥有指定的角色。</li>
+<li>  RequiresPermissions：需要用户拥有指定的权限。</li>
 </ul>
 
-<h2 id="toc_3">POLICYSERVER FEATURES</h2>
+<p>前面三个都很好理解，而后面两个是类似的。笔者这里拿 @RequiresPermissions 来做个示例。首先我们把上面定义的 Realm 改一下，给 role 添加权限。这样我们的 user1 将拥有 perm1、perm2 和 perm3 的权限，而 user2 将拥有 perm1、perm3 和 perm4 的权限。</p>
 
-<h3 id="toc_4">POLICY MANAGEMENT</h3>
+<pre><code class="language-xml">&lt;bean id=&quot;realm&quot; class=&quot;org.apache.shiro.realm.text.TextConfigurationRealm&quot;&gt;
+    &lt;property &gt;
+        &lt;value&gt;
+            user1=pass1,role1,role2
+            user2=pass2,role2,role3
+            admin=admin,admin
+        &lt;/value&gt;
+    &lt;/property&gt;
+    &lt;property &gt;
+        &lt;value&gt;
+            role1=perm1,perm2
+            role2=perm1,perm3
+            role3=perm3,perm4
+        &lt;/value&gt;
+    &lt;/property&gt;
+&lt;/bean&gt;
+</code></pre>
 
-<p><img src="media/15389187307729/15389189087208.jpg" alt="" style="width:87px;"/></p>
+<p><code>@RequiresPermissions</code>可以添加在方法上，用来指定调用该方法时需要拥有的权限。下面的代码我们就指定了在访问<code>/perm1</code>时必须拥有<code>perm1</code>这个权限。这个时候 user1 和 user2 都能访问。</p>
 
-<p>We provide you with the management tools to design your policies, from simple to complex. </p>
+<pre><code class="language-java">@RequestMapping(&quot;/perm1&quot;)
+@RequiresPermissions(&quot;perm1&quot;)
+public Object permission1() {
+    return &quot;permission1&quot;;
+}
+</code></pre>
 
-<p>These tools include:<br/>
-* Management UI to help you define and manage policies<br/>
-* Policy visualizer<br/>
-* Integration with identity users and roles for transformation<br/>
-* Policy evaluation tester<br/>
-* Management APIs to support DevOps workflows</p>
+<p>如果需要指定必须同时拥有多个权限才能访问某个方法，可以把需要指定的权限以数组的形式指定（注解上的数组属性指定单个的时候可以不加大括号，需要指定多个时就需要加大括号）。比如下面这样我们就指定了在访问<code>/perm1AndPerm4</code>时用户必须同时拥有<code>perm1</code>和<code>perm4</code>这两个权限。这时候就只有 user2 可以访问，因为只有它才同时拥有<code>perm1</code>和<code>perm4</code>。</p>
 
-<h3 id="toc_5">CLIENT LIBRARIES</h3>
+<pre><code class="language-java">@RequestMapping(&quot;/perm1AndPerm4&quot;)
+@RequiresPermissions({&quot;perm1&quot;, &quot;perm4&quot;})
+public Object perm1AndPerm4() {
+    return &quot;perm1AndPerm4&quot;;
+}
+</code></pre>
 
-<p><img src="media/15389187307729/15389189497826.jpg" alt="" style="width:87px;"/></p>
+<p>当同时指定了多个权限时，默认多个权限之间的关系是与的关系，即需要同时拥有指定的所有的权限。如果只需要拥有指定的多个权限中的一个就可以访问，则我们可以通过<code>logical=Logical.OR</code>指定多个权限之间是或的关系。比如下面这样我们就指定了在访问<code>/perm1OrPerm4</code>时只需要拥有<code>perm1</code>或<code>perm4</code>权限即可，这样 user1 和 user2 都可以访问该方法。</p>
 
-<p>Integrate authorization to your applications with ease using our client libraries. </p>
+<pre><code class="language-java">@RequestMapping(&quot;/perm1OrPerm4&quot;)
+@RequiresPermissions(value={&quot;perm1&quot;, &quot;perm4&quot;}, logical=Logical.OR)
+public Object perm1OrPerm4() {
+    return &quot;perm1OrPerm4&quot;;
+}
+</code></pre>
 
-<p>With our tools you can:<br/>
-* Spend more time on policy design, less on authorization tooling<br/>
-* Integrate our policy engine with your application<br/>
-* Use your technology platform&#39;s authorization mechanism to enforce policy<br/>
-* Connect your identity system output to policy evaluation<br/>
-* Migrate legacy applications to modern authorization</p>
+<p>@RequiresPermissions 也可以标注在 Class 上，表示在外部访问 Class 中的方法时都需要有对应的权限。比如下面这样我们在 Class 级别指定了需要拥有权限<code>perm2</code>，而在<code>index()</code>方法上则没有指定需要任何权限，但是我们在访问该方法时还是需要拥有 Class 级别指定的权限。此时将只有 user1 可以访问。</p>
 
-<h3 id="toc_6">POLICY ENGINE</h3>
+<pre><code class="language-java">@RestController
+@RequestMapping(&quot;/foo&quot;)
+@RequiresPermissions(&quot;perm2&quot;)
+public class FooController {
 
-<p><img src="media/15389187307729/15389189694024.jpg" alt="" style="width:87px;"/></p>
+    @RequestMapping(method=RequestMethod.GET)
+    public Object index() {
+        Map&lt;String, Object&gt; map = new HashMap&lt;&gt;();
+        map.put(&quot;abc&quot;, 123);
+        return map;
+    }
 
-<p>Our policy engine supports complex hierarchical policy evaluation. It is distributed as a lightweight and scalable API that you can host according to your own solution topology requirements. Integration to the policy engine is made simple through our client libraries.</p>
+}
+</code></pre>
 
-<h3 id="toc_7">AUDIT LOGS AND COMPLIANCE</h3>
+<p>当 Class 和方法级别都同时拥有 @RequiresPermissions 时，方法级别的拥有更高的优先级，而且此时将只会校验方法级别要求的权限。如下我们在 Class 级别指定了需要<code>perm2</code>权限，而在方法级别指定了需要<code>perm3</code>权限，那么在访问<code>/foo</code>时将只需要拥有<code>perm3</code>权限即可访问到<code>index()</code>方法。所以此时 user1 和 user2 都可以访问<code>/foo</code>。</p>
 
-<p><img src="media/15389187307729/15389189893698.jpg" alt="" style="width:87px;"/></p>
+<pre><code class="language-java">@RestController
+@RequestMapping(&quot;/foo&quot;)
+@RequiresPermissions(&quot;perm2&quot;)
+public class FooController {
 
-<p>Our management tools and policy runtime are both built to support detailed audit logs for reporting and compliance. Our built-in auditing features can support connectors to push audit logs to the desired target for your hosting and data topology.</p>
+    @RequestMapping(method=RequestMethod.GET)
+    @RequiresPermissions(&quot;perm3&quot;)
+    public Object index() {
+        Map&lt;String, Object&gt; map = new HashMap&lt;&gt;();
+        map.put(&quot;abc&quot;, 123);
+        return map;
+    }
 
-<h3 id="toc_8">SERVICES</h3>
+}
+</code></pre>
 
-<h4 id="toc_9">POLICY DESIGN</h4>
+<p>但是如果此时我们在 Class 上新增<code>@RequiresRoles(&quot;role1&quot;)</code>指定需要拥有角色 role1, 那么此时访问<code>/foo</code>时需要拥有 Class 上的 role1 和<code>index()</code>方法上<code>@RequiresPermissions(&quot;perm3&quot;)</code>指定的<code>perm3</code>权限。因为<code>RequiresRoles</code>和<code>RequiresPermissions</code>属于不同维度的权限定义，Shiro 在校验的时候都将校验一遍，但是如果 Class 和方法上都拥有同类型的权限控制定义的注解时，则只会以方法上的定义为准。</p>
 
-<p>PolicyServer provides you with the necessary tools to design and execute authorization policies - allowing you to focus on the actual authorization requirements for your solution and the policy design. Still, defining policies for any solution is a design-intensive task - and we can provide you with the support you need to get there marrying our team&#39;s experience in policy authorization to your team&#39;s domain experience.</p>
+<pre><code class="language-java">@RestController
+@RequestMapping(&quot;/foo&quot;)
+@RequiresPermissions(&quot;perm2&quot;)
+@RequiresRoles(&quot;role1&quot;)
+public class FooController {
 
-<h4 id="toc_10">IDENTITY PROVIDER INTEGRATION</h4>
+    @RequestMapping(method=RequestMethod.GET)
+    @RequiresPermissions(&quot;perm3&quot;)
+    public Object index() {
+        Map&lt;String, Object&gt; map = new HashMap&lt;&gt;();
+        map.put(&quot;abc&quot;, 123);
+        return map;
+    }
 
-<p>At Solliance, our security practice specializes in identity protocols, integrations with identity providers including IdentityServer, Azure AD, Auth0, Okta, Ping Federate, OneLogin and others. We can help you design your identity workflows, including API security, and link that identity story to your PolicyServer implementation as well.</p>
+}
+</code></pre>
+
+<blockquote>
+<p>虽然示例中使用的只是<code>RequiresPermissions</code>, 但是其它权限控制注解的用法也是类似的，其它注解的用法请感兴趣的朋友自己实践。</p>
+</blockquote>
+
+<h2 id="toc_2">基于注解控制权限的原理</h2>
+
+<p>上面使用<code>@RequiresPermissions</code>我们指定的权限都是静态的，写本文的一个主要目的是介绍一种方法，通过扩展实现来使指定的权限可以是动态的。但是在扩展前我们得知道它底层的工作方式，即实现原理，我们才能进行扩展。所以接下来我们先来看一下 Shiro 整合 Spring 后使用<code>@RequiresPermissions</code>的工作原理。在启用对<code>@RequiresPermissions</code>的支持时我们定义了如下 bean，这是一个 Advisor，其继承自 StaticMethodMatcherPointcutAdvisor，它的方法匹配逻辑是只要 Class 或 Method 上拥有 Shiro 的几个权限控制注解即可，而拦截以后的处理逻辑则是由相应的 Advice 指定。</p>
+
+<pre><code class="language-xml">&lt;bean class=&quot;org.apache.shiro.spring.security.interceptor.AuthorizationAttributeSourceAdvisor&quot;&gt;
+    &lt;property /&gt;
+&lt;/bean&gt;
+</code></pre>
+
+<p>以下是 AuthorizationAttributeSourceAdvisor 的源码。我们可以看到在其构造方法中通过<code>setAdvice()</code>指定了 AopAllianceAnnotationsAuthorizingMethodInterceptor 这个 Advice 实现类，这是基于 MethodInterceptor 的实现。</p>
+
+<pre><code class="language-java">public class AuthorizationAttributeSourceAdvisor extends StaticMethodMatcherPointcutAdvisor {
+
+    private static final Logger log = LoggerFactory.getLogger(AuthorizationAttributeSourceAdvisor.class);
+
+    private static final Class&lt;? extends Annotation&gt;[] AUTHZ_ANNOTATION_CLASSES =
+            new Class[] {
+                    RequiresPermissions.class, RequiresRoles.class,
+                    RequiresUser.class, RequiresGuest.class, RequiresAuthentication.class
+            };
+
+    protected SecurityManager securityManager = null;
+
+    public AuthorizationAttributeSourceAdvisor() {
+        setAdvice(new AopAllianceAnnotationsAuthorizingMethodInterceptor());
+    }
+
+    public SecurityManager getSecurityManager() {
+        return securityManager;
+    }
+
+    public void setSecurityManager(org.apache.shiro.mgt.SecurityManager securityManager) {
+        this.securityManager = securityManager;
+    }
+
+    public boolean matches(Method method, Class targetClass) {
+        Method m = method;
+
+        if ( isAuthzAnnotationPresent(m) ) {
+            return true;
+        }
+
+        //The &#39;method&#39; parameter could be from an interface that doesn&#39;t have the annotation.
+        //Check to see if the implementation has it.
+        if ( targetClass != null) {
+            try {
+                m = targetClass.getMethod(m.getName(), m.getParameterTypes());
+                return isAuthzAnnotationPresent(m) || isAuthzAnnotationPresent(targetClass);
+            } catch (NoSuchMethodException ignored) {
+                //default return value is false.  If we can&#39;t find the method, then obviously
+                //there is no annotation, so just use the default return value.
+            }
+        }
+
+        return false;
+    }
+
+    private boolean isAuthzAnnotationPresent(Class&lt;?&gt; targetClazz) {
+        for( Class&lt;? extends Annotation&gt; annClass : AUTHZ_ANNOTATION_CLASSES ) {
+            Annotation a = AnnotationUtils.findAnnotation(targetClazz, annClass);
+            if ( a != null ) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean isAuthzAnnotationPresent(Method method) {
+        for( Class&lt;? extends Annotation&gt; annClass : AUTHZ_ANNOTATION_CLASSES ) {
+            Annotation a = AnnotationUtils.findAnnotation(method, annClass);
+            if ( a != null ) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+}
+</code></pre>
+
+<p>AopAllianceAnnotationsAuthorizingMethodInterceptor 的源码如下。其实现的 MethodInterceptor 接口的 invoke 方法又调用了父类的 invoke 方法。同时我们要看到在其构造方法中创建了一些 AuthorizingAnnotationMethodInterceptor 实现，这些实现才是实现权限控制的核心，待会我们会挑出 PermissionAnnotationMethodInterceptor 实现类来看其具体的实现逻辑。</p>
+
+<pre><code class="language-java">public class AopAllianceAnnotationsAuthorizingMethodInterceptor
+        extends AnnotationsAuthorizingMethodInterceptor implements MethodInterceptor {
+
+    public AopAllianceAnnotationsAuthorizingMethodInterceptor() {
+        List&lt;AuthorizingAnnotationMethodInterceptor&gt; interceptors =
+                new ArrayList&lt;AuthorizingAnnotationMethodInterceptor&gt;(5);
+
+        //use a Spring-specific Annotation resolver - Spring&#39;s AnnotationUtils is nicer than the
+        //raw JDK resolution process.
+        AnnotationResolver resolver = new SpringAnnotationResolver();
+        //we can re-use the same resolver instance - it does not retain state:
+        interceptors.add(new RoleAnnotationMethodInterceptor(resolver));
+        interceptors.add(new PermissionAnnotationMethodInterceptor(resolver));
+        interceptors.add(new AuthenticatedAnnotationMethodInterceptor(resolver));
+        interceptors.add(new UserAnnotationMethodInterceptor(resolver));
+        interceptors.add(new GuestAnnotationMethodInterceptor(resolver));
+
+        setMethodInterceptors(interceptors);
+    }
+
+    protected org.apache.shiro.aop.MethodInvocation createMethodInvocation(Object implSpecificMethodInvocation) {
+        final MethodInvocation mi = (MethodInvocation) implSpecificMethodInvocation;
+
+        return new org.apache.shiro.aop.MethodInvocation() {
+            public Method getMethod() {
+                return mi.getMethod();
+            }
+
+            public Object[] getArguments() {
+                return mi.getArguments();
+            }
+
+            public String toString() {
+                return &quot;Method invocation [&quot; + mi.getMethod() + &quot;]&quot;;
+            }
+
+            public Object proceed() throws Throwable {
+                return mi.proceed();
+            }
+
+            public Object getThis() {
+                return mi.getThis();
+            }
+        };
+    }
+
+    protected Object continueInvocation(Object aopAllianceMethodInvocation) throws Throwable {
+        MethodInvocation mi = (MethodInvocation) aopAllianceMethodInvocation;
+        return mi.proceed();
+    }
+
+    public Object invoke(MethodInvocation methodInvocation) throws Throwable {
+        org.apache.shiro.aop.MethodInvocation mi = createMethodInvocation(methodInvocation);
+        return super.invoke(mi);
+    }
+}
+</code></pre>
+
+<p>通过看父类的 invoke 方法实现，最终我们会看到核心逻辑是调用 assertAuthorized 方法，而该方法的实现（源码如下）又是依次判断配置的 AuthorizingAnnotationMethodInterceptor 是否支持当前方法进行权限校验（通过判断 Class 或 Method 上是否拥有其支持的注解），当支持时则会调用其 assertAuthorized 方法进行权限校验，而 AuthorizingAnnotationMethodInterceptor 又会调用 AuthorizingAnnotationHandler 的 assertAuthorized 方法。</p>
+
+<pre><code class="language-java">protected void assertAuthorized(MethodInvocation methodInvocation) throws AuthorizationException {
+    //default implementation just ensures no deny votes are cast:
+    Collection&lt;AuthorizingAnnotationMethodInterceptor&gt; aamis = getMethodInterceptors();
+    if (aamis != null &amp;&amp; !aamis.isEmpty()) {
+        for (AuthorizingAnnotationMethodInterceptor aami : aamis) {
+            if (aami.supports(methodInvocation)) {
+                aami.assertAuthorized(methodInvocation);
+            }
+        }
+    }
+}
+</code></pre>
+
+<p>接下来我们再回过头来看 AopAllianceAnnotationsAuthorizingMethodInterceptor 的定义的 PermissionAnnotationMethodInterceptor，其源码如下。结合 AopAllianceAnnotationsAuthorizingMethodInterceptor 的源码和 PermissionAnnotationMethodInterceptor 的源码，我们可以看到 PermissionAnnotationMethodInterceptor 中这时候指定了 PermissionAnnotationHandler 和 SpringAnnotationResolver。PermissionAnnotationHandler 是 AuthorizingAnnotationHandler 的一个子类。所以我们最终的权限控制由 PermissionAnnotationHandler 的 assertAuthorized 实现决定。</p>
+
+<pre><code class="language-java">public class PermissionAnnotationMethodInterceptor extends AuthorizingAnnotationMethodInterceptor {
+
+    public PermissionAnnotationMethodInterceptor() {
+        super( new PermissionAnnotationHandler() );
+    }
+
+    public PermissionAnnotationMethodInterceptor(AnnotationResolver resolver) {
+        super( new PermissionAnnotationHandler(), resolver);
+    }
+
+}
+</code></pre>
+
+<p>接下来我们来看 PermissionAnnotationHandler 的 assertAuthorized 方法实现，其完整代码如下。从实现上我们可以看到其会从 Annotation 中获取配置的权限值，而这里的 Annotation 就是 RequiresPermissions 注解。而且在进行权限校验时都是直接使用的我们定义注解时指定的文本值，待会我们进行扩展时就将从这里入手。</p>
+
+<pre><code class="language-java">public class PermissionAnnotationHandler extends AuthorizingAnnotationHandler {
+
+    public PermissionAnnotationHandler() {
+        super(RequiresPermissions.class);
+    }
+
+    protected String[] getAnnotationValue(Annotation a) {
+        RequiresPermissions rpAnnotation = (RequiresPermissions) a;
+        return rpAnnotation.value();
+    }
+
+    public void assertAuthorized(Annotation a) throws AuthorizationException {
+        if (!(a instanceof RequiresPermissions)) return;
+
+        RequiresPermissions rpAnnotation = (RequiresPermissions) a;
+        String[] perms = getAnnotationValue(a);
+        Subject subject = getSubject();
+
+        if (perms.length == 1) {
+            subject.checkPermission(perms[0]);
+            return;
+        }
+        if (Logical.AND.equals(rpAnnotation.logical())) {
+            getSubject().checkPermissions(perms);
+            return;
+        }
+        if (Logical.OR.equals(rpAnnotation.logical())) {
+            // Avoid processing exceptions unnecessarily - &quot;delay&quot; throwing the exception by calling hasRole first
+            boolean hasAtLeastOnePermission = false;
+            for (String permission : perms) if (getSubject().isPermitted(permission)) hasAtLeastOnePermission = true;
+            // Cause the exception if none of the role match, note that the exception message will be a bit misleading
+            if (!hasAtLeastOnePermission) getSubject().checkPermission(perms[0]);
+
+        }
+    }
+}
+</code></pre>
+
+<p>通过前面的介绍我们知道 PermissionAnnotationHandler 的 assertAuthorized 方法参数的 Annotation 是由 AuthorizingAnnotationMethodInterceptor 在调用 AuthorizingAnnotationHandler 的 assertAuthorized 方法时传递的。其源码如下，从源码中我们可以看到 Annotation 是通过 getAnnotation 方法获得的。</p>
+
+<pre><code class="language-java">public void assertAuthorized(MethodInvocation mi) throws AuthorizationException {
+    try {
+        ((AuthorizingAnnotationHandler)getHandler()).assertAuthorized(getAnnotation(mi));
+    }
+    catch(AuthorizationException ae) {
+        if (ae.getCause() == null) ae.initCause(new AuthorizationException(&quot;Not authorized to invoke method: &quot; + mi.getMethod()));
+        throw ae;
+    }         
+}
+</code></pre>
+
+<p>沿着这个方向走下去，最终我们会找到 SpringAnnotationResolver 的 getAnnotation 方法实现，其实现如下。从下面的代码可以看到，其在寻找注解时是优先寻找 Method 上的，如果在 Method 上没有找到会从当前方法调用的所属 Class 上寻找对应的注解。从这里也可以看到为什么我们之前在 Class 和 Method 上都定义了相同类型的权限控制注解时生效的是 Method 上的，而单独存在的时候就是单独定义的那个生效了。</p>
+
+<pre><code class="language-java">public class SpringAnnotationResolver implements AnnotationResolver {
+
+    public Annotation getAnnotation(MethodInvocation mi, Class&lt;? extends Annotation&gt; clazz) {
+        Method m = mi.getMethod();
+
+        Annotation a = AnnotationUtils.findAnnotation(m, clazz);
+        if (a != null) return a;
+
+        //The MethodInvocation&#39;s method object could be a method defined in an interface.
+        //However, if the annotation existed in the interface&#39;s implementation (and not
+        //the interface itself), it won&#39;t be on the above method object.  Instead, we need to
+        //acquire the method representation from the targetClass and check directly on the
+        //implementation itself:
+        Class&lt;?&gt; targetClass = mi.getThis().getClass();
+        m = ClassUtils.getMostSpecificMethod(m, targetClass);
+        a = AnnotationUtils.findAnnotation(m, clazz);
+        if (a != null) return a;
+        // See if the class has the same annotation
+        return AnnotationUtils.findAnnotation(mi.getThis().getClass(), clazz);
+    }
+}
+</code></pre>
+
+<blockquote>
+<p>通过以上的源码阅读，相信读者对于 Shiro 整合 Spring 后支持的权限控制注解的原理已经有了比较深入的理解。上面贴出的源码只是部分笔者认为比较核心的，有想详细了解完整内容的请读者自己沿着笔者提到的思路去阅读完整代码。 了解了这块基于注解进行权限控制的原理后，读者朋友们也可以根据实际的业务需要进行相应的扩展。</p>
+</blockquote>
+
+<h2 id="toc_3">使用 Spring EL 表达式</h2>
+
+<p>假设现在内部有下面这样一个接口，其中有一个 query 方法，接收一个参数 type。这里我们简化一点，假设只要接收这么一个参数，然后对应不同的取值时将返回不同的结果。</p>
+
+<pre><code class="language-java">public interface RealService {
+
+    Object query(int type);
+
+}
+</code></pre>
+
+<p>这个接口是对外开放的，通过对应的 URL 可以请求到该方法，我们定义了对应的 Controller 方法如下：</p>
+
+<pre><code class="language-java">@RequestMapping(&quot;/service/{type}&quot;)
+public Object query(@PathVariable(&quot;type&quot;) int type) {
+    return this.realService.query(type);
+}
+</code></pre>
+
+<p>上面的接口服务在进行查询的时候针对 type 是有权限的，不是每个用户都可以使用每种 type 进行查询的，需要拥有对应的权限才行。所以针对上面的处理器方法我们需要加上权限控制，而且在控制时需要的权限是随着参数 type 动态变的。假设关于 type 的每项权限的定义是 query:type 的形式，比如 type=1 时需要的权限是 query:1，type=2 时需要的权限是 query:2。在没有与 Spring 整合时，我们会如下这样做：</p>
+
+<pre><code class="language-java">@RequestMapping(&quot;/service/{type}&quot;)
+public Object query(@PathVariable(&quot;type&quot;) int type) {
+    SecurityUtils.getSubject().checkPermission(&quot;query:&quot; + type);
+    return this.realService.query(type);
+}
+</code></pre>
+
+<p>但是与 Spring 整合后，上面的做法耦合性强，我们会更希望通过整合后的注解来进行权限控制。对于上面的场景我们更希望通过<code>@RequiresPermissions</code>来指定需要的权限，但是<code>@RequiresPermissions</code>中定义的权限是静态文本，固定的。它没法满足我们动态的需求。这个时候可能你会想着我们可以把 Controller 处理方法拆分为多个，单独进行权限控制。比如下面这样：</p>
+
+<pre><code class="language-java">@RequestMapping(&quot;/service/1&quot;)
+@RequiresPermissions(&quot;query:1&quot;)
+public Object service1() {
+    return this.realService.query(1);
+}
+
+@RequiresPermissions(&quot;query:2&quot;)
+@RequestMapping(&quot;/service/2&quot;)
+public Object service2() {
+    return this.realService.query(2);
+}
+
+//...
+
+@RequestMapping(&quot;/service/200&quot;)
+@RequiresPermissions(&quot;query:200&quot;)
+public Object service200() {
+    return this.realService.query(200);
+}
+</code></pre>
+
+<p>这在 type 的取值范围比较小的时候还可以，但是如果像上面这样可能的取值有 200 种，把它们穷举出来定义单独的处理器方法并进行权限控制就显得有点麻烦了。另外就是如果将来 type 的取值有变动，我们还得添加新的处理器方法。所以最好的办法是让<code>@RequiresPermissions</code>支持动态的权限定义，同时又可以维持静态定义的支持。通过前面的分析我们知道，切入点是 PermissionAnnotationHandler，而它里面是没有提供对权限校验的扩展的。我们如果想对它扩展简单的办法就是把它整体的替换。但是我们需要动态处理的权限是跟方法参数相关的，而 PermissionAnnotationHandler 中是取不到方法参数的，为此我们不能直接替换掉 PermissionAnnotationHandler。PermissionAnnotationHandler 是由 PermissionAnnotationMethodInterceptor 调用的，在其父类 AuthorizingAnnotationMethodInterceptor 的 assertAuthorized 方法中调用 PermissionAnnotationHandler 时是可以获取到方法参数的。为此我们的扩展点就选在 PermissionAnnotationMethodInterceptor 类上，我们也需要把它整体的替换。Spring 的 EL 表达式可以支持解析方法参数值，这里我们选择引入 Spring 的 EL 表达式，在<code>@RequiresPermissions</code>定义权限时可以使用 Spring EL 表达式引入方法参数。同时为了兼顾静态的文本。这里引入 Spring 的 EL 表达式模板。关于 Spring 的 EL 表达式模板可以参考笔者的<a href="/blog/2393611">这篇博文</a>。我们定义自己的 PermissionAnnotationMethodInterceptor，把它继承自 PermissionAnnotationMethodInterceptor，重写 assertAuthoried 方法，方法的实现逻辑参考 PermissionAnnotationHandler 中的逻辑，但是所使用的<code>@RequiresPermissions</code>中的权限定义，是我们使用 Spring EL 表达式基于当前调用的方法作为 EvaluationContext 解析后的结果。以下是我们自己定义的 PermissionAnnotationMethodInterceptor 实现。</p>
+
+<pre><code class="language-java">public class SelfPermissionAnnotationMethodInterceptor extends PermissionAnnotationMethodInterceptor {
+
+    private final SpelExpressionParser parser = new SpelExpressionParser();
+    private final ParameterNameDiscoverer paramNameDiscoverer = new DefaultParameterNameDiscoverer();
+    private final TemplateParserContext templateParserContext = new TemplateParserContext();
+
+    public SelfPermissionAnnotationMethodInterceptor(AnnotationResolver resolver) {
+        super(resolver);
+    }
+
+    @Override
+    public void assertAuthorized(MethodInvocation mi) throws AuthorizationException {
+        Annotation annotation = super.getAnnotation(mi);
+        RequiresPermissions permAnnotation = (RequiresPermissions) annotation;
+        String[] perms = permAnnotation.value();
+        EvaluationContext evaluationContext = new MethodBasedEvaluationContext(null, mi.getMethod(), mi.getArguments(), paramNameDiscoverer);
+        for (int i=0; i&lt;perms.length; i++) {
+            Expression expression = this.parser.parseExpression(perms[i], templateParserContext);
+            //使用Spring EL表达式解析后的权限定义替换原来的权限定义
+            perms[i] = expression.getValue(evaluationContext, String.class);
+        }
+        Subject subject = getSubject();
+
+        if (perms.length == 1) {
+            subject.checkPermission(perms[0]);
+            return;
+        }
+        if (Logical.AND.equals(permAnnotation.logical())) {
+            getSubject().checkPermissions(perms);
+            return;
+        }
+        if (Logical.OR.equals(permAnnotation.logical())) {
+            // Avoid processing exceptions unnecessarily - &quot;delay&quot; throwing the exception by calling hasRole first
+            boolean hasAtLeastOnePermission = false;
+            for (String permission : perms) if (getSubject().isPermitted(permission)) hasAtLeastOnePermission = true;
+            // Cause the exception if none of the role match, note that the exception message will be a bit misleading
+            if (!hasAtLeastOnePermission) getSubject().checkPermission(perms[0]);
+
+        }
+    }
+
+}
+</code></pre>
+
+<p>定义了自己的 PermissionAnnotationMethodInterceptor 后，我们需要替换原来的 PermissionAnnotationMethodInterceptor 为我们自己的 PermissionAnnotationMethodInterceptor。根据前面介绍的 Shiro 整合 Spring 后使用<code>@RequiresPermissions</code>等注解的原理我们知道 PermissionAnnotationMethodInterceptor 是由 AopAllianceAnnotationsAuthorizingMethodInterceptor 指定的，而后者又是由 AuthorizationAttributeSourceAdvisor 指定的。为此我们需要在定义 AuthorizationAttributeSourceAdvisor 时通过显示定义 AopAllianceAnnotationsAuthorizingMethodInterceptor 的方式显示的定义其中的 AuthorizingAnnotationMethodInterceptor，然后把自带的 PermissionAnnotationMethodInterceptor 替换为我们自定义的 SelfAuthorizingAnnotationMethodInterceptor。替换后的定义如下：</p>
+
+<pre><code>&lt;bean class=&quot;org.apache.shiro.spring.security.interceptor.AuthorizationAttributeSourceAdvisor&quot;&gt;
+    &lt;property /&gt;
+    &lt;property &gt;
+        &lt;bean class=&quot;org.apache.shiro.spring.security.interceptor.AopAllianceAnnotationsAuthorizingMethodInterceptor&quot;&gt;
+            &lt;property &gt;
+                &lt;util:list&gt;
+                    &lt;bean class=&quot;org.apache.shiro.authz.aop.RoleAnnotationMethodInterceptor&quot;
+                        c:resolver-ref=&quot;springAnnotationResolver&quot;/&gt;
+                    &lt;!-- 使用自定义的PermissionAnnotationMethodInterceptor --&gt;
+                    &lt;bean class=&quot;com.elim.chat.shiro.SelfPermissionAnnotationMethodInterceptor&quot;
+                        c:resolver-ref=&quot;springAnnotationResolver&quot;/&gt;
+                    &lt;bean class=&quot;org.apache.shiro.authz.aop.AuthenticatedAnnotationMethodInterceptor&quot;
+                        c:resolver-ref=&quot;springAnnotationResolver&quot;/&gt;
+                    &lt;bean class=&quot;org.apache.shiro.authz.aop.UserAnnotationMethodInterceptor&quot;
+                        c:resolver-ref=&quot;springAnnotationResolver&quot;/&gt;
+                    &lt;bean class=&quot;org.apache.shiro.authz.aop.GuestAnnotationMethodInterceptor&quot;
+                        c:resolver-ref=&quot;springAnnotationResolver&quot;/&gt;
+                &lt;/util:list&gt;
+            &lt;/property&gt;
+        &lt;/bean&gt;
+    &lt;/property&gt;
+&lt;/bean&gt;
+
+&lt;bean id=&quot;springAnnotationResolver&quot; class=&quot;org.apache.shiro.spring.aop.SpringAnnotationResolver&quot;/&gt;
+</code></pre>
+
+<p>为了演示前面示例的动态的权限，我们把角色与权限的关系调整如下，让 role1、role2 和 role3 分别拥有 query:1、query:2 和 query:3 的权限。此时 user1 将拥有 query:1 和 query:2 的权限。</p>
+
+<pre><code class="language-xml">&lt;bean id=&quot;realm&quot; class=&quot;org.apache.shiro.realm.text.TextConfigurationRealm&quot;&gt;
+    &lt;property &gt;
+        &lt;value&gt;
+            user1=pass1,role1,role2
+            user2=pass2,role2,role3
+            admin=admin,admin
+        &lt;/value&gt;
+    &lt;/property&gt;
+    &lt;property &gt;
+        &lt;value&gt;
+            role1=perm1,perm2,query:1
+            role2=perm1,perm3,query:2
+            role3=perm3,perm4,query:3
+        &lt;/value&gt;
+    &lt;/property&gt;
+&lt;/bean&gt;
+</code></pre>
+
+<p>此时<code>@RequiresPermissions</code>中指定权限时就可以使用 Spring EL 表达式支持的语法了。因为我们在定义 SelfPermissionAnnotationMethodInterceptor 时已经指定了应用基于模板的表达式解析，此时权限中定义的文本都将作为文本解析，动态的部分默认需要使用<code>#{</code>前缀和<code>}</code>后缀包起来（这个前缀和后缀是可以指定的，但是默认就好）。在动态部分中可以使用<code>#</code>前缀引用变量，基于方法的表达式解析中可以使用参数名或<code>p参数索引</code>的形式引用方法参数。所以上面我们需要动态的权限的 query 方法的<code>@RequiresPermissions</code>定义如下。</p>
+
+<pre><code class="language-java">@RequestMapping(&quot;/service/{type}&quot;)
+@RequiresPermissions(&quot;query:#{#type}&quot;)
+public Object query(@PathVariable(&quot;type&quot;) int type) {
+    return this.realService.query(type);
+}
+</code></pre>
+
+<p>这样 user1 在访问<code>/service/1</code>和<code>/service/2</code>是 OK 的，但是在访问<code>/service/3</code>和<code>/service/300</code>时会提示没有权限，因为 user1 没有<code>query:3</code>和<code>query:300</code>的权限。</p>
 
                         
                       </div>
@@ -203,7 +776,7 @@
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/10/7</span>
+                    <span class="date">2018/10/28</span>
                     <span>posted in&nbsp;</span> 
           				  
           					    <span class="posted-in"><a href='Authn&Authz.html'>Authn&Authz</a></span>
@@ -296,31 +869,31 @@
 	      
 		      
 			      <li class="post">
-			        <a href="15389311738065.html">重构到更深层的模型</a>
+			        <a href="15459058392039.html">Reliable Domain Events</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389278377243.html">IAM of Google Cloud</a>
+			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389224951575.html">RSocket, a New Application Network Protocol for Reactive Applications, Announced at SpringOne</a>
+			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389220103546.html">如何形象地描述RxJava中的背压和流控机制？</a>
+			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389214670417.html">Modeling Uncertainty with Reactive DDD</a>
+			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
 			      </li>
 		     
 		  

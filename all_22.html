@@ -105,555 +105,429 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15359384213292.html">
+                <a class="clearlink" href="15401080666894.html">
                 
-                  <h1>Securing Spring Boot with JWTs</h1>
+                  <h1>Thread Pools in NGINX Boost Performance 9x!</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
-                        	<pre><code>Dylan Meeus September 20, 2016
-</code></pre>
-
-<blockquote>
-<p><a href="https://auth0.com/blog/securing-spring-boot-with-jwts/">https://auth0.com/blog/securing-spring-boot-with-jwts/</a></p>
+                        	<blockquote>
+<p><a href="https://www.nginx.com/blog/thread-pools-boost-performance-9x/">https://www.nginx.com/blog/thread-pools-boost-performance-9x/</a></p>
 </blockquote>
 
-<pre><code>Learn how to set up a Spring Boot project using Java, and secure it with JWTs.  
-</code></pre>
+<p>It’s well known that NGINX uses an <a href="http://nginx.com/blog/inside-nginx-how-we-designed-for-performance-scale/">asynchronous, event‑driven approach to handling connections</a>. This means that instead of creating another dedicated process or thread for each request (like servers with a traditional architecture), it handles multiple connections and requests in one worker process. To achieve this, NGINX works with sockets in a non‑blocking mode and uses efficient methods such as <a href="http://man7.org/linux/man-pages/man7/epoll.7.html">epoll</a> and <a href="https://www.freebsd.org/cgi/man.cgi?query=kqueue">kqueue</a>.</p>
 
-<p>The approach exposed in this article is <strong>out-of-date</strong> and is left here for reference only. Please, <a href="/blog/implementing-jwt-authentication-on-spring-boot">check out a <strong>better and up-to-date</strong> approach on how to secure Spring Boot applications with JWTs here.</a></p>
+<p>Because the number of full‑weight processes is small (usually only one per CPU core) and constant, much less memory is consumed and CPU cycles aren’t wasted on task switching. The advantages of such an approach are well‑known through the example of NGINX itself. It successfully handles millions of simultaneous requests and scales very well.</p>
 
-<p><strong>TL;DR:</strong> Spring Boot is a technology that makes it easy to create Java and Groovy applications utilizing the full power of Spring, with minimal setup. It allows you to create applications that &#39;just run&#39; without hassle; and even the project setup becomes a breeze. Read on to find out how to set up a fully-functioning project and secure it with JWT in almost no time!</p>
+<p><img src="media/15401080666894/15401081464365.jpg" alt=""/></p>
 
-<h2 id="toc_0">Spring Boot Overview</h2>
+<blockquote>
+<p>Each process consumes additional memory, and each switch between them consumes CPU cycles and trashes L‑caches</p>
+</blockquote>
 
-<p><a href="https://projects.spring.io/spring-boot/">Spring Boot</a> is a technology from <a href="https://pivotal.io/">Pivotal</a>, known for giving us the powerful Spring framework. With Spring Boot, they offer an easy way to set up a project and get it running in no time. They took the approach of valuing convention over configuration, meaning that you will spend a lot less time struggling with the setup and more time focusing on what is unique about your project. Along with having an embedded Tomcat, Jetty, or Undertow, a large number of possible the deployment issues have been eliminated, causing most applications to &#39;just run&#39;.</p>
+<p>But the asynchronous, event‑driven approach still has a problem. Or, as I like to think of it, an “enemy”. And the name of the enemy is: <strong>blocking</strong>. Unfortunately, many third‑party modules use blocking calls, and users (and sometimes even the developers of the modules) aren’t aware of the drawbacks. Blocking operations can ruin NGINX performance and must be avoided at all costs.</p>
 
-<p>Above all, Spring Boot is meant to make it <u>easy</u> to get a project running, starting all the way at the beginning by providing multiple ways to set up a Spring Boot project. Let&#39;s jump right into setting up our project and getting our&#39;Hello World&#39;!</p>
+<p>Even in the current official NGINX code it’s not possible to avoid blocking operations in every case, and to solve this problem the new “thread pools” mechanism was <a href="http://hg.nginx.org/nginx/rev/466bd63b63d1">implemented in NGINX version 1.7.11</a> and <a href="http://nginx.com/blog/nginx-plus-r7-released/#thread-pools">NGINX Plus Release 7</a>. What it is and how it supposed to be used, we will cover later. Now let’s meet face to face with our enemy.</p>
 
-<p>If you can&#39;t wait to see the result, feel free to check out the full code on this <a href="https://github.com/auth0-blog/spring-boot-jwts">GitHub repository</a>.</p>
+<p><u>Editor – For an overview of NGINX Plus R7, see <a href="https://www.nginx.com/blog/nginx-plus-r7-released/">Announcing NGINX Plus R7</a> on our blog.</u></p>
 
-<h2 id="toc_1">Setting Up the Spring Boot Project</h2>
-
-<p>There are various ways to get started with a Spring Boot project. They provide both a <a href="http://start.spring.io/">quick start</a> and a <a href="https://docs.spring.io/spring-boot/docs/current/reference/html/cli-using-the-cli.html">CLI tool</a>. If we didn&#39;t want to use those, we could also set up a project with Spring Boot manually, using either <a href="https://maven.apache.org/">Maven</a> or <a href="https://gradle.org/">Gradle</a> and adding the necessary dependencies ourselves. In this post we will set up a project using the quick start approach, which can be found at <a href="http://start.spring.io/">start.spring.io</a>.</p>
-
-<p>When we head over to the quick start webpage, we are presented with a few options on the main page. We will generate a <u>Maven project</u> with the latest version of Spring Boot (1.5.2 last time I checked). With the Project Metadata we could set up the standard properties of a Maven artifact, but we&#39;ll just leave it at the default for now.</p>
-
-<p>Next, we can search for dependencies. Searching for dependencies is a handy feature once you have used Spring Boot several times and are aware of the available dependencies. Because this is our first project, however, we can click on the link at the bottom that says <u>switch to full version</u>. After doing this, we have a webpage with checkboxes for all the available dependencies. Because we want to create a web project, we&#39;ll tick that checkbox under the <u>web</u> heading.</p>
-
-<p><img src="https://cdn.auth0.com/blog/spring-boot-auth/springboot-start.png" alt=""/></p>
-
-<p>There are a lot of dependencies available that work with Spring Boot out of the box. Many of the common technologies are provided here, such as dependencies for <a href="https://spring.io/understanding/HATEOAS">HATEOAS</a>, <a href="https://en.wikibooks.org/wiki/Java_Persistence/What_is_JPA%3F">JPA</a>, <a href="https://www.mongodb.com/">MongoDB</a>, and <a href="http://www.thymeleaf.org/">Thymeleaf</a>. If we are going to use one of the common Java technologies, chances are good that it can easily be included in our Spring Boot project.</p>
-
-<p>For now, all we really need is the <u>Web</u> dependency, which gives us several things including a Tomcat server and the <a href="https://docs.spring.io/spring/docs/current/spring-framework-reference/html/mvc.html">Spring MVC framework</a>. Once we click on the <u>Generate Project</u> button, a download containing a starting project for our selected setup will start. Setting up a Spring Boot project really is just a matter of minutes!</p>
-
-<h2 id="toc_2">Our First Spring Boot Application</h2>
-
-<p>Once we have downloaded our zip file, the project can be imported into our favorite editor. At this point, some code is already generated for us. Let&#39;s first take a look at some of the code, to understand what Spring Boot has prepared for us.</p>
-
-<p>As this is a Maven project, we will examine the <code>pom.xml</code> file first. The top of the file is pretty much a standard pom file. It identifies our project by the <code>groupId</code> and the <code>artifactId</code>. Our project also has a name and a description. Next, there is a reference to a parent. This is the parent of all Spring Boot starters, and contains further dependencies needed for the base of Spring Boot. Also, the <code>version</code> tag of the parent, defines the Spring Boot version that we are using.</p>
-
-<p>This is followed by the properties, which tells us something more about the project. Because we have chosen Java 8, the properties also reflect this in the <code>java.version</code> tag.</p>
-
-<p>Here comes the interesting part:</p>
-
-<pre><code>&lt;dependencies&gt;
-    &lt;dependency&gt;
-        &lt;groupId&gt;org.springframework.boot&lt;/groupId&gt;
-        &lt;artifactId&gt;spring-boot-starter-web&lt;/artifactId&gt;
-    &lt;/dependency&gt;
-
-    &lt;dependency&gt;
-        &lt;groupId&gt;org.springframework.boot&lt;/groupId&gt;
-        &lt;artifactId&gt;spring-boot-starter-test&lt;/artifactId&gt;
-        &lt;scope&gt;test&lt;/scope&gt;
-    &lt;/dependency&gt;
-&lt;/dependencies&gt;
-
-&lt;build&gt;
-    &lt;plugins&gt;
-        &lt;plugin&gt;
-            &lt;groupId&gt;org.springframework.boot&lt;/groupId&gt;
-            &lt;artifactId&gt;spring-boot-maven-plugin&lt;/artifactId&gt;
-        &lt;/plugin&gt;
-    &lt;/plugins&gt;
-&lt;/build&gt;
-
-</code></pre>
-
-<p>The dependencies presented here are the ones that were selected during the setup. Because we only selected the Web dependency, we will see both <u>Web</u> and <u>Test</u> dependencies (_Test_ is provided by default, for unit testing our application). Although it might look like there are not a lot of dependencies being pulled in, that&#39;s not quite the case. The <code>spring-boot-starter-...</code> dependencies that we enter here actually fetch other dependencies they need. Because this is invisible to us, the pom.xml file looks quite clean, and all the management of those dependencies is taken care of for us as well.</p>
-
-<p>Next, there is one plugin, the <code>spring-boot-maven-plugin</code>. This will let us build and deploy the entire application with one simple Maven command:<code>mvn spring-boot:run</code>. If we try to run this now, there won&#39;t be anything interesting yet. After running that command, we can go to <code>localhost:8080</code>, though all we will see is a &quot;Whitelabel Error Page&quot;. But, if all went well, the compilation worked without any problems and our server is up and running. Time to start doing something interesting with it!</p>
-
-<h2 id="toc_3">Creating a Web Application</h2>
-
-<p>In this part, we will set up a small application that will accept HTTP requests on various paths and return data. To keep this example concise, all the information will be statically provided. At first, we will just expose all the data to everyone; then we will secure some routes with a JWT and provide a login mechanism.</p>
-
-<p>For starters, we will just create a mapping against the root (<code>/</code>) of our webserver in order to verify that this is working; afterwards we can add more specific routes for the various functions that we will offer. When we want to make methods for certain paths, we need to create a <code>RestController</code>. For now we will use our only class for this, and we will add the <code>RestController</code> and <code>EnableAutoConfiguration</code> annotations to this class. The class should be called <code>DemoApplication</code> and it is the only class with a main method.</p>
-
-<pre><code>package com.example;
-
-import org.springframework.boot.SpringApplication;
-import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
-import org.springframework.boot.autoconfigure.SpringBootApplication;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RestController;
-
-@SpringBootApplication
-@RestController
-@EnableAutoConfiguration
-public class DemoApplication {
-
-    @RequestMapping(&quot;/&quot;)
-    String hello() {
-        return &quot;hello world&quot;;
-    }
-
-    public static void main(String[] args) {
-        SpringApplication.run(DemoApplication.class, args);
-    }
-}
-
-</code></pre>
-
-<p>When we run our application, by using <code>mvn spring-boot:run</code>, we can navigate to <code>localhost:8080</code>, and are presented with a &quot;Hello World&quot; message. An alternative approach would be to use a CLI tool like <code>curl</code> or the <code>postman</code> application to send requests to the webserver. When dealing with JWTs, <a href="https://www.getpostman.com/">postman</a> offers an incredibly convenient way to test our application.</p>
-
-<p>Now we will extend this example a little bit. We will create a new class <code>UserController</code>, which will be once again annotated with <code>@RestController</code>. We will return some static JSON data at route <code>/users</code> to begin with.</p>
-
-<pre><code>package com.example;
-
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.ResponseBody;
-import org.springframework.web.bind.annotation.RestController;
-
-@RestController
-public class UserController {
-
-  /* Maps to all HTTP actions by default (GET,POST,..)*/
-  @RequestMapping(&quot;/users&quot;)
-  public @ResponseBody String getUsers() {
-    return &quot;{\&quot;users\&quot;:[{\&quot;firstname\&quot;:\&quot;Richard\&quot;, \&quot;lastname\&quot;:\&quot;Feynman\&quot;},&quot; +
-           &quot;{\&quot;firstname\&quot;:\&quot;Marie\&quot;,\&quot;lastname\&quot;:\&quot;Curie\&quot;}]}&quot;;
-  }
-}
-
-</code></pre>
-
-<p>We have some pretty similar code to our original &#39;Hello World&#39;, but now we are returning JSON-encoded data. For this reason, the <code>@ResponseBody</code> annotation has been added. With this annotation, when a request specifies in the headers that it wants to accept <code>application/json</code>, the data will be returned to the client as JSON. When testing this with postman, the returned data look like this:</p>
-
-<pre><code> {
-     &quot;user&quot;: [{
-         &quot;firstname&quot;: &quot;Richard&quot;,
-         &quot;lastname&quot;: &quot;Feynman&quot;
-     }, {
-         &quot;firstname&quot;: &quot;Marie&quot;,
-         &quot;lastname&quot;: &quot;Curie&quot;
-     }]
- }
-
-</code></pre>
-
-<h2 id="toc_4">Securing Spring Boot Application With JWT</h2>
-
-<p><a href="/blog/implementing-jwt-authentication-on-spring-boot">A <strong>better and easier</strong> way on how to secure Spring Boot with JWTs is explained here. Take a look!</a></p>
-
-<p>At this point, our application is exposed to everyone. Anyone can query our webserver and request a list of all the users. We&#39;d prefer that it&#39;s only exposed to people who are logged in. For this purpose, we will secure our application with JSON Web Tokens (JWTs).</p>
-
-<p>JWT is a relatively new technology, defined in <a href="https://tools.ietf.org/html/rfc7519">rfc-7519</a>. It defines a compact, URL-safe way of sharing data between parties using a JSON object. The information is signed with either a secret (using an HMAC) or a public/private key-pair using RSA. If you want to learn more about <a href="https://auth0.com/learn/json-web-tokens/">JWTs</a>, we&#39;ve got you covered!</p>
-
-<h3 id="toc_5">Adding Secure Routes</h3>
-
-<p>The first step is to secure some routes of our application. For this demo we will expose the routes <code>/</code> and <code>/login</code> to everyone, and only expose <code>/users</code> to people whom can provide a valid JWT token. To achieve this, we start by adding <code>spring-boot-starter-security</code> to our <code>pom.xml</code>. This will give us the necessary classes to start working with authentication in Spring Boot. In addition, we will add a dependency to manage our JWTs.</p>
-
-<pre><code>&lt;dependency&gt;
-    &lt;groupId&gt;org.springframework.boot&lt;/groupId&gt;
-    &lt;artifactId&gt;spring-boot-starter-security&lt;/artifactId&gt;
-&lt;/dependency&gt;
-
-&lt;dependency&gt;
-    &lt;groupId&gt;io.jsonwebtoken&lt;/groupId&gt;
-    &lt;artifactId&gt;jjwt&lt;/artifactId&gt;
-    &lt;version&gt;0.7.0&lt;/version&gt;
-&lt;/dependency&gt;
-
-</code></pre>
-
-<p>Once we have updated the <code>pom.xml</code> file and imported the new dependencies, we are ready to start securing our routes. First of all, we want to avoid exposing <code>/users</code> to everyone, so we will create a configuration that restricts its access. We will accomplish this by adding a new class called <code>WebSecurityConfig</code> that extends the <code>WebSecurityConfigurerAdapter</code> class from Spring Security. Let&#39;s add this new class, under a new package called <code>com.example.security</code>, with the following content:</p>
-
-<pre><code>package com.example.security;
-
-import org.springframework.context.annotation.Configuration;
-import org.springframework.http.HttpMethod;
-import org.springframework.security.config.annotation.authentication.builders.AuthenticationManagerBuilder;
-import org.springframework.security.config.annotation.web.builders.HttpSecurity;
-import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
-import org.springframework.security.config.annotation.web.configuration.WebSecurityConfigurerAdapter;
-import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
-
-@Configuration
-@EnableWebSecurity
-public class WebSecurityConfig extends WebSecurityConfigurerAdapter {
-  @Override
-  protected void configure(HttpSecurity http) throws Exception {
-    http.csrf().disable().authorizeRequests()
-        .antMatchers(&quot;/&quot;).permitAll()
-        .antMatchers(HttpMethod.POST, &quot;/login&quot;).permitAll()
-        .anyRequest().authenticated()
-        .and()
-        // We filter the api/login requests
-        .addFilterBefore(new JWTLoginFilter(&quot;/login&quot;, authenticationManager()),
-                UsernamePasswordAuthenticationFilter.class)
-        // And filter other requests to check the presence of JWT in header
-        .addFilterBefore(new JWTAuthenticationFilter(),
-                UsernamePasswordAuthenticationFilter.class);
-  }
-
-  @Override
-  protected void configure(AuthenticationManagerBuilder auth) throws Exception {
-    // Create a default account
-    auth.inMemoryAuthentication()
-        .withUser(&quot;admin&quot;)
-        .password(&quot;password&quot;)
-        .roles(&quot;ADMIN&quot;);
-  }
-}
-
-</code></pre>
-
-<p>Here we have decided that everyone can access the <code>/</code> route, and that the <code>/login</code> route is only publicly available for <code>POST</code> requests. For all other routes, authentication is required. You may have noted that the <code>JWTLoginFilter</code> class and the <code>JWTAuthenticationFilter</code> class are missing. We will create them soon, but their goal is to filter for the <code>/login</code> route, and every other route, to decide what should happen when someone access these routes. In this class, we also added a default account that we can use to test our application.</p>
-
-<p>The great thing here is that we have now secured our application without having to change code for existing routes. We did not alter our previously created <code>UserController</code>, nor did we have to write any xml-configuration.</p>
-
-<p>The classes <code>JWTLoginFilter</code> and <code>JWTAuthenticationFilter</code> will handle logging in and authenticating users, respectively. Before we can use these classes, however, we need to create a class that can handle JWTs.</p>
-
-<h3 id="toc_6">Creating a JWT Service on Spring Boot</h3>
-
-<p>Our JWT service will deal with the creation and verification of our tokens. In this example, we will create a token based on a username and an expiration time, and then sign it with a secret (using an HMAC). We will use <code>io.jsonwebtoken.Jwts</code> here for creating and verifying our tokens; they also provide a bunch of algorithms we can use to sign our secret.</p>
-
-<p>For this, let&#39;s create a new class called <code>TokenAuthenticationService</code>, under the <code>com.example.security</code>, with the following code:</p>
-
-<pre><code>package com.example.security;
-
-import io.jsonwebtoken.Jwts;
-import io.jsonwebtoken.SignatureAlgorithm;
-import org.springframework.security
-            .authentication.UsernamePasswordAuthenticationToken;
-import org.springframework.security.core.Authentication;
-
-import javax.servlet.http.HttpServletRequest;
-import javax.servlet.http.HttpServletResponse;
-import java.util.Date;
-
-import static java.util.Collections.emptyList;
-
-class TokenAuthenticationService {
-  static final long EXPIRATIONTIME = 864_000_000; // 10 days
-  static final String SECRET = &quot;ThisIsASecret&quot;;
-  static final String TOKEN_PREFIX = &quot;Bearer&quot;;
-  static final String HEADER_STRING = &quot;Authorization&quot;;
-
-  static void addAuthentication(HttpServletResponse res, String username) {
-    String JWT = Jwts.builder()
-        .setSubject(username)
-        .setExpiration(new Date(System.currentTimeMillis() + EXPIRATIONTIME))
-        .signWith(SignatureAlgorithm.HS512, SECRET)
-        .compact();
-    res.addHeader(HEADER_STRING, TOKEN_PREFIX + &quot; &quot; + JWT);
-  }
-
-  static Authentication getAuthentication(HttpServletRequest request) {
-    String token = request.getHeader(HEADER_STRING);
-    if (token != null) {
-      // parse the token.
-      String user = Jwts.parser()
-          .setSigningKey(SECRET)
-          .parseClaimsJws(token.replace(TOKEN_PREFIX, &quot;&quot;))
-          .getBody()
-          .getSubject();
-
-      return user != null ?
-          new UsernamePasswordAuthenticationToken(user, null, emptyList()) :
-          null;
-    }
-    return null;
-  }
-}
-
-</code></pre>
-
-<h3 id="toc_7">Authenticating with JWTs</h3>
-
-<p>We now have everything set up to use JWTs in our authentication process. We&#39;ll first take a look at the <code>JWTLoginFilter</code> class. This class will intercept <code>POST</code> requests on the <code>/login</code> path and attempt to authenticate the user. When the user is successfully authenticated, it will return a JWT in the <code>Authorization</code> header of the response. Let&#39;s create this class, under the <code>com.example.security</code> package, with the following content:</p>
-
-<pre><code>package com.example.security;
-
-import com.fasterxml.jackson.databind.ObjectMapper;
-import org.springframework.security.authentication.AuthenticationManager;
-import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
-import org.springframework.security.core.Authentication;
-import org.springframework.security.core.AuthenticationException;
-import org.springframework.security.web.authentication.AbstractAuthenticationProcessingFilter;
-import org.springframework.security.web.util.matcher.AntPathRequestMatcher;
-
-import javax.servlet.FilterChain;
-import javax.servlet.ServletException;
-import javax.servlet.http.HttpServletRequest;
-import javax.servlet.http.HttpServletResponse;
-import java.io.IOException;
-import java.util.Collections;
-
-public class JWTLoginFilter extends AbstractAuthenticationProcessingFilter {
-
-  public JWTLoginFilter(String url, AuthenticationManager authManager) {
-    super(new AntPathRequestMatcher(url));
-    setAuthenticationManager(authManager);
-  }
-
-  @Override
-  public Authentication attemptAuthentication(
-      HttpServletRequest req, HttpServletResponse res)
-      throws AuthenticationException, IOException, ServletException {
-    AccountCredentials creds = new ObjectMapper()
-        .readValue(req.getInputStream(), AccountCredentials.class);
-    return getAuthenticationManager().authenticate(
-        new UsernamePasswordAuthenticationToken(
-            creds.getUsername(),
-            creds.getPassword(),
-            Collections.emptyList()
-        )
-    );
-  }
-
-  @Override
-  protected void successfulAuthentication(
-      HttpServletRequest req,
-      HttpServletResponse res, FilterChain chain,
-      Authentication auth) throws IOException, ServletException {
-    TokenAuthenticationService
-        .addAuthentication(res, auth.getName());
-  }
-}
-
-</code></pre>
-
-<p>During the authentication attempt, which is dealt by the <code>attemptAuthentication</code> method, we retrieve the username and password from the request. After they are retrieved, we use the <code>AuthenticationManager</code> to verify that these details match with an existing user. If it does, we enter the <code>successfulAuthentication</code> method. In this method we fetch the name from the authenticated user, and pass it on to <code>TokenAuthenticationService</code>, which will then add a JWT to the response.</p>
-
-<p>Now we will implement the <code>JWTAuthenticationFilter</code> class. Let&#39;s create this class, under the same <code>com.example.security</code> package, with the following content:</p>
-
-<pre><code>package com.example.security;
-
-import org.springframework.security.core.context.SecurityContextHolder;
-import org.springframework.web.filter.GenericFilterBean;
-import org.springframework.security.core.Authentication;
-import javax.servlet.FilterChain;
-import javax.servlet.ServletException;
-import javax.servlet.ServletRequest;
-import javax.servlet.ServletResponse;
-import javax.servlet.http.HttpServletRequest;
-import java.io.IOException;
-
-public class JWTAuthenticationFilter extends GenericFilterBean {
-
-  @Override
-  public void doFilter(ServletRequest request,
-             ServletResponse response,
-             FilterChain filterChain)
-      throws IOException, ServletException {
-    Authentication authentication = TokenAuthenticationService
-        .getAuthentication((HttpServletRequest)request);
-
-    SecurityContextHolder.getContext()
-        .setAuthentication(authentication);
-    filterChain.doFilter(request,response);
-  }
-}
-
-</code></pre>
-
-<p>What this filter does is to intercept all requests to validate the presence of the JWT–that is, the ones that are not issued to <code>/</code> nor <code>/users</code>. This validation is done with the help of the <code>TokenAuthenticationService</code> class.</p>
-
-<p>We need just one extra class: the <code>AccountCredentials</code> class. This will be used to map request data when a <code>POST</code> call is made to <code>/login</code> path. The request data should contain the username and password as part of the body. Let&#39;s create this class, under the same <code>com.example.security</code> package, with the following content:</p>
-
-<pre><code>package com.example.security;
-
-public class AccountCredentials {
-
-  private String username;
-  private String password;
-  // getters &amp; setters
-}
-
-</code></pre>
-
-<h3 id="toc_8">Running the Spring Boot Application</h3>
-
-<p>Our Spring Boot application is now secured and supports authentication with JWTs, so we can go ahead and run our application again. When our server is up and running, we can test this out by querying <code>http://localhost:8080/users</code>, and we should get a message saying &quot;Access Denied.&quot; To authenticate ourselves, we will send a <code>POST</code> request to <code>/login</code> with our user&#39;s credentials in the body: <code>{&quot;username&quot;:&quot;admin&quot;,&quot;password&quot;:&quot;password&quot;}</code>.</p>
-
-<p><img src="https://cdn.auth0.com/blog/spring-boot-auth/postman.png" alt=""/></p>
-
-<p>In the response to this request, we will get a token as part of the <u>Authorization</u> header, prefixed by &quot;Bearer&quot;. We can copy this token, with the <code>Bearer</code> prefix, to issue GET requests to our <code>/users</code> path. To do this, alter the request to <code>/users</code> to include a header called <code>Authorization</code>, paste the JWT received when logging in, and launch the request. If all went well, we should once again be presented with the users.</p>
-
-<p><img src="https://cdn.auth0.com/blog/spring-boot-auth/getusers.png" alt=""/></p>
-
-<h2 id="toc_9">Advantages of Spring Boot</h2>
-
-<p>Now that we&#39;ve completed our Spring Boot application, let&#39;s reflect on the advantages this framework gave us:</p>
+<p>_For detailed discussions of other new features in NGINX Plus R7, see these related blog posts:</p>
 
 <ul>
-<li><p><strong>Fast development:</strong> Setting up the project took us just a few minutes, getting it to run just a few more.</p></li>
-<li><p><strong>Many dependencies managed for us:</strong> While we still had to alter our pom.xml file, we did not have to include too many dependencies. Most of them are added on build time by Maven as dependencies to Spring Boot default libs. Issues of incompatible dependencies are largely gone because of this.</p></li>
-<li><p><strong>No XML configuration:</strong> At no point did we have to write XML configuration files: all configuration was done from within Java files by the use of annotations and existing classes and methods.</p></li>
-<li><p><strong>Self-contained applications:</strong> The applications we can make with Spring Boot are self-contained. We can simply run the application using one simple command, and the deployment (containing a webserver) is done for us.</p></li>
-<li><p><strong>Leverage a mature framework:</strong> Spring Boot can leverage the power of the mature Spring framework, which is something many Java developers are already familiar with, making adoption of Spring Boot more convenient!</p></li>
-<li><p><strong>Well documented:</strong> Being well documented is important, and Pivotal has great documentation on how to get started with Spring Boot and Spring. If you&#39;re curious about learning more, you should check out the <a href="https://spring.io/guides">Getting Started Guides</a>.</p></li>
+<li>  <a href="https://www.nginx.com/blog/http2-r7/">HTTP/2 Now Fully Supported in NGINX Plus</a></li>
+<li>  <a href="https://www.nginx.com/blog/socket-sharding-nginx-release-1-9-1/">Socket Sharding in NGINX</a></li>
+<li>  <a href="https://www.nginx.com/blog/dashboard-r7">The New NGINX Plus Dashboard in Release 7</a></li>
+<li>  <a href="https://www.nginx.com/blog/tcp-load-balancing-r7">TCP Load Balancing in NGINX Plus R7</a>_ </li>
 </ul>
 
-<h3 id="toc_10">Spring Boot and MicroServices</h3>
+<h2 id="toc_0">The Problem</h2>
 
-<p>One of the advantages of Spring Boot lies with microservices. Microservices are a successor of the SOA, service oriented architecture. A microservice is responsible for managing a single data domain and the functions thereof. Spring Boot is actually a great example of this principle, as it consists of many different modules that we can use. Recall that during the setup of our application, we could choose between a whole range of these dependencies, dependencies that could be added to our project by including a simple reference to them in our <code>pom.xml</code> file. Each of these dependencies can be thought of as a microservice. Each project would function as a self-contained service that we could then use in other projects.</p>
+<p>First, for better understanding of the problem a few words about how NGINX works.</p>
 
-<p><img src="https://cdn.auth0.com/blog/microservices/Microservices2.png" alt=""/></p>
+<p>In general, NGINX is an event handler, a controller that receives information from the kernel about all events occurring on connections and then gives commands to the operating system about what to do. In fact, NGINX does all the hard work by orchestrating the operating system, while the operating system does the routine work of reading and sending bytes. So it’s very important for NGINX to respond fast and in a timely manner.</p>
 
-<p><u>Typical microservices diagram</u></p>
+<p><img src="media/15401080666894/15401081641234.jpg" alt=""/></p>
 
-<p>In our example, we have created a REST service that is self-contained. We could focus on writing just the REST api that deals with logging in and retrieving a list of users. We could then create another Spring Boot project for another part of our application (say, for example, a JSP application or desktop client), if we were so inclined. These Spring Boot applications could then communicate with each other via HTTP, but would be largely independent of each other. This all makes Spring Boot a popular choice in modern architectures, and one worth checking out!</p>
+<blockquote>
+<p>The worker process listens for and processes events from the kernel</p>
+</blockquote>
 
-<h2 id="toc_11">Aside: Using Spring Boot with Auth0</h2>
+<p>The events can be timeouts, notifications about sockets ready to read or to write, or notifications about an error that occurred. NGINX receives a bunch of events and then processes them one by one, doing the necessary actions. Thus all the processing is done in a simple loop over a queue in one thread. NGINX dequeues an event from the queue and then reacts to it by, for example, writing or reading a socket. In most cases, this is extremely quick (perhaps just requiring a few CPU cycles to copy some data in memory) and NGINX proceeds through all of the events in the queue in an instant.</p>
 
-<p>Securing Spring Boot APIs with Auth0 is an easy task, as we will see, and brings a lot of great features to the table. With Auth0 we have to write just a few lines of code to get a solid <a href="https://auth0.com/docs/identityproviders">identity management solution</a>, including <a href="https://auth0.com/docs/sso/single-sign-on">single sign-on</a>, user management, support for social identity providers (like Facebook, GitHub, Twitter, etc.), enterprise (Active Directory, LDAP, SAML, etc.), and your own database of users.</p>
+<p><img src="media/15401080666894/15401081758160.jpg" alt=""/></p>
 
-<p>For starters, if you haven&#39;t done so yet, this is a good time to sign up for a <a href="https://auth0.com/signup">free Auth0 account</a>. Having an Auth0 account, the first thing that we must do is to <a href="https://manage.auth0.com/#/apis">create a new API on the dashboard</a>. An API is an entity that represents an external resource, capable of accepting and responding to protected resource requests made by client applications. And this is exactly what the Spring Boot app that we just built is, an API.</p>
+<blockquote>
+<p>All processing is done in a simple loop by one thread</p>
+</blockquote>
 
-<p><img src="https://cdn.auth0.com/blog/spring-boot-jwts/create-api.png" alt=""/></p>
+<p>But what will happen if some long and heavy operation has occurred? The whole cycle of event processing will get stuck waiting for this operation to finish.</p>
 
-<p><strong>Note</strong>, if you don&#39;t already have the APIs menu item, you can enable it by going to your <a href="https://manage.auth0.com/#/account/advanced">Account Settings</a> and in the <strong>Advanced</strong> tab, scroll down until you see <strong>Enable APIs Section</strong> and flip the switch.</p>
+<p>So, by saying “a blocking operation” we mean any operation that stops the cycle of handling events for a significant amount of time. Operations can be blocking for various reasons. For example, NGINX might be busy with lengthy, CPU‑intensive processing, or it might have to wait to access a resource (such as a hard drive, or a mutex or library function call that gets responses from a database in a synchronous manner, etc.). The key point is that while processing such operations, the worker process cannot do anything else and cannot handle other events, even if there are more system resources available and some events in the queue could utilize those resources.</p>
 
-<p>When creating an API, we must define three fields: <code>Name</code>, which is just a friendly name for our new API; <code>Identifier</code>, which is a <code>String</code> that we will use when requesting an <code>access_token</code>; and the <code>Signing Algorithm</code>, which defines if this API will use a <a href="https://auth0.com/blog/json-web-token-signing-algorithms-overview/">symmetric or asymmetric algorithm</a> to sign the <code>access_token</code>. In our case, we will fill this fields, respectively, with: <code>Spring Boot Users API</code>; <code>spring-boot-jwts</code>; and <code>RS256</code> (i.e. we will use an asymmetric algorithm).</p>
+<p>Imagine a salesperson in a store with a long queue in front of him. The first guy in the queue asks for something that is not in the store but is in the warehouse. The salesperson goes to the warehouse to deliver the goods. Now the entire queue must wait a couple of hours for this delivery and everyone in the queue is unhappy. Can you imagine the reaction of the people? The waiting time of every person in the queue is increased by these hours, but the items they intend to buy might be right there in the shop.</p>
 
-<p>Auth0 supports different <a href="https://auth0.com/docs/api-auth">OAuth 2.0 flows to request access tokens</a>. In our particular case, to keep the example simple, we are going to use the <a href="https://auth0.com/docs/api-auth/grant/password">APIs &amp; Trusted Clients flow</a>. Keep in mind that this flow, although being the easiest one to implement, is the less secure one and must be used <strong>only</strong> when the the client application is <strong>absolutely trusted</strong>. Most situations will require other flows, and the <a href="https://auth0.com/docs/api-auth/which-oauth-flow-to-use">&quot;Which OAuth 2.0 flow should I use?&quot;</a> article on Auth0 can help on deciding which is the best approach.</p>
+<p><img src="media/15401080666894/15401081890992.jpg" alt=""/></p>
 
-<p>To use the <u>APIs &amp; Trusted Clients</u> flow, we must first configure the <code>Default Directory</code> property on our Auth0 account. To do so, head to the <a href="https://manage.auth0.com/#/account">Account settings</a> page and add <code>Username-Password-Authentication</code> as the value of the <code>Default Directory</code> property.</p>
+<blockquote>
+<p>Everyone in the queue has to wait for the first person’s order</p>
+</blockquote>
 
-<h3 id="toc_12">Changes to the Project</h3>
+<p>Nearly the same situation happens with NGINX when it asks to read a file that isn’t cached in memory, but needs to be read from disk. Hard drives are slow (especially the spinning ones), and while the other requests waiting in the queue might not need access to the drive, they are forced to wait anyway. As a result, latencies increase and system resources are not fully utilized.</p>
 
-<p>Since we are now using Auth0, we don&#39;t need to issue the JWTs ourselves anymore, so there is one dependency that we can remove and a few classes also. All the changes that are required can be found on the <code>auth0</code> <a href="https://github.com/auth0-blog/spring-boot-jwts/tree/auth0">branch on GitHub</a>. But we will go through the changes now.</p>
+<p><img src="media/15401080666894/15401082010258.jpg" alt=""/></p>
 
-<p>First, let&#39;s remove the classes that we don&#39;t need anymore. Remove all the files in this list:</p>
+<blockquote>
+<p>Just one blocking operation can delay all following operations for a significant time</p>
+</blockquote>
 
-<ul>
-<li>  <code>src/main/java/com/example/security/AccountCredentials.java</code></li>
-<li>  <code>src/main/java/com/example/security/JWTAuthenticationFilter.java</code></li>
-<li>  <code>src/main/java/com/example/security/JWTLoginFilter.java</code></li>
-<li>  <code>src/main/java/com/example/security/TokenAuthenticationService.java</code></li>
-</ul>
+<p>Some operating systems provide an asynchronous interface for reading and sending files and NGINX can use this interface (see the <a href="http://nginx.org/en/docs/http/ngx_http_core_module.html#aio">aio</a> directive). A good example here is FreeBSD. Unfortunately, we can’t say the same about Linux. Although Linux provides a kind of asynchronous interface for reading files, it has a couple of significant drawbacks. One of them is alignment requirements for file access and buffers, but NGINX handles that well. But the second problem is worse. The asynchronous interface requires the <code>O_DIRECT</code> flag to be set on the file descriptor, which means that any access to the file will bypass the cache in memory and increase load on the hard disks. That definitely doesn’t make it optimal for many cases.</p>
 
-<p>And then we remove the following dependency from our <code>pom.xml</code> file:</p>
+<p>To solve this problem in particular, thread pools were introduced in NGINX 1.7.11 and NGINX Plus Release 7.</p>
 
-<pre><code>&lt;dependency&gt;
-    &lt;groupId&gt;io.jsonwebtoken&lt;/groupId&gt;
-    &lt;artifactId&gt;jjwt&lt;/artifactId&gt;
-  &lt;version&gt;0.7.0&lt;/version&gt;
-&lt;/dependency&gt;
+<p>Now let’s dive into what thread pools are about and how they work.</p>
 
-</code></pre>
+<h2 id="toc_1">Thread Pools</h2>
 
-<p>Now, under <code>./src/main/resources</code>, there is a file called <code>application.properties</code>. This file needs to be populated with data from your Auth0 account. By default, when creating a new account you will have a &quot;Default App&quot;, which you could use for this. These are the important parts of that config, so remember to replace the values with the values of your application:</p>
+<p>Let’s return to our poor sales assistant who delivers goods from a faraway warehouse. But he has become smarter (or maybe he became smarter after being beaten by the crowd of angry clients?) and hired a delivery service. Now when somebody asks for something from the faraway warehouse, instead of going to the warehouse himself, he just drops an order to a delivery service and they will handle the order while our sales assistant will continue serving other customers. Thus only those clients whose goods aren’t in the store are waiting for delivery, while others can be served immediately.</p>
 
-<pre><code># spring-boot-jwts is the identifier of the API that we just created
-auth0.audience=spring-boot-jwts
-# replace YOUR-DOMAIN to get something like https://bkrebs.auth0.com/
-auth0.issuer=https://YOUR-DOMAIN.auth0.com/
+<p><img src="media/15401080666894/15401082115635.jpg" alt=""/></p>
 
-</code></pre>
+<blockquote>
+<p>Passing an order to the delivery service unblocks the queue</p>
+</blockquote>
 
-<p>Before we jump into the code, we need to add some dependencies to Maven.</p>
+<p>In terms of NGINX, the thread pool is performing the functions of the delivery service. It consists of a task queue and a number of threads that handle the queue. When a worker process needs to do a potentially long operation, instead of processing the operation by itself it puts a task in the pool’s queue, from which it can be taken and processed by any free thread.</p>
 
-<pre><code>&lt;dependency&gt;
-  &lt;groupId&gt;com.auth0&lt;/groupId&gt;
-  &lt;artifactId&gt;auth0&lt;/artifactId&gt;
-  &lt;version&gt;1.0.0&lt;/version&gt;
-&lt;/dependency&gt;
+<p><img src="media/15401080666894/15401082238769.jpg" alt=""/></p>
 
-&lt;dependency&gt;
-  &lt;groupId&gt;com.auth0&lt;/groupId&gt;
-  &lt;artifactId&gt;auth0-spring-security-api&lt;/artifactId&gt;
-  &lt;version&gt;1.0.0-rc.2&lt;/version&gt;
-&lt;/dependency&gt;
+<blockquote>
+<p>The worker process offloads blocking operations to the thread pool</p>
+</blockquote>
 
-</code></pre>
+<p>It seems then we have another queue. Right. But in this case the queue is limited by a specific resource. We can’t read from a drive faster than the drive is capable of producing data. Now at least the drive doesn’t delay processing of other events and only the requests that need to access files are waiting.</p>
 
-<p>Once we&#39;ve done this, let&#39;s replace the source code of the <code>WebSecurityConfig</code> class, under the <code>./src/main/java/com/example/security/WebSecurityConfig.java</code> file, with the following:</p>
+<p>The “reading from disk” operation is often used as the most common example of a blocking operation, but actually the thread pools implementation in NGINX can be used for any tasks that aren’t appropriate to process in the main working cycle.</p>
 
-<pre><code>package com.example.security;
+<p>At the moment, offloading to thread pools is implemented only for three essential operations: the <code>read()</code> syscall on most operating systems, <code>sendfile()</code> on Linux, and <code>aio_write()</code> on Linux which is used when writing some temporary files such as those for the cache. We will continue to test and benchmark the implementation, and we may offload other operations to the thread pools in future releases if there’s a clear benefit.</p>
 
-import com.auth0.spring.security.api.JwtWebSecurityConfigurer;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.context.annotation.Configuration;
-import org.springframework.security.config.annotation.web.builders.HttpSecurity;
-import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
-import org.springframework.security.config.annotation.web.configuration.WebSecurityConfigurerAdapter;
+<p><u>Editor – Support for the</u> <code>aio_write()</code> <u>syscall was added in <a href="http://hg.nginx.org/nginx/rev/fc72784b1f52">NGINX 1.9.13</a> and <a href="https://www.nginx.com/blog/nginx-plus-r9-released/#aio-write">NGINX Plus R9</a>.</u></p>
 
-@Configuration
-@EnableWebSecurity
-public class WebSecurityConfig extends WebSecurityConfigurerAdapter {
-  @Value(&quot;${auth0.audience}&quot;)
-  private String audience;
+<h2 id="toc_2">Benchmarking</h2>
 
-  @Value(&quot;${auth0.issuer}&quot;)
-  private String issuer;
+<p>It’s time to move from theory to practice. To demonstrate the effect of using thread pools we are going to perform a synthetic benchmark that simulates the worst mix of blocking and nonblocking operations.</p>
 
-  @Override
-  protected void configure(HttpSecurity http) throws Exception {
-    http.authorizeRequests()
-        .antMatchers(&quot;/&quot;).permitAll()
-        .antMatchers(&quot;/users&quot;).authenticated();
+<p>It requires a data set that is guaranteed not to fit in memory. On a machine with 48 GB of RAM, we have generated 256 GB of random data in 4‑MB files, and then have configured NGINX 1.9.0 to serve it.</p>
 
-    JwtWebSecurityConfigurer
-        .forRS256(audience, issuer)
-        .configure(http);
-  }
+<p>The configuration is pretty simple:</p>
+
+<pre><code>worker_processes 16;
+
+events {
+    accept_mutex off;
 }
 
-</code></pre>
+http {
+    include mime.types;
+    default_type application/octet-stream;
 
-<p>There we have it, this was all that&#39;s required to use Auth0 with Spring Boot. We can jump into testing this application now, once again with Postman or a tool like curl. So let&#39;s run the application:</p>
+    access_log off;
+    sendfile on;
+    sendfile_max_chunk 512k;
 
-<pre><code>mvn spring-boot:run
+    server {
+        listen 8000;
 
-</code></pre>
-
-<p>Before getting an access token to issue requests to our API, we first need to create a new user on Auth0. To do that we have to issue a <code>POST</code> request, which requires a <code>Content-Type</code> header with <code>application/json</code>, to <code>https://bkrebs.auth0.com/dbconnections/signup</code> with the following JSON body:</p>
-
-<pre><code>{
-  &quot;client_id&quot;: &quot;hfs2An7Zka9OPbXs0CRpmmmL33IKy4mA&quot;,
-  &quot;email&quot;: &quot;user@test.com&quot;,
-  &quot;password&quot;: &quot;123123&quot;,
-  &quot;connection&quot;: &quot;Username-Password-Authentication&quot;
+        location / {
+            root /storage;
+        }
+    }
 }
-
 </code></pre>
 
-<p>After that we can get an access token. For that we need to issue a <code>POST</code> request to <code>https://bkrebs.auth0.com/oauth/token</code> that contains a JSON object in the body, which also requires a <code>Content-Type</code> header with <code>application/json</code>, that looks like:</p>
+<p>As you can see, to achieve better performance some tuning was done: <code>[logging](http://nginx.org/en/docs/http/ngx_http_log_module.html#access_log)</code> and <code>[accept_mutex](http://nginx.org/en/docs/ngx_core_module.html#accept_mutex)</code> were disabled, <code>[sendfile](http://nginx.org/en/docs/http/ngx_http_core_module.html#sendfile)</code> was enabled, and <code>[sendfile_max_chunk](http://nginx.org/en/docs/http/ngx_http_core_module.html#sendfile_max_chunk)</code> was set. The last directive can reduce the maximum time spent in blocking <code>sendfile()</code> calls, since NGINX won’t try to send the whole file at once, but will do it in 512‑KB chunks.</p>
 
-<pre><code>{
-  &quot;grant_type&quot;:&quot;password&quot;,
-  &quot;username&quot;: &quot;user@test.com&quot;,
-  &quot;password&quot;: &quot;123123&quot;,
-  &quot;audience&quot;: &quot;spring-boot-jwts&quot;,
-  &quot;client_id&quot;: &quot;hfs2An7Zka9OPbXs0CRpmmmL33IKy4mA&quot;,
-  &quot;client_secret&quot;: &quot;Hx4eFNAT8TI2POIWXhxWDJ8vWpZxt79DQYUl7e898Uw0ASfc7eY42zPf2H-Gv1n1&quot;
+<p>The machine has two Intel Xeon E5645 (12 cores, 24 HT‑threads in total) processors and a 10‑Gbps network interface. The disk subsystem is represented by four Western Digital WD1003FBYX hard drives arranged in a RAID10 array. All of this hardware is powered by Ubuntu Server 14.04.1 LTS.</p>
+
+<p><img src="media/15401080666894/15401082447034.jpg" alt=""/></p>
+
+<blockquote>
+<p>Configuration of load generators and NGINX for the benchmark</p>
+</blockquote>
+
+<p>The clients are represented by two machines with the same specifications. On one of these machines, <a href="https://github.com/wg/wrk"><code>wrk</code></a> creates load using a Lua script. The script requests files from our server in a random order using 200 parallel connections, and each request is likely to result in a cache miss and a blocking read from disk. Let’s call this load the <u>random</u> load.</p>
+
+<p>On the second client machine we will run another copy of <code>wrk</code> that will request the same file multiple times using 50 parallel connections. Since this file will be frequently accessed, it will remain in memory all the time. In normal circumstances, NGINX would serve these requests very quickly, but performance will fall if the worker processes are blocked by other requests. Let’s call this load the <u>constant</u> load.</p>
+
+<p>The performance will be measured by monitoring throughput of the server machine using <code>ifstat</code> and by obtaining <code>wrk</code> results from the second client.</p>
+
+<p>Now, the first run without thread pools does not give us very exciting results:</p>
+
+<pre><code>% ifstat -bi eth2
+eth2
+Kbps in  Kbps out
+5531.24  1.03e+06
+4855.23  812922.7
+5994.66  1.07e+06
+5476.27  981529.3
+6353.62  1.12e+06
+5166.17  892770.3
+5522.81  978540.8
+6208.10  985466.7
+6370.79  1.12e+06
+6123.33  1.07e+06
+</code></pre>
+
+<p>As you can see, with this configuration the server is able to produce about 1 Gbps of traffic in total. In the output from <code>top</code>, we can see that all of worker processes spend most of the time in blocking I/O (they are in a <code>D</code> state):</p>
+
+<pre><code>top - 10:40:47 up 11 days,  1:32,  1 user,  load average: 49.61, 45.77 62.89
+Tasks: 375 total,  2 running, 373 sleeping,  0 stopped,  0 zombie
+%Cpu(s):  0.0 us,  0.3 sy,  0.0 ni, 67.7 id, 31.9 wa,  0.0 hi,  0.0 si,  0.0 st
+KiB Mem:  49453440 total, 49149308 used,   304132 free,    98780 buffers
+KiB Swap: 10474236 total,    20124 used, 10454112 free, 46903412 cached Mem
+
+  PID USER     PR  NI    VIRT    RES     SHR S  %CPU %MEM    TIME+ COMMAND
+ 4639 vbart    20   0   47180  28152     496 D   0.7  0.1  0:00.17 nginx
+ 4632 vbart    20   0   47180  28196     536 D   0.3  0.1  0:00.11 nginx
+ 4633 vbart    20   0   47180  28324     540 D   0.3  0.1  0:00.11 nginx
+ 4635 vbart    20   0   47180  28136     480 D   0.3  0.1  0:00.12 nginx
+ 4636 vbart    20   0   47180  28208     536 D   0.3  0.1  0:00.14 nginx
+ 4637 vbart    20   0   47180  28208     536 D   0.3  0.1  0:00.10 nginx
+ 4638 vbart    20   0   47180  28204     536 D   0.3  0.1  0:00.12 nginx
+ 4640 vbart    20   0   47180  28324     540 D   0.3  0.1  0:00.13 nginx
+ 4641 vbart    20   0   47180  28324     540 D   0.3  0.1  0:00.13 nginx
+ 4642 vbart    20   0   47180  28208     536 D   0.3  0.1  0:00.11 nginx
+ 4643 vbart    20   0   47180  28276     536 D   0.3  0.1  0:00.29 nginx
+ 4644 vbart    20   0   47180  28204     536 D   0.3  0.1  0:00.11 nginx
+ 4645 vbart    20   0   47180  28204     536 D   0.3  0.1  0:00.17 nginx
+ 4646 vbart    20   0   47180  28204     536 D   0.3  0.1  0:00.12 nginx
+ 4647 vbart    20   0   47180  28208     532 D   0.3  0.1  0:00.17 nginx
+ 4631 vbart    20   0   47180    756     252 S   0.0  0.1  0:00.00 nginx
+ 4634 vbart    20   0   47180  28208     536 D   0.0  0.1  0:00.11 nginx&lt;
+ 4648 vbart    20   0   25232   1956    1160 R   0.0  0.0  0:00.08 top
+25921 vbart    20   0  121956   2232    1056 S   0.0  0.0  0:01.97 sshd
+25923 vbart    20   0   40304   4160    2208 S   0.0  0.0  0:00.53 zsh
+</code></pre>
+
+<p>In this case the throughput is limited by the disk subsystem, while the CPU is idle most of the time. The results from <code>wrk</code> are also very low:</p>
+
+<pre><code>Running 1m test @ http://192.0.2.1:8000/1/1/1
+  12 threads and 50 connections
+  Thread Stats   Avg    Stdev     Max  +/- Stdev
+    Latency     7.42s  5.31s   24.41s   74.73%
+    Req/Sec     0.15    0.36     1.00    84.62%
+  488 requests in 1.01m, 2.01GB read
+Requests/sec:      8.08
+Transfer/sec:     34.07MB
+</code></pre>
+
+<p>And remember, this is for the file that should be served from memory! The excessively large latencies are because all the worker processes are busy with reading files from the drives to serve the random load created by 200 connections from the first client, and cannot handle our requests in good time.</p>
+
+<p>It’s time to put our thread pools in play. For this we just add the <code>[aio](http://nginx.org/en/docs/http/ngx_http_core_module.html#aio)</code> <code>threads</code> directive to the <code>location</code> block:</p>
+
+<pre><code>location / {
+    root /storage;
+    aio threads;
 }
-
 </code></pre>
 
-<p>The <code>client_id</code> and <code>client_secret</code> properties, on both requests, must be changed properly. Their values can be found in the <code>Spring Boot Users API (Test Application)</code> application that Auth0 created for us. Head to the <a href="https://manage.auth0.com/#/applications">Applications page</a> to get them.</p>
+<p>and ask NGINX to reload its configuration.</p>
 
-<p>Issuing this last request will give us an <code>access_token</code>. We will use this token in the header of the <code>GET</code> request that we will send to our Spring Boot API, in a similar manner to how we did it before. Now if we query our endpoint again, we get a list of the users. As we see, integrating Auth0 with Spring Boot is an easy process!</p>
+<p>After that we repeat the test:</p>
 
-<h2 id="toc_13">Conclusion</h2>
+<pre><code>% ifstat -bi eth2
+eth2
+Kbps in  Kbps out
+60915.19  9.51e+06
+59978.89  9.51e+06
+60122.38  9.51e+06
+61179.06  9.51e+06
+61798.40  9.51e+06
+57072.97  9.50e+06
+56072.61  9.51e+06
+61279.63  9.51e+06
+61243.54  9.51e+06
+59632.50  9.50e+06
+</code></pre>
 
-<p>Creating a project with Spring Boot makes development a lot easier. We can save a lot of time otherwise spent on dealing with configuration and deployment, which are now taken care of for us. We can add a great deal of functionality to our project by including another dependency in our pom.xml, and all this gets bundled into one self-contained, easily-deployed application. As you can tell from the start of this project, there is a lot more to explore with Spring Boot, <a href="http://start.spring.io/">so what are you waiting for? ;-)</a></p>
+<p>Now our server produces <strong>9.5 Gbps</strong>, compared to ~1 Gbps without thread pools!</p>
+
+<p>It probably could produce even more, but it has already reached the practical maximum network capacity, so in this test NGINX is limited by the network interface. The worker processes spend most of the time just sleeping and waiting for new events (they are in <code>S</code> state in <code>top</code>):</p>
+
+<pre><code>top - 10:43:17 up 11 days,  1:35,  1 user,  load average: 172.71, 93.84, 77.90
+Tasks: 376 total,  1 running, 375 sleeping,  0 stopped,  0 zombie
+%Cpu(s):  0.2 us,  1.2 sy,  0.0 ni, 34.8 id, 61.5 wa,  0.0 hi,  2.3 si,  0.0 st
+KiB Mem:  49453440 total, 49096836 used,   356604 free,    97236 buffers
+KiB Swap: 10474236 total,    22860 used, 10451376 free, 46836580 cached Mem
+
+  PID USER     PR  NI    VIRT    RES     SHR S  %CPU %MEM    TIME+ COMMAND
+ 4654 vbart    20   0  309708  28844     596 S   9.0  0.1  0:08.65 nginx
+ 4660 vbart    20   0  309748  28920     596 S   6.6  0.1  0:14.82 nginx
+ 4658 vbart    20   0  309452  28424     520 S   4.3  0.1  0:01.40 nginx
+ 4663 vbart    20   0  309452  28476     572 S   4.3  0.1  0:01.32 nginx
+ 4667 vbart    20   0  309584  28712     588 S   3.7  0.1  0:05.19 nginx
+ 4656 vbart    20   0  309452  28476     572 S   3.3  0.1  0:01.84 nginx
+ 4664 vbart    20   0  309452  28428     524 S   3.3  0.1  0:01.29 nginx
+ 4652 vbart    20   0  309452  28476     572 S   3.0  0.1  0:01.46 nginx
+ 4662 vbart    20   0  309552  28700     596 S   2.7  0.1  0:05.92 nginx
+ 4661 vbart    20   0  309464  28636     596 S   2.3  0.1  0:01.59 nginx
+ 4653 vbart    20   0  309452  28476     572 S   1.7  0.1  0:01.70 nginx
+ 4666 vbart    20   0  309452  28428     524 S   1.3  0.1  0:01.63 nginx
+ 4657 vbart    20   0  309584  28696     592 S   1.0  0.1  0:00.64 nginx
+ 4655 vbart    20   0  30958   28476     572 S   0.7  0.1  0:02.81 nginx
+ 4659 vbart    20   0  309452  28468     564 S   0.3  0.1  0:01.20 nginx
+ 4665 vbart    20   0  309452  28476     572 S   0.3  0.1  0:00.71 nginx
+ 5180 vbart    20   0   25232   1952    1156 R   0.0  0.0  0:00.45 top
+ 4651 vbart    20   0   20032    752     252 S   0.0  0.0  0:00.00 nginx
+25921 vbart    20   0  121956   2176    1000 S   0.0  0.0  0:01.98 sshd
+25923 vbart    20   0   40304   3840    2208 S   0.0  0.0  0:00.54 zsh
+</code></pre>
+
+<p>There are still plenty of CPU resources.</p>
+
+<p>The results of <code>wrk</code>:</p>
+
+<pre><code>Running 1m test @ http://192.0.2.1:8000/1/1/1
+  12 threads and 50 connections
+  Thread Stats   Avg      Stdev     Max  +/- Stdev
+    Latency   226.32ms  392.76ms   1.72s   93.48%
+    Req/Sec    20.02     10.84    59.00    65.91%
+  15045 requests in 1.00m, 58.86GB read
+Requests/sec:    250.57
+Transfer/sec:      0.98GB
+</code></pre>
+
+<p>The average time to serve a 4‑MB file has been reduced from 7.42 seconds to 226.32 milliseconds (33 times less), and the number of requests per second has increased by 31 times (250 vs 8)!</p>
+
+<p>The explanation is that our requests no longer wait in the events queue for processing while worker processes are blocked on reading, but are handled by free threads. As long as the disk subsystem is doing its job as best it can serving our random load from the first client machine, NGINX uses the rest of the CPU resources and network capacity to serve requests of the second client from memory.</p>
+
+<h2 id="toc_3">Still Not a Silver Bullet</h2>
+
+<p>After all our fears about blocking operations and some exciting results, probably most of you already are going to configure thread pools on your servers. Don’t hurry.</p>
+
+<p>The truth is that fortunately most read and send file operations do not deal with slow hard drives. If you have enough RAM to store the data set, then an operating system will be clever enough to cache frequently used files in a so‑called “page cache”.</p>
+
+<p>The page cache works pretty well and allows NGINX to demonstrate great performance in almost all common use cases. Reading from the page cache is quite quick and no one can call such operations “blocking.” On the other hand, offloading to a thread pool has some overhead.</p>
+
+<p>So if you have a reasonable amount of RAM and your working data set isn’t very big, then NGINX already works in the most optimal way without using thread pools.</p>
+
+<p>Offloading read operations to the thread pool is a technique applicable to very specific tasks. It is most useful where the volume of frequently requested content doesn’t fit into the operating system’s VM cache. This might be the case with, for instance, a heavily loaded NGINX‑based streaming media server. This is the situation we’ve simulated in our benchmark.</p>
+
+<p>It would be great if we could improve the offloading of read operations into thread pools. All we need is an efficient way to know if the needed file data is in memory or not, and only in the latter case should the reading operation be offloaded to a separate thread.</p>
+
+<p>Turning back to our sales analogy, currently the salesman cannot know if the requested item is in the store and must either always pass all orders to the delivery service or always handle them himself.</p>
+
+<p>The culprit is that operating systems are missing this feature. The first attempts to add it to Linux as the <a href="https://lwn.net/Articles/371538/"><code>fincore()</code></a> syscall were in 2010 but that didn’t happen. Later there were a number of attempts to implement it as a new <code>preadv2()</code> syscall with the <code>RWF_NONBLOCK</code> flag (see <a href="https://lwn.net/Articles/612483/">Nonblocking buffered file read operations</a> and <a href="https://lwn.net/Articles/636967/">Asynchronous buffered read operations</a> at LWN.net for details). The fate of all these patches is still unclear. The sad point here is that it seems the main reason why these patches haven’t been accepted yet to the kernel is continuous <a href="http://bikeshed.com/">bikeshedding</a>.</p>
+
+<p>On the other hand, users of FreeBSD don’t need to worry at all. FreeBSD already has a sufficiently good asynchronous interface for reading files, which you should use instead of thread pools.</p>
+
+<h2 id="toc_4">Configuring Thread Pools</h2>
+
+<p>So if you are sure that you can get some benefit out of using thread pools in your use case, then it’s time to dive deep into configuration.</p>
+
+<p>The configuration is quite easy and flexible. The first thing you should have is NGINX version 1.7.11 or later, compiled with the <code>--with-threads</code> argument to the <code>configure</code> command. NGINX Plus users need Release 7 or later. In the simplest case, the configuration looks very plain. All you need is to include the <a href="http://nginx.org/en/docs/http/ngx_http_core_module.html#aio"><code>aio</code></a> <code>threads</code> directive in the appropriate context:</p>
+
+<pre><code># in the &#39;http&#39;, &#39;server&#39;, or &#39;location&#39; context
+aio threads;
+</code></pre>
+
+<p>This is the minimal possible configuration of thread pools. In fact, it’s a short version of the following configuration:</p>
+
+<pre><code># in the &#39;main&#39; context
+thread_pool default threads=32 max_queue=65536;
+
+# in the &#39;http&#39;, &#39;server&#39;, or &#39;location&#39; context
+aio threads=default;
+</code></pre>
+
+<p>It defines a thread pool called <strong>default</strong> with 32 working threads and a maximum length for the task queue of 65536 tasks. If the task queue is overloaded, NGINX rejects the request and logs this error:</p>
+
+<pre><code>thread pool &quot;NAME&quot; queue overflow: N tasks waiting
+</code></pre>
+
+<p>The error means it’s possible that the threads aren’t able to handle the work as quickly as it is added to the queue. You can try increasing the maximum queue size, but if that doesn’t help, then it indicates that your system is not capable of serving so many requests.</p>
+
+<p>As you already noticed, with the <a href="http://nginx.org/en/docs/ngx_core_module.html#thread_pool"><code>thread_pool</code></a> directive you can configure the number of threads, the maximum length of the queue, and the name of a specific thread pool. The last implies that you can configure several independent thread pools and use them in different places of your configuration file to serve different purposes:</p>
+
+<pre><code># in the &#39;main&#39; context
+thread_pool one threads=128 max_queue=0;
+thread_pool two threads=32;
+
+http {
+    server {
+        location /one {
+            aio threads=one;
+        }
+
+        location /two {
+            aio threads=two;
+        }
+
+    }
+    # ...
+}
+</code></pre>
+
+<p>If the <code>max_queue</code> parameter isn’t specified, the value 65536 is used by default. As shown, it’s possible to set <code>max_queue</code> to zero. In this case the thread pool will only be able to handle as many tasks as there are threads configured; no tasks will wait in the queue.</p>
+
+<p>Now let’s imagine you have a server with three hard drives and you want this server to work as a “caching proxy” that caches all responses from your backends. The expected amount of cached data far exceeds the available RAM. It’s actually a caching node for your personal CDN. Of course in this case the most important thing is to achieve maximum performance from the drives.</p>
+
+<p>One of your options is to configure a RAID array. This approach has its pros and cons. Now with NGINX you can take another one:</p>
+
+<pre><code># We assume that each of the hard drives is mounted on one of these directories:
+# /mnt/disk1, /mnt/disk2, or /mnt/disk3
+
+# in the &#39;main&#39; context
+thread_pool pool_1 threads=16;
+thread_pool pool_2 threads=16;
+thread_pool pool_3 threads=16;
+
+http {
+    proxy_cache_path /mnt/disk1 levels=1:2 keys_zone=cache_1:256m max_size=1024G 
+                     use_temp_path=off;
+    proxy_cache_path /mnt/disk2 levels=1:2 keys_zone=cache_2:256m max_size=1024G 
+                     use_temp_path=off;
+    proxy_cache_path /mnt/disk3 levels=1:2 keys_zone=cache_3:256m max_size=1024G 
+                     use_temp_path=off;
+
+    split_clients $request_uri $disk {
+        33.3%     1;
+        33.3%     2;
+        *         3;
+    }
+
+    server {
+        # ...
+        location / {
+            proxy_pass http://backend;
+            proxy_cache_key $request_uri;
+            proxy_cache cache_$disk;
+            aio threads=pool_$disk;
+            sendfile on;
+        }
+    }
+}
+</code></pre>
+
+<p>In this configuration, the <code>thread_pool</code> directives define a dedicated, independent thread pool for each disk, and the <a href="http://nginx.org/en/docs/http/ngx_http_proxy_module.html#proxy_cache_path"><code>proxy_cache_path</code></a> directives define an dedicated, independent cache on each disk.</p>
+
+<p>The <a href="http://nginx.org/en/docs/http/ngx_http_split_clients_module.html"><code>split_clients</code></a> module is used for load balancing between the caches (and as a result between the disks), which perfectly fits this task.</p>
+
+<p>The <code>use_temp_path=off</code> parameter to the <code>proxy_cache_path</code> directive instructs NGINX to save temporary files into the same directories where the corresponding cache data is located. It is needed to avoid copying response data between the hard drives when updating our caches.</p>
+
+<p>All this together allows us to get maximum performance out of the current disk subsystem, because NGINX through separate thread pools interacts with the drives in parallel and independently. Each of the drives is served by 16 independent threads with a dedicated task queue for reading and sending files.</p>
+
+<p>I bet your clients like this custom‑tailored approach. Be sure that your hard drives like it too.</p>
+
+<p>This example is a good demonstration of how flexibly NGINX can be tuned specifically for your hardware. It’s like you are giving instructions to NGINX about the best way to interact with the machine and your data set. And by fine‑tuning NGINX in user space, you can ensure that your software, operating system, and hardware work together in the most optimal mode to utilize all the system resources as effectively as possible.</p>
+
+<h2 id="toc_5">Conclusion</h2>
+
+<p>Summing up, thread pools is a great feature that pushes NGINX to new levels of performance by eliminating one of its well‑known and long‑time enemies – blocking – especially when we are speaking about really large volumes of content.</p>
+
+<p>And there is even more to come. As previously mentioned, this brand‑new interface potentially allows offloading of any long and blocking operation without any loss of performance. NGINX opens up new horizons in terms of having a mass of new modules and functionality. Lots of popular libraries still do not provide an asynchronous nonblocking interface, which previously made them incompatible with NGINX. We may spend a lot of time and resources on developing our own nonblocking prototype of some library, but will it always be worth the effort? Now, with thread pools on board, it is possible to use such libraries relatively easily, making such modules without an impact on performance.</p>
+
+<p>Stay tuned.</p>
 
                         
                       </div>
@@ -662,10 +536,10 @@ public class WebSecurityConfig extends WebSecurityConfigurerAdapter {
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/9/3</span>
+                    <span class="date">2018/10/21</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Authn&Authz.html'>Authn&Authz</a></span>
+          					    <span class="posted-in"><a href='RPC&NIO.html'>RPC&NIO</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -755,31 +629,31 @@ public class WebSecurityConfig extends WebSecurityConfigurerAdapter {
 	      
 		      
 			      <li class="post">
-			        <a href="15389311738065.html">重构到更深层的模型</a>
+			        <a href="15459058392039.html">Reliable Domain Events</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389278377243.html">IAM of Google Cloud</a>
+			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389224951575.html">RSocket, a New Application Network Protocol for Reactive Applications, Announced at SpringOne</a>
+			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389220103546.html">如何形象地描述RxJava中的背压和流控机制？</a>
+			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389214670417.html">Modeling Uncertainty with Reactive DDD</a>
+			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
 			      </li>
 		     
 		  

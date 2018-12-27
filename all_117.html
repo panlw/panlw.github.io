@@ -105,598 +105,303 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15282771049157.html">
+                <a class="clearlink" href="15301797659390.html">
                 
-                  <h1>ELK: Using a Centralized Logging Architecture</h1>
+                  <h1>架构设计：负载均衡层设计方案（3）——Nginx 进阶</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p>by Alexandre Lourenco  ·  Mar. 07, 15 · DevOps Zone · Tutorial<br/>
-<a href="https://dzone.com/articles/elk-using-centralized-logging">https://dzone.com/articles/elk-using-centralized-logging</a><br/>
-<a href="https://dzone.com/articles/elk-using-centralized-logging-0">https://dzone.com/articles/elk-using-centralized-logging-0</a></p>
+<p><a href="https://blog.csdn.net/yinwenjie/article/details/46742661">https://blog.csdn.net/yinwenjie/article/details/46742661</a></p>
 </blockquote>
 
-<p>Welcome, dear reader, to another post from my blog. On this new series, we will talk about a architecture specially designed to process data from log files coming from applications, with the junction of 3 tools, Logstash, ElasticSearch and Kibana. But after all, do we really need such a structure to process log files?</p>
+<p>上篇文章《架构设计：负载均衡层设计方案（2）——Nginx 安装》（<a href="http://blog.csdn.net/yinwenjie/article/details/46620711">http://blog.csdn.net/yinwenjie/article/details/46620711</a>），我们介绍了 Nginx 的核心设计思想、基本安装和使用。本来准备继续介绍 Nginx 的几个使用特性，但是奈何博文篇幅太长，只有将一篇文章拆成两篇。本文我们将承接上文，继续讲解 Nginx 的实用特性，包括 gzip 功能、rewirte 功能和一个第三方的节点监测模块。本文我们还将提到 Taobao 团队对 Nginx 的深度改造 Tengine。</p>
 
-<p><strong>Stacks of log</strong></p>
+<h1 id="toc_0"><a></a>1、Nginx 继续进阶</h1>
 
-<p>On a company ecosystem, there is lots of systems, like the CRM, ERP, etc. On such environments, it is common for the systems to produce tons of logs, which provide not only a real-time analysis of the technical status of the software, but could also provide some business information too, like a log of a customer&#39;s behavior  on a  shopping cart, for example. To dive into this useful source of information, enters the ELK architecture, which name came from the initials of the software involved: ElasticSearch, LogStash and Kibana. The picture below shows in a macro vision the flow between the tools:</p>
+<h2 id="toc_1"><a></a>1.1、gzip</h2>
 
-<p><img src="https://dl.dropboxusercontent.com/s/4kqrjggb1vqfqhq/architectureELKdzone.jpg?dl=0" alt=""/></p>
-
-<p>As we can see, there&#39;s a clear separation of concerns between the tools, where which one has his own individual part on the processing of the log data:</p>
+<p>nginx 对返回给浏览器的 http response body 是可以进行压缩的。虽然需要消耗一点 cpu 和内存资源，但是想到 100KB 的数据量可以压缩到 60KB 甚至更小进行传输，是否有一定的吸引力？这里我的建议是，不要为了节约成本将业务服务和负载层服务放在一台物理服务器上，这样做既影响性能又增加了运维难度。http 返回数据进行压缩的功能在很多场景下都实用：</p>
 
 <ul>
-<li>  <strong>Logstash</strong>: Responsible for collect the data, make transformations like parsing - using regular expressions - adding fields, formatting as structures like JSON, etc and finally sending the data to various destinations, like a ElasticSearch cluster. Later on this post we will see more detail about this useful tool;</li>
-<li>  <strong>ElasticSearch</strong>: RESTful data indexer, ElasticSearch provides a clustered solution to make searches and analysis on a set of data. On the second part of our series, we will see more about this tool;</li>
-<li>  <strong>Kibana</strong>: Web-based application, responsible for providing a light and easy-to-use dashboard tool. On the third and last part of our series, we will see more of this tool;</li>
+<li><p>如果浏览器使用的是 3G/4G 网络，那么流量对于用户来说就是 money。</p></li>
+<li><p>压缩可节约服务器机房的对外带宽，为更多用户服务。按照目前的市场价良好的机房带宽资源的一般在 200RMB/Mbps，而服务器方案的压力往往也来自于机房带宽。</p></li>
+<li><p>主要注意的是，不是 Nginx 开启了 gzip 功能，HTTP 响应的数据就一定会被压缩，除了满足 Nginx 设置的 “需要压缩的 http 格式” 以外，客户端（浏览器）也需要支持 gzip（不然它怎么解压呢），一个好消息是，目前大多数浏览器和 API 都支持 http 压缩。</p>
+
+<p>我们首先来讲解 Nginx 中的 gzip 的设置参数，然后我们讲解当开启压缩功能后，HTTP 的交互过程和过程中关键的几个属性。我们首先来看看 Nginx 中开启 gzip 的属性（gzip 的设置放置在 HTTP 主配置区域）：</p></li>
 </ul>
 
-<p>So, to begin our road in the ELK stack, let&#39;s begin by talking about the tool responsible for integrating our data: LogStash.</p>
+<pre><code class="language-conf">#开启 gzip 压缩服务，
+gzip on;
 
-<p><strong>LogStash installation</strong></p>
+#gzip 压缩是要申请临时内存空间的，假设前提是压缩后大小是小于等于压缩前的。例如，如果原始文件大小为 10K，那么它超过了 8K，所以分配的内存是 8 * 2 = 16K; 再例如，原始文件大小为 18K，很明显 16K 也是不够的，那么按照 8 * 2 * 2 = 32K 的大小申请内存。如果没有设置，默认值是申请跟原始数据相同大小的内存空间去存储 gzip 压缩结果。
+gzip_buffers 2 8k;
 
-<p>To install, all we need to do is unzip the file we get from LogStash&#39;s site and run the binaries on the bin folder. The only pre-requisite for the tool is to have Java installed and configured in the environment. If the reader wants to follow my instructions with the same system then me, I am using Ubuntu 14.10 with Java 8, which can be downloaded from Oracle&#39;s site <a href="http://www.oracle.com/technetwork/java/javase/downloads/jdk8-downloads-2133151.html">here</a>.</p>
+#进行压缩的原始文件的最小大小值，也就是说如果原始文件小于 5K，那么就不会进行压缩了
+gzip_min_length 5K;
 
-<p>With Java installed and configured, we begin by downloading and unziping the file. To do this, we open a terminal and input:</p>
+#gzip 压缩基于的 http 协议版本，默认就是 HTTP 1.1
+gzip_http_version 1.1;
 
-<pre><code class="language-sh">curl https://download.elasticsearch.org/logstash/logstash/logstash-1.4.2.tar.gz | tar -xz
+# gzip 压缩级别 1-9，级别越高压缩率越大，压缩时间也就越长 CPU 越高
+gzip_comp_level 5;
+
+#需要进行 gzip 压缩的 Content-Type 的 Header 的类型。建议 js、text、css、xml、json 都要进行压缩；图片就没必要了，gif、jpge 文件已经压缩得很好了，就算再压，效果也不好，而且还耗费 cpu。
+Igzip_types text/HTML text/plain application/x-javascript text/css application/xml;
 </code></pre>
 
-<p>After the download, we will have LogStash on a folder on the same place we run our &#39;curl&#39; command. On the LogStash terminology, we have 4 types of configurations we can make for a stream, named:</p>
+<pre><code>设置完成后，重启 nginx，即可生效。下面我们来看看浏览器和服务器进行 gzip 压缩的请求和处理返回过程（实际上在我的《标准 Web 系统的架构分层》文章中，已经有所提及）：
+</code></pre>
+
+<p><img src="https://img-blog.csdn.net/20150709162940954" alt=""/></p>
 
 <ul>
-<li>  <strong>input</strong>: On this configuration, we put the sources of our streams, that can range from polling files of a file system to more complex inputs such as a Amazon SQS queue and even Twitter;</li>
-<li>  <strong>codec</strong>: On this configuration we make transformations on the data, like turning into a JSON structure, or grouping together lines that are semantically related, like for example, a Java&#39;s stack trace;</li>
-<li>  <strong>filter</strong>: On this configuration we make operations such as parsing data from/to different formats, removal of special characters and checksums for deduplication;</li>
-<li>  <strong>output</strong>: On this configuration we define the destinations for the processed data, such as a ElasticSearch cluster, AWS SQS, Nagios etc;</li>
+<li><p>整个请求过程来看，开启 gzip 和不开启 gip 功能，其 http 的请求和返回过程是一致的，不同的是参数。这个可以看看我的另外一篇文章《标准 Web 系统的架构分层》<a href="http://blog.csdn.net/yinwenjie/article/details/46480485">http://blog.csdn.net/yinwenjie/article/details/46480485</a></p></li>
+<li><p>当开启 HTTP 的 gzip 功能时，客户端发出 http 请求时，会通过 headers 中的 Accept-Encoding 属性告诉服务器 “我支持 gzip 解压，解压格式（算法）deflate,sdch 为：”。Accept-Encoding:gzip,deflate,sdch</p></li>
+<li><p>注意，不是 request 说自己支持解压，Nginx 返回 response 数据的时候就一定会压缩。这还要看本次 Nginx 返回数据的格式是什么，如果返回数据的原始数据格式，和设置的 gzip_types 相符合，这时 Nginx 才会进行压缩。</p></li>
+<li><p>Nginx 返回 response headers 是，如果数据被压缩了，就会在 Content-Encoding 属性中标示 gzip，表示接下来返回的 response content 是经过压缩的；并且在 Content-Type 属性中表示数据的原始格式。</p></li>
+<li><p>最后返回经过压缩的 response content 给客户端，客户端再进行解压。这里注意一下，在客户端发送的 headers 里面，有一个 deflate,sdch。这是两种压缩算法，如果读者感兴趣，可以查查相关的资料（我建议查查，了解哈弗曼压缩算法对扩展自己的架构思路很有帮助）</p></li>
 </ul>
 
-<p>Now that we have established LogStash&#39;s configuration structure, let&#39;s begin with our first execution. In LogStash we have two ways to configure our execution, one way by providing the settings on the start command itself and the other one is by providing a configuration file for the command. The simplest way to boot a LogStash&#39;s stream is by setting the input and output as the console itself, to make this execution, we open a terminal, navigate to the bin folder of our LogStash&#39;s installation and execute the following command:</p>
+<h2 id="toc_2"><a></a>1.2、rewrite</h2>
 
-<pre>./logstash -e 'input { stdin { } } output { stdout {} }'</pre>
+<p>本小结内容，假定读者了解正则表达式。如果您不清楚正则表达式，请首先 Google 或者百度，正则表达式不在我们讨论的范围内。</p>
 
-<p>As we can see after we run the command, we booted LogStash, setting the console as the input and the output, without any transformation or filtering. To test, we simply input anything on the console, seeing that our message is displayed back by the tool:</p>
+<p>Nginx 的强大在于其对 URL 请求的重写（重定位）。Nginx 的 rewrite 功能依赖于 PCRE Lib，请一定在 Nginx 编译安装时，安装 Pcre lib。请参见我的上一篇文章《架构设计：负载均衡层设计方案（2）——Nginx 安装》<a href="http://blog.csdn.net/yinwenjie/article/details/46620711">http://blog.csdn.net/yinwenjie/article/details/46620711</a></p>
 
-<p><img src="https://dl.dropboxusercontent.com/s/c2s4wiuo585hxaj/ELKpart1image1.jpg?dl=0" alt=""/></p>
+<p>我们先从讲解 rewrite 的关键语法，然后出示几个示例，由示例进行讲解。先来说一下 Nginx 中几个关键的语法：</p>
 
-<p>Now that we get the installation out of the way, let&#39;s begin with the actual lab. Unfortunately -or not, depending on the point of view -, it would take us a lot of time to show all the features of what we can do with the tool, so to make a short but illustrative example, we will start 2 logstash streams, to do the following:</p>
-
-<p>1st stream:</p>
+<p><strong>正在表达式匹配：</strong></p>
 
 <ul>
-<li>  The input will be made by a java program, which will produce a log file with log4j, representing technical information;</li>
-<li>  For now, we will just print logstash&#39;s events on the console, using the rubydebug codec. On our next part on the series, we will return to this configuration and change the output to send the events to elasticsearch;</li>
+<li>  ~ 区分大小写进行正则表达式匹配</li>
+<li>  ~* 不区分大小写进行正则表达式匹配</li>
+<li>  !~ 区分大小写进行正则表达式不匹配</li>
+<li>  !~* 不区分大小写进行正则表达式不匹配</li>
 </ul>
 
-<p>2nd stream:</p>
+<p>举例说明:</p>
+
+<pre><code>示例1：location ~* \.(jpg|gif|png|ioc|jpeg)$
+
+location是Nginx中的关键字，代表当前的URL请求值。
+以上表达式表示对URL进行不区分大小写的匹配，一旦URL以jpg或gif或png或ioc或jpeg结尾时，匹配成功。
+
+示例2：$var1 ~ ^(\d+)$
+
+var1是Nginx中使用set关键字定义的变量，以上语句代表var1和一个整数进行匹配。
+
+</code></pre>
+
+<p><strong>Nginx 中的全局变量：</strong><br/>
+从上面的各个实例中，我们已经发现 Nginx 是支持变量的，Nginx 还内置了一些全局变量，这里列举一些比较重要的全局变量：</p>
 
 <ul>
-<li>  The input will be made by the same java program, which will produce a positional file, representing business information of costumers and orders;</li>
-<li>  We will then use the grok filter to parse the data of the positional file into separated fields, producing the data for the output step;</li>
-<li>  Finally, we use the mongodb output, to save our data - filtering to only persist the orders - on a  Mongodb collection;</li>
+<li>  $content_length: 获取 request 中 header 部分的 “Content_Length” 值。</li>
+<li>  $content_type: 获取 request 中 header 部分的 “Content_type” 值。</li>
+<li>  $request_method: 请求方式，常用的有两种请求方式：POST、GET</li>
+<li>  $remote_addr: 发送请求的客户端 ip</li>
+<li>  $remote_port: 发送请求的客户端端口</li>
+<li>  $request_uri: 含有参数的完整的初始 URI</li>
+<li>  $server_addr: request 到达的 server 的 ip。</li>
+<li>  $server_port: 请求到达的服务器的端口号。</li>
 </ul>
 
-<p>With the streams defined, we can begin our coding. First, let&#39;s create the java program which will generate the inputs for the streams. The code for the program can be seen bellow:</p>
+<p><strong>rewrite 语法</strong></p>
 
-<pre><code class="language-java">package com.technology.alexandreesl;
-import java.io.FileWriter;
-import java.io.IOException;
-import java.io.PrintWriter;
-import java.util.ArrayList;
-import java.util.Date;
-import java.util.List;
-import org.apache.log4j.Logger;
+<pre><code>rewrite regex replacement flag
 
-public class LogStashProvider {
-    private static Logger logger = Logger.getLogger(LogStashProvider.class);
-    public static void main(String[] args) throws IOException {
-        try {
-            logger.info(&quot;STARTING DATA COLLECTION&quot;);
-            List&lt;String&gt; data = new ArrayList&lt;String&gt;();
-            Customer customer = new Customer();
-            customer.setName(&quot;Alexandre&quot;);
-            customer.setAge(32);
-            customer.setSex(&#39;M&#39;);
-            customer.setIdentification(&quot;4434554567&quot;);
-            List&lt;Order&gt; orders = new ArrayList&lt;Order&gt;();
-            for (int counter = 1; counter &lt; 10; counter++) {
-                Order order = new Order();
-                order.setOrderId(counter);
-                order.setProductId(counter);
-                order.setCustomerId(customer.getIdentification());
-                order.setQuantity(counter);
-                orders.add(order);
-            }
-            logger.info(&quot;FETCHING RESULTS INTO DESTINATION&quot;);
-            PrintWriter file = new PrintWriter(new FileWriter(
-                &quot;/home/alexandreesl/logstashdataexample/data&quot;
-                    + new Date().getTime() + &quot;.txt&quot;));
-            file.println(&quot;1&quot; + customer.getName() + customer.getSex()
-                + customer.getAge() + customer.getIdentification());
-            for (Order order : orders) {
-                file.println(&quot;2&quot; + order.getOrderId() + order.getCustomerId()
-                    + order.getProductId() + order.getQuantity());
-            }
-            logger.info(&quot;CLEANING UP!&quot;);
-            file.flush();
-            file.close();
-// forcing a error to simulate stack traces
-            PrintWriter fileError = new PrintWriter(new FileWriter(
-                &quot;/etc/nopermission.txt&quot;));
-        } catch (Exception e) {
-            logger.error(&quot;ERROR!&quot;, e);
-        }
-    }
-}
+#regex：表示当前匹配的正则表达式。只有$url大小写相关匹配regex正则表达式，这个$url才会被rewrite进行重定向。
+
+#replacement：重定向目标规则。这个目标规则支持动态变量绑定，这个问题下文马上用示例来讲。
+
+#flag：重定向规则。
+
 </code></pre>
 
-<p>As we can see, it is a very simple class, that uses log4j to generate some log and output a positional file representing data from customers and orders and at the end, try to create a file on a folder we don&#39;t have permission to write by default,&quot;forcing&quot; a error to produce a stack trace. The complete code for the program can be found <a href="https://github.com/alexandreesl/LogStashProvider.git">here</a>. Now that we have made our data generator, let&#39;s begin the configuration for logstash. The configuration for our first example is the following:</p>
-
-<pre><code class="language-conf">input {
-    log4j {
-        port =&gt; 1500
-        type =&gt; &quot;log4j&quot;
-        tags =&gt; [ &quot;technical&quot;, &quot;log&quot;]
-    }
-}
-output {
-    stdout { codec =&gt; rubydebug }
-}
-</code></pre>
-
-<p>To run the script, let&#39;s create a file called&quot;config1.conf&quot;and save the file with the script on the&quot;bin&quot;folder of logstash&#39;s installation folder. Finally, we run the script with the following command:</p>
-
-<pre><code class="language-sh">./logstash -f config1.conf
-</code></pre>
-
-<p>This will start logstash process with the configurations we provided. To test, simply run the java program we coded earlier and we will see a sequence of message events in logstash&#39;s console window, generated by the rubydebug codec, like the one bellow, for example:</p>
-
-<pre><code class="language-log">{
-&quot;message&quot; =&gt; &quot;ERROR!&quot;,
-&quot;@version&quot; =&gt; &quot;1&quot;,
-&quot;@timestamp&quot; =&gt; &quot;2015-01-24T19:08:10.872Z&quot;,
-&quot;type&quot; =&gt; &quot;log4j&quot;,
-&quot;tags&quot; =&gt; [
-[0] &quot;technical&quot;,
-[1] &quot;log&quot;
-],
-&quot;host&quot; =&gt; &quot;127.0.0.1:34412&quot;,
-&quot;path&quot; =&gt; &quot;com.technology.alexandreesl.LogStashProvider&quot;,
-&quot;priority&quot; =&gt; &quot;ERROR&quot;,
-&quot;logger_name&quot; =&gt; &quot;com.technology.alexandreesl.LogStashProvider&quot;,
-&quot;thread&quot; =&gt; &quot;main&quot;,
-&quot;class&quot; =&gt; &quot;com.technology.alexandreesl.LogStashProvider&quot;,
-&quot;file&quot; =&gt; &quot;LogStashProvider.java:70&quot;,
-&quot;method&quot; =&gt; &quot;main&quot;,
-&quot;stack_trace&quot; =&gt; &quot;java.io.FileNotFoundException: /etc/nopermission.txt (Permission denied)\n\tat java.io.FileOutputStream.open(Native Method)\n\tat java.io.FileOutputStream.&lt;init&gt;(FileOutputStream.java:213)\n\tat java.io.FileOutputStream.&lt;init&gt;(FileOutputStream.java:101)\n\tat java.io.FileWriter.&lt;init&gt;(FileWriter.java:63)\n\tat com.technology.alexandreesl.LogStashProvider.main(LogStashProvider.java:66)&quot;
-}
-</code></pre>
-
-<p>Now, let&#39;s move on to the next stream. First, we create another file, called&quot;config2.conf&quot;, on the same folder we created the first one. On this new file, we create the following configuration:</p>
-
-<pre><code class="language-conf">input {
-    file {
-        path = &gt; &quot;/home/alexandreesl/logstashdataexample/data*.txt&quot;
-        start_position = &gt; &quot;beginning&quot;
-    }
-}
-filter {
-    grok {
-        match = &gt; [&quot;message&quot;, &quot;(?&lt;file_type&gt;.{1})(?&lt;name&gt;.{9})(?&lt;sex&gt;.{1})(?&lt;age&gt;.{2})(?&lt;identification&gt;.{10})&quot;, &quot;message&quot;, &quot;(?&lt;file_type&gt;.{1})(?&lt;order_id&gt;.{1})(?&lt;costumer_id&gt;.{10})(?&lt;product_id&gt;.{1})(?&lt;quantity&gt;.{1})&quot;]
-    }
-}
-output {
-    stdout {codec = &gt; rubydebug}
-    if [file_type] == &quot;2&quot; {
-        mongodb {
-            collection = &gt; &quot;testData&quot;
-            database = &gt; &quot;mydb&quot;
-            uri = &gt; &quot;mongodb://localhost&quot;
-        }
-    }
-}
-</code></pre>
-
-<p>With the configuration created, we can run our second example. Before we do that, however, let&#39;s dive a little on the configuration we just made. First, we used the file input, which will make logstash keep monitoring the files on the folder and processing them as they appear on the input folder.</p>
-
-<p>Next, we create a filter with the grok plugin. This filter uses combinations of regular expressions, that parses the data from the input. The plugin comes with more then 100 patterns pre-made that helps the development. Another useful tool in the use of grok is a site where we could test our expressions before use. Both links are available on the links section at the end of this post.</p>
-
-<p>Finally, we use the mongodb plugin, where we reference our logstash for a database and collection of a mongodb instance, where we will insert the data from the file into mongodb&#39;s documents. We also used again the rubydebug codec, so we can also see the processing of the files on the console. The reader will note that we used a&quot;if&quot;statement before the configuration of the mongodb output. After we parse the data with grok, we can use the newly created fields to do some logic on our stream. In this case, we filter to only process data with the type&quot;2&quot;, so only the order&#39;s data goes to the collection on mongodb, instead of all the data. We could have expanded more on this example, like saving the data into two different collections, but for the idea of passing a general view of the structure of logstash for the reader, the present logic will suffice.</p>
-
-<p><strong>PS:</strong> This example assumes the reader has mongodb installed and running on the default port of his environment, with a db &quot;mydb&quot; and a collection &quot;testData&quot; created. If the reader doesn&#39;t have mongodb, the instructions can be found on the <a href="http://docs.mongodb.org/manual/tutorial/getting-started/">official documentation</a>.</p>
-
-<p>Finally, with everything installed and configured, we run the script, with the following command:</p>
-
-<pre>./logstash -f config2.conf</pre>
-
-<p>After logstash&#39;s start, if we run our program to generate a file, we will see logstash working the data, like the screen bellow:</p>
-
-<p><img src="https://dl.dropboxusercontent.com/s/sjh61dwr5j50t1e/logstash2.png?dl=0" alt=""/></p>
-
-<p>And finally, if we query the collection on mongodb, we see the data is persisted:</p>
-
-<p><img src="https://dl.dropboxusercontent.com/s/2rk8e45qly5glkf/logstash3.png?dl=0" alt=""/></p>
-
-<p><strong>Conclusion</strong></p>
-
-<p>And so we conclude the first part of our series. With a simple usage, logstash prove to be a useful tool in the integration of information from different formats and sources, specially log-related. In the next part of our series, we will dive in the next tool of our stack: ElasticSearch. Until next time</p>
-
-<p><a href="http://logstash.net/">logstash - official site</a></p>
-
-<p><a href="https://github.com/alexandreesl/LogStashProvider.git">Source-code (Github)</a></p>
-
-<p><a href="https://grokdebug.herokuapp.com/">Grok Debugger (online testing of grok expressions)</a></p>
-
-<p><a href="https://github.com/elasticsearch/logstash/blob/v1.4.2/patterns/grok-patterns">Grok pre-made patterns</a></p>
-
-<hr/>
-
-<p>Welcome, dear reader, to another post of our series about the ELK stack for logging. On the last post, we talked about LogStash, a tool that allow us to integrate data from different sources to different destinations, using transformations along the way, in a stream-like form. On this post, we will talk about ElasticSearch, a indexer based on apache Lucene, which can allow us to organize our data and make textual searches on the data, in a scalable infrastructure. So, let&#39;s begin by understanding how ElasticSearch is organized on the inside</p>
-
-<p><strong>Indexes, documents and shards</strong></p>
-
-<p>On ElasticSearch, we have the concept of indexes. A index is like a repository, where we can store our data in the format of documents. A document on ElasticSearch&#39;s terminology consists of a structure for the data to be stored, analysed and classified, following a mapping definition, composed of a series of fields - a important thing to note, is that a field on ElasticSearch has the same type across the whole index, meaning that we cant have a field&quot;phone&quot; with the type int on a document and the type string on another.</p>
-
-<p>In turn, we have our documents stored on shards, which divide the data on segments based on a rule - by default, the segmentation is made by hashing the data, but it can also be manually manipulated -, making the searches faster.</p>
-
-<p>So, in a nutshell, we can say that the order of organization of ElasticSearch is as follows:</p>
-
-<p>Index &gt;&gt; Document (mappings/type) &gt;&gt; shard</p>
-
-<p>This organization is used by the user on the two basic operations of the cluster: indexing and searching.</p>
-
-<p>One last thing to say about documents is that they can not only be stored as independent , but also be mounted on a tree-like hierarchy, with links between them. This is useful in scenarios that we can make use of hierarchical searches, such as product&#39;s searches based on their categories.</p>
-
-<p><strong>Indexing</strong></p>
-
-<p>Indexing is the action of inputing the data from a external source to the cluster. ElasticSearch is a textual indexer, which means he can only analyse text on plain format, despite that we can use the cluster to store data in base64 format, using a plugin. Later on the post, we will see a example installation of a plugin, which are extensions we can aggregate to expand our cluster usability.</p>
-
-<p>When we index our data,  we define which fields are to be analysed, which analyser to use, if the default ones does not suffice and which fields we want to store the data on the cluster, so we can use as the result of our searches. One important thing to note about the indexing operations is that, despite it has CRUD-like operations, the data is not really updated or deleted on the cluster, instead a new version is generated and the old version is marked as deleted.</p>
-
-<p>This is a important thing to take note, because if not properly configured to make purges - which can be made with a configuration that break the shards into segments, and periodically make merges of the segments, phisically deleting the obsolet documents on the process -, the cluster will keep indefinitely expanding in size with the &quot;deleted&quot; older versions of our data, making specially the searches to became really slow.</p>
-
-<p>All the operations can be made with a REST API provided by ElasticSearch, that we will see later on this post.</p>
-
-<p><strong>Searching</strong></p>
-
-<p>The other, and probably most important, action on ElasticSearch, is the searching of the data previously indexed. Like the indexing action, ElasticSearch also provide a REST API for the searches. The API provides a very rich range of possibilities of searching, from basic term searches to more complex searches such as hierarchical searches, searches by synonims, language detections, etc.</p>
-
-<p>All the searching is based on a score system, where formulas are applied to confront the accuracy of the documents founded versus the query supplied. This score system can also be customized.</p>
-
-<p>By default, the searching on the cluster occurs in 2 phases:</p>
+<p><strong>rewrite 中的 Flag 关键字</strong></p>
 
 <ul>
-<li>  On the first phase, the master node sends the query for all the nodes, and subsequently shards , retrieving just the IDs and scores of the documents. Using a parameter called _size_ which defines the maximum results from a query, the master selects the more meaningful documents, based on the score;</li>
-<li>  On the second phase, the master send requests for the nodes to retrieve the documents selected on the previous phase. After receiving the documents, the master finally sends the result for the client;</li>
+<li>  redirect：通知客户端重定向到 rewrtie 后面的地址。</li>
+<li>  permanent：通知客户端永久重定向到 rewrtie 后面的地址。</li>
+<li>  last：将 rewrite 后的地址重新在 server 标签执行。</li>
+<li>  break：将 rewrite 后地址重新在当前的 location 标签执行。</li>
 </ul>
 
-<p>Alongside this search type, there&#39;s also other modes, like the _query_and_fetch_. On this mode, the searching is made simultaneous on all shards, not only to retrieve the IDs and scores but also returning the data itself, limited only by the _size_ parameter, which is applied per shard. In turn, on this mode, the maximum of results returned will be the size parameter plus the number of shards.</p>
+<p>实际上针对客户端来说，其效果是一样的，都是由客户端重新发起 http 请求，请求地址重新定位到 replacement 规则的 URL 地址；这里关键要讲解最常用的 last 和 break 两个关键字：</p>
 
-<p>One interesting feature of ElasticSearch&#39;s configuration options is the ability to make some nodes exclusive to query operations, and others to make the storage part, called data nodes. This way, when we query, our query dont need to run  across all the cluster to formulate the results, making the searches faster. On the next section we will see a little more about cluster configurations.</p>
-
-<p><strong>Cluster capabilities</strong></p>
-
-<p>When we talk about a cluster, we talk about scalability, but we also talk about availability. On ElasticSearch, we can configure the replication of shards, where the data is replicated by a given factor, so we dont lose our data if a node is lost. The replication if also maintained by the cluster, so if we lost a replica, the cluster itself will distribute a new replica for another node.</p>
-
-<p>Other interesting feature of the cluster are the ability to discover itself. By the default configuration, when we start a node he will use a discovery mode called Zen, which uses unicast and multicast to search for another instances on all the ports of the OS. If it founds another instance, and the name of the cluster is the same - this is another one of the cluster&#39;s configuration properties. All of this configurations can be made on the file _elasticsearch.yml_, on the config folder -, it will communicate with the instance and establish a new node for the already running cluster. There is another modes for this feature, including the discover of nodes from other servers.</p>
-
-<p><strong>Logging</strong></p>
-
-<p>The reader could be thinking: &quot;Lol, do I need all of this to run a logging stack?&quot;.</p>
-
-<p>Of course that ElasticSearch is a very robust tool, that can be used on other solutions as well. However, on our case of making a centralized logging analysis solution, the core of ElasticSearch&#39;s capabilities serve us well for this task, after all, we are talking about the textual analysis of log texts, for use on dashboards, reports, or simply for real-time exploration of the data.</p>
-
-<p>Well, that concludes the conceptual part of our post. Now, let&#39;s move on to the practice.</p>
-
-<p><strong>Hands-on</strong></p>
-
-<p>So, without further delay, let&#39;s begin the hands-on. For this, we will use the previous Java program we used on our lab about LogStash. The code can be found on GitHub, <a href="https://github.com/alexandreesl/LogStashProvider.git">on this link</a>. On this program, we used the _org.apache.log4j.net.SocketAppender_ from log4j to send all the logging we make to LogStash. However, on that point we just printed the messages on the console, instead of sending to ElasticSearch. Before we change this, let&#39;s first start our cluster.</p>
-
-<p>To do this, first we need to download the last version from the site and unzip the tar. Let&#39;s open a terminal, and type the following command:</p>
-
-<pre>curl https://download.elasticsearch.org/elasticsearch/elasticsearch/elasticsearch-1.4.4.tar.gz | tar -zx</pre>
-
-<p>After running the command, we will find a new folder called &quot;elasticsearch-1.4.4&quot; created on the same folder we run our command. To our example, we will create 2 copies of this folder on a folder we call &quot;elasticsearchcluster&quot;, where each one will represent one node of the cluster. To do this, we run the following commands:</p>
-
-<pre><code class="language-sh">mkdir elasticsearchcluster
-sudo cp -avr elasticsearch-1.4.4/ elasticsearchcluster/elasticsearch-1.4.4-node1/
-sudo cp -avr elasticsearch-1.4.4/ elasticsearchcluster/elasticsearch-1.4.4-node2/
-</code></pre>
-
-<p>After we made our cluster structure, we dont need the original folder anymore, so we remove:</p>
-
-<pre><code class="language-sh">rm -R elasticsearch-1.4.4/
-</code></pre>
-
-<p>Now, let&#39;s finally start our cluster! To do this, we open a terminal, navigate to the bin folder of our first node (elasticsearch-1.4.4-node1) and type:<a href="#viewSource" title="view source">view sourc</a></p>
-
-<pre><code class="language-sh">./elasticsearch
-</code></pre>
-
-<p>After some seconds, we can see our first node is on:</p>
-
-<p><img src="https://dl.dropboxusercontent.com/s/0mb9no6kee8oicq/elastic1.png?dl=0" alt=""/></p>
-
-<p>For curiosity sake, we can see the name &quot;Feral&quot; on the node&#39;s name on the log. All the names generated by the tool are based on Marvel Comic&#39;s characters. IT world sure has some sense of humor, heh?</p>
-
-<p>Now, let&#39;s start our second node. On a new terminal window, let&#39;s navigate to the folder of our second node (elasticsearch-1.4.4-node2) and type again the command &quot;./elasticsearch&quot;. After some seconds, we can see that the node is also started:</p>
-
-<p><img src="https://dl.dropboxusercontent.com/s/816wtb4ak0o1j3b/elastic2.png?dl=0" alt=""/></p>
-
-<p>One interesting thing to notice is that our second node &quot;Ooze&quot;, has a mention of comunicating with our other node, &quot;Feral&quot;. That is the zen discover on the action, making the 2 nodes talk to each other and form a cluster. If we look again at the terminal of our first node, we can see another evidence of this bidirectional communication, as &quot;Feral&quot; has added &quot;Ooze&quot; to the cluster, as his role as a master node:</p>
-
-<p><img src="https://dl.dropboxusercontent.com/s/p15tuaw4qewmz2i/elastic3.png?dl=0" alt=""/></p>
-
-<p> Now that we have our cluster set up, let&#39;s adjust our logstash script to send the messages to the cluster. To do this, let&#39;s change the output part of the script, to the following:</p>
-
-<pre><code class="language-conf">input {
-    log4j {
-        port = &gt; 1500
-        type = &gt; &quot;log4j&quot;
-        tags = &gt; [&quot;technical&quot;, &quot;log&quot;]
-    }
-}
-
-output {
-    stdout {codec = &gt; rubydebug}
-    elasticsearch_http {
-        host = &gt; &quot;localhost&quot;
-        port = &gt; 9200
-        index = &gt; &quot;log4jlogs&quot;
-    }
-}
-</code></pre>
-
-<p>As we can see, we just included another output - we remained the console output just to check how logstash is receiving the data - including the ip and port where our ElasticSearch cluster will respond. We also defined the name of the index we want our logs to be stored. If this parameter is not defined, logstash will order elasticsearch to create a index with the pattern &quot;logstash-%{+YYYY.MM.dd}&quot;.</p>
-
-<p>To execute this script, we do like we did on the <a href="https://alexandreesl.wordpress.com/2015/01/26/elk-using-a-centralized-logging-architecture-part-1/" title="ELK: using a centralized logging architecture – part 1">previous post</a>, we put the new script on a file called &quot;configelasticsearch.conf&quot; on the bin folder of logstash, and run with the command:</p>
-
-<pre><code class="language-sh">./logstash -f configelasticsearch.conf
-</code></pre>
-
-<p><strong>PS1:</strong> On the<a href="https://github.com/alexandreesl/ElasticSearchConfigs.git"> GitHub repository</a>, it is possible to find this config file, alongside a file containing all the commands we will send to ElasticSearch from now on.</p>
-
-<p><strong>PS2: </strong>For simplicity sake, we will use the default mappings logstash provide for us when sending messages to the cluster. It is also possible to pass a elasticsearch&#39;s mapping structure, which consists of a JSON model, that logstash will use as a template. We will see the mapping from our log messages later on our lab, but for satisfying the reader curiosity for now, this is what a elasticsearch&#39;s mapping structure look like, for example for a document type &quot;product&quot;:</p>
-
-<pre><code class="language-json">&quot;mappings&quot;: {
-    &quot;product&quot;: {
-        &quot;properties&quot;: {
-            &quot;variation&quot;: {&quot;type&quot;: int}
-            &quot;color&quot;: {&quot;type&quot;: &quot;string&quot;}
-            &quot;code&quot;: {&quot;type&quot;: int}
-            &quot;quantity&quot;: {&quot;type&quot;: int}
+<pre><code>所有的rewrite语句都是要在server中的location中书写的，如下：
+server {
+    。。。。。。
+    。。。。。。
+    location ... {
+        if(...) {
+            rewirte regex replacement flag;
         }
+        rewirte regex replacement flag;
     }
 }
+
+那么，break关键字说明重写的replacement地址在当前location的区域马上执行。
+last关键字说明重写的replacement地址在当前server所有的location中重新再做匹配。
+
 </code></pre>
 
-<p>After some seconds, we can see that LogStash booted, so our configuration was a success. Now, let&#39;s begin sending our logs!</p>
+<p>下面我们结合 rewrite 关键字和 rewrite flag 关键字给出典型的示例进行讲解：</p>
 
-<p>To do this, we run the program from our previous post, running the class _com.technology.alexandreesl.LogStashProvider ._ We can see on the console of logstash, after starting the program, that the messages are going through the stack:</p>
+<pre><code>示例1：
+location ~* ^/(.+)/(.+)\.(jpg|gif|png|jpeg)$ {
+    rewrite ^/orderinfo/(.+)\.(jpg|gif|png|jpeg)$   /img/$1.$2   break;
+    root   /cephclient;
+}
 
-<p><img src="https://dl.dropboxusercontent.com/s/avoh8yu98u5oqbj/elastic4.png?dl=0" alt=""/></p>
+location在不进行大小写区分的情况下利用正则表达式对$url进行匹配。当匹配成功后进行rewrite重定位。
+rewrite进行重写url的规则是：regex表达式第一个括号中的内容对应$1，regex表达式第二个括号中的内容对应$2，以此类推。
+这样重定位的意义就很明确了：将任何目录下的文件名重定位到img目录下的对应文件名，
+并且马上在这个location中（注意是Nginx，而不是客户端）执行这个重写后的URL定位。
 
-<p>Now that we have our cluster up and running, let&#39;s start to use it. First, let&#39;s see the mappings of the index that ElasticSearch created for us, based on the configuration we made on LogStash. Let&#39;s open a terminal and run the following command:</p>
+示例2：
+server {
+    。。。。
+    。。。。
+    location ~* ^/orderinfo/(.+)\.(jpg|gif|png|jpeg)$ {
+        rewrite ^/orderinfo/(.+)\.(.+)$  /img/$1.$2   last;
+    }
 
-<p>curl -XGET &#39;localhost:9200/log4jlogs/_mapping?pretty&#39;</p>
-
-<p>On the command above, we are using ElasticSearch&#39;s REST API. The reader will notice that, after the ip and port, the URL contains the name of the index we configured. This pattern for calls of the API is applied to most of the actions, as we can see below:</p>
-
-<p><ip>:<port>/<index>/<doc type>/<action>?<attributes></p>
-
-<p>So, after this explanation, let&#39;s see the result from our call:</p>
-
-<pre><code class="language-json">{
-    &quot;log4jlogs&quot;: {
-        &quot;mappings&quot;: {
-            &quot;log4j&quot;: {
-                &quot;properties&quot;: {
-                    &quot;@timestamp&quot;: {
-                        &quot;type&quot;: &quot;date&quot;,
-                        &quot;format&quot;: &quot;dateOptionalTime&quot;
-                    },
-                    &quot;@version&quot;: {
-                        &quot;type&quot;: &quot;string&quot;
-                    },
-                    &quot;class&quot;: {
-                        &quot;type&quot;: &quot;string&quot;
-                    },
-                    &quot;file&quot;: {
-                        &quot;type&quot;: &quot;string&quot;
-                    },
-                    &quot;host&quot;: {
-                        &quot;type&quot;: &quot;string&quot;
-                    },
-                    &quot;logger_name&quot;: {
-                        &quot;type&quot;: &quot;string&quot;
-                    },
-                    &quot;message&quot;: {
-                        &quot;type&quot;: &quot;string&quot;
-                    },
-                    &quot;method&quot;: {
-                        &quot;type&quot;: &quot;string&quot;
-                    },
-                    &quot;path&quot;: {
-                        &quot;type&quot;: &quot;string&quot;
-                    },
-                    &quot;priority&quot;: {
-                        &quot;type&quot;: &quot;string&quot;
-                    },
-                    &quot;stack_trace&quot;: {
-                        &quot;type&quot;: &quot;string&quot;
-                    },
-                    &quot;tags&quot;: {
-                        &quot;type&quot;: &quot;string&quot;
-                    },
-                    &quot;thread&quot;: {
-                        &quot;type&quot;: &quot;string&quot;
-                    },
-                    &quot;type&quot;: {
-                        &quot;type&quot;: &quot;string&quot;
-                    }
-                }
-            }
-        }
+    location / {
+        root   /cephclient;
     }
 }
+
+在server中，有两个location位置，当url需要访问orderinfo目录下的某一个图片时，rewrite将重写这个url，
+并且重新带入这个url到server执行，这样“location /”这个location就会执行了，并找到图片存储的目录。
+
 </code></pre>
 
-<p>As we can see, the index &quot;log4jlogs&quot; was created, alongside the document type &quot;log4j&quot;. Also, a series of fields were created, representing information from the log messages, like the thread that generated the log, the class, the log level and the log message itself.</p>
+<h2 id="toc_3"><a></a>1.3、健康检查模块</h2>
 
-<p>Now, let&#39;s begin to make some searches.</p>
+<p>在本小节我们介绍一个用于 Nginx 对后端 UpStream 集群节点健康状态检查的第三方模块：nginx_upstream_check_module（<a href="https://github.com/yaoweibin/nginx_upstream_check_module">https://github.com/yaoweibin/nginx_upstream_check_module</a>）。这个模块有资料介绍是 TaoBao 团队开发的，但是我在 GitHua 上试图求证时并没有找到直接证据。</p>
 
-<p>Let&#39;s begin by searching all log messages which the priority was&quot;INFO&quot;. We make this searching by running:</p>
+<p>这里需要说明的是，目前有很多 Nginx 模块实现 Nginx 对后端集群节点的健康监测，不止 nginx_upstream_check_module。Nginx 官方有一个模块 healthcheck_nginx_upstreams 也可以实现对后端节点的健康监测（<a href="https://github.com/cep21/healthcheck_nginx_upstreams">https://github.com/cep21/healthcheck_nginx_upstreams</a> 有详细的安装和使用介绍）</p>
 
-<p>curl -XGET &#39;localhost:9200/log4jlogs/log4j/_search?q=priority:info&amp;pretty=true&#39;</p>
+<p>我们回到对 nginx_upstream_check_module 的讲解，<strong>要使用这个第三方模块首先您需要进行下载，然后通过 patch 命令将补丁打入您原有的 Nginx 源码中，并且重新进行编译安装</strong>。下面我们来重点讲解一下这个模块的安装和使用。</p>
 
-<p>A fragment of the result of the query would be something like the following:</p>
+<p><strong>下载 nginx_upstream_check_module 模块：</strong></p>
 
-<pre><code class="language-json">{
-    &quot;took&quot;: 12,
-    &quot;timed_out&quot;: false,
-    &quot;_shards&quot;: {
-        &quot;total&quot;: 5,
-        &quot;successful&quot;: 5,
-        &quot;failed&quot;: 0
-    },
-    &quot;hits&quot;: {
-        &quot;total&quot;: 18,
-        &quot;max_score&quot;: 1.1823215,
-        &quot;hits&quot;: [{
-        &quot;_index&quot;: &quot;log4jlogs&quot;,
-        &quot;_type&quot;: &quot;log4j&quot;,
-        &quot;_id&quot;: &quot;AUuxkDTk8qbJts0_16ph&quot;,
-        &quot;_score&quot;: 1.1823215,
-        &quot;_source&quot;: {&quot;message&quot;: &quot;STARTING DATA COLLECTION&quot;, &quot;@version&quot;: &quot;1&quot;, &quot;@timestamp&quot;: &quot;2015-02-22T13:53:12.907Z&quot;, &quot;type&quot;: &quot;log4j&quot;, &quot;tags&quot;: [&quot;technical&quot;, &quot;log&quot;], &quot;host&quot;:&quot;127.0.0.1:32942&quot;, &quot;path&quot;:&quot;com.technology.alexandreesl.LogStashProvider&quot;, &quot;priority&quot;:&quot;INFO&quot;, &quot;logger_name&quot;:&quot;com.technology.alexandreesl.LogStashProvider&quot;, &quot;thread&quot;:&quot;main&quot;, &quot;class&quot;:&quot;com.technology.alexandreesl.LogStashProvider&quot;, &quot;file&quot;:&quot;LogStashProvider.java:20&quot;, &quot;method&quot;:&quot;main&quot;}
-    }
-.
-.
-.
+<pre><code>wget https://codeload.github.com/yaoweibin/nginx_upstream_check_module/zip/master
+
+您也可以直接到GitHua上进行下载，还一个在linux系统上使用git命令进行下载。
+
 </code></pre>
 
-<p>As we can see, the result is a JSON structure, with the documents that met our search. The beginning information of the result is not the documents themselves, but instead information about the search itself, such as the number of shards used, the seconds the search took to execute, etc. This kind of information is useful when we need to make a tuning of our searches, like manually defining the shards we which to use on the search, for example.</p>
+<p><strong>解压安装，并补丁打入 Nginx 源码</strong></p>
 
-<p>Let&#39;s see another example. On our previous search, we received all the fields from the document on the result, which is not always the desired result, since we will not always use the whole information. To limit the fields we want to receive, we make our query like the following:</p>
+<pre><code># unzip ./nginx_upstream_check_module-master.zip
 
-<pre><code class="language-sh">curl -XGET &#39;localhost:9200/log4jlogs/log4j/_search?pretty=true&#39; -d &#39;
-{
-    &quot;fields&quot; : [&quot;priority&quot;, &quot;message&quot;,&quot;class&quot;],
-    &quot;query&quot; : {
-        &quot;query_string&quot; : {&quot;query&quot; : &quot;priority:info&quot;}
-    }
-}&#39;
+注意是将补丁打入Nginx源码，不是Nginx的安装路径：
+
+# cd ./nginx-1.6.2
+
+# patch -p1 &lt; ../nginx_upstream_check_module-master/check_1.5.12+.patch
+
+如果补丁安装成功，您将看到以下的提示信息：
+patching file src/http/modules/ngx_http_upstream_ip_hash_module.c
+patching file src/http/modules/ngx_http_upstream_least_conn_module.c
+patching file src/http/ngx_http_upstream_round_robin.c
+patching file src/http/ngx_http_upstream_round_robin.h
+
+这里请注意：在nginx_upstream_check_module官网的安装说明中，有一个打补丁的注意事项：
+If you use nginx-1.2.1 or nginx-1.3.0, the nginx upstream round robin
+module changed greatly. You should use the patch named
+&#39;check_1.2.1.patch&#39;.
+If you use nginx-1.2.2+ or nginx-1.3.1+, It added the upstream
+least_conn module. You should use the patch named &#39;check_1.2.2+.patch&#39;.
+If you use nginx-1.2.6+ or nginx-1.3.9+, It adjusted the round robin
+module. You should use the patch named &#39;check_1.2.6+.patch&#39;.
+If you use nginx-1.5.12+, You should use the patch named
+&#39;check_1.5.12+.patch&#39;.
+If you use nginx-1.7.2+, You should use the patch named
+&#39;check_1.7.2+.patch&#39;.
+
+这里我们的Nginx的版本是1.6.2，那么就应该打入check_1.5.12+.patch这个补丁
+
 </code></pre>
 
-<p>On the query above, we asked ElasticSearch to limit the return to only return the priority, message and class fields. A fragment of the result can be seen bellow:</p>
+<p><strong>重新编译安装 Nginx：</strong></p>
 
-<pre><code class="language-json">.
-.
-.
-{
-    &quot;_index&quot; : &quot;log4jlogs&quot;,
-    &quot;_type&quot; : &quot;log4j&quot;,
-    &quot;_id&quot; : &quot;AUuxkECZ8qbJts0_16pr&quot;,
-    &quot;_score&quot; : 1.1823215,
-    &quot;fields&quot; : {
-        &quot;priority&quot; : [ &quot;INFO&quot; ],
-        &quot;message&quot; : [ &quot;CLEANING UP!&quot; ],
-        &quot;class&quot; : [ &quot;com.technology.alexandreesl.LogStashProvider&quot; ]
-    }
+<pre><code>注意重新编译Nginx，要使用add-module参数将这个第三方模块安装进去：
+
+# ./configure --prefix=/usr/nginx-1.6.2/ --add-module=../nginx_upstream_check_module-master/
+
+# make &amp;&amp; make install
+
+</code></pre>
+
+<p>通过以上的步骤，第三方的 nginx_upstream_check_module 模块就在 Nginx 中准备好了。接下来我们讲解一下如何使用这个模块。首先看一下 upstream 的配置信息：</p>
+
+<pre><code>upstream cluster {
+    # simple round-robin
+    server 192.168.0.1:80;
+    server 192.168.0.2:80;
+
+    check interval=5000 rise=1 fall=3 timeout=4000;
+
+    #check interval=3000 rise=2 fall=5 timeout=1000 type=ssl_hello;
+    #check interval=3000 rise=2 fall=5 timeout=1000 type=http;
+    #check_http_send &quot;HEAD / HTTP/1.0\r\n\r\n&quot;;
+    #check_http_expect_alive http_2xx http_3xx;
 }
-.
-.
-.
+
 </code></pre>
 
-<p>Now, let&#39;s use the term search. On the term searches, we use ElasticSearch&#39;s textual analysis to find a term inside the text of a field. Let&#39;s run the following command:</p>
+<p>上面的代码中，check 部分就是调用 nginx_upstream_check_module 模块的语法：</p>
 
-<pre><code class="language-sh">curl -XGET &#39;localhost:9200/log4jlogs/log4j/_search?pretty=true&#39; -d &#39;
-{
-    &quot;fields&quot; : [&quot;priority&quot;, &quot;message&quot;,&quot;class&quot;],
-    &quot;query&quot; : {
-        &quot;term&quot; : {
-            &quot;message&quot; : &quot;up&quot;
-        }
-    }
-}&#39;
+<pre><code>check interval=milliseconds [fall=count] [rise=count]
+[timeout=milliseconds] [default_down=true|false]
+[type=tcp|http|ssl_hello|mysql|ajp|fastcgi]
+
 </code></pre>
 
-<p>If we see the result, it would be all the log messages that contains the word &quot;up&quot;. A fragment of the result can be seen bellow:</p>
+<p>interval：必要参数，检查请求的间隔时间。</p>
 
-<pre><code class="language-json">{
-    &quot;_index&quot; : &quot;log4jlogs&quot;,
-    &quot;_type&quot; : &quot;log4j&quot;,
-    &quot;_id&quot; : &quot;AUuxkESc8qbJts0_16pv&quot;,
-    &quot;_score&quot; : 1.1545612,
-    &quot;fields&quot; : {
-        &quot;priority&quot; : [ &quot;INFO&quot; ],
-        &quot;message&quot; : [ &quot;CLEANING UP!&quot; ],
-        &quot;class&quot; : [ &quot;com.technology.alexandreesl.LogStashProvider&quot; ]
-    }
-}
+<p>fall：当检查失败次数超过了 fall，这个服务节点就变成 down 状态。</p>
+
+<p>rise：当检查成功的次数超过了 rise，这个服务节点又会变成 up 状态。</p>
+
+<p>timeout：请求超时时间，超过等待时间后，这次检查就算失败。</p>
+
+<p>default_down：后端服务器的初始状态。默认情况下，检查功能在 Nginx 启动的时候将会把所有后端节点的状态置为 down，检查成功后，在置为 up。</p>
+
+<p>type：这是检查通信的协议类型，默认为 http。以上类型是检查功能所支持的所有协议类型。</p>
+
+<pre><code>check_http_send http_packet
+
+http_packet的默认格式为：&quot;GET / HTTP/1.0\r\n\r\n&quot;
+
 </code></pre>
 
-<p>Of course, there is a lot more of searching options on ElasticSearch, but the examples provided on this post are enough to make a good starting point for the reader. To make a final example, we will use the &quot;prefix&quot; search. On this type of search, ElasticSearch will search for terms that start with our given text, on a given field. For example, to search for log messages that have words starting with &quot;clea&quot;, part of the word &quot;cleaning&quot;, we run the following:</p>
+<p>check_http_send 设置，这个设置描述了检查模块在每次检查时，向后端节点发送什么样的信息</p>
 
-<pre><code class="language-sh">curl -XGET &#39;localhost:9200/log4jlogs/log4j/_search?pretty=true&#39; -d &#39;
-{
-    &quot;fields&quot; : [&quot;priority&quot;, &quot;message&quot;,&quot;class&quot;],
-    &quot;query&quot; : {
-        &quot;prefix&quot; : {
-            &quot;message&quot; : &quot;clea&quot;
-        }
-    }
-}&#39;
+<pre><code>check_http_expect_alive [ http_2xx | http_3xx | http_4xx | http_5xx ]
+
 </code></pre>
 
-<p>If we see the results, we will see that are the same from the previous search, proving that our search worked correctly.</p>
+<p>这些状态代码表示服务器的 HTTP 响应上是 OK 的，后端节点是可用的。默认情况的设置是：http_2xx | http_3xx</p>
 
-<p><strong>Kopf</strong></p>
+<p>当您根据您的配置要求完成检查模块的配置后，请首先使用 nginx -t 命令监测配置文件是否可用，然后在用 nginx -s reload 重启 nginx。</p>
 
-<p>The reader possibly could ask &quot;Is there another way to send my queries without using the terminal?&quot; or &quot;Is there any graphical tool that I can use to monitor the status of my cluster?&quot;. As a matter of fact, there is a answer for both of this questions, and the answer is the kopf plugin.</p>
+<h2 id="toc_4"><a></a>1.4、不得不提的 tengine</h2>
 
-<p>As we said before, plugins are extensions that we can install to improve the capacities of our cluster. In order to install the plugin, first let&#39;s stop both the nodes of the cluster - press ctrl+c on both terminal windows to stop - then, navigate to the nodes root folder and type the following:</p>
+<p>Tengine 是由淘宝网发起的 Web 服务器项目。它在 Nginx 的基础上，针对大访问量网站的需求，添加了很多高级功能和特性。Tengine 的性能和稳定性已经在大型的网站如淘宝网，天猫商城等得到了很好的检验。它的最终目标是打造一个高效、稳定、安全、易用的 Web 平台（<a href="http://tengine.taobao.org/">http://tengine.taobao.org/</a>）。</p>
 
-<pre><code class="language-sh">bin/plugin -install lmenezes/elasticsearch-kopf
-</code></pre>
+<p>您应该懂了，我建议您根据业务的实际情况，适时在生产环境引入 Tengine。但在本博客发布时，Tengine 的 2.X 版本还不稳定，所以建议实用 1.5.2 的稳定版本。<strong>请记住 Tengine 就是经过升读改造后的 Nginx</strong>。</p>
 
-<p>If the plugin was installed correctly, we should see a message like the one bellow on the console:</p>
+<h1 id="toc_5"><a></a>2、后文介绍</h1>
 
-<pre><code class="language-log">.
-.
-.
--&gt; Installing lmenezes/elasticsearch-kopf...
-Trying [https://github.com/lmenezes/elasticsearch-kopf/archive/master.zip...](https://github.com/lmenezes/elasticsearch-kopf/archive/master.zip...)
-Downloading .....................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................DONE
-Installed lmenezes/elasticsearch-kopf into....
-</code></pre>
+<p>花了两篇文章的功夫，终于将我想给大家讲解的 nginx 的实用特性讲完了，但是 nginx 远远不止这些特性。后面有时间我们会再回到 Nginx，重点讲解针对 Nginx 的脚本开发，我们还会讲解 Nginx 和 Lua 的集成。但是为了不扰乱这个系列博文的时间安排，下篇文章我们将开始介绍 LVS 技术，争取用一篇文章的篇幅讲清楚 LVS 核心设计思想、单节点安装和使用。再下篇文章我们介绍 Keepalived 技术，以及 keepalived 和 LVS、Nginx 分别进行集成，敬请关注。</p>
 
-<p>After installing on both nodes, we can start again the nodes, just as we did before. After the booting of the cluster, let&#39;s open a browser and type the following URL:</p>
-
-<p><a href="http://localhost:9200/_plugin/kopf">http://localhost:9200/_plugin/kopf</a></p>
-
-<p>We will see the following web page of the kopf plugin, showing the status of our cluster, such as the nodes, the indexes, shard information, etc</p>
-
-<p><img src="https://dl.dropboxusercontent.com/s/v1gevf01knh4efo/elastic5.png?dl=0" alt=""/></p>
-
-<p>Now, let&#39;s run our last example from the search queries on kopf. First, we select the&quot;rest&quot;option on the top menu. On the next screen, we select&quot;POST&quot; as the http method, include on the URL field the index and document type to narrow the results and on the textarea bellow we include our JSON query filters. The print bellow shows the query made on the interface:</p>
-
-<p><img src="https://dl.dropboxusercontent.com/s/qpc23126qwkakpy/elastic6.png?dl=0" alt=""/></p>
-
-<p><strong> Conclusion</strong></p>
-
-<p>And so we conclude our post about ElasticSearch. A very powerful tool on the indexing and analysis of textual information, the central stone on our ELK stack for logging is a tool to be used, not only on a logging analysis system, but on other solutions that his features can be useful as well.</p>
-
-<p>So, our stack is almost complete. We can gather our log information, and the information is indexed on our cluster. However, a final piece remains: we need a place where we can have a more friendly interface, that allow us not only to search the information, but also to make rich presentations of the data, such as dashboards. That&#39;s when it enters our last part of our ELK series and the last tool we will see, Kibana. Thank you for following me on another post, until next time.</p>
-
-<p><a href="https://github.com/alexandreesl/ElasticSearchConfigs">GitHub code (ElasticSearch)</a></p>
-
-<p><a href="https://github.com/alexandreesl/LogStashProvider">GitHub code (LogStash)</a></p>
-
-<p><a href="http://www.elasticsearch.org/">ElasticSearch (Official site)</a></p>
+<p><link rel="stylesheet" href="https://csdnimg.cn/release/phoenix/template/css/markdown_views-ea0013b516.css"></p>
 
                         
                       </div>
@@ -705,10 +410,10 @@ Installed lmenezes/elasticsearch-kopf into....
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/6/6</span>
+                    <span class="date">2018/6/28</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Logging.html'>Logging</a></span>
+          					    <span class="posted-in"><a href='Network.html'>Network</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -798,31 +503,31 @@ Installed lmenezes/elasticsearch-kopf into....
 	      
 		      
 			      <li class="post">
-			        <a href="15389311738065.html">重构到更深层的模型</a>
+			        <a href="15459058392039.html">Reliable Domain Events</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389278377243.html">IAM of Google Cloud</a>
+			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389224951575.html">RSocket, a New Application Network Protocol for Reactive Applications, Announced at SpringOne</a>
+			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389220103546.html">如何形象地描述RxJava中的背压和流控机制？</a>
+			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389214670417.html">Modeling Uncertainty with Reactive DDD</a>
+			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
 			      </li>
 		     
 		  

@@ -105,124 +105,494 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15352773081191.html">
+                <a class="clearlink" href="15423821810758.html">
                 
-                  <h1>有赞统一日志平台初探</h1>
+                  <h1>如何使用Journalctl查看和操作Systemd日志</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://tech.youzan.com/you-zan-tong-ri-zhi-ping-tai-chu-tan/">https://tech.youzan.com/you-zan-tong-ri-zhi-ping-tai-chu-tan/</a></p>
+<p><a href="https://www.howtoing.com/how-to-use-journalctl-to-view-and-manipulate-systemd-logs/">https://www.howtoing.com/how-to-use-journalctl-to-view-and-manipulate-systemd-logs/</a></p>
 </blockquote>
 
-<pre><code>【编者的话】从2015年初入职有赞以来，一直致力于后端服务开发，主要设计开发了监控系统Hawk，但这不是本次要分享的点。一个月前，负责日志平台Track的小伙伴寻求梦想出去创业了，有幸接手了日志平台，这对本人确实是个不小的挑战，也同样是个学习成长的机会。此次就借着梳理日志平台的机会，给大家分享一下有赞统一日志平台的架构设计。
+<h3 id="toc_0">介绍</h3>
+
+<p>一些最引人注目的优势<code>systemd</code>是那些参与到流程和系统日志。 当使用其它工具，日志通常分散在整个系统中，由不同的守护程序和进程的处理，并且可以是相当困难的，当它们跨越多个应用来解释。 <code>Systemd</code>试图通过用于记录所有内核提供一个集中管理解决方案，以解决这些问题，并用户级进程。 收集和管理这些日志的系统称为日志。</p>
+
+<p>该杂志是与实施<code>journald</code>守护程序，它处理所有的内核，initrd 服务等。在本指南中产生的消息，我们将讨论如何使用<code>journalctl</code>实用工具，可用于访问和操纵数据在期刊内举行。</p>
+
+<h2 id="toc_1">大概的概念</h2>
+
+<p>其中背后的驱动力的<code>systemd</code>刊物是集中日志的管理，无论哪里的消息发起的。 由于大部分的启动过程和服务管理是由处理<code>systemd</code>过程，是有意义的标准化的日志收集和访问的方式。 该<code>journald</code>守护在轻松和动态操作的二进制格式的所有可用资源，并将它们存储收集数据。</p>
+
+<p>这给了我们一些显着的优势。 通过使用单个实用程序与数据交互，管理员能够根据其需要动态显示日志数据。 这可以像从三个引导之前查看引导数据一样简单，或者从两个相关服务顺序组合日志条目以调试通信问题。</p>
+
+<p>以二进制格式存储日志数据还意味着数据可以根据您当前需要的任意输出格式显示。 例如，对于每天的日志管理您可以用于在标准查看日志<code>syslog</code>格式，但如果你决定以后图表服务中断，可以输出每一个条目作为 JSON 对象，使其耗到你的绘图服务。 由于数据未以纯文本形式写入磁盘，因此在需要不同的按需格式时不需要进行转换。</p>
+
+<p>该<code>systemd</code>期刊既可以与现有使用<code>syslog</code>的实现，也可以更换<code>syslog</code>功能，根据您的需要。 而<code>systemd</code>杂志将涵盖大多数管理员的记录需求，它也可以补充现有的日志机制。 例如，你可能有一个集中的<code>syslog</code> ，你用来编译来自多个服务器的数据服务器，但你也不妨与交错在单个系统上从多个服务日志<code>systemd</code>杂志。 您可以通过组合这些技术来实现这两者。</p>
+
+<h2 id="toc_2">设置系统时间</h2>
+
+<p>使用二进制日志进行日志记录的一个好处是能够以 UTC 或本地时间随意查看日志记录。 默认情况下， <code>systemd</code>将显示在当地时间结果。</p>
+
+<p>因此，在我们开始使用期刊之前，我们将确保时区设置正确。 该<code>systemd</code>套房实际上带有一个工具，称为<code>timedatectl</code> ，可以帮助这一点。</p>
+
+<p>首先，看看什么时区以<code>list-timezones</code>选项：</p>
+
+<pre><code>timedatectl list-timezones
 </code></pre>
 
-<h4 id="toc_0">一、引言</h4>
+<p>这将列出您的系统上可用的时区。 如果您发现该位置匹配您的服务器的一个，你可以通过设置<code>set-timezone</code>选项：</p>
 
-<p>自有赞成立以来，发展迅猛，业务增长很快，业务系统数量大，每天都会产生大量的系统日志和业务日志 (据统计，平均每秒产生日志 1.1 万条，峰值 1.5 万条，每天的日志量约 9 亿条，占用空间 2.4T 左右)。</p>
-
-<p>在信息化时代，日志的价值是无穷的。为了对系统进行有效的监控、维护、优化、改进，都离不开对日志的收集和分析，而这些日志散落在各个服务器上，无论对运维同学、还是业务开发同学，抑或是数据部门的同学而言，查阅或分析日志是一大痛点，实时收集分布在不同节点或机器上的日志，供离线或在线查阅及分析来提升工作效率的需求异常迫切，在此背景下，于是有赞统一日志平台就应运而生了。</p>
-
-<p>在互联网高速发展的今天，有那么多优秀的日志收集系统，诸如 Kafka、Flume、Scribe、Chukwa、ELK 等。对于如何选型在此不做讨论，而且本人才疏学浅，也未做深入调研和性能分析对比测试，还不够资格讨论。相信前人的选择是有其理由的，接下来我们来看看秉着 “短平快” 的互联网精神，构建的这套适合有赞业务系统的统一日志平台。</p>
-
-<h4 id="toc_1">二、总体设计</h4>
-
-<p>废话不多说，直接上总体架构图，如图 2-1 所示： <img src="http://7xtb4n.com1.z0.glb.clouddn.com/track-pic-2-1.png" alt=""/> 图 2-1 总体架构图</p>
-
-<p>有赞统一日志系统，负责收集所有系统日志和业务日志，转化为流式数据，通过 flume 或 logstash 上传到日志中心 (kafka 集群)，然后供 Track、Storm、Spark 及其它系统实时分析处理日志，并将日志持久化存储到 HDFS 供离线数据分析处理，或写入 ElasticSearch 提供数据查询，或写入 Hawk 发起异常报警或提供指标监控查询。</p>
-
-<h4 id="toc_2">三、模块分解</h4>
-
-<p>从上面总体架构图中，我们可以看到整个日志平台架构分为四层，从左到右依次是日志接入层、日志中心、日志处理层、日志存储层。</p>
-
-<h5 id="toc_3">3.1 日志接入层</h5>
-
-<p>日志接入层主要有两种方式，方式 1 基于 rsyslog 和 logstash，方式 2 基于 flume-ng。</p>
-
-<h6 id="toc_4">3.1.1</h6>
-
-<p><img src="http://7xtb4n.com1.z0.glb.clouddn.com/track-pic-3-1.png" alt=""/> 图 3-1 日志接入方式 1</p>
-
-<p>对于一些稳定的日志，比如系统日志或框架日志 (如 nginx 访问日志、phpfpm 异常日志等)，我们添加 nginx 配置，通过 rsyslog 写到本地目录 local0，然后 logstash 根据其配置，会将 local0 中的增量日志上传到日志中心对应的 topic 中，具体数据流图见图 3-1 所示：</p>
-
-<h6 id="toc_5">3.1.2</h6>
-
-<p>Flume NG 是一个分布式，高可用，可靠的系统，它能将不同的海量数据收集，移动并存储到一个数据存储系统中。轻量，配置简单，适用于各种日志收集，并支持 Failover 和负载均衡。并且它拥有非常丰富的组件。Flume NG 采用的是三层架构：Agent 层，Collector 层和 Store 层，每一层均可水平拓展。其中 Agent 包含 Source，Channel 和 Sink，三者组建了一个 Agent。三者的职责如下所示：<br/>
-Source：用来消费（收集）数据源到 Channel 组件中，简单说就是搜集数据的入口。<br/>
-Channel：中转临时存储，保存所有 Source 组件信息，其实就是个消息队列，可配置多个 Chanel。<br/>
-Sink：从 Channel 中读取，读取成功后会删除 Channel 中的信息，简单说就是搜集数据的出口。</p>
-
-<p>在有赞日志平台中，我们只用了 Agent 层。具体可以见图 3-2:</p>
-
-<p><img src="http://7xtb4n.com1.z0.glb.clouddn.com/track-pic-3-2.png" alt=""/></p>
-
-<p>图 3-2 日志接入方式 2</p>
-
-<p>日志中心的 kafka 是根据 topic 存取数据的，所以需要在日志中加入 topic 字段。为了统一，我们对日志格式做了约定，格式如下:</p>
-
-<pre><code>&lt;158&gt;yyyy-MM-dd HH:mm:ss host/ip level[pid]: topic=track.**** {&quot;type&quot;:&quot;error&quot;,&quot;tag&quot;:&quot;redis connection refused&quot;,&quot;platform&quot;:&quot;java/go/php&quot;,&quot;level&quot;:&quot;info/warn/error&quot;,&quot;app&quot;:&quot;appName&quot;,&quot;module&quot;:&quot;com.youzan.somemodule&quot;,&quot;detail&quot;:&quot;any things you want here&quot;}
+<pre><code>sudo timedatectl set-timezone zone
 
 </code></pre>
 
-<p>对于 PHP Server，我们在 PHP 框架中封装了日志 SDK，PHP 开发的同学只需调用写日志接口，就可以将日志传到 Flume 中。同样的，对于 Java Server，也封装了日志 SDK(基于 logback 自定义了<code>TrackAppender</code>)，并集成在 Dubbox 框架中，业务开发的同学只需在其工程的 logback.xml 中添加相应的 appender 配置，指明应用名和日志 topic 即可将日志异步传到 Flume 中。对于其它应用或服务 (比如基于 Go、Node.JS、Python 等)，如果需要接入日志平台，只需按照以上日志格式组装日志，并将其上传到 Flume 即可。</p>
+<p>为了确保您的机器现在使用正确的时间，用<code>timedatectl</code>单独命令，或使用<code>status</code>选项。 显示将是相同的：</p>
 
-<p>细心的同学会发现，在图 3-2 中，我们用了<code>TrackSink</code>，这个是做什么的呢？虽然 Flume 自带丰富的组件，也包括 KafkaSink，但是为什么我们不用呢？考虑到自带的 KafkaSink 不能按我们需要的 topic 来分发数据，所以只能自定义实现了 Sink 来达到写不同 topic 日志到不同日志中心 topic 中去的目的。</p>
+<pre><code>timedatectl status
+</code></pre>
 
-<p>另外，Flume 是通过 Supervisor 启动的，并且添加了监控报警，但是为了避免日志写失败，在 Flume 中，我们使用了 Failover 策略，假如写日志中心失败，则将日志写到本地，保证日志不丢失。</p>
+<pre><code>      Local time: Thu 2015-02-05 14:08:06 EST
+  Universal time: Thu 2015-02-05 19:08:06 UTC
+        RTC time: Thu 2015-02-05 19:08:06
+       Time zone: America/New_York (EST, -0500)
+     NTP enabled: no
+NTP synchronized: no
+ RTC in local TZ: no
+      DST active: n/a
+</code></pre>
 
-<p>3.2 日志中心</p>
+<p>第一行应显示正确的时间。</p>
 
-<p>美其名曰日志中心，但实际上只是日志中心缓存，我们只保存最近 24 小时的日志，需要持久化的日志都会刷入 HDFS。至于为什么选用 kafka 集群来构建日志中心，理由主要如下:</p>
+<h2 id="toc_3">基本日志查看</h2>
 
-<pre><code>  1、分布式架构，可支持水平扩展。
-  2、高吞吐量，在普通的服务器上每秒钟也能处理几十万条消息(远高于我们的峰值1.5万条/秒)。
-  3、消息持久化，按topic分区存储，支持可重复消费。
-  4、日志系统不需要保证严格的消息准确性。
-  5、数据在磁盘上的存取代价为O(1)。
-  6、可根据broker配置定期删除过期数据。
+<script>(adsbygoogle = window.adsbygoogle || []).push({});</script>
+
+<p>要看到，日志<code>journald</code>守护程序收集，使用<code>journalctl</code>命令。</p>
+
+<p>单独使用时，每一个日记帐分录是系统将寻呼机（通常内显示<code>less</code> ），供您浏览。 最旧的条目将在顶部：</p>
+
+<pre><code>journalctl
+</code></pre>
+
+<pre><code>-- Logs begin at Tue 2015-02-03 21:48:52 UTC, end at Tue 2015-02-03 22:29:38 UTC. --
+Feb 03 21:48:52 localhost.localdomain systemd-journal[243]: Runtime journal is using 6.2M (max allowed 49.
+Feb 03 21:48:52 localhost.localdomain systemd-journal[243]: Runtime journal is using 6.2M (max allowed 49.
+Feb 03 21:48:52 localhost.localdomain systemd-journald[139]: Received SIGTERM from PID 1 (systemd).
+Feb 03 21:48:52 localhost.localdomain kernel: audit: type=1404 audit(1423000132.274:2): enforcing=1 old_en
+Feb 03 21:48:52 localhost.localdomain kernel: SELinux: 2048 avtab hash slots, 104131 rules.
+Feb 03 21:48:52 localhost.localdomain kernel: SELinux: 2048 avtab hash slots, 104131 rules.
+Feb 03 21:48:52 localhost.localdomain kernel: input: ImExPS/2 Generic Explorer Mouse as /devices/platform/
+Feb 03 21:48:52 localhost.localdomain kernel: SELinux:  8 users, 102 roles, 4976 types, 294 bools, 1 sens,
+Feb 03 21:48:52 localhost.localdomain kernel: SELinux:  83 classes, 104131 rules
+
+. . .
+</code></pre>
+
+<p>你将有可能页和数据页来滚动，它可以是几万或几十万排长队，如果<code>systemd</code>已经在系统上很长一段时间。 这将显示日志数据库中有多少数据可用。</p>
+
+<p>该格式将是熟悉的那些谁是用来标准<code>syslog</code>日志记录。 然而，这实际上收集来自多个来源的数据，比传统<code>syslog</code>实现有能力的。 它包括来自早期引导过程，内核，initrd 和应用程序标准错误的日志。 这些都在期刊上可用。</p>
+
+<p>您可能会注意到，显示的所有时间戳都是本地时间。 这对于每个日志条目都可用，现在我们的本地时间在我们的系统上正确设置。 使用此新信息显示所有日志。</p>
+
+<p>如果你想显示 UTC 时间戳，您可以使用<code>--utc</code>标志：</p>
+
+<pre><code>journalctl --utc
+</code></pre>
+
+<h2 id="toc_4">日志按时间过滤</h2>
+
+<p>虽然访问这样大量的数据集合是绝对有用的，但是这样大量的信息可能难以或不可能在精神上检查和处理。 正因为如此，的最重要的特点之一<code>journalctl</code>是其过滤选项。</p>
+
+<h3 id="toc_5">显示当前引导的日志</h3>
+
+<p>最基本的这些，你可能每天都在使用，是<code>-b</code>标志。 这将显示自最近重新引导以来收集的所有日记帐分录。</p>
+
+<pre><code>journalctl -b
+</code></pre>
+
+<p>这将帮助您识别和管理与您当前环境相关的信息。</p>
+
+<p>在您不使用此功能，并正在显示的靴子一天以上的情况下，你会看到<code>journalctl</code>插入了一行，看起来像这样每次系统崩溃：</p>
+
+<pre><code>. . .
+
+-- Reboot --
+
+. . .
+</code></pre>
+
+<p>这可以用于帮助您将信息逻辑地分为引导会话。</p>
+
+<h3 id="toc_6">过去靴子</h3>
+
+<p>虽然你通常想显示当前引导的信息，但是有时候过去的引导也会有帮助。 该杂志可以节省许多以前的靴子信息，因此<code>journalctl</code>可以做成很容易地显示信息。</p>
+
+<p>某些分发版本可以在默认情况下保存以前的引导信息，而其他分发版则禁用此功能。 要启用持久启动信息，您可以键入以下命令来创建存储日志的目录：</p>
+
+<pre><code>sudo mkdir -p /var/log/journal
+</code></pre>
+
+<p>或者，您可以编辑日志配置文件：</p>
+
+<pre><code>sudo nano /etc/systemd/journald.conf
+</code></pre>
+
+<p>根据<code>[Journal]</code>部分，设置了<code>Storage=</code>选项 “老大难” 启用日志记录持续：</p>
+
+<p>/etc/systemd/journald.conf</p>
+
+<pre><code>. . .
+[Journal]
+Storage=persistent
 
 </code></pre>
 
-<p>3.3 日志处理层和日志存储层</p>
+<p>当保存先前的靴子是您的服务器上启用， <code>journalctl</code>提供了一些命令来帮助你靴子划分的单位工作。 要看到，靴子<code>journald</code>知道，使用<code>--list-boots</code>带选项<code>journalctl</code> ：</p>
 
-<p>日志处理层，是我们真正做事的地方；日志存储层，则是我们存放日志分析结果的地方。</p>
-
-<p>基于日志中心，可做的事情有很多。只要我们对某 topic 日志感兴趣，那么便可以将该 topic 日志消费来满足我们的业务需求。我们可以：</p>
-
-<pre><code>1、将日志聚合，根据业务不同，建立不同的索引，存入ElasticSearch提供查询。
-2、发现异常日志时，发往监控中心，向对应的业务方发起报警，发现和预发问题的实时性提高了。
-3、统计一些访问日志或调用日志等指标信息，发往监控中心来掌握相关调用趋势。
-4、调用链开始做起来了，系统性能瓶颈一目了然了。
-5、用户日志行为可分析了。
-
+<pre><code>journalctl --list-boots
 </code></pre>
 
-<p>这里我们做了不少，但是需要做的还有更多，就不一一例举了。</p>
-
-<h4 id="toc_6">四、遇到的问题和要做的事情</h4>
-
-<p>突然接手如此规模的一个基础产品，遇到的问题还是比较多的:</p>
-
-<pre><code>1、业务日志接入，每一次对接不仅需要开发日志消费模块，解析相应日志，建立相应的索引并写入elasticsearch，还需要开发对应定制的查询页面。由于自己本身对系统不熟悉，另外文档缺失，以及每一次对接的都是“新人”，还时不时可能会遇到各种千奇百怪的问题，需要排查定位并解决问题。这块急需解放，不然一个人真的忙不过来，针对该问题，接下来会抽象出日志消费和elasticsearch读写SDK，供业务接入方自己开发和维护。
-2、对于各个组件(如logstash、flume、kafka、elasticsearch等)都未曾接触过的情况下，短时间接手这么一个新产品，需要学习的东西很多，压力还是很大的，但总算熬过来了。
-3、缺失的开发测试环境，到写此文章时总算搭建起来了。
-4、elasticsearch内存占用高，以及索引的管理与维护，还在优化和考虑中。
-5、需要开发更加人性化且更易扩展和维护的运控平台供使用方查询日志。
-6、日志收集到Flume增加支持UDP协议。
-7、将存储层的HDFS移到日志中心，支持日志同时写入Kafka集群和HDFS集群。
-8、是时候做点日志挖掘的事情了。
-
+<pre><code>-2 caf0524a1d394ce0bdbcff75b94444fe Tue 2015-02-03 21:48:52 UTC—Tue 2015-02-03 22:17:00 UTC
+-1 13883d180dc0420db0abcb5fa26d6198 Tue 2015-02-03 22:17:03 UTC—Tue 2015-02-03 22:19:08 UTC
+ 0 bed718b17a73415fade0e4e7f4bea609 Tue 2015-02-03 22:19:12 UTC—Tue 2015-02-03 23:01:01 UTC
 </code></pre>
 
-<h4 id="toc_7">五、结语</h4>
+<p>这将为每次引导显示一行。 第一列的偏移量，可以用来很容易地与参考引导的引导<code>journalctl</code> 。 如果需要绝对引用，则引导标识位于第二列。 您可以通过结束时列出的两个时间规格来判断引导会话所指的时间。</p>
 
-<p>为什么做这次分享？</p>
+<p>要显示来自这些引导的信息，您可以使用第一列或第二列中的信息。</p>
 
-<p>由于之前交接时间较短，实际只有 2 天，然后统一日志平台涉及的内容比较多，接手日志平台的这一个多月是痛苦的，然后找崔 (有赞 CTO) 吐槽了一下。结果崔知道我在梳理日志平台，就让我顺便写篇介绍有赞的日志架构的文章，帮助大家了解一下。怎奈我这人脸皮太薄，在对日志平台还不熟悉的情况下，竟然应承下来了，俗话说的好，死要面子活受罪。</p>
+<p>例如，看杂志，从先前的引导，使用<code>-1</code>相对终场前的<code>-b</code>标志：</p>
 
-<p>最后，好像不做点广告都对不起人民大众, 热烈欢迎优秀程序员加我有赞大家庭，无论前端后端，只要想做事会做事就行。有意者请猛戳: <a href="http://job.youzan.com/" title="加入我们">加入我们</a></p>
+<pre><code>journalctl -b -1
+</code></pre>
+
+<p>您还可以使用引导 ID 从引导回调数据：</p>
+
+<pre><code>journalctl -b caf0524a1d394ce0bdbcff75b94444fe
+</code></pre>
+
+<h3 id="toc_7">时间窗口</h3>
+
+<p>通过引导查看日志条目非常有用，通常您可能希望请求与系统引导不匹配的时间窗口。 在处理长时间运行的服务器并且正常运行时间很长时，这可能尤其如此。</p>
+
+<p>可以通过使用任意的时间限制进行过滤<code>--since</code>和<code>--until</code>选项，分别限制之后，或者给定时间之前所显示的那些条目。</p>
+
+<p>时间值可以有多种格式。 对于绝对时间值，应使用以下格式：</p>
+
+<pre><code>YYYY-MM-DD HH:MM:SS
+</code></pre>
+
+<p>例如，我们可以看到所有的条目从 2015 年 1 月 10 日下午 5:15 通过键入：</p>
+
+<pre><code>journalctl --since &quot;2015-01-10 17:15:00&quot;
+</code></pre>
+
+<p>如果上述格式的组件保持关闭，将应用一些默认值。 例如，如果省略日期，则将假定当前日期。 如果时间组件丢失，将替换 “00:00:00”（午夜）。 秒字段也可以关闭，默认为 “00”：</p>
+
+<pre><code>journalctl --since &quot;2015-01-10&quot; --until &quot;2015-01-11 03:00&quot;
+</code></pre>
+
+<p>日志还理解一些相对值和命名快捷方式。 例如，您可以使用 “昨天”，“今天”，“明天” 或“现在”字样。 你通过在一个编号的值前面加上 “-” 或“+”或者在句子结构中使用像“”“这样的词来做相对的时间。</p>
+
+<p>要从昨天获取数据，您可以键入：</p>
+
+<pre><code>journalctl --since yesterday
+</code></pre>
+
+<p>如果您收到服务中断的报告，从上午 9:00 开始并持续到一个小时前，您可以键入：</p>
+
+<pre><code>journalctl --since 09:00 --until &quot;1 hour ago&quot;
+</code></pre>
+
+<p>正如你所看到的，定义灵活的时间窗口来过滤你想要看到的条目是相对容易的。</p>
+
+<h2 id="toc_8">按消息兴趣过滤</h2>
+
+<script>(adsbygoogle = window.adsbygoogle || []).push({});</script>
+
+<p>我们在上面学习了一些方法，可以使用时间约束来过滤日志数据。 在本节中，我们将讨论如何根据你是什么服务或组件兴趣进行过滤。该<code>systemd</code>杂志提供了多种这样的方法。</p>
+
+<h3 id="toc_9">按单位</h3>
+
+<p>也许过滤的最有效的方法是你感兴趣的单位。我们可以用<code>-u</code>选项以这种方式来过滤。</p>
+
+<p>例如，要查看我们系统上的 Nginx 单元的所有日志，我们可以键入：</p>
+
+<pre><code>journalctl -u nginx.service
+</code></pre>
+
+<p>通常，您可能希望按时间进行过滤，以便显示您感兴趣的行。例如，要检查当前服务是如何运行的，您可以键入：</p>
+
+<pre><code>journalctl -u nginx.service --since today
+</code></pre>
+
+<p>当您利用期刊的交叉记录从各种单位的能力时，这种类型的重点变得非常有用。 例如，如果您的 Nginx 进程连接到一个 PHP-FPM 单元来处理动态内容，您可以通过指定两个单位按时间顺序合并条目：</p>
+
+<pre><code>journalctl -u nginx.service -u php-fpm.service --since today
+</code></pre>
+
+<p>这可以使得更容易发现不同程序和调试系统之间的交互，而不是单个进程。</p>
+
+<h3 id="toc_10">按进程，用户或组 ID</h3>
+
+<p>一些服务产生了各种子进程来做工作。 如果你已经搜索出你感兴趣的过程的确切 PID，你也可以过滤它。</p>
+
+<p>要做到这一点，我们可以通过指定过滤<code>_PID</code>领域。 例如，如果我们感兴趣的 PID 是 8088，我们可以键入：</p>
+
+<pre><code>journalctl _PID=8088
+</code></pre>
+
+<p>在其他时间，您可能希望显示从特定用户或组记录的所有条目。 这可以通过完成<code>_UID</code>或<code>_GID</code>滤波器。 例如，如果你的 Web 服务器下运行<code>www-data</code>的用户，你可以找到通过键入用户 ID：</p>
+
+<pre><code>id -u www-data
+</code></pre>
+
+<pre><code>33
+</code></pre>
+
+<p>之后，您可以使用返回的 ID 过滤日志结果：</p>
+
+<pre><code>journalctl _UID=33 --since today
+</code></pre>
+
+<p>该<code>systemd</code>轴颈具有许多领域，可以用于过滤。 其中的一些从该过程被传递的被记录和一些被施加<code>journald</code>用它从系统的日志的时间收集信息。</p>
+
+<p>领先的下划线表示该<code>_PID</code>字段是后一种类型。 日志自动记录和索引正在记录以供以后过滤的进程的 PID。 您可以通过键入以下内容找到所有可用的日记字段：</p>
+
+<pre><code>man systemd.journal-fields
+</code></pre>
+
+<p>我们将在本指南中讨论其中的一些。 现在，我们将讨论与这些字段过滤有关的一个更有用的选项。 该<code>-F</code>选项可用于显示所有可用的值对于给定的杂志领域。</p>
+
+<p>例如，看哪个组 ID 的<code>systemd</code>杂志有，你可以输入的条目：</p>
+
+<pre><code>journalctl -F _GID
+</code></pre>
+
+<pre><code>32
+99
+102
+133
+81
+84
+100
+0
+124
+87
+</code></pre>
+
+<p>这将显示日志为组 ID 字段存储的所有值。 这可以帮助您构建过滤器。</p>
+
+<h3 id="toc_11">按组件路径</h3>
+
+<p>我们还可以通过提供路径位置进行过滤。</p>
+
+<p>如果该路径指向一个可执行文件， <code>journalctl</code>将显示所有涉及问题的可执行文件中的条目。 例如，为了找到那些涉及条目<code>bash</code>可执行文件，您可以键入：</p>
+
+<pre><code>journalctl /usr/bin/bash
+</code></pre>
+
+<p>通常，如果一个单元可用于可执行文件，该方法更干净，并提供更好的信息（来自相关子进程的条目等）。 然而，有时，这是不可能的。</p>
+
+<h3 id="toc_12">显示内核消息</h3>
+
+<p>内核消息，这些通常是在发现<code>dmesg</code>输出，可以从日志以及检索。</p>
+
+<p>要只显示这些消息，我们可以添加<code>-k</code>或<code>--dmesg</code>标志来我们的命令：</p>
+
+<pre><code>journalctl -k
+</code></pre>
+
+<p>默认情况下，这将显示当前引导的内核消息。 您可以使用前面讨论的正常引导选择标志来指定备用引导。 例如，要从五个靴子之前获取消息，您可以键入：</p>
+
+<pre><code>journalctl -k -b -5
+</code></pre>
+
+<h3 id="toc_13">优先级</h3>
+
+<p>系统管理员经常感兴趣的一个过滤器是消息优先级。 虽然在非常详细的级别上记录信息通常是有用的，但是当实际消化可用信息时，低优先级日志可能分散注意力和混乱。</p>
+
+<p>您可以使用<code>journalctl</code>通过显示一个指定的优先级或以上的只有消息<code>-p</code>选项。 这允许您过滤掉较低优先级的邮件。</p>
+
+<p>例如，要仅显示在错误级别或更高级别记录的条目，您可以键入：</p>
+
+<pre><code>journalctl -p err -b
+</code></pre>
+
+<p>这将显示标记为错误，重要，警报或紧急情况的所有邮件。 该杂志实现了标准<code>syslog</code>消息级别。 您可以使用优先级名称或其相应的数值。 按照从高到低的顺序，这些是：</p>
+
+<ul>
+<li>  0：出现</li>
+<li>  1：警报</li>
+<li>  2：暴击</li>
+<li>  3：错误</li>
+<li>  4：警告</li>
+<li>  5：通知</li>
+<li>  6：info</li>
+<li>  7：调试</li>
+</ul>
+
+<p>上面的数字或名称可以互换的使用<code>-p</code>选项。 选择优先级将显示标记在指定级别及其上方的消息。</p>
+
+<h2 id="toc_14">修改日志显示</h2>
+
+<p>上面，我们通过过滤展示了入口选择。 还有其他方法，我们可以修改输出。 我们可以调整<code>journalctl</code>显示，以适应各种需求。</p>
+
+<h3 id="toc_15">截断或展开输出</h3>
+
+<p>我们可以调整<code>journalctl</code>告诉它缩小或扩大输出显示数据。</p>
+
+<p>默认情况下， <code>journalctl</code>将显示在寻呼机整个条目，使条目落后关闭到屏幕的右侧。 可以通过按向右箭头键访问此信息。</p>
+
+<p>如果你宁愿输出截断，插入其中，信息已被删除省略号，你可以使用<code>--no-full</code>选项：</p>
+
+<pre><code>journalctl --no-full
+</code></pre>
+
+<pre><code>. . .
+
+Feb 04 20:54:13 journalme sshd[937]: Failed password for root from 83.234.207.60...h2
+Feb 04 20:54:13 journalme sshd[937]: Connection closed by 83.234.207.60 [preauth]
+Feb 04 20:54:13 journalme sshd[937]: PAM 2 more authentication failures; logname...ot
+</code></pre>
+
+<p>你也可以走在相反的方向与此并告诉<code>journalctl</code> ，以显示它的所有信息，无论是否包括不可打印的字符。 我们可以用做<code>-a</code>标志：</p>
+
+<pre><code>journalctl -a
+</code></pre>
+
+<h3 id="toc_16">输出到标准输出</h3>
+
+<p>缺省情况下， <code>journalctl</code>显示在寻呼机的输出更容易消耗。 如果您在处理文本处理工具的数据计划，但是，你可能希望能够输出到标准输出。</p>
+
+<p>你可以用做<code>--no-pager</code>选项：</p>
+
+<pre><code>journalclt --no-pager
+</code></pre>
+
+<p>这可以立即管道到处理实用程序或重定向到磁盘上的文件，根据您的需要。</p>
+
+<h3 id="toc_17">输出格式</h3>
+
+<p>如果你正在处理日记帐分录，如上面提到的，你很可能将有一个更容易的分析数据，如果它是在一个更耗格式。 幸运的是，期刊可以根据需要以各种格式显示。 您可以使用做到这一点<code>-o</code>与格式说明选项。</p>
+
+<p>例如，您可以通过输入以下内容在 JSON 中输出日记帐分录：</p>
+
+<pre><code>journalctl -b -u nginx -o json
+</code></pre>
+
+<pre><code>{ &quot;__CURSOR&quot; : &quot;s=13a21661cf4948289c63075db6c25c00;i=116f1;b=81b58db8fd9046ab9f847ddb82a2fa2d;m=19f0daa;t=50e33c33587ae;x=e307daadb4858635&quot;, &quot;__REALTIME_TIMESTAMP&quot; : &quot;1422990364739502&quot;, &quot;__MONOTONIC_TIMESTAMP&quot; : &quot;27200938&quot;, &quot;_BOOT_ID&quot; : &quot;81b58db8fd9046ab9f847ddb82a2fa2d&quot;, &quot;PRIORITY&quot; : &quot;6&quot;, &quot;_UID&quot; : &quot;0&quot;, &quot;_GID&quot; : &quot;0&quot;, &quot;_CAP_EFFECTIVE&quot; : &quot;3fffffffff&quot;, &quot;_MACHINE_ID&quot; : &quot;752737531a9d1a9c1e3cb52a4ab967ee&quot;, &quot;_HOSTNAME&quot; : &quot;desktop&quot;, &quot;SYSLOG_FACILITY&quot; : &quot;3&quot;, &quot;CODE_FILE&quot; : &quot;src/core/unit.c&quot;, &quot;CODE_LINE&quot; : &quot;1402&quot;, &quot;CODE_FUNCTION&quot; : &quot;unit_status_log_starting_stopping_reloading&quot;, &quot;SYSLOG_IDENTIFIER&quot; : &quot;systemd&quot;, &quot;MESSAGE_ID&quot; : &quot;7d4958e842da4a758f6c1cdc7b36dcc5&quot;, &quot;_TRANSPORT&quot; : &quot;journal&quot;, &quot;_PID&quot; : &quot;1&quot;, &quot;_COMM&quot; : &quot;systemd&quot;, &quot;_EXE&quot; : &quot;/usr/lib/systemd/systemd&quot;, &quot;_CMDLINE&quot; : &quot;/usr/lib/systemd/systemd&quot;, &quot;_SYSTEMD_CGROUP&quot; : &quot;/&quot;, &quot;UNIT&quot; : &quot;nginx.service&quot;, &quot;MESSAGE&quot; : &quot;Starting A high performance web server and a reverse proxy server...&quot;, &quot;_SOURCE_REALTIME_TIMESTAMP&quot; : &quot;1422990364737973&quot; }
+
+. . .
+</code></pre>
+
+<p>这对于使用实用程序进行解析很有用。 你可以使用<code>json-pretty</code>格式，其传递给消费者 JSON 之前得到的数据结构，更好地处理：</p>
+
+<pre><code>journalctl -b -u nginx -o json-pretty
+</code></pre>
+
+<pre><code>{ &quot;__CURSOR&quot; : &quot;s=13a21661cf4948289c63075db6c25c00;i=116f1;b=81b58db8fd9046ab9f847ddb82a2fa2d;m=19f0daa;t=50e33c33587ae;x=e307daadb4858635&quot;, &quot;__REALTIME_TIMESTAMP&quot; : &quot;1422990364739502&quot;, &quot;__MONOTONIC_TIMESTAMP&quot; : &quot;27200938&quot;, &quot;_BOOT_ID&quot; : &quot;81b58db8fd9046ab9f847ddb82a2fa2d&quot;, &quot;PRIORITY&quot; : &quot;6&quot;, &quot;_UID&quot; : &quot;0&quot;, &quot;_GID&quot; : &quot;0&quot;, &quot;_CAP_EFFECTIVE&quot; : &quot;3fffffffff&quot;, &quot;_MACHINE_ID&quot; : &quot;752737531a9d1a9c1e3cb52a4ab967ee&quot;, &quot;_HOSTNAME&quot; : &quot;desktop&quot;, &quot;SYSLOG_FACILITY&quot; : &quot;3&quot;, &quot;CODE_FILE&quot; : &quot;src/core/unit.c&quot;, &quot;CODE_LINE&quot; : &quot;1402&quot;, &quot;CODE_FUNCTION&quot; : &quot;unit_status_log_starting_stopping_reloading&quot;, &quot;SYSLOG_IDENTIFIER&quot; : &quot;systemd&quot;, &quot;MESSAGE_ID&quot; : &quot;7d4958e842da4a758f6c1cdc7b36dcc5&quot;, &quot;_TRANSPORT&quot; : &quot;journal&quot;, &quot;_PID&quot; : &quot;1&quot;, &quot;_COMM&quot; : &quot;systemd&quot;, &quot;_EXE&quot; : &quot;/usr/lib/systemd/systemd&quot;, &quot;_CMDLINE&quot; : &quot;/usr/lib/systemd/systemd&quot;, &quot;_SYSTEMD_CGROUP&quot; : &quot;/&quot;, &quot;UNIT&quot; : &quot;nginx.service&quot;, &quot;MESSAGE&quot; : &quot;Starting A high performance web server and a reverse proxy server...&quot;, &quot;_SOURCE_REALTIME_TIMESTAMP&quot; : &quot;1422990364737973&quot; }
+
+. . .
+</code></pre>
+
+<p>以下格式可用于显示：</p>
+
+<ul>
+<li>  <strong>猫</strong> ：只显示消息字段本身。</li>
+<li>  <strong>出口</strong> ：适合传输或备份二进制格式。</li>
+<li>  <strong>JSON：</strong>标准的 JSON，每行一个条目。</li>
+<li>  <strong>JSON - 漂亮</strong> ：JSON 格式的更好的人类可读性</li>
+<li>  <strong>JSON-SSE：JSON</strong> 格式的输出包装以使兼容添加服务器发送的事件</li>
+<li>  <strong>总之</strong> ：默认的<code>syslog</code>风格输出</li>
+<li>  <strong>短期 ISO：</strong>增强显示 ISO 8601 挂钟时间标记的默认格式。</li>
+<li>  <strong>短单调</strong> ：用单调的时间戳的默认格式。</li>
+<li>  <strong>短精确</strong> ：与微秒级精度的默认格式</li>
+<li>  <strong>详细</strong> ：显示了可用于进入每一个领域的杂志，包括那些通常隐藏在内部。</li>
+</ul>
+
+<p>这些选项允许您以最适合您当前需要的任何格式显示日记帐分录。</p>
+
+<h2 id="toc_18">活动进程监视</h2>
+
+<script>(adsbygoogle = window.adsbygoogle || []).push({});</script>
+
+<p>该<code>journalctl</code>命令模仿多少管理员使用<code>tail</code>监视活动或近期活动。 此功能内置到<code>journalctl</code> ，允许您访问这些功能，而不必管到另一个工具。</p>
+
+<h3 id="toc_19">显示最近的日志</h3>
+
+<p>要显示的记录集量，则可以使用<code>-n</code>选项，它的工作原理完全一样<code>tail -n</code> 。</p>
+
+<p>默认情况下，它将显示最近的 10 个条目：</p>
+
+<pre><code>journalctl -n
+</code></pre>
+
+<p>您可以指定希望看到与后一个数字的条目数<code>-n</code> ：</p>
+
+<pre><code>journalctl -n 20
+</code></pre>
+
+<h3 id="toc_20">跟随日志</h3>
+
+<p>要积极跟踪日志，因为他们正在写的，你可以使用<code>-f</code>标志。 同样，这个工作，如果你使用有经验，你可能期望<code>tail -f</code> ：</p>
+
+<pre><code>journalctl -f
+</code></pre>
+
+<h2 id="toc_21">日志维护</h2>
+
+<p>你可能想知道成本是存储我们迄今为止看到的所有数据。 此外，你可能有兴趣清理一些旧的日志和释放空间。</p>
+
+<h3 id="toc_22">正在查找当前磁盘使用情况</h3>
+
+<p>你可以找到的，该杂志目前使用占用的磁盘空间量<code>--disk-usage</code>标志：</p>
+
+<pre><code>journalctl --disk-usage
+</code></pre>
+
+<pre><code>Journals take up 8.0M on disk.
+</code></pre>
+
+<h3 id="toc_23">删除旧日志</h3>
+
+<p>如果你想缩小你的日记，你可以在两种不同的方式（可带<code>systemd</code>版 218 及更高版本）。</p>
+
+<p>如果使用<code>--vacuum-size</code>选项，您可以通过指示尺寸的缩小你的日记。 这将删除旧条目，直到磁盘上占用的总日志空间为所请求的大小：</p>
+
+<pre><code>sudo journalctl --vacuum-size=1G
+</code></pre>
+
+<p>你可以收缩杂志的另一种方式是提供一个截止时间与<code>--vacuum-time</code>选项。 超过该时间的任何条目将被删除。 这允许您保留在特定时间之后创建的条目。</p>
+
+<p>例如，要保留上一年的条目，您可以键入：</p>
+
+<pre><code>sudo journalctl --vacuum-time=1years
+</code></pre>
+
+<h3 id="toc_24">限制日志扩展</h3>
+
+<p>您可以配置服务器以限制日志可占用的空间量。 这可以通过编辑来完成<code>/etc/systemd/journald.conf</code>文件。</p>
+
+<p>以下项目可用于限制日记帐增长：</p>
+
+<ul>
+<li>  <strong><code>SystemMaxUse=</code></strong> ：指定可以通过在持久存储轴颈使用的最大的磁盘空间。</li>
+<li>  <strong><code>SystemKeepFree=</code></strong>指定的空间添加日记帐分录到持久性存储时，杂志应该把可用的容量。</li>
+<li>  <strong><code>SystemMaxFileSize=</code></strong> ：控制大个人日志文件如何被旋转前增长到永久存储。</li>
+<li>  <strong><code>RuntimeMaxUse=</code></strong> ：指定可以在易失性存储中使用的最大的磁盘空间（内<code>/run</code>文件系统）。</li>
+<li>  <strong><code>RuntimeKeepFree=</code></strong> ：指定的空间量，以留出用于其他用途写入数据时，以非易失性存储被设置（在内<code>/run</code>文件系统）。</li>
+<li>  <strong><code>RuntimeMaxFileSize=</code></strong> ：指定一个单独的日志文件可以在易失性存储占用的空间量（内<code>/run</code>旋转前的文件系统）。</li>
+</ul>
+
+<p>通过设置这些值，可以控制如何<code>journald</code>消耗你的服务器上保留空间。</p>
+
+<h2 id="toc_25">结论</h2>
+
+<p>正如你所看到的， <code>systemd</code>期刊是用于收集和管理您的系统和应用程序的数据非常有用。 大多数灵活性来自于自动记录的大量元数据和日志的集中式特性。 该<code>journalctl</code>命令可以很容易地利用该杂志的高级功能，并做大量的分析和不同应用程序组件的关系调试。</p>
 
                         
                       </div>
@@ -231,7 +601,7 @@ Sink：从 Channel 中读取，读取成功后会删除 Channel 中的信息，�
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/8/26</span>
+                    <span class="date">2018/11/16</span>
                     <span>posted in&nbsp;</span> 
           				  
           					    <span class="posted-in"><a href='Logging.html'>Logging</a></span>
@@ -324,31 +694,31 @@ Sink：从 Channel 中读取，读取成功后会删除 Channel 中的信息，�
 	      
 		      
 			      <li class="post">
-			        <a href="15389311738065.html">重构到更深层的模型</a>
+			        <a href="15459058392039.html">Reliable Domain Events</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389278377243.html">IAM of Google Cloud</a>
+			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389224951575.html">RSocket, a New Application Network Protocol for Reactive Applications, Announced at SpringOne</a>
+			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389220103546.html">如何形象地描述RxJava中的背压和流控机制？</a>
+			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389214670417.html">Modeling Uncertainty with Reactive DDD</a>
+			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
 			      </li>
 		     
 		  

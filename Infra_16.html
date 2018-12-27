@@ -105,88 +105,241 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15319631527349.html">
+                <a class="clearlink" href="15331745470579.html">
                 
-                  <h1>高可用Redis服务架构分析与搭建</h1>
+                  <h1>ZooKeeper基本原理</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://www.cnblogs.com/xuning/p/8464625.html">https://www.cnblogs.com/xuning/p/8464625.html</a></p>
+<p><a href="https://www.cnblogs.com/luxiaoxun/p/4887452.html">https://www.cnblogs.com/luxiaoxun/p/4887452.html</a></p>
+
+<p>作者：<a href="http://www.cnblogs.com/luxiaoxun/">阿凡卢</a></p>
+
+<p>出处：<a href="http://www.cnblogs.com/luxiaoxun/">http://www.cnblogs.com/luxiaoxun/</a></p>
 </blockquote>
 
-<p>基于内存的 Redis 应该是目前各种 web 开发业务中最为常用的 key-value 数据库了，我们经常在业务中用其存储用户登陆态（Session 存储），加速一些热数据的查询（相比较 mysql 而言，速度有数量级的提升），做简单的消息队列（LPUSH 和 BRPOP）、订阅发布（PUB/SUB）系统等等。规模比较大的互联网公司，一般都会有专门的团队，将 Redis 存储以基础服务的形式提供给各个业务调用。</p>
+<p><strong>ZooKeeper</strong> <strong>简介</strong></p>
 
-<p>不过任何一个基础服务的提供方，都会被调用方问起的一个问题是：你的服务是否具有高可用性？最好不要因为你的服务经常出问题，导致我这边的业务跟着遭殃。最近我所在的项目中也自己搭了一套小型的 “高可用”Redis 服务，在此做一下自己的总结和思考。</p>
+<p>ZooKeeper 是一个开放源码的分布式应用程序协调服务，它包含一个简单的原语集，分布式应用程序可以基于它实现同步服务，配置维护和命名服务等。</p>
 
-<p>首先我们要定义一下对于 Redis 服务来说怎样才算是高可用，即在各种出现异常的情况下，依然可以正常提供服务。或者宽松一些，出现异常的情况下，只经过很短暂的时间即可恢复正常服务。所谓异常，应该至少包含了以下几种可能性：</p>
+<p><img src="https://images2015.cnblogs.com/blog/434101/201510/434101-20151019093350567-692728278.jpg" alt=""/></p>
 
-<p>【异常 1】某个节点服务器的某个进程突然 down 掉（例如某开发手残，把一台服务器的 redis-server 进程 kill 了）</p>
+<p><strong>ZooKeeper 设计目的</strong></p>
 
-<p>【异常 2】某台节点服务器 down 掉，相当于这个节点上所有进程都停了（例如某运维手残，把一个服务器的电源拔了；例如一些老旧机器出现硬件故障）</p>
+<p>1. 最终一致性：client 不论连接到哪个 Server，展示给它都是同一个视图，这是 zookeeper 最重要的性能。</p>
 
-<p>【异常 3】任意两个节点服务器之间的通信中断了（例如某临时工手残，把用于两个机房通信的光缆挖断了）</p>
+<p>2. 可靠性：具有简单、健壮、良好的性能，如果消息 m 被到一台服务器接受，那么它将被所有的服务器接受。</p>
 
-<p>其实以上任意一种异常都是小概率事件，而做到高可用性的基本指导思想就是：多个小概率事件同时发生的概率可以忽略不计。只要我们设计的系统可以容忍短时间内的单点故障，即可实现高可用性。</p>
+<p>3. 实时性：Zookeeper 保证客户端将在一个时间间隔范围内获得服务器的更新信息，或者服务器失效的信息。但由于网络延时等原因，Zookeeper 不能保证两个客户端能同时得到刚更新的数据，如果需要最新数据，应该在读数据之前调用 sync() 接口。</p>
 
-<p>对于搭建高可用 Redis 服务，网上已有了很多方案，例如 Keepalived，Codis，Twemproxy，Redis Sentinel。其中 Codis 和 Twemproxy 主要是用于大规模的 Redis 集群中，也是在 Redis 官方发布 Redis Sentinel 之前 twitter 和豌豆荚提供的开源解决方案。我的业务中数据量并不大，所以搞集群服务反而是浪费机器了。最终在 Keepalived 和 Redis Sentinel 之间做了个选择，选择了官方的解决方案 Redis Sentinel。</p>
+<p>4. 等待无关（wait-free）：慢的或者失效的 client 不得干预快速的 client 的请求，使得每个 client 都能有效的等待。</p>
 
-<p>Redis Sentinel 可以理解为一个监控 Redis Server 服务是否正常的进程，并且一旦检测到不正常，可以自动地将备份（slave）Redis Server 启用，使得外部用户对 Redis 服务内部出现的异常无感知。我们按照由简至繁的步骤，搭建一个最小型的高可用的 Redis 服务。</p>
+<p>5. 原子性：更新只能成功或者失败，没有中间状态。</p>
 
-<p><strong>方案 1：单机版 Redis Server，无 Sentinel</strong></p>
+<p>6. 顺序性：包括全局有序和偏序两种：全局有序是指如果在一台服务器上消息 a 在消息 b 前发布，则在所有 Server 上消息 a 都将在消息 b 前被发布；偏序是指如果一个消息 b 在消息 a 后被同一个发送者发布，a 必将排在 b 前面。</p>
 
-<p><img src="https://images2018.cnblogs.com/blog/566097/201802/566097-20180224104757825-317365999.png" alt=""/></p>
+<p><strong>ZooKeeper</strong> <strong>数据模型</strong></p>
 
-<p>一般情况下，我们搭的个人网站，或者平时做开发时，会起一个单实例的 Redis Server。调用方直接连接 Redis 服务即可，甚至 Client 和 Redis 本身就处于同一台服务器上。这种搭配仅适合个人学习娱乐，毕竟这种配置总会有单点故障的问题无法解决。一旦 Redis 服务进程挂了，或者服务器 1 停机了，那么服务就不可用了。并且如果没有配置 Redis 数据持久化的话，Redis 内部已经存储的数据也会丢失。</p>
+<p>Zookeeper 会维护一个具有层次关系的数据结构，它非常类似于一个标准的文件系统，如图所示：</p>
 
-<p><strong>方案 2：主从同步 Redis Server，单实例 Sentinel</strong></p>
+<p><img src="https://images2015.cnblogs.com/blog/434101/201510/434101-20151017140829960-1863595007.jpg" alt=""/></p>
 
-<p><img src="https://images2018.cnblogs.com/blog/566097/201802/566097-20180224104938975-2014456086.png" alt=""/></p>
+<p>Zookeeper 这种数据结构有如下这些特点：</p>
 
-<p>为了实现高可用，解决方案 1 中所述的单点故障问题，我们必须增加一个备份服务，即在两台服务器上分别各启动一个 Redis Server 进程，一般情况下由 master 提供服务，slave 只负责同步和备份。与此同时，在额外启动一个 Sentinel 进程，监控两个 Redis Server 实例的可用性，以便在 master 挂掉的时候，及时把 slave 提升到 master 的角色继续提供服务，这样就实现了 Redis Server 的高可用。这基于一个高可用服务设计的依据，即单点故障本身就是个小概率事件，而多个单点同时故障（即 master 和 slave 同时挂掉），可以认为是（基本）不可能发生的事件。</p>
+<p>1）每个子目录项如 NameService 都被称作为 znode，这个 znode 是被它所在的路径唯一标识，如 Server1 这个 znode 的标识为 / NameService/Server1。</p>
 
-<p>对于 Redis 服务的调用方来说，现在要连接的是 Redis Sentinel 服务，而不是 Redis Server 了。常见的调用过程是，client 先连接 Redis Sentinel 并询问目前 Redis Server 中哪个服务是 master，哪些是 slave，然后再去连接相应的 Redis Server 进行操作。当然目前的第三方库一般都已经实现了这一调用过程，不再需要我们手动去实现（例如 Nodejs 的 ioredis，PHP 的 predis，Golang 的 go-redis/redis，JAVA 的 jedis 等）。</p>
+<p>2）znode 可以有子节点目录，并且每个 znode 可以存储数据，注意 EPHEMERAL（临时的）类型的目录节点不能有子节点目录。</p>
 
-<p>然而，我们实现了 Redis Server 服务的主从切换之后，又引入了一个新的问题，即 Redis Sentinel 本身也是个单点服务，一旦 Sentinel 进程挂了，那么客户端就没办法链接 Sentinel 了。所以说，方案 2 的配置并无法实现高可用性。</p>
+<p>3）znode 是有版本的（version），每个 znode 中存储的数据可以有多个版本，也就是一个访问路径中可以存储多份数据，version 号自动增加。</p>
 
-<p><strong>方案 3：主从同步 Redis Server，双实例 Sentinel</strong></p>
+<p>4）znode 的类型：</p>
 
-<p><img src="https://images2018.cnblogs.com/blog/566097/201802/566097-20180224105121774-2039349597.png" alt=""/></p>
+<ul>
+<li>  <strong>_Persistent _</strong>节点，一旦被创建，便不会意外丢失，即使服务器全部重启也依然存在。每个 Persist 节点即可包含数据，也可包含子节点。</li>
+<li><p><strong>_Ephemeral _</strong>节点，在创建它的客户端与服务器间的 Session 结束时自动被删除。服务器重启会导致 Session 结束，因此 Ephemeral 类型的 znode 此时也会自动删除。</p></li>
+<li><p><strong>_Non-sequence _</strong>节点，多个客户端同时创建同一 Non-sequence 节点时，只有一个可创建成功，其它匀失败。并且创建出的节点名称与创建时指定的节点名完全一样。</p></li>
+<li><p><strong>_Sequence _</strong>节点，创建出的节点名在指定的名称之后带有 10 位 10 进制数的序号。多个客户端创建同一名称的节点时，都能创建成功，只是序号不同。</p></li>
+</ul>
 
-<p>为了解决方案 2 的问题，我们把 Redis Sentinel 进程也额外启动一份，两个 Sentinel 进程同时为客户端提供服务发现的功能。对于客户端来说，它可以连接任何一个 Redis Sentinel 服务，来获取当前 Redis Server 实例的基本信息。通常情况下，我们会在 Client 端配置多个 Redis Sentinel 的链接地址，Client 一旦发现某个地址连接不上，会去试图连接其他的 Sentinel 实例，这当然也不需要我们手动实现，各个开发语言中比较热门的 redis 连接库都帮我们实现了这个功能。我们预期是：即使其中一个 Redis Sentinel 挂掉了，还有另外一个 Sentinel 可以提供服务。</p>
+<p>5）znode 可以被监控，包括这个目录节点中存储的数据的修改，子节点目录的变化等，一旦变化可以通知设置监控的客户端，这个是 Zookeeper 的核心特性，Zookeeper 的很多功能都是基于这个特性实现的。</p>
 
-<p>然而，愿景是美好的，现实却是很残酷的。如此架构下，依然无法实现 Redis 服务的高可用。方案 3 示意图中，红线部分是两台服务器之间的通信，而我们所设想的异常场景（【异常 2】）是，某台服务器整体 down 机，不妨假设服务器 1 停机，此时，只剩下服务器 2 上面的 Redis Sentinel 和 slave Redis Server 进程。这时，Sentinel 其实是不会将仅剩的 slave 切换成 master 继续服务的，也就导致 Redis 服务不可用，因为 Redis 的设定是只有当超过 50% 的 Sentinel 进程可以连通并投票选取新的 master 时，才会真正发生主从切换。本例中两个 Sentinel 只有一个可以连通，等于 50% 并不在可以主从切换的场景中。</p>
+<p>6）ZXID：每次对 Zookeeper 的状态的改变都会产生一个 zxid（ZooKeeper Transaction Id），zxid 是全局有序的，如果 zxid1 小于 zxid2，则 zxid1 在 zxid2 之前发生。</p>
 
-<p>你可能会问，为什么 Redis 要有这个 50% 的设定？假设我们允许小于等于 50% 的 Sentinel 连通的场景下也可以进行主从切换。试想一下【异常 3】，即服务器 1 和服务器 2 之间的网络中断，但是服务器本身是可以运行的。如下图所示：</p>
+<p><strong>ZooKeeper Session</strong></p>
 
-<p><img src="https://images2018.cnblogs.com/blog/566097/201802/566097-20180224105223591-314651630.png" alt=""/></p>
+<p>Client 和 Zookeeper 集群建立连接，整个 session 状态变化如图所示：</p>
 
-<p>实际上对于服务器 2 来说，服务器 1 直接 down 掉和服务器 1 网络连不通是一样的效果，反正都是突然就无法进行任何通信了。假设网络中断时我们允许服务器 2 的 Sentinel 把 slave 切换为 master，结果就是你现在拥有了两个可以对外提供服务的 Redis Server。Client 做任何的增删改操作，有可能落在服务器 1 的 Redis 上，也有可能落在服务器 2 的 Redis 上（取决于 Client 到底连通的是哪个 Sentinel），造成数据混乱。即使后面服务器 1 和服务器 2 之间的网络又恢复了，那我们也无法把数据统一了（两份不一样的数据，到底该信任谁呢？），数据一致性完全被破坏。</p>
+<p><img src="https://images2015.cnblogs.com/blog/434101/201510/434101-20151017140903647-942632156.jpg" alt=""/></p>
 
-<p><strong>方案 4：主从同步 Redis Server，三实例 Sentinel</strong></p>
+<p>如果 Client 因为 Timeout 和 Zookeeper Server 失去连接，client 处在 CONNECTING 状态，会自动尝试再去连接 Server，如果在 session 有效期内再次成功连接到某个 Server，则回到 CONNECTED 状态。</p>
 
-<p><img src="https://images2018.cnblogs.com/blog/566097/201802/566097-20180224105313568-148145342.png" alt=""/></p>
+<p>注意：如果因为网络状态不好，client 和 Server 失去联系，client 会停留在当前状态，会尝试主动再次连接 Zookeeper Server。client 不能宣称自己的 session expired，session expired 是由 Zookeeper Server 来决定的，client 可以选择自己主动关闭 session。</p>
 
-<p>鉴于方案 3 并没有办法做到高可用，我们最终的版本就是上图所示的方案 4 了。实际上这就是我们最终搭建的架构。我们引入了服务器 3，并且在 3 上面又搭建起一个 Redis Sentinel 进程，现在由三个 Sentinel 进程来管理两个 Redis Server 实例。这种场景下，不管是单一进程故障、还是单个机器故障、还是某两个机器网络通信故障，都可以继续对外提供 Redis 服务。</p>
+<p><strong>ZooKeeper Watch</strong></p>
 
-<p>实际上，如果你的机器比较空闲，当然也可以把服务器 3 上面也开启一个 Redis Server，形成 1 master + 2 slave 的架构，每个数据都有两个备份，可用性会提升一些。当然也并不是 slave 越多越好，毕竟主从同步也是需要时间成本的。</p>
+<p>Zookeeper watch 是一种监听通知机制。Zookeeper 所有的读操作 getData(), getChildren() 和 exists() 都可以设置监视 (watch)，监视事件可以理解为一次性的触发器，官方定义如下： a watch event is one-time trigger, sent to the client that set the watch, whichoccurs when the data for which the watch was set changes。Watch 的三个关键点：</p>
 
-<p>在方案 4 中，一旦服务器 1 和其他服务器的通信完全中断，那么服务器 2 和 3 会将 slave 切换为 master。对于客户端来说，在这么一瞬间会有 2 个 master 提供服务，并且一旦网络恢复了，那么所有在中断期间落在服务器 1 上的新数据都会丢失。如果想要部分解决这个问题，可以配置 Redis Server 进程，让其在检测到自己网络有问题的时候，立即停止服务，避免在网络故障期间还有新数据进来（可以参考 Redis 的 min-slaves-to-write 和 min-slaves-max-lag 这两个配置项）。</p>
+<p>*（一次性触发）One-time trigger</p>
 
-<p>至此，我们就用 3 台机器搭建了一个高可用的 Redis 服务。其实网上还有更加节省机器的办法，就是把一个 Sentinel 进程放在 Client 机器上，而不是服务提供方的机器上。只不过在公司里面，一般服务的提供方和调用方并不来自同一个团队。两个团队共同操作同一个机器，很容易因为沟通问题导致一些误操作，所以出于这种人为因素的考虑，我们还是采用了方案 4 的架构。并且由于服务器 3 上面只跑了一个 Sentinel 进程，对服务器资源消耗并不多，还可以用服务器 3 来跑一些其他的服务。</p>
+<p>当设置监视的数据发生改变时，该监视事件会被发送到客户端，例如，如果客户端调用了 getData(&quot;/znode1&quot;, true) 并且稍后 /znode1 节点上的数据发生了改变或者被删除了，客户端将会获取到 /znode1 发生变化的监视事件，而如果 /znode1 再一次发生了变化，除非客户端再次对 / znode1 设置监视，否则客户端不会收到事件通知。</p>
 
-<p><strong>易用性：像使用单机版 Redis 一样使用 Redis Sentinel</strong></p>
+<p>*（发送至客户端）Sent to the client</p>
 
-<p>作为服务的提供方，我们总是会讲到用户体验问题。在上述方案当中始终有一个让 Client 端用的不是那么舒服的地方。对于单机版 Redis，Client 端直接连接 Redis Server，我们只需要给一个 ip 和 port，Client 就可以使用我们的服务了。而改造成 Sentinel 模式之后，Client 不得不采用一些支持 Sentinel 模式的外部依赖包，并且还要修改自己的 Redis 连接配置，这对于 “矫情” 的用户来讲显然是不能接收的。有没有办法还是像在使用单机版的 Redis 那样，只给 Client 一个固定的 ip 和 port 就可以提供服务呢？</p>
+<p>Zookeeper 客户端和服务端是通过 socket 进行通信的，由于网络存在故障，所以监视事件很有可能不会成功地到达客户端，监视事件是异步发送至监视者的，Zookeeper 本身提供了顺序保证 (ordering guarantee)：即客户端只有首先看到了监视事件后，才会感知到它所设置监视的 znode 发生了变化 (a client will never see a change for which it has set a watch until it first sees the watch event)。网络延迟或者其他因素可能导致不同的客户端在不同的时刻感知某一监视事件，但是不同的客户端所看到的一切具有一致的顺序。</p>
 
-<p><img src="https://images2018.cnblogs.com/blog/566097/201802/566097-20180224105513939-1484357459.png" alt=""/></p>
+<p>*（被设置 watch 的数据）The data for which the watch was set</p>
 
-<p>答案当然是肯定的。这可能就要引入虚拟 IP（Virtual IP，VIP），如上图所示。我们可以把虚拟 IP 指向 Redis Server master 所在的服务器，在发生 Redis 主从切换的时候，会触发一个回调脚本，回调脚本中将 VIP 切换至 slave 所在的服务器。这样对于 Client 端来说，他仿佛在使用的依然是一个单机版的高可用 Redis 服务。</p>
+<p>这意味着 znode 节点本身具有不同的改变方式。你也可以想象 Zookeeper 维护了两条监视链表：数据监视和子节点监视 (data watches and child watches) getData() 和 exists() 设置数据监视，getChildren()设置子节点监视。或者你也可以想象 Zookeeper 设置的不同监视返回不同的数据，getData() 和 exists() 返回 znode 节点的相关信息，而 getChildren() 返回子节点列表。因此，setData() 会触发设置在某一节点上所设置的数据监视（假定数据设置成功），而一次成功的 create() 操作则会出发当前节点上所设置的数据监视以及父节点的子节点监视。一次成功的 delete 操作将会触发当前节点的数据监视和子节点监视事件，同时也会触发该节点父节点的 child watch。</p>
 
-<p><strong>结语</strong></p>
+<p>Zookeeper 中的监视是轻量级的，因此容易设置、维护和分发。当客户端与 Zookeeper 服务器失去联系时，客户端并不会收到监视事件的通知，只有当客户端重新连接后，若在必要的情况下，以前注册的监视会重新被注册并触发，对于开发人员来说这通常是透明的。只有一种情况会导致监视事件的丢失，即：通过 exists() 设置了某个 znode 节点的监视，但是如果某个客户端在此 znode 节点被创建和删除的时间间隔内与 zookeeper 服务器失去了联系，该客户端即使稍后重新连接 zookeeper 服务器后也得不到事件通知。</p>
 
-<p>搭建任何一个服务，做到 “能用” 其实是非常简单的，就像我们运行一个单机版的 Redis。不过一旦要做到“高可用”，事情就会变得复杂起来。业务中使用了额外的两台服务器，3 个 Sentinel 进程 + 1 个 Slave 进程，只是为了保证在那小概率的事故中依然做到服务可用。在实际业务中我们还启用了 supervisor 做进程监控，一旦进程意外退出，会自动尝试重新启动。</p>
+<p><strong>Consistency Guarantees</strong></p>
+
+<p>Zookeeper 是一个高效的、可扩展的服务，read 和 write 操作都被设计为快速的，read 比 write 操作更快。</p>
+
+<p>顺序一致性（Sequential Consistency）：从一个客户端来的更新请求会被顺序执行。</p>
+
+<p>原子性（Atomicity）：更新要么成功要么失败，没有部分成功的情况。</p>
+
+<p>唯一的系统镜像（Single System Image）：无论客户端连接到哪个 Server，看到系统镜像是一致的。</p>
+
+<p>可靠性（Reliability）：更新一旦有效，持续有效，直到被覆盖。</p>
+
+<p>时间线（Timeliness）：保证在一定的时间内各个客户端看到的系统信息是一致的。</p>
+
+<p><strong>ZooKeeper</strong> <strong>的工作原理</strong></p>
+
+<p>在 zookeeper 的集群中，各个节点共有下面 3 种角色和 4 种状态：</p>
+
+<ul>
+<li>  角色：leader,follower,observer</li>
+<li>  状态：leading,following,observing,looking</li>
+</ul>
+
+<p>Zookeeper 的核心是原子广播，这个机制保证了各个 Server 之间的同步。实现这个机制的协议叫做 Zab 协议（ZooKeeper Atomic Broadcast protocol）。Zab 协议有两种模式，它们分别是恢复模式（Recovery 选主）和广播模式（Broadcast 同步）。当服务启动或者在领导者崩溃后，Zab 就进入了恢复模式，当领导者被选举出来，且大多数 Server 完成了和 leader 的状态同步以后，恢复模式就结束了。状态同步保证了 leader 和 Server 具有相同的系统状态。</p>
+
+<p>为了保证事务的顺序一致性，zookeeper 采用了递增的事务 id 号（zxid）来标识事务。所有的提议（proposal）都在被提出的时候加上了 zxid。实现中 zxid 是一个 64 位的数字，它高 32 位是 epoch 用来标识 leader 关系是否改变，每次一个 leader 被选出来，它都会有一个新的 epoch，标识当前属于那个 leader 的统治时期。低 32 位用于递增计数。</p>
+
+<p>每个 Server 在工作过程中有 4 种状态：</p>
+
+<p>LOOKING：当前 Server 不知道 leader 是谁，正在搜寻。</p>
+
+<p>LEADING：当前 Server 即为选举出来的 leader。</p>
+
+<p>FOLLOWING：leader 已经选举出来，当前 Server 与之同步。</p>
+
+<p>OBSERVING：observer 的行为在大多数情况下与 follower 完全一致，但是他们不参加选举和投票，而仅仅接受 (observing) 选举和投票的结果。</p>
+
+<p><strong>Leader Election</strong></p>
+
+<p>当 leader 崩溃或者 leader 失去大多数的 follower，这时候 zk 进入恢复模式，恢复模式需要重新选举出一个新的 leader，让所有的 Server 都恢复到一个正确的状态。Zk 的选举算法有两种：一种是基于 basic paxos 实现的，另外一种是基于 fast paxos 算法实现的。系统默认的选举算法为 fast paxos。先介绍 basic paxos 流程：</p>
+
+<p>1. 选举线程由当前 Server 发起选举的线程担任，其主要功能是对投票结果进行统计，并选出推荐的 Server；</p>
+
+<p>2. 选举线程首先向所有 Server 发起一次询问（包括自己）；</p>
+
+<p>3. 选举线程收到回复后，验证是否是自己发起的询问（验证 zxid 是否一致），然后获取对方的 id（myid），并存储到当前询问对象列表中，最后获取对方提议的 leader 相关信息（id,zxid），并将这些信息存储到当次选举的投票记录表中；</p>
+
+<p>4. 收到所有 Server 回复以后，就计算出 zxid 最大的那个 Server，并将这个 Server 相关信息设置成下一次要投票的 Server；</p>
+
+<p>5. 线程将当前 zxid 最大的 Server 设置为当前 Server 要推荐的 Leader，如果此时获胜的 Server 获得 n/2 + 1 的 Server 票数，设置当前推荐的 leader 为获胜的 Server，将根据获胜的 Server 相关信息设置自己的状态，否则，继续这个过程，直到 leader 被选举出来。</p>
+
+<p>通过流程分析我们可以得出：要使 Leader 获得多数 Server 的支持，则 Server 总数必须是奇数 2n+1，且存活的 Server 的数目不得少于 n+1.</p>
+
+<p>每个 Server 启动后都会重复以上流程。在恢复模式下，如果是刚从崩溃状态恢复的或者刚启动的 server 还会从磁盘快照中恢复数据和会话信息，zk 会记录事务日志并定期进行快照，方便在恢复时进行状态恢复。</p>
+
+<p>fast paxos 流程是在选举过程中，某 Server 首先向所有 Server 提议自己要成为 leader，当其它 Server 收到提议以后，解决 epoch 和 zxid 的冲突，并接受对方的提议，然后向对方发送接受提议完成的消息，重复这个流程，最后一定能选举出 Leader。</p>
+
+<p><strong>Leader</strong> <strong>工作流程</strong></p>
+
+<p>Leader 主要有三个功能：</p>
+
+<p>1. 恢复数据；</p>
+
+<p>2. 维持与 follower 的心跳，接收 follower 请求并判断 follower 的请求消息类型；</p>
+
+<p>3.follower 的消息类型主要有 PING 消息、REQUEST 消息、ACK 消息、REVALIDATE 消息，根据不同的消息类型，进行不同的处理。</p>
+
+<p>PING 消息是指 follower 的心跳信息；REQUEST 消息是 follower 发送的提议信息，包括写请求及同步请求；</p>
+
+<p>ACK 消息是 follower 的对提议的回复，超过半数的 follower 通过，则 commit 该提议；</p>
+
+<p>REVALIDATE 消息是用来延长 SESSION 有效时间。</p>
+
+<p><strong>Follower</strong> <strong>工作流程</strong></p>
+
+<p>Follower 主要有四个功能：</p>
+
+<p>1. 向 Leader 发送请求（PING 消息、REQUEST 消息、ACK 消息、REVALIDATE 消息）；</p>
+
+<p>2. 接收 Leader 消息并进行处理；</p>
+
+<p>3. 接收 Client 的请求，如果为写请求，发送给 Leader 进行投票；</p>
+
+<p>4. 返回 Client 结果。</p>
+
+<p>Follower 的消息循环处理如下几种来自 Leader 的消息：</p>
+
+<p>1.PING 消息：心跳消息</p>
+
+<p>2.PROPOSAL 消息：Leader 发起的提案，要求 Follower 投票</p>
+
+<p>3.COMMIT 消息：服务器端最新一次提案的信息</p>
+
+<p>4.UPTODATE 消息：表明同步完成</p>
+
+<p>5.REVALIDATE 消息：根据 Leader 的 REVALIDATE 结果，关闭待 revalidate 的 session 还是允许其接受消息</p>
+
+<p>6.SYNC 消息：返回 SYNC 结果到客户端，这个消息最初由客户端发起，用来强制得到最新的更新。</p>
+
+<p><strong>Zab: Broadcasting State Updates</strong></p>
+
+<p>Zookeeper Server 接收到一次 request，如果是 follower，会转发给 leader，Leader 执行请求并通过 Transaction 的形式广播这次执行。Zookeeper 集群如何决定一个 Transaction 是否被 commit 执行？通过 “两段提交协议”（a two-phase commit）：</p>
+
+<ol>
+<li> Leader 给所有的 follower 发送一个 PROPOSAL 消息。</li>
+<li> 一个 follower 接收到这次 PROPOSAL 消息，写到磁盘，发送给 leader 一个 ACK 消息，告知已经收到。</li>
+<li> 当 Leader 收到法定人数（quorum）的 follower 的 ACK 时候，发送 commit 消息执行。</li>
+</ol>
+
+<p>Zab 协议保证：</p>
+
+<ul>
+<li>  1）  如果 leader 以 T1 和 T2 的顺序广播，那么所有的 Server 必须先执行 T1，再执行 T2。</li>
+<li>  2）  如果任意一个 Server 以 T1、T2 的顺序 commit 执行，其他所有的 Server 也必须以 T1、T2 的顺序执行。</li>
+</ul>
+
+<p>“两段提交协议” 最大的问题是如果 Leader 发送了 PROPOSAL 消息后 crash 或暂时失去连接，会导致整个集群处在一种不确定的状态（follower 不知道该放弃这次提交还是执行提交）。Zookeeper 这时会选出新的 leader，请求处理也会移到新的 leader 上，不同的 leader 由不同的 epoch 标识。切换 Leader 时，需要解决下面两个问题：</p>
+
+<p>1. Never forget delivered messages</p>
+
+<p>Leader 在 COMMIT 投递到任何一台 follower 之前 crash，只有它自己 commit 了。新 Leader 必须保证这个事务也必须 commit。</p>
+
+<p>2. Let go of messages that are skipped</p>
+
+<p>Leader 产生某个 proposal，但是在 crash 之前，没有 follower 看到这个 proposal。该 server 恢复时，必须丢弃这个 proposal。</p>
+
+<p>Zookeeper 会尽量保证不会同时有 2 个活动的 Leader，因为 2 个不同的 Leader 会导致集群处在一种不一致的状态，所以 Zab 协议同时保证：</p>
+
+<ul>
+<li>  1）  在新的 leader 广播 Transaction 之前，先前 Leader commit 的 Transaction 都会先执行。</li>
+<li>  2）  在任意时刻，都不会有 2 个 Server 同时有法定人数（quorum）的支持者。</li>
+</ul>
+
+<p>这里的 quorum 是一半以上的 Server 数目，确切的说是有投票权力的 Server（不包括 Observer）。</p>
+
+<p>总结：简单介绍了 Zookeeper 的基本原理，数据模型，Session，Watch 机制，一致性保证，Leader Election，Leader 和 Follower 的工作流程和 Zab 协议。</p>
+
+<p>参考：</p>
+
+<ul>
+<li>《ZooKeeper—Distributed Process Coordination》 by FlavioJunqueira and Benjamin Reed</li>
+<li><a href="http://zookeeper.apache.org/doc/current/zookeeperOver.html">http://zookeeper.apache.org/doc/current/zookeeperOver.html</a></li>
+<li><a href="http://www.ibm.com/developerworks/cn/opensource/os-cn-zookeeper/index.html">http://www.ibm.com/developerworks/cn/opensource/os-cn-zookeeper/index.html</a></li>
+<li><a href="https://my.oschina.net/pingpangkuangmo/blog/778927">《ZooKeeper 的一致性算法赏析》</a></li>
+</ul>
 
                         
                       </div>
@@ -195,10 +348,10 @@
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/7/19</span>
+                    <span class="date">2018/8/2</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Cache.html'>Cache</a></span>
+          					    <span class="posted-in"><a href='Orchestrator.html'>Orchestrator</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -288,31 +441,31 @@
 	      
 		      
 			      <li class="post">
-			        <a href="15389311738065.html">重构到更深层的模型</a>
+			        <a href="15459058392039.html">Reliable Domain Events</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389278377243.html">IAM of Google Cloud</a>
+			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389224951575.html">RSocket, a New Application Network Protocol for Reactive Applications, Announced at SpringOne</a>
+			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389220103546.html">如何形象地描述RxJava中的背压和流控机制？</a>
+			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15389214670417.html">Modeling Uncertainty with Reactive DDD</a>
+			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
 			      </li>
 		     
 		  
