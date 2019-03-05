@@ -105,421 +105,315 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15388979027531.html">
+                <a class="clearlink" href="15462168709575.html">
                 
-                  <h1>授权策略（Authorization Policy）基本元素</h1>
+                  <h1>分布式锁</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
-                        	<pre><code>阿里云 &gt; 访问控制 RAM &gt; 授权策略管理
-</code></pre>
-
-<blockquote>
-<p>原文地址 <a href="https://help.aliyun.com/document_detail/28663.html">https://help.aliyun.com/document_detail/28663.html</a></p>
+                        	<blockquote>
+<p>原文地址 <a href="https://zhuanlan.zhihu.com/p/51988123">https://zhuanlan.zhihu.com/p/51988123</a></p>
 </blockquote>
 
-<p>RAM 中使用授权策略（Policy）来描述授权的具体内容，授权内容包含以下基本因素：效力（Effect）、资源（Resource）、对资源所授予的操作权限（Action）以及限制条件（Condition）。</p>
+<p>【小宅按】现在面试都会聊聊分布式系统，通常面试官都会从服务框架（Spring Cloud、Dubbo），一路聊到分布式事务、分布式锁、ZooKeeper 等知识。今天就来聊聊分布式锁这块的知识，先具体的来看看 Redis 分布式锁的实现原理。</p>
 
-<h2 id="toc_0">效力（Effect）</h2>
+<p>如果在公司里落地生产环境用分布式锁的时候，一定是会用开源类库的，比如 Redis 分布式锁，一般就是用 Redisson 框架就好了，非常的简便易用。感兴趣可以去 Redisson 官网看看如何在项目中引入 Redisson 的依赖，然后基于 Redis 实现分布式锁的加锁与释放锁。</p>
 
-<p>授权效力包括两种：允许（Allow）和拒绝（Deny）。</p>
+<p>一段简单的使用代码片段，先直观的感受一下：<br/>
+<img src="media/15462168709575/15462169730534.jpg" alt=""/></p>
 
-<h2 id="toc_1">资源（Resource）</h2>
+<p>是不是感觉简单的不行！此外，还支持 Redis 单实例、Redis 哨兵、Redis Cluster、redis master-slave 等各种部署架构，都可以完美实现。</p>
 
-<p>资源是指被授权的具体对象。</p>
+<h2 id="toc_0"><strong>Redisson 实现 Redis 分布式锁的底层原理</strong></h2>
 
-<p>比如，访问策略 “允许张三对资源 SampleBucket 执行 GetBucket 操作” 中的资源是“SampleBucket”。</p>
+<p>现在通过一张手绘图，说说 Redisson 这个开源框架对 Redis 分布式锁的实现原理。<br/>
+<img src="media/15462168709575/15462169812635.jpg" alt=""/></p>
 
-<h2 id="toc_2">操作权限（Action）</h2>
+<p><strong>加锁机制</strong></p>
 
-<p>操作方法是指对具体资源的操作。</p>
+<p>看上面那张图，现在某个客户端要加锁。如果该客户端面对的是一个 Redis Cluster 集群，他首先会根据 Hash 节点选择一台机器。</p>
 
-<p>比如，访问策略 “允许张三对资源 SampleBucket 执行 GetBucket 操作” 中的操作是“GetBucket”。</p>
+<p>注：仅仅只是选择一台机器！然后发送一段 Lua 脚本到 Redis 上，那段 Lua 脚本如下所示：<br/>
+<img src="media/15462168709575/15462169890243.jpg" alt=""/></p>
 
-<h2 id="toc_3">限制条件（Condition）</h2>
+<p>为啥要用 Lua 脚本呢？因为一大坨复杂的业务逻辑，可以通过封装在 Lua 脚本中发送给 Redis，保证这段复杂业务逻辑执行的原子性。</p>
 
-<p>限制条件是指授权生效的限制条件。</p>
+<p>那么，这段 Lua 脚本是什么意思呢？这里 KEYS[1] 代表的是你加锁的那个 Key，比如说：RLock lock = redisson.getLock(&quot;myLock&quot;)；这里你自己设置了加锁的那个锁 Key 就是 “myLock”。</p>
 
-<p>比如，访问策略 “允许张三在 2011 年 12 月 31 日之前对资源 SampleBucket 执行 GetBucket 操作” 中的限制条件是“在 2011 年 12 月 31 日之前”。</p>
+<p>ARGV[1] 代表的就是锁 Key 的默认生存时间，默认 30 秒。ARGV[2] 代表的是加锁的客户端的 ID，类似于下面这样：8743c9c0-0795-4907-87fd-6c719a6b4586:1。</p>
 
-<h2 id="toc_4">授权策略样例</h2>
+<p>第一段 if 判断语句，就是用 “exists myLock” 命令判断一下，如果你要加锁的那个锁 Key 不存在的话，你就进行加锁。如何加锁呢？很简单，用下面的命令：hset myLock。</p>
 
-<p>下面是一个权限策略实例，它描述的含义：允许对 OSS 的 samplebucket 进行只读操作，条件是请求者的 IP 来源为 <code>42.160.1.0</code>。</p>
+<p>8743c9c0-0795-4907-87fd-6c719a6b4586:1 1，通过这个命令设置一个 Hash 数据结构，这行命令执行后，会出现一个类似下面的数据结构：<br/>
+<img src="media/15462168709575/15462170001398.jpg" alt=""/></p>
 
-<pre><code class="language-json">{
-      &quot;Version&quot;: &quot;1&quot;,
-      &quot;Statement&quot;:
-        [{
-          &quot;Effect&quot;: &quot;Allow&quot;,
-            &quot;Action&quot;: [&quot;oss:List*&quot;, &quot;oss:Get*&quot;],
-            &quot;Resource&quot;: [&quot;acs:oss:*:*:samplebucket&quot;, &quot;acs:oss:*:*:samplebucket/*&quot;],
-            &quot;Condition&quot;:
-             {
-                &quot;IpAddress&quot;:
-                 {
-                    &quot;acs:SourceIp&quot;: &quot;42.160.1.0&quot;
-                  }
-              }
-         }]
-}
-</code></pre>
+<p>上述就代表 “8743c9c0-0795-4907-87fd-6c719a6b4586:1” 这个客户端对 “myLock” 这个锁 Key 完成了加锁。</p>
 
-<h2 id="toc_5">Policy 结构</h2>
+<p>接着会执行 “pexpire myLock 30000” 命令，设置 myLock 这个锁 Key 的生存时间是 30 秒，加锁完成。</p>
 
-<p>授权策略（Policy）结构包括 Policy 版本号及授权语句（Statement）列表。每个授权语句又包括以下元素：Effect（授权类型）、Action（操作名称列表）、Resource（操作对象列表）以及 Condition（条件限制），其中 Condition 是可选项。</p>
+<p><strong>锁互斥机制</strong></p>
 
-<p>Policy 结构简述如下：</p>
+<p>这个时候，如果客户端 2 来尝试加锁，执行了同样的一段 Lua 脚本，会怎样？</p>
 
-<p>图 1. Policy 结构<br/>
-<img src="media/15388979027531/15389054067698.png" alt=""/></p>
+<p>第一个 if 判断会执行 “exists myLock”，发现 myLock 这个锁 Key 已经存在了。</p>
 
-<h2 id="toc_6">格式检查（JSON）</h2>
+<p>第二个 if 判断，判断 myLock 锁 Key 的 Hash 数据结构中，是否包含客户端 2 的 ID，但是明显不是的，因为那里包含的是客户端 1 的 ID。</p>
 
-<p>RAM 仅支持 JSON 格式的描述。当创建或更新 Policy 时，RAM 会首先检查 JSON 格式的正确性。</p>
+<p>所以，客户端 2 会获取到 pttl myLock 返回的一个数字，这个数字代表了 myLock 这个锁 Key 的剩余生存时间。比如还剩 15000 毫秒的生存时间。此时客户端 2 会进入一个 while 循环，不停的尝试加锁。</p>
+
+<p><strong>watch dog 自动延期机制</strong></p>
+
+<p>客户端 1 加锁的锁 Key 默认生存时间才 30 秒，如果超过了 30 秒，客户端 1 还想一直持有这把锁，怎么办呢？</p>
+
+<p>只要客户端 1 加锁成功，就会启动一个 watch dog 看门狗，这个后台线程，会每隔 10 秒检查一下，如果客户端 1 还持有锁 Key，就会不断的延长锁 Key 的生存时间。</p>
+
+<p><strong>可重入加锁机制</strong></p>
+
+<p>那如果客户端 1 都已经持有了这把锁了，结果可重入的加锁会怎么样呢？如下代码：<br/>
+<img src="media/15462168709575/15462170089600.jpg" alt=""/></p>
+
+<p>分析一下上面那段 Lua 脚本。第一个 if 判断肯定不成立，“exists myLock” 会显示锁 Key 已经存在了。</p>
+
+<p>第二个 if 判断会成立，因为 myLock 的 Hash 数据结构中包含的那个 ID，就是客户端 1 的那个 ID，也就是 “8743c9c0-0795-4907-87fd-6c719a6b4586:1”。</p>
+
+<p>此时就会执行可重入加锁的逻辑，incrby myLock 8743c9c0-0795-4907-87fd-6c71a6b4586:1 1，通过这个命令，对客户端 1 的加锁次数，累加 1。</p>
+
+<p>此时 myLock 数据结构变为下面这样：<br/>
+<img src="media/15462168709575/15462171028604.jpg" alt=""/></p>
+
+<p>myLock 的 Hash 数据结构中的那个客户端 ID，就对应着加锁的次数。</p>
+
+<p><strong>释放锁机制</strong></p>
+
+<p>如果执行 lock.unlock()，就可以释放分布式锁，此时的业务逻辑也是非常简单的。就是每次都对 myLock 数据结构中的那个加锁次数减 1。</p>
+
+<p>如果发现加锁次数是 0 了，说明这个客户端已经不再持有锁了，此时就会用：“del myLock” 命令，从 Redis 里删除这个 Key。</p>
+
+<p>而另外的客户端 2 就可以尝试完成加锁了。这就是所谓的分布式锁的开源 Redisson 框架的实现机制。</p>
+
+<p>一般我们在生产系统中，可以用 Redisson 框架提供的这个类库来基于 Redis 进行分布式锁的加锁与释放锁。</p>
+
+<p><strong>上述 Redis 分布式锁的缺点</strong></p>
+
+<p>上面那种方案最大的问题，就是如果你对某个 Redis Master 实例，写入了 myLock 这种锁 Key 的 Value，此时会异步复制给对应的 Master Slave 实例。</p>
+
+<p>但是这个过程中一旦发生 Redis Master 宕机，主备切换，Redis Slave 变为了 Redis Master。</p>
+
+<p>会导致客户端 2 尝试加锁时，在新的 Redis Master 上完成加锁，客户端 1 也以为自己成功加锁。</p>
+
+<p>此时就会导致多个客户端对一个分布式锁完成了加锁。这时系统在业务语义上一定会出现问题，导致各种脏数据的产生。</p>
+
+<p>所以这个就是 Redis Cluster，或者是 redis master-slave 架构的主从异步复制导致的 Redis 分布式锁的最大缺陷：在 Redis Master 实例宕机的时候，可能导致多个客户端同时完成加锁。</p>
+
+<h2 id="toc_1"><strong>七张图彻底讲清楚 ZooKeeper 分布式锁的实现原理</strong></h2>
+
+<p>下面再聊一下 ZooKeeper 实现分布式锁的原理。同理，我是直接基于比较常用的 Curator 这个开源框架，聊一下这个框架对 ZooKeeper（以下简称 ZK）分布式锁的实现。</p>
+
+<p>一般除了大公司是自行封装分布式锁框架之外，建议大家用这些开源框架封装好的分布式锁实现，这是一个比较快捷省事的方式。</p>
+
+<p><strong>ZooKeeper 分布式锁机制</strong></p>
+
+<p>看看多客户端获取及释放 ZK 分布式锁的整个流程及背后的原理。首先看看下图，如果现在有两个客户端一起要争抢 ZK 上的一把分布式锁，会是个什么场景？<br/>
+<img src="media/15462168709575/15462171167551.jpg" alt=""/></p>
+
+<p>如果大家对 ZK 还不太了解的话，建议先自行百度一下，简单了解点基本概念，比如 ZK 有哪些节点类型等等。</p>
+
+<p>参见上图。ZK 里有一把锁，这个锁就是 ZK 上的一个节点。两个客户端都要来获取这个锁，具体是怎么来获取呢？</p>
+
+<p>假设客户端 A 抢先一步，对 ZK 发起了加分布式锁的请求，这个加锁请求是用到了 ZK 中的一个特殊的概念，叫做 “临时顺序节点”。</p>
+
+<p>简单来说，就是直接在 &quot;my_lock&quot; 这个锁节点下，创建一个顺序节点，这个顺序节点有 ZK 内部自行维护的一个节点序号。</p>
+
+<p>比如第一个客户端来搞一个顺序节点，ZK 内部会给起个名字叫做：xxx-000001。</p>
+
+<p>然后第二个客户端来搞一个顺序节点，ZK 可能会起个名字叫做：xxx-000002。</p>
+
+<p>注意，最后一个数字都是依次递增的，从 1 开始逐次递增。ZK 会维护这个顺序。</p>
+
+<p>所以这个时候，假如说客户端 A 先发起请求，就会搞出来一个顺序节点，大家看下图，Curator 框架大概会弄成如下的样子：<br/>
+<img src="media/15462168709575/15462171244417.jpg" alt=""/></p>
+
+<p>客户端 A 发起一个加锁请求，先在要加锁的 node 下搞一个临时顺序节点，这列长名字都是 Curator 框架自己生成出来的。</p>
+
+<p>然后，那个最后一个数字是 &quot;1&quot;。因为客户端 A 是第一个发起请求的，所以给他搞出来的顺序节点的序号是 &quot;1&quot;。</p>
+
+<p>接着客户端 A 创建完一个顺序节点。还没完，他会查一下 &quot;my_lock&quot; 这个锁节点下的所有子节点，并且这些子节点是按照序号排序的，这个时候他大概会拿到这么一个集合：<br/>
+<img src="media/15462168709575/15462171334054.jpg" alt=""/></p>
+
+<p>接着客户端 A 会走一个关键性的判断：这个集合里创建的顺序节点，是否排在首位？</p>
+
+<p>如果是的话，就可以加锁，因为明明我就是第一个来创建顺序节点的人，所以我就是第一个尝试加分布式锁的人啊！</p>
+
+<p>加锁成功！看下图，再来直观的感受一下整个过程：<br/>
+<img src="media/15462168709575/15462171389866.jpg" alt=""/></p>
+
+<p>接着假如说，客户端 A 都加完锁了，客户端 B 过来想要加锁了，这个时候他会干一样的事儿：先是在 &quot;my_lock&quot; 这个锁节点下创建一个临时顺序节点，此时名字会变成类似于：<br/>
+<img src="media/15462168709575/15462171449715.jpg" alt=""/></p>
+
+<p>下图：<br/>
+<img src="media/15462168709575/15462171518242.jpg" alt=""/></p>
+
+<p>客户端 B 因为是第二个来创建顺序节点的，所以 ZK 内部会维护序号为 &quot;2&quot;。</p>
+
+<p>接着客户端 B 会走加锁判断逻辑，查询 &quot;my_lock&quot; 锁节点下的所有子节点，按序号顺序排列，此时他看到的类似于：<br/>
+<img src="media/15462168709575/15462171636274.jpg" alt=""/></p>
+
+<p>同时检查自己创建的顺序节点，是不是集合中的第一个？明显不是啊，此时第一个是客户端 A 创建的那个顺序节点，序号为 &quot;01&quot; 的那个。所以加锁失败！</p>
+
+<p>加锁失败了以后，客户端 B 就会通过 ZK 的 API 对他的顺序节点的上一个顺序节点加一个监听器。ZK 天然就可以实现对某个节点的监听。</p>
+
+<p>如果大家还不知道 ZK 的基本用法，可以百度查阅，非常的简单。客户端 B 的顺序节点是：<br/>
+<img src="media/15462168709575/15462171716419.jpg" alt=""/></p>
+
+<p>他的上一个顺序节点，不就是下面这个吗？<br/>
+<img src="media/15462168709575/15462171768326.jpg" alt=""/></p>
+
+<p>即客户端 A 创建的那个顺序节点！所以，客户端 B 会对：<br/>
+<img src="media/15462168709575/15462171823543.jpg" alt=""/></p>
+
+<p>这个节点加一个监听器，监听这个节点是否被删除等变化！大家看下图：<br/>
+<img src="media/15462168709575/15462171895824.jpg" alt=""/></p>
+
+<p>接着，客户端 A 加锁之后，可能处理了一些代码逻辑，然后就会释放锁。那么，释放锁是个什么过程呢？</p>
+
+<p>其实就是把自己在 ZK 里创建的那个顺序节点，也就是：<br/>
+<img src="media/15462168709575/15462171959976.jpg" alt=""/></p>
+
+<p>这个节点删除。删除了那个节点之后，ZK 会负责通知监听这个节点的监听器，也就是客户端 B 之前加的那个监听器，说：你监听的那个节点被删除了，有人释放了锁。<br/>
+<img src="media/15462168709575/15462172020977.jpg" alt=""/></p>
+
+<p>此时客户端 B 的监听器感知到了上一个顺序节点被删除，也就是排在他之前的某个客户端释放了锁。</p>
+
+<p>此时，就会通知客户端 B 重新尝试去获取锁，也就是获取 &quot;my_lock&quot; 节点下的子节点集合，此时为：<br/>
+<img src="media/15462168709575/15462172087811.jpg" alt=""/></p>
+
+<p>集合里此时只有客户端 B 创建的唯一的一个顺序节点了！然后呢，客户端 B 判断自己居然是集合中的第一个顺序节点，Bingo！可以加锁了！直接完成加锁，运行后续的业务代码即可，运行完了之后再次释放锁。<br/>
+<img src="media/15462168709575/15462172150011.jpg" alt=""/></p>
+
+<p>其实如果有客户端 C、客户端 D 等 N 个客户端争抢一个 ZK 分布式锁，原理都是类似的：</p>
 
 <ul>
-<li>  关于 JSON 的语法标准请参考 <a href="http://tools.ietf.org/html/rfc7159">RFC 7159</a>。</li>
-<li>  用户也可以使用一些在线的 JSON 格式验证器和编辑器来校验 JSON 文本的有效性。</li>
+<li>  大家都是上来直接创建一个锁节点下的一个接一个的临时顺序节点。</li>
+<li>  如果自己不是第一个节点，就对自己上一个节点加监听器。</li>
+<li>  只要上一个节点释放锁，自己就排到前面去了，相当于是一个排队机制。</li>
 </ul>
 
-<hr/>
+<p>而且用临时顺序节点的另外一个用意就是，如果某个客户端创建临时顺序节点之后，不小心自己宕机了也没关系，ZK 感知到那个客户端宕机，会自动删除对应的临时顺序节点，相当于自动释放锁，或者是自动取消自己的排队。</p>
 
-<h2 id="toc_7">Policy 语法</h2>
+<p>最后，咱们来看下用 Curator 框架进行加锁和释放锁的一个过程：<br/>
+<img src="media/15462168709575/15462172259888.jpg" alt=""/></p>
 
-<p>了解 Policy 中用到的字符及规则，以及 Policy 语法描述。</p>
+<p>其实用开源框架就是方便。这个 Curator 框架的 ZK 分布式锁的加锁和释放锁的实现原理，就是上面我们说的那样子。</p>
 
-<p><strong>字符及规则</strong></p>
+<p>但是如果你要手动实现一套那个代码的话，要考虑到各种细节，异常处理等等。所以大家如果考虑用 ZK 分布式锁，可以参考下本文的思路。</p>
 
-<p>Policy 中所包含的 JSON 字符有：<code>{ } [ ] &quot; , :</code>；描述语法使用的特殊字符有：<code>= &lt; &gt; ( ) |</code>。</p>
+<h2 id="toc_2"><strong>每秒上千订单场景下的分布式锁高并发优化实践</strong></h2>
 
-<p>字符使用说明如下：</p>
+<p>接着聊一个有意思的话题：每秒上千订单场景下，如何对分布式锁的并发能力进行优化？</p>
+
+<p>首先，我们一起来看看这个问题的背景。前段时间有个朋友在外面面试，然后有一天找我聊说：有一个国内不错的电商公司，面试官给他出了一个场景题：</p>
+
+<p>假如下单时，用分布式锁来防止库存超卖，但是是每秒上千订单的高并发场景，如何对分布式锁进行高并发优化来应对这个场景？</p>
+
+<p>他说他当时没答上来，因为没做过没什么思路。其实我当时听到这个面试题心里也觉得有点意思，因为如果是我来面试候选人的话，给的范围会更大一些。比如，让面试的同学聊一聊电商高并发秒杀场景下的库存超卖解决方案，各种方案的优缺点以及实践，进而聊到分布式锁这个话题。</p>
+
+<p>因为库存超卖问题是有很多种技术解决方案的，比如悲观锁，分布式锁，乐观锁，队列串行化，Redis 原子操作，等等吧。但是既然那个面试官兄弟限定死了用分布式锁来解决库存超卖，我估计就是想问一个点：在高并发场景下如何优化分布式锁的并发性能。</p>
+
+<p>面试官提问的角度还是可以接受的，因为在实际落地生产的时候，分布式锁这个东西保证了数据的准确性，但是他天然并发能力有点弱。</p>
+
+<p>刚好我之前在自己项目的其他场景下，确实是做过高并发场景下的分布式锁优化方案，因此正好是借着这个朋友的面试题，把分布式锁的高并发优化思路，给大家来聊一聊。</p>
+
+<p><strong>库存超卖现象是怎么产生的？</strong></p>
+
+<p>先来看看如果不用分布式锁，所谓的电商库存超卖是啥意思？大家看下图：<br/>
+<img src="media/15462168709575/15462172368454.jpg" alt=""/></p>
+
+<p>这个图其实很清晰了，假设订单系统部署在两台机器上，不同的用户都要同时买 10 台 iPhone，分别发了一个请求给订单系统。</p>
+
+<p>接着每个订单系统实例都去数据库里查了一下，当前 iPhone 库存是 12 台，大于了要买的 10 台数量。</p>
+
+<p>于是每个订单系统实例都发送 SQL 到数据库里下单，然后扣减了 10 个库存，其中一个将库存从 12 台扣减为 2 台，另外一个将库存从 2 台扣减为 -8 台。</p>
+
+<p>现在库存出现了负数！没有 20 台 iPhone 发给两个用户啊！怎么办？</p>
+
+<p><strong>用分布式锁如何解决库存超卖问题？</strong></p>
+
+<p>我们用分布式锁如何解决库存超卖问题呢？回忆一下上次我们说的那个分布式锁的实现原理：</p>
+
+<p>同一个锁 Key，同一时间只能有一个客户端拿到锁，其他客户端会陷入无限的等待来尝试获取那个锁，只有获取到锁的客户端才能执行下面的业务逻辑。<br/>
+<img src="media/15462168709575/15462172445492.jpg" alt=""/></p>
+
+<p>代码如上图，分析一下为什么这样可以避免库存超卖？<br/>
+<img src="media/15462168709575/15462172507567.jpg" alt=""/></p>
+
+<p>大家可以顺着上面的那个步骤序号看一遍，马上就明白了。</p>
+
+<p>从上图可以看到，只有一个订单系统实例可以成功加分布式锁，然后只有他一个实例可以查库存、判断库存是否充足、下单扣减库存，接着释放锁。释放锁之后，另外一个订单系统实例才能加锁，接着查库存，一下发现库存只有 2 台了，库存不足，无法购买，下单失败。不会将库存扣减为 -8 的。</p>
+
+<p><strong>有没其他方案解决库存超卖问题？</strong></p>
+
+<p>当然有！比如悲观锁，分布式锁，乐观锁，队列串行化，异步队列分散，Redis 原子操作，等等，很多方案，我们对库存超卖有自己的一整套优化机制。但是前面说过，这篇文章就聊一个分布式锁的并发优化，不是聊库存超卖的解决方案，所以库存超卖只是一个业务场景而已。</p>
+
+<p><strong>分布式锁的方案在高并发场景下</strong></p>
+
+<p>现在我们来看看，分布式锁的方案在高并发场景下有什么问题？分布式锁一旦加了之后，对同一个商品的下单请求，会导致所有客户端都必须对同一个商品的库存锁 Key 进行加锁。</p>
+
+<p>比如，对 iPhone 这个商品的下单，都必对 “iphone_stock” 这个锁 Key 来加锁。这样会导致对同一个商品的下单请求，就必须串行化，一个接一个的处理。大家再回去对照上面的图反复看一下，应该能想明白这个问题。</p>
+
+<p>假设加锁之后，释放锁之前，查库存→创建订单→扣减库存，这个过程性能很高吧，算他全过程 20 毫秒，这应该不错了。那么 1 秒是 1000 毫秒，只能容纳 50 个对这个商品的请求依次串行完成处理。如一秒钟 50 个请求，都是对 iPhone 下单的，那么每个请求处理 20 毫秒，逐个来，最后 1000 毫秒正好处理完 50 个请求。</p>
+
+<p>大家看下图，加深印象。<br/>
+<img src="media/15462168709575/15462172584887.jpg" alt=""/></p>
+
+<p>所以看到这里，大家起码也明白了，简单的使用分布式锁来处理库存超卖问题，存在什么缺陷。</p>
+
+<p>同一商品多用户同时下单时，会基于分布式锁串行化处理，导致没法同时处理同一个商品的大量下单的请求。这种方案应对那种低并发、无秒杀场景的普通小电商系统，可能还可以接受。</p>
+
+<p>因为如果并发量很低，每秒就不到 10 个请求，没有瞬时高并发秒杀单个商品的场景的话，其实也很少会对同一个商品在 1 秒内瞬间下 1000 个订单，因为小电商系统没那场景。</p>
+
+<p><strong>如何对分布式锁进行高并发优化？</strong></p>
+
+<p>那么现在怎么办呢？面试官说，我现在就卡死，库存超卖就是用分布式锁来解决，而且一秒对一个 iPhone 下上千订单，怎么优化？</p>
+
+<p>现在按照刚才的计算，你 1 秒钟只能处理针对 iPhone 的 50 个订单。其实说出来也很简单，相信很多人看过 Java 里的 ConcurrentHashMap 的源码和底层原理，应该知道里面的核心思路，就是分段加锁！</p>
+
+<p>把数据分成很多个段，每个段是一个单独的锁，所以多个线程过来并发修改数据的时候，可以并发的修改不同段的数据。不至于说，同一时间只能有一个线程独占修改 ConcurrentHashMap 中的数据。</p>
+
+<p>另外，Java 8 中新增了一个 LongAdder 类，也是针对 Java 7 以前的 AtomicLong 进行的优化，解决的是 CAS 类操作在高并发场景下，使用乐观锁思路，会导致大量线程长时间重复循环。LongAdder 中也采用了类似的分段 CAS 操作，失败则自动迁移到下一个分段进行 CAS 的思路。</p>
+
+<p>其实分布式锁的优化思路也是类似的，之前我们是在另外一个业务场景下落地了这个方案到生产中，不是在库存超卖问题里用的。但是库存超卖这个业务场景不错，很容易理解，所以我们就用这个场景来说一下。</p>
+
+<p>大家看下图：<br/>
+<img src="media/15462168709575/15462172667397.jpg" alt=""/></p>
+
+<p>这就是分段加锁。假如现在 iPhone 有 1000 个库存，完全可以给拆成 20 个库存段。</p>
+
+<p>要是你愿意，可以在数据库的表里建 20 个库存字段，比如 stock_01，stock_02，类似这样的，也可以在 Redis 之类的地方放 20 个库存 Key。</p>
+
+<p>总之，就是把你的 1000 件库存给他拆开，每个库存段是 50 件库存，比如 stock_01 对应 50 件库存，stock_02 对应 50 件库存。</p>
+
+<p>接着，每秒 1000 个请求过来了！此时可以自己写一个简单的随机算法，每个请求都是随机在 20 个分段库存里，选择一个进行加锁。</p>
+
+<p>这样同时可以有最多 20 个下单请求一起执行，每个下单请求锁了一个库存分段，然后在业务逻辑里面，就对数据库或者是 Redis 中的那个分段库存进行操作即可，包括查库存→判断库存是否充足→扣减库存。</p>
+
+<p>这相当于一个 20 毫秒，可以并发处理掉 20 个下单请求，那么 1 秒，也就可以依次处理掉 20 * 50 = 1000 个对 iPhone 的下单请求了。</p>
+
+<p>一旦对某个数据做了分段处理之后，有一个坑大家一定要注意：就是如果某个下单请求，咔嚓加锁，然后发现这个分段库存里的库存不足了。这时你得自动释放锁，然后立马换下一个分段库存，再次尝试加锁后尝试处理。这个过程一定要实现。</p>
+
+<p><strong>分布式锁并发优化方案有什么不足？</strong></p>
+
+<p>最大的不足是很不方便，实现太复杂：</p>
 
 <ul>
-<li>  当一个元素允许多值时，使用逗号和省略号来表达，比如：<code>[ &lt;action_string&gt;, &lt;action_string&gt;, ...]</code>。在所有支持多值的语法中，使用单值也是有效的。而且两种表达方式是等效的：<code>&quot;Action&quot;: [&lt;action_string&gt;]</code> 和 <code>&quot;Action&quot;: &lt;action_string&gt;</code></li>
-<li>  带有问号的元素表示这是一个可选元素，比如：<code>&lt;condition_block?&gt;</code></li>
-<li>  多值之间用竖线 （|）隔开，表示取值只能选取这些值中的某一个。比如：<code>(&quot;Allow&quot; | &quot;Deny&quot;)</code></li>
-<li>  使用双引号引起了的元素，表示它是文本串。比如： <code>&lt;version_block&gt; = &quot;Version&quot; : (&quot;1&quot;)</code></li>
+<li>  <strong>首先，</strong>你得对一个数据分段存储，一个库存字段本来好好的，现在要分为 20 个库存字段。</li>
+<li>  <strong>其次，</strong>你在每次处理库存的时候，还得自己写随机算法，随机挑选一个分段来处理。</li>
+<li>  <strong>最后，</strong>如果某个分段中的数据不足了，你还得自动切换到下一个分段数据去处理。</li>
 </ul>
 
-<p><strong>语法描述及说明</strong></p>
+<p>这个过程都是要手动写代码实现的，还是有点工作量。不过我们确实在一些业务场景里，因为用到了分布式锁，然后又必须要进行锁并发的优化，又进一步用到了分段加锁的技术方案，效果当然是很好的了，一下子并发性能可以增长几十倍。</p>
 
-<p>Policy 语法描述如下：</p>
-
-<pre><code>policy  = {
-     &lt;version_block&gt;,
-     &lt;statement_block&gt;
-}
-&lt;version_block&gt; = &quot;Version&quot; : (&quot;1&quot;)
-&lt;statement_block&gt; = &quot;Statement&quot; : [ &lt;statement&gt;, &lt;statement&gt;, ... ]
-&lt;statement&gt; = { 
-    &lt;effect_block&gt;,
-    &lt;action_block&gt;,
-    &lt;resource_block&gt;,
-    &lt;condition_block?&gt;
-}
-&lt;effect_block&gt; = &quot;Effect&quot; : (&quot;Allow&quot; | &quot;Deny&quot;)  
-&lt;action_block&gt; = (&quot;Action&quot; | &quot;NotAction&quot;) : 
-    (&quot;*&quot; | [&lt;action_string&gt;, &lt;action_string&gt;, ...])
-&lt;resource_block&gt; = (&quot;Resource&quot; | &quot;NotResource&quot;) : 
-    (&quot;*&quot; | [&lt;resource_string&gt;, &lt;resource_string&gt;, ...])
-&lt;condition_block&gt; = &quot;Condition&quot; : &lt;condition_map&gt;
-&lt;condition_map&gt; = {
-  &lt;condition_type_string&gt; : { 
-      &lt;condition_key_string&gt; : &lt;condition_value_list&gt;,
-      &lt;condition_key_string&gt; : &lt;condition_value_list&gt;,
-      ...
-  },
-  &lt;condition_type_string&gt; : {
-      &lt;condition_key_string&gt; : &lt;condition_value_list&gt;,
-      &lt;condition_key_string&gt; : &lt;condition_value_list&gt;,
-      ...
-  }, ...
-}  
-&lt;condition_value_list&gt; = [&lt;condition_value&gt;, &lt;condition_value&gt;, ...]
-&lt;condition_value&gt; = (&quot;String&quot; | &quot;Number&quot; | &quot;Boolean&quot;)
-</code></pre>
-
-<p>语法说明如下：</p>
-
-<ul>
-<li>  <strong>版本</strong>：当前支持的 Policy 版本为 1。</li>
-<li>  <strong>授权语句</strong>：一个 Policy 可以有多条授权语句。
-
-<ul>
-<li>  每条授权语句要么是 Deny，要么是 Allow。一条授权语句中，Action 是一个支持多个操作的列表，Resource 也是一个支持多个对象的列表。</li>
-<li>  每条授权语句都支持独立的限制条件（Condition）。一个条件块可以支持多种条件操作类型，以及对这多种条件的逻辑组合。</li>
-</ul></li>
-<li>  <strong>Deny 优先</strong>： 一个用户可以被授予多个 Policy，当这些 Policy 存在多条授权语句既包含有 Allow 又包含有 Deny 时，遵循 Deny 优先（只认 Deny 不认 Allow）原则。</li>
-<li><p><strong>元素取值</strong>：</p>
-
-<ul>
-<li>  当取值为数字（Number）或布尔值（Boolean）时，与字符串类似，需要用双引号引起。</li>
-<li><p>当元素取值为字符串值（String）时，支持（*）和（？）模糊匹配。</p>
-
-<ul>
-<li>  (*) 代表 0 个或多个任意的英文字母。</li>
-<li>  (?) 代表 1 个任意的英文字母。</li>
-</ul>
-
-<p>比如，<code>ecs:Describe*</code> 可以表示 ecs 的所有以 Describe 开头的 API 操作名称。</p></li>
-</ul></li>
-</ul>
-
-<h2 id="toc_8">Policy 元素使用</h2>
-
-<p>了解 Policy 语法中各元素的使用规则。</p>
-
-<p><strong>Effect（授权类型）</strong></p>
-
-<p>Effect 取值 为 Allow 或 Deny。比如，<code>&quot;Effect&quot;: &quot;Allow&quot;</code></p>
-
-<p><strong>Action（操作名称列表）</strong></p>
-
-<p>Action 支持多值，取值为云服务所定义的 API 操作名称，其格式定义如下：</p>
-
-<pre><code>&lt;service-name&gt;:&lt;action-name&gt;
-</code></pre>
-
-<p><strong>格式说明</strong>：</p>
-
-<ul>
-<li>  service-name: 阿里云产品名称，如 ecs, rds, slb, oss, ots 等。</li>
-<li>  action-name: service 相关的 api 操作接口名称。</li>
-</ul>
-
-<p><strong>描述样例</strong>：</p>
-
-<pre><code>&quot;Action&quot;: [&quot;oss:ListBuckets&quot;, &quot;ecs:Describe*&quot;, &quot;rds:Describe*&quot;]
-</code></pre>
-
-<h2 id="toc_9">Resource（操作对象列表）</h2>
-
-<p>Resource 通常指操作对象，比如 ECS 虚拟机实例，OSS 存储对象。我们使用如下格式来命名阿里云服务的资源命名。</p>
-
-<pre><code>acs:&lt;service-name&gt;:&lt;region&gt;:&lt;account-id&gt;:&lt;relative-id&gt;
-</code></pre>
-
-<p><strong>格式说明</strong>：</p>
-
-<ul>
-<li>  <code>acs</code>: Aliyun Cloud Service 的首字母缩写，表示阿里云的公有云平台。</li>
-<li>  <code>service-name</code>: 阿里云提供的 Open Service 的名字，如 ecs, oss, ots 等。</li>
-<li>  <code>region</code>: 地区信息。如果不支持该项，可以使用通配符 “*” 号来代替。</li>
-<li>  <code>account-id</code>: 账号 ID，比如 <code>1234567890123456</code>，也可以用 “*” 代替。</li>
-<li>  <code>relative-id</code>: 与 service 相关的资源描述部分，其语义由具体 service 指定。这部分的格式描述支持类似于一个文件路径的树状结构。以 oss 为例，<code>relative-id = “mybucket/dir1/object1.jpg”</code> 表示一个 OSS 对象。</li>
-</ul>
-
-<p><strong>描述样例</strong>：</p>
-
-<pre><code>&quot;Resource&quot;: [&quot;acs:ecs:*:*:instance/inst-001&quot;, &quot;acs:ecs:*:*:instance/inst-002&quot;, &quot;acs:oss:*:*:mybucket&quot;, &quot;acs:oss:*:*:mybucket/*&quot;]
-</code></pre>
-
-<p><strong>Condition（条件限制）</strong></p>
-
-<p>条件块（Condition Block）由一个或多个条件子句构成。一个条件子句由条件操作类型、条件关键字和条件值组成。条件操作类型和条件关键字在下文中会有详细描述。</p>
-
-<p><strong>条件块判断逻辑</strong></p>
-
-<p>是否满足条件的判断原则如下图所示：</p>
-
-<p>图 2. 是否满足条件的判断原则<br/>
-<img src="media/15388979027531/15389054664258.png" alt=""/></p>
-
-<p>具体规则如下：</p>
-
-<ul>
-<li>  一个条件关键字可以指定一个或多个值，在条件检查时，如果条件关键字的值与指定值中的某一个相等，即可判定条件满足。</li>
-<li>  同一种条件操作类型的条件子句下的多个条件关键字同时满足的情况下，才能判定该条件子句满足。</li>
-<li>  条件块下的所有条件子句同时满足的情况下，才能判定该条件块满足。</li>
-</ul>
-
-<p><strong>条件操作类型</strong></p>
-
-<p>支持如下条件操作类型：字符串类型（String）、数字类型（Numeric）、日期类型（Data and time）、布尔类型（Boolean）和 IP 地址类型（IP address）。</p>
-
-<p>每种条件操作类型分别支持如下的方法：</p>
-
-<table>
-<thead>
-<tr>
-<th>String</th>
-<th>Numeric</th>
-<th>Date and time</th>
-<th>Boolean</th>
-<th>IP address</th>
-</tr>
-</thead>
-
-<tbody>
-<tr>
-<td>StringEquals</td>
-<td>NumericEquals</td>
-<td>DateEquals</td>
-<td>Bool</td>
-<td>IpAddress</td>
-</tr>
-<tr>
-<td>StringNotEquals</td>
-<td>NumericNotEquals</td>
-<td>DateNotEquals</td>
-<td>-</td>
-<td>NotIpAddress</td>
-</tr>
-<tr>
-<td>StringEqualsIgnoreCase</td>
-<td>NumericLessThan</td>
-<td>DateLessThan</td>
-<td>-</td>
-<td>-</td>
-</tr>
-<tr>
-<td>StringNotEqualsIgnoreCase</td>
-<td>NumericLessThanEquals</td>
-<td>DateLessThanEquals</td>
-<td>-</td>
-<td>-</td>
-</tr>
-<tr>
-<td>StringLike</td>
-<td>NumericGreaterThan</td>
-<td>DateGreaterThan</td>
-<td>-</td>
-<td>-</td>
-</tr>
-<tr>
-<td>StringNotLike</td>
-<td>NumericGreaterThanEquals</td>
-<td>DateGreaterThanEquals</td>
-<td>-</td>
-<td>-</td>
-</tr>
-</tbody>
-</table>
-
-<p><strong>条件关键字（Condition-key）</strong></p>
-
-<p>阿里云服务保留的条件关键字命名格式为：</p>
-
-<pre><code>acs:&lt;condition-key&gt;
-</code></pre>
-
-<p>阿里云服务保留的通用条件关键字如下：</p>
-
-<table>
-<thead>
-<tr>
-<th>通用条件关键字</th>
-<th>类型</th>
-<th>说明</th>
-</tr>
-</thead>
-
-<tbody>
-<tr>
-<td><code>acs:CurrentTime</code></td>
-<td>Date and time</td>
-<td>Web Server 接收到请求的时间，以 ISO 8601 格式表示，如 <code>2012-11-11T23:59:59Z</code></td>
-</tr>
-<tr>
-<td><code>acs:SecureTransport</code></td>
-<td>Boolean</td>
-<td>发送请求是否使用了安全信道，如 HTTPS</td>
-</tr>
-<tr>
-<td><code>acs:SourceIp</code></td>
-<td>IP address</td>
-<td>发送请求时的客户端 IP 地址</td>
-</tr>
-<tr>
-<td><code>acs:MFAPresent</code></td>
-<td>Boolean</td>
-<td>用户登录时是否使用了多因素认证（二步认证）</td>
-</tr>
-</tbody>
-</table>
-
-<p>云产品可以定义产品级别的条件关键字，格式如下：</p>
-
-<pre><code>&lt;service-name&gt;:&lt;condition-key&gt;
-</code></pre>
-
-<p>部分云产品定义的条件关键字如下：</p>
-
-<table>
-<thead>
-<tr>
-<th>产品名称</th>
-<th>条件关键字</th>
-<th>类型</th>
-<th>说明</th>
-</tr>
-</thead>
-
-<tbody>
-<tr>
-<td>ECS</td>
-<td><code>ecs:tag/&lt;tag-key&gt;</code></td>
-<td>String</td>
-<td>ECS 资源的标签关键字，可由用户自定义</td>
-</tr>
-<tr>
-<td>RDS</td>
-<td><code>rds:ResourceTag/&lt;tag-key&gt;</code></td>
-<td>String</td>
-<td>RDS 资源的标签关键字，可由用户自定义</td>
-</tr>
-<tr>
-<td>OSS</td>
-<td><code>oss:Delimiter</code></td>
-<td>String</td>
-<td>OSS 对 Object 名字进行分组的分隔符</td>
-</tr>
-<tr>
-<td></td>
-<td><code>oss:Prefix</code></td>
-<td>String</td>
-<td>OSS Object 名称的前缀</td>
-</tr>
-</tbody>
-</table>
-
-<h2 id="toc_10">Policy 样例</h2>
-
-<p>如下所示的 Policy 样例中，包含两条授权语句（Statement）：</p>
-
-<ul>
-<li>  第 1 条授权语句是允许对 region 华东 1（杭州）所有 ecs 资源有查看权限 (<code>ecs:Describe*</code>)；</li>
-<li>  第 2 条授权语句是允许对 oss 的 mybucket 存储桶中的对象具有读访问权限 (<code>oss:ListObjects</code>, <code>oss:GetObject</code>)，并限制请求者的 IP 来源必须是<code>42.120.88.10</code>或<code>42.120.66.0/24</code>。</li>
-</ul>
-
-<pre><code class="language-json">{
-    &quot;Version&quot;: &quot;1&quot;,
-    &quot;Statement&quot;: [
-        {
-            &quot;Effect&quot;: &quot;Allow&quot;,
-            &quot;Action&quot;: &quot;ecs:Describe*&quot;,
-            &quot;Resource&quot;: &quot;acs:ecs:cn-hangzhou:*:*&quot;
-        },
-        {
-            &quot;Effect&quot;: &quot;Allow&quot;,
-            &quot;Action&quot;: [
-                &quot;oss:ListObjects&quot;,
-                &quot;oss:GetObject&quot;
-            ],
-            &quot;Resource&quot;: [
-                &quot;acs:oss:*:*:mybucket&quot;,
-                &quot;acs:oss:*:*:mybucket/*&quot;
-            ],
-            &quot;Condition&quot;:{
-                &quot;IpAddress&quot;: {
-                    &quot;acs:SourceIp&quot;: [&quot;42.120.88.10&quot;, &quot;42.120.66.0/24&quot;]
-                }
-            }
-        }
-    ]
-}
-</code></pre>
+<p><strong>该优化方案的后续改进：</strong>以我们本文所说的库存超卖场景为例，你要是这么玩，会把自己搞的很痛苦！再次强调，我们这里的库存超卖场景，仅仅只是作为演示场景而已。</p>
 
                         
                       </div>
@@ -528,10 +422,10 @@
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/10/7</span>
+                    <span class="date">2018/12/31</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Authn&Authz.html'>Authn&Authz</a></span>
+          					    <span class="posted-in"><a href='Cocurrency.html'>Cocurrency</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -621,31 +515,31 @@
 	      
 		      
 			      <li class="post">
-			        <a href="15459058392039.html">Reliable Domain Events</a>
+			        <a href="15517999043443.html">The Art of Crafting Architectural Diagrams</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
+			        <a href="15517997955971.html">为什么说我们需要软件架构图？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
+			        <a href="15516128677869.html">DNS Servers That Offer Privacy and Filtering</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
+			        <a href="15516123108194.html">Airbnb's Migration from Monolith to Services</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
+			        <a href="15516097487470.html">Events As First-Class Citizens</a>
 			      </li>
 		     
 		  

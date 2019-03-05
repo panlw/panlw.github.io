@@ -105,308 +105,288 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15358820607055.html">
+                <a class="clearlink" href="15425204595510.html">
                 
-                  <h1>Java 8 Concurrency Tutorial: Atomic Variables and ConcurrentMap</h1>
+                  <h1>Spring Boot cache with Redis</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://winterbe.com/posts/2015/05/22/java8-concurrency-tutorial-atomic-concurrent-map-examples/">https://winterbe.com/posts/2015/05/22/java8-concurrency-tutorial-atomic-concurrent-map-examples/</a></p>
+<p><a href="https://medium.com/@MatthewFTech/spring-boot-cache-with-redis-56026f7da83a">https://medium.com/@MatthewFTech/spring-boot-cache-with-redis-56026f7da83a</a></p>
 </blockquote>
 
-<p>Welcome to the third part of my tutorial series about multi-threaded programming in Java 8. This tutorial covers two important parts of the Concurrency API: Atomic Variables and Concurrent Maps. Both have been greatly improved with the introduction of lambda expressions and functional programming in the latest Java 8 release. All those new features are described with a bunch of easily understood code samples. Enjoy!</p>
+<p>Each of us met the situation when application was working slowly. Even the best code will fall on knees at high load. Caching can be fast and relatively cheap way to increase performance and reduce response time.<br/>
+<img src="media/15425204595510/15425206105845.jpg" alt=""/></p>
+
+<p>In simple words caching is one of performance strategies when you must face with long running services. Invocation result can be placed inside fast <br/>
+in-memory storage and used next time without expensive method execution. Following the green flow, you may notice if we found requested data in cache (called <u>“cache hit”)</u> we save time and resources. Red flow represents worst scenario (called <u>“cache miss”</u>) when cache doesn’t store expected data and you need to load and recalculate it from the beginning with an extra trip to cache which increases response time. So how it works underneath?<br/>
+<img src="media/15425204595510/15425206180856.jpg" alt=""/></p>
+
+<p>With big simplification when new data arrives, they are placed in the first empty bucket, but when cache is full, cleaning process is performed according to selected eviction algorithm. Some data are safe, they are used very often or meet other conditions for chosen algorithm. Rest of the data are candidates to remove. In ideal world cache will evict only old data until it found place for new ones. With Spring and Redis we will try to build simple app and consider how different factors can impact on our caching layer.</p>
+
+<p></section></p>
+
+<p><section></p>
+
+<hr/>
+
+<h3 id="toc_0">A Piece of Code</h3>
+
+<p>A little bit of background. Lets imagine that you work with social site where users are able to create own content, top most read posts are good candidates to find place in cache. Post structure will look more and less like code below, pretty simple but enough in this case.</p>
+
+<pre><code class="language-java">public class Post implements Serializable {
+
+    private String id;
+    private String title;
+    private String description;
+    private String image;
+    private int shares;
+    private Author author;
+    //getters setters and constructors
+}
+</code></pre>
+
+<blockquote>
+<p><a href="https://gist.github.com/matthewfrank/2030aad230ca40d6c6a6e25e2d83ef7c#file-postchunk-java">https://gist.github.com/matthewfrank/2030aad230ca40d6c6a6e25e2d83ef7c#file-postchunk-java</a></p>
+</blockquote>
+
+<h4 id="toc_1">Configuration and dependencies</h4>
+
+<p>Spring need <code>spring-boot-started-data-redis</code> as cache dependency. <br/>
+Basic configuration can be set from <a href="https://docs.spring.io/spring-boot/docs/current/reference/html/common-application-properties.html">properties</a> level.</p>
+
+<pre>spring.cache.type=redis
+spring.redis.host=192.168.99.100
+spring.redis.port=6379</pre>
+
+<h4 id="toc_2">Cache abstraction</h4>
+
+<p>Spring Framework provides an abstraction layer with set of annotations for caching support and can work together with various cache implementation like Redis, EhCache, Hazelcast, Infinispan and <a href="http://docs.spring.io/spring-boot/docs/current/reference/html/boot-features-caching.html">many more</a>. Loose coupling is always very welcome :)</p>
+
+<p><strong>@Cacheable — </strong>Fulfill cache after method execution, next invocation with the same arguments will be omitted and result will be loaded from cache. Annotation provide useful feature called conditional caching. In some case no all data should be cached e.g. you want store in memory only most popular posts.</p>
+
+<pre><code class="language-java">@Cacheable(value = &quot;post-single&quot;, key = &quot;#id&quot;, unless = &quot;#result.shares &lt; 500&quot;)
+@GetMapping(&quot;/{id}&quot;)
+public Post getPostByID(@PathVariable String id) throws PostNotFoundException {
+    log.info(&quot;get post with id {}&quot;, id);
+    return postService.getPostByID(id);
+}
+@Cacheable(value = &quot;post-top&quot;)
+@GetMapping(&quot;/top&quot;)
+public List&lt;Post&gt; getTopPosts() {
+    return postService.getTopPosts();
+}
+</code></pre>
+
+<blockquote>
+<p><a href="https://gist.github.com/matthewfrank/7e67901a2122b23df3ddd5d6f7864305#file-cacheablecontrollermethods-java">https://gist.github.com/matthewfrank/7e67901a2122b23df3ddd5d6f7864305#file-cacheablecontrollermethods-java</a></p>
+</blockquote>
+
+<p><strong>@CachePut — </strong>Annotation allows to update entry in cache and support same options like Cacheable annotation. Code below updates post and return it for cache provider to change entry with new value.</p>
+
+<pre><code class="language-java">@CachePut(value = &quot;post-single&quot;, key = &quot;#post.id&quot;)
+@PutMapping(&quot;/update&quot;)
+public Post updatePostByID(@RequestBody Post post) throws PostNotFoundException {
+    log.info(&quot;update post with id {}&quot;, post.getId());
+    postService.updatePost(post);
+    return post;
+}
+</code></pre>
+
+<blockquote>
+<p><a href="https://gist.github.com/matthewfrank/fdc85c0c04be6697cce39eebddc05eb0#file-cacheputcontrollermethod-java">https://gist.github.com/matthewfrank/fdc85c0c04be6697cce39eebddc05eb0#file-cacheputcontrollermethod-java</a></p>
+</blockquote>
+
+<p><strong>@CacheEvict — </strong>Remove entry from cache, can be both conditional and global to all entries in specific cache.</p>
+
+<pre><code class="language-java">@CacheEvict(value = &quot;post-single&quot;, key = &quot;#id&quot;)
+@DeleteMapping(&quot;/delete/{id}&quot;)
+public void deletePostByID(@PathVariable String id) throws PostNotFoundException {
+    log.info(&quot;delete post with id {}&quot;, id);
+    postService.deletePost(id);
+}
+
+@CacheEvict(value = &quot;post-top&quot;)
+@GetMapping(&quot;/top/evict&quot;)
+public void evictTopPosts() {
+    log.info(&quot;Evict post-top&quot;);
+}
+</code></pre>
+
+<blockquote>
+<p><a href="https://gist.github.com/matthewfrank/84797873672c189823d59eb61c0b37fb#file-cacheevictcontrollermethod-java">https://gist.github.com/matthewfrank/84797873672c189823d59eb61c0b37fb#file-cacheevictcontrollermethod-java</a></p>
+</blockquote>
+
+<p><strong>@EnableCaching — </strong>Annotation ensure that post processor will check all beans trying to find demarcated methods and will create proxy to intercept all invocations.</p>
+
+<p><strong>@Caching — </strong>Aggregate multiple annotations of the same type when e.g. you need to use different conditions and caches.</p>
+
+<p><strong>@CacheConfig — </strong>Class level annotation allows to specify global values for annotations like cache name or key generator.</p>
+
+<h3 id="toc_3">Redis cache</h3>
+
+<p>Redis is popular open source in-memory data store used as a database, message broker and cache, for now only last use-case is important for us. <br/>
+Download official Redis image from docker hub typing <code>docker pull redis</code> after this command new image should be present in your local repository (type <code>docker images</code> to check it). Of course it can installed on bare metal but for our case docker internal overhead is negligible. Standard Redis image will work well as storage but for cache we should consider few important things like maximum memory, eviction algorithms and durability.</p>
+
+<p><strong>Maximum memory — </strong>By default redis have no memory limits on 64-bit systems and 3 GB on 32-bit systems. Large memory can contain more data and increase hit ratio, one of the most important metrics but at a certain limit of memory the hit rate will be at the same level.</p>
+
+<p><strong>Eviction algorithms — </strong>When cache size reaches the memory limit, old data is removed to make place for new one. Access pattern is a keyword when you thinking about eviction policies, each strategy will be good for specific case:</p>
 
 <ul>
-<li>  Part 1: <a href="/posts/2015/04/07/java8-concurrency-tutorial-thread-executor-examples/">Threads and Executors</a></li>
-<li>  Part 2: <a href="/posts/2015/04/30/java8-concurrency-tutorial-synchronized-locks-examples/">Synchronization and Locks</a></li>
-<li>  Part 3: Atomic Variables and ConcurrentMap</li>
+<li>  <strong>Last Recently Used (LRU)</strong> track when key was used last time. So probably it will be still used in future, but what if it was only <u>‘one shot’</u> before long idle time? Key will be stored to next eviction cycle.</li>
+<li>  <strong>Least Frequently Used (LFU)[Available from Redis 4.0]</strong> will count how many times key was used. The most popular keys will survive eviction cycle. Problem appears when key was used very often some time ago. Another key starts to being requested but it still have smaller counter and will be candidate to eviction (Redis team solved problem with long lived keys by decreasing counter after some period of time).</li>
 </ul>
 
-<p>For simplicity the code samples of this tutorial make use of the two helper methods <code>sleep(seconds)</code> and <code>stop(executor)</code> as defined <a href="https://github.com/winterbe/java8-tutorial/blob/master/src/com/winterbe/java8/samples/concurrent/ConcurrentUtils.java">here</a>.</p>
-
-<h3 id="toc_0">AtomicInteger<a href="#atomicinteger" title="Permalink to this section">#</a></h3>
-
-<p>The package <code>java.concurrent.atomic</code> contains many useful classes to perform atomic operations. An operation is atomic when you can safely perform the operation in parallel on multiple threads without using the <code>synchronized</code> keyword or locks as shown in my <a href="/posts/2015/04/30/java8-concurrency-tutorial-synchronized-locks-examples/">previous tutorial</a>.</p>
-
-<p>Internally, the atomic classes make heavy use of <a href="http://en.wikipedia.org/wiki/Compare-and-swap">compare-and-swap</a> (CAS), an atomic instruction directly supported by most modern CPUs. Those instructions usually are much faster than synchronizing via locks. So my advice is to prefer atomic classes over locks in case you just have to change a single mutable variable concurrently.</p>
-
-<p>Now let&#39;s pick one of the atomic classes for a few examples: <code>AtomicInteger</code></p>
-
-<pre><code>AtomicInteger atomicInt = new AtomicInteger(0);
-
-ExecutorService executor = Executors.newFixedThreadPool(2);
-
-IntStream.range(0, 1000)
-    .forEach(i -&gt; executor.submit(atomicInt::incrementAndGet));
-
-stop(executor);
-
-System.out.println(atomicInt.get());    // =&gt; 1000
-
-</code></pre>
-
-<p>By using <code>AtomicInteger</code> as a replacement for <code>Integer</code> we&#39;re able to increment the number concurrently in a thread-safe manor without synchronizing the access to the variable. The method <code>incrementAndGet()</code> is an atomic operation so we can safely call this method from multiple threads.</p>
-
-<p>AtomicInteger supports various kinds of atomic operations. The method <code>updateAndGet()</code> accepts a lambda expression in order to perform arbitrary arithmetic operations upon the integer:</p>
-
-<pre><code>AtomicInteger atomicInt = new AtomicInteger(0);
-
-ExecutorService executor = Executors.newFixedThreadPool(2);
-
-IntStream.range(0, 1000)
-    .forEach(i -&gt; {
-        Runnable task = () -&gt;
-            atomicInt.updateAndGet(n -&gt; n + 2);
-        executor.submit(task);
-    });
-
-stop(executor);
-
-System.out.println(atomicInt.get());    // =&gt; 2000
-
-</code></pre>
-
-<p>The method <code>accumulateAndGet()</code> accepts another kind of lambda expression of type <code>IntBinaryOperator</code>. We use this method to sum up all values from 0 to 1000 concurrently in the next sample:</p>
-
-<pre><code>AtomicInteger atomicInt = new AtomicInteger(0);
-
-ExecutorService executor = Executors.newFixedThreadPool(2);
-
-IntStream.range(0, 1000)
-    .forEach(i -&gt; {
-        Runnable task = () -&gt;
-            atomicInt.accumulateAndGet(i, (n, m) -&gt; n + m);
-        executor.submit(task);
-    });
-
-stop(executor);
-
-System.out.println(atomicInt.get());    // =&gt; 499500
-
-</code></pre>
-
-<p>Other useful atomic classes are <a href="https://docs.oracle.com/javase/8/docs/api/java/util/concurrent/atomic/AtomicBoolean.html">AtomicBoolean</a>, <a href="https://docs.oracle.com/javase/8/docs/api/java/util/concurrent/atomic/AtomicLong.html">AtomicLong</a> and <a href="https://docs.oracle.com/javase/8/docs/api/java/util/concurrent/atomic/AtomicReference.html">AtomicReference</a>.</p>
-
-<h3 id="toc_1">LongAdder<a href="#longadder" title="Permalink to this section">#</a></h3>
-
-<p>The class <code>LongAdder</code> as an alternative to <code>AtomicLong</code> can be used to consecutively add values to a number.</p>
-
-<pre><code>ExecutorService executor = Executors.newFixedThreadPool(2);
-
-IntStream.range(0, 1000)
-    .forEach(i -&gt; executor.submit(adder::increment));
-
-stop(executor);
-
-System.out.println(adder.sumThenReset());   // =&gt; 1000
-
-</code></pre>
-
-<p>LongAdder provides methods <code>add()</code> and <code>increment()</code> just like the atomic number classes and is also thread-safe. But instead of summing up a single result this class maintains a set of variables internally to reduce contention over threads. The actual result can be retrieved by calling <code>sum()</code> or <code>sumThenReset()</code>.</p>
-
-<p>This class is usually preferable over atomic numbers when updates from multiple threads are more common than reads. This is often the case when capturing statistical data, e.g. you want to count the number of requests served on a web server. The drawback of <code>LongAdder</code> is higher memory consumption because a set of variables is held in-memory.</p>
-
-<h3 id="toc_2">LongAccumulator<a href="#longaccumulator" title="Permalink to this section">#</a></h3>
-
-<p>LongAccumulator is a more generalized version of LongAdder. Instead of performing simple add operations the class <code>LongAccumulator</code> builds around a lambda expression of type <code>LongBinaryOperator</code> as demonstrated in this code sample:</p>
-
-<pre><code>LongBinaryOperator op = (x, y) -&gt; 2 * x + y;
-LongAccumulator accumulator = new LongAccumulator(op, 1L);
-
-ExecutorService executor = Executors.newFixedThreadPool(2);
-
-IntStream.range(0, 10)
-    .forEach(i -&gt; executor.submit(() -&gt; accumulator.accumulate(i)));
-
-stop(executor);
-
-System.out.println(accumulator.getThenReset());     // =&gt; 2539
-
-</code></pre>
-
-<p>We create a LongAccumulator with the function <code>2 * x + y</code> and an initial value of one. With every call to <code>accumulate(i)</code> both the current result and the value <code>i</code> are passed as parameters to the lambda expression.</p>
-
-<p>A <code>LongAccumulator</code> just like <code>LongAdder</code> maintains a set of variables internally to reduce contention over threads.</p>
-
-<h3 id="toc_3">ConcurrentMap<a href="#concurrentmap" title="Permalink to this section">#</a></h3>
-
-<p>The interface <code>ConcurrentMap</code> extends the map interface and defines one of the most useful concurrent collection types. Java 8 introduces functional programming by adding new methods to this interface.</p>
-
-<p>In the next code snippets we use the following sample map to demonstrates those new methods:</p>
-
-<pre><code>ConcurrentMap&lt;String, String&gt; map = new ConcurrentHashMap&lt;&gt;();
-map.put(&quot;foo&quot;, &quot;bar&quot;);
-map.put(&quot;han&quot;, &quot;solo&quot;);
-map.put(&quot;r2&quot;, &quot;d2&quot;);
-map.put(&quot;c3&quot;, &quot;p0&quot;);
-
-</code></pre>
-
-<p>The method <code>forEach()</code> accepts a lambda expression of type <code>BiConsumer</code> with both the key and value of the map passed as parameters. It can be used as a replacement to for-each loops to iterate over the entries of the concurrent map. The iteration is performed sequentially on the current thread.</p>
-
-<pre><code>map.forEach((key, value) -&gt; System.out.printf(&quot;%s = %s\n&quot;, key, value));
-
-</code></pre>
-
-<p>The method <code>putIfAbsent()</code> puts a new value into the map only if no value exists for the given key. At least for the <code>ConcurrentHashMap</code> implementation of this method is thread-safe just like <code>put()</code> so you don&#39;t have to synchronize when accessing the map concurrently from different threads:</p>
-
-<pre><code>String value = map.putIfAbsent(&quot;c3&quot;, &quot;p1&quot;);
-System.out.println(value);    // p0
-
-</code></pre>
-
-<p>The method <code>getOrDefault()</code> returns the value for the given key. In case no entry exists for this key the passed default value is returned:</p>
-
-<pre><code>String value = map.getOrDefault(&quot;hi&quot;, &quot;there&quot;);
-System.out.println(value);    // there
-
-</code></pre>
-
-<p>The method <code>replaceAll()</code> accepts a lambda expression of type <code>BiFunction</code>. BiFunctions take two parameters and return a single value. In this case the function is called with the key and the value of each map entry and returns a new value to be assigned for the current key:</p>
-
-<pre><code>map.replaceAll((key, value) -&gt; &quot;r2&quot;.equals(key) ? &quot;d3&quot; : value);
-System.out.println(map.get(&quot;r2&quot;));    // d3
-
-</code></pre>
-
-<p>Instead of replacing all values of the map <code>compute()</code> let&#39;s us transform a single entry. The method accepts both the key to be computed and a bi-function to specify the transformation of the value.</p>
-
-<pre><code>map.compute(&quot;foo&quot;, (key, value) -&gt; value + value);
-System.out.println(map.get(&quot;foo&quot;));   // barbar
-
-</code></pre>
-
-<p>In addition to <code>compute()</code> two variants exist: <code>computeIfAbsent()</code> and <code>computeIfPresent()</code>. The functional parameters of these methods only get called if the key is absent or present respectively.</p>
-
-<p>Finally, the method <code>merge()</code> can be utilized to unify a new value with an existing value in the map. Merge accepts a key, the new value to be merged into the existing entry and a bi-function to specify the merging behavior of both values:</p>
-
-<pre><code>map.merge(&quot;foo&quot;, &quot;boo&quot;, (oldVal, newVal) -&gt; newVal + &quot; was &quot; + oldVal);
-System.out.println(map.get(&quot;foo&quot;));   // boo was foo
-
-</code></pre>
-
-<h3 id="toc_4">ConcurrentHashMap<a href="#concurrenthashmap" title="Permalink to this section">#</a></h3>
-
-<p>All those methods above are part of the <code>ConcurrentMap</code> interface, thereby available to all implementations of that interface. In addition the most important implementation <code>ConcurrentHashMap</code> has been further enhanced with a couple of new methods to perform parallel operations upon the map.</p>
-
-<p>Just like parallel streams those methods use a special <code>ForkJoinPool</code> available via <code>ForkJoinPool.commonPool()</code> in Java 8. This pool uses a preset parallelism which depends on the number of available cores. Four CPU cores are available on my machine which results in a parallelism of three:</p>
-
-<pre><code>System.out.println(ForkJoinPool.getCommonPoolParallelism());  // 3
-
-</code></pre>
-
-<p>This value can be decreased or increased by setting the following JVM parameter:</p>
-
-<pre><code>-Djava.util.concurrent.ForkJoinPool.common.parallelism=5
-
-</code></pre>
-
-<p>We use the same example map for demonstrating purposes but this time we work upon the concrete implementation <code>ConcurrentHashMap</code> instead of the interface <code>ConcurrentMap</code>, so we can access all public methods from this class:</p>
-
-<pre><code>ConcurrentHashMap&lt;String, String&gt; map = new ConcurrentHashMap&lt;&gt;();
-map.put(&quot;foo&quot;, &quot;bar&quot;);
-map.put(&quot;han&quot;, &quot;solo&quot;);
-map.put(&quot;r2&quot;, &quot;d2&quot;);
-map.put(&quot;c3&quot;, &quot;p0&quot;);
-
-</code></pre>
-
-<p>Java 8 introduces three kinds of parallel operations: <code>forEach</code>, <code>search</code> and <code>reduce</code>. Each of those operations are available in four forms accepting functions with keys, values, entries and key-value pair arguments.</p>
-
-<p>All of those methods use a common first argument called <code>parallelismThreshold</code>. This threshold indicates the minimum collection size when the operation should be executed in parallel. E.g. if you pass a threshold of 500 and the actual size of the map is 499 the operation will be performed sequentially on a single thread. In the next examples we use a threshold of one to always force parallel execution for demonstrating purposes.</p>
-
-<h4 id="toc_5">ForEach<a href="#foreach" title="Permalink to this section">#</a></h4>
-
-<p>The method <code>forEach()</code> is capable of iterating over the key-value pairs of the map in parallel. The lambda expression of type <code>BiConsumer</code> is called with the key and value of the current iteration step. In order to visualize parallel execution we print the current threads name to the console. Keep in mind that in my case the underlying <code>ForkJoinPool</code> uses up to a maximum of three threads.</p>
-
-<pre><code>map.forEach(1, (key, value) -&gt;
-    System.out.printf(&quot;key: %s; value: %s; thread: %s\n&quot;,
-        key, value, Thread.currentThread().getName()));
-
-// key: r2; value: d2; thread: main
-// key: foo; value: bar; thread: ForkJoinPool.commonPool-worker-1
-// key: han; value: solo; thread: ForkJoinPool.commonPool-worker-2
-// key: c3; value: p0; thread: main
-
-</code></pre>
-
-<h4 id="toc_6">Search<a href="#search" title="Permalink to this section">#</a></h4>
-
-<p>The method <code>search()</code> accepts a <code>BiFunction</code> returning a non-null search result for the current key-value pair or <code>null</code> if the current iteration doesn&#39;t match the desired search criteria. As soon as a non-null result is returned further processing is suppressed. Keep in mind that <code>ConcurrentHashMap</code> is unordered. The search function should not depend on the actual processing order of the map. If multiple entries of the map match the given search function the result may be non-deterministic.</p>
-
-<pre><code>String result = map.search(1, (key, value) -&gt; {
-    System.out.println(Thread.currentThread().getName());
-    if (&quot;foo&quot;.equals(key)) {
-        return value;
-    }
-    return null;
-});
-System.out.println(&quot;Result: &quot; + result);
-
-// ForkJoinPool.commonPool-worker-2
-// main
-// ForkJoinPool.commonPool-worker-3
-// Result: bar
-
-</code></pre>
-
-<p>Here&#39;s another example searching solely on the values of the map:</p>
-
-<pre><code>String result = map.searchValues(1, value -&gt; {
-    System.out.println(Thread.currentThread().getName());
-    if (value.length() &gt; 3) {
-        return value;
-    }
-    return null;
-});
-
-System.out.println(&quot;Result: &quot; + result);
-
-// ForkJoinPool.commonPool-worker-2
-// main
-// main
-// ForkJoinPool.commonPool-worker-1
-// Result: solo
-
-</code></pre>
-
-<h4 id="toc_7">Reduce<a href="#reduce" title="Permalink to this section">#</a></h4>
-
-<p>The method <code>reduce()</code> already known from Java 8 Streams accepts two lambda expressions of type <code>BiFunction</code>. The first function transforms each key-value pair into a single value of any type. The second function combines all those transformed values into a single result, ignoring any possible <code>null</code> values.</p>
-
-<pre><code>String result = map.reduce(1,
-    (key, value) -&gt; {
-        System.out.println(&quot;Transform: &quot; + Thread.currentThread().getName());
-        return key + &quot;=&quot; + value;
-    },
-    (s1, s2) -&gt; {
-        System.out.println(&quot;Reduce: &quot; + Thread.currentThread().getName());
-        return s1 + &quot;, &quot; + s2;
-    });
-
-System.out.println(&quot;Result: &quot; + result);
-
-// Transform: ForkJoinPool.commonPool-worker-2
-// Transform: main
-// Transform: ForkJoinPool.commonPool-worker-3
-// Reduce: ForkJoinPool.commonPool-worker-3
-// Transform: main
-// Reduce: main
-// Reduce: main
-// Result: r2=d2, c3=p0, han=solo, foo=bar
-
-</code></pre>
-
-<p>I hope you&#39;ve enjoyed reading the third part of my tutorial series about Java 8 Concurrency. The code samples from this tutorial are <a href="https://github.com/winterbe/java8-tutorial">hosted on GitHub</a> along with many other Java 8 code snippets. You&#39;re welcome to fork the repo and try it by your own.</p>
-
-<p>If you want to support my work, please share this tutorial with your friends. You should also <a href="https://twitter.com/winterbe_">follow me on Twitter</a> as I constantly tweet about Java and programming related stuff.</p>
+<p><strong>Durability — </strong>For some reasons you may want to persist your cache. After startup, cache is initially empty, it will be useful to fulfill it with snapshot data in case of recovery after outage. Redis support three types of persistence:</p>
 
 <ul>
-<li>  Part 1: <a href="/posts/2015/04/07/java8-concurrency-tutorial-thread-executor-examples/">Threads and Executors</a></li>
-<li>  Part 2: <a href="/posts/2015/04/30/java8-concurrency-tutorial-synchronized-locks-examples/">Synchronization and Locks</a></li>
-<li>  Part 3: Atomic Variables and ConcurrentMap</li>
+<li>  <strong>RDB</strong> point-in-time snapshots after specific interval of time or amount of writes. Rare snapshots should not harm performance but it will be a good task trying to find balance between snapshot interval and to avoid serving obsolete data after outage.</li>
+<li>  <strong>AOF</strong> create persistence logs with every write operation. If you consider this level of durability, you should read about different fsync policies under <code>appendfsync</code> configuration parameter.</li>
+<li>  Both RDB and AOF.</li>
+</ul>
+
+<p>Every additional fork or other operations like <u>fsync()</u> will consume power, <br/>
+if warming-up is not important, disable all persistence options.</p>
+
+<p></section></p>
+
+<p><section></p>
+
+<hr/>
+
+<h4 id="toc_4">Redis configuration</h4>
+
+<p>All aspects mentioned before are configurable from <a href="http://download.redis.io/redis-stable/redis.conf">redis.conf</a> level. Its up to you how much memory you will allocate and what type of eviction algorithm you will choose. Eviction policy can be switched on the fly, but Redis will need some time to collect all keys metadata proper for chosen algorithm.</p>
+
+<pre>**#memory limit up to 128MB (up to you)**
+maxmemory 128mb
+**#remove the last recently used (LRU) keys first**
+maxmemory-policy allkeys-lru
+**#eviction precision (up to you)**
+`maxmemory-samples 10`</pre>
+
+<p></section></p>
+
+<p><section></p>
+
+<hr/>
+
+<h4 id="toc_5">Metrics worth to track</h4>
+
+<p><strong>Hit/miss ratio — </strong>Describes cache efficiency and give us relevant information about rightness of our approach. Low hit ratio is a signal to reflect on nature of stored data. It’s easy to fall into the trap of premature optimization at the early stages of project when you can only guess relying on experience what data should be cached.</p>
+
+<pre>**λ:** redis-cli info stats
+**...
+keyspace_hits:142   #Successful lookups
+keyspace_misses:26  #Failed lookups
+...**</pre>
+
+<p>Redis delivers information about amount of lookups, ratio can be calculated using below formula.</p>
+
+<pre>**hit_ratio ** =(keyspace_hits)/(keyspace_hits + keyspace_misses)
+**miss_ratio =** (keyspace_misses)/(keyspace_hits + keyspace_misses)</pre>
+
+<p><strong>Latency —</strong> Maximum delay between request and respond. First place where we can find if something bad happen with your cache. Many factors can impact on latency like VM overhead, slow commands or I/O operations.</p>
+
+<pre>**λ:** redis-cli --latency -h 127.0.0.1 -p 6379
+min: 0, max: 16, avg: 0.15 (324531 samples)...</pre>
+
+<p><strong>Fragmentation Ratio —</strong> Redis will always use more memory than you declared in <code>maxmemory</code> for himself and e.g. to keeps keys metadata but high ratio can be first signal of memory fragmentation.</p>
+
+<ul>
+<li>  ratio &lt;1.0 —Memory allocator need more than you can give him. Old data will be swapped to disk what occurs resources consumption and increase latency. (In case of cache usage, swapping should be disabled)</li>
+<li>  ratio &gt; ~1.5 — Operation system slice memory segment into pieces, Redis use more physical memory than he requested for.</li>
+</ul>
+
+<pre>**λ:** redis-cli info memory
+**...** used_memory_human:41.22M
+**...**
+used_memory_rss_human:50.01M
+...
+**mem_fragmentation_ratio:1.21 #used_memory_rss/used_memory
+...**</pre>
+
+<p><strong>Evicted keys — </strong>When cache size exceeds <code>maxmemory</code> limit Redis removes data using chosen eviction policy. Constantly fast growing value can be signal of insufficient cache size.</p>
+
+<pre>**λ:** redis-cli info stats
+**...
+evicted_keys:14 #14 keys removed since operation time
+...**</pre>
+
+<p></section></p>
+
+<p><section></p>
+
+<hr/>
+
+<h4 id="toc_6">Run and Test</h4>
+
+<p>Docker knowledge will be advantage. In short words, commands below will download redis image and run container with custom configuration. Container will run as daemon, last two command runs bash and redis-cli.</p>
+
+<pre>**λ:** docker pull redis
+**λ:** docker run -p 6379:6379 -d --name redis-cache       
+   \-v /usr/configs:/usr/redis_config 
+   \redis redis-server /usr/redis_config/redis.conf
+**λ:** docker exec -it redis-cache /bin/bash
+**λ:** redis-cli</pre>
+
+<p>Example application is available on GitHub <a href="https://github.com/matthewfrank/spring-boot-redis-cache">here</a>.</p>
+
+<pre>**λ:** for /l %N in (1 1 5) do
+   \curl -o /dev/null -s -w "%{time_total}\n"  
+   \localhost:8080/post/IDX001
+...
+**1.012 #cache miss**
+0.009 **#cache hit**
+0.009 **#cache hit**
+0.011 **#cache hit**
+0.010 **#cache hit**</pre>
+
+<p>It’s good time to check what is exactly stored by Redis. For more human readable key name, please check other <code>RedisSerializer.java</code> implementations.</p>
+
+<pre>**λ:** redis-cli keys * **#Or more efficient scan 0 instead of** **keys ***
+1) "post-single:\xac\xed\x00\x05t\x00\x06IDX001"</pre>
+
+<p>Application work like we expected, after first invocation cache is fulfilled for given key, next request use cached data.</p>
+
+<hr/>
+
+<h4 id="toc_7">Traps</h4>
+
+<p><strong>Stale data.</strong> High dynamic data become outdated very quickly. Without update or expiration mechanism cache will serve obsolete content.</p>
+
+<p><strong>Large memory is not always equal bigger hit ratio.</strong> When you reach specific amount of memory, hit ratio will not increase. In this place many things will depend on eviction policies and nature of data.</p>
+
+<p><strong>Premature optimization.</strong> Let test your services without cache, may be your fears will proved groundless, <u>“Premature optimization is the root of all evil”.</u></p>
+
+<p><strong>Hiding bad performance.</strong> Cache is not always an answer for slow services, try to optimize them before, because when you put them after cache layer, you will hide possible architectural mistakes.</p>
+
+<p><strong>Don’t share your redis cache.</strong> Redis works on single thread. Other teams may use your store for other extensive purposes. Every data bumps, heavy commands (KEYS, SORT etc.) may block your cache and increase execution time. In case of performance problems, check <a href="https://redis.io/commands/slowlog">SLOWLOG</a> command.</p>
+
+<p><strong>Config param [maxmemory].</strong> If you consider run your cache with snapshot persistence you should use less than half of available memory as <code>maxmemory</code> to avoid memory errors.</p>
+
+<p><strong>Monitoring.</strong> You should monitor your cache, from time to time <a href="https://redis.io/commands/info">INFO</a> will not generate performance issues but <a href="https://redis.io/commands/monitor">MONITOR</a> can reduce the throughput dramatically.</p>
+
+<h4 id="toc_8">Repository</h4>
+
+<p><a href="https://github.com/matthewfrank/spring-boot-redis-cache" title="https://github.com/matthewfrank/spring-boot-redis-cache"><strong>matthewfrank/spring-boot-redis-cache</strong><br/>
+<u>Contribute to spring-boot-redis-cache development by creating an account on GitHub.</u>github.com</a><a href="https://github.com/matthewfrank/spring-boot-redis-cache"></a></p>
+
+<h4 id="toc_9">Further Reading</h4>
+
+<ul>
+<li>  <a href="https://docs.spring.io/spring/docs/current/spring-framework-reference/html/cache.html">Cache Abstraction in Spring</a></li>
+<li>  <a href="https://spring.io/guides/gs/caching/">Caching Data with Spring</a></li>
+<li>  <a href="https://redis.io/topics/lru-cache">Using Redis as an LRU cache</a></li>
+<li>  <a href="https://redis.io/topics/latency">Redis latency</a></li>
+<li>  <a href="https://redis.io/topics/persistence">Redis persistence</a></li>
+<li>  <a href="http://oldblog.antirez.com/post/redis-as-LRU-cache.html">Redis as an LRU cache</a></li>
+<li><p><a href="http://oldblog.antirez.com/post/redis-persistence-demystified.html">Redis persistence demystified</a></p></li>
+<li><p><a href="https://medium.com/tag/redis?source=post">Redis</a></p></li>
+<li><p><a href="https://medium.com/tag/spring-boot?source=post">Spring Boot</a></p></li>
+<li><p><a href="https://medium.com/tag/cache?source=post">Cache</a></p></li>
+<li><p><a href="https://medium.com/tag/java?source=post">Java</a></p></li>
 </ul>
 
                         
@@ -416,10 +396,10 @@ System.out.println(&quot;Result: &quot; + result);
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/9/2</span>
+                    <span class="date">2018/11/18</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Java.html'>Java</a></span>
+          					    <span class="posted-in"><a href='Spring.html'>Spring</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -509,31 +489,31 @@ System.out.println(&quot;Result: &quot; + result);
 	      
 		      
 			      <li class="post">
-			        <a href="15459058392039.html">Reliable Domain Events</a>
+			        <a href="15517999043443.html">The Art of Crafting Architectural Diagrams</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
+			        <a href="15517997955971.html">为什么说我们需要软件架构图？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
+			        <a href="15516128677869.html">DNS Servers That Offer Privacy and Filtering</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
+			        <a href="15516123108194.html">Airbnb's Migration from Monolith to Services</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
+			        <a href="15516097487470.html">Events As First-Class Citizens</a>
 			      </li>
 		     
 		  

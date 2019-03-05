@@ -105,245 +105,309 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15456638361570.html">
+                <a class="clearlink" href="15475691484503.html">
                 
-                  <h1>Spring boot metrics monitoring using TICK stack</h1>
+                  <h1>Coroutines in pure Java</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
-                        	<pre><code>Mohammed Aboullaite | 08 Apr 2018 | 6 min (1537 words)
+                        	<pre><code>esoco GmbH Oct 31, 2018
 </code></pre>
 
 <blockquote>
-<p>原文地址 <a href="https://aboullaite.me/spring-boot-metrics-monitoring-using-tick-stack/">https://aboullaite.me/spring-boot-metrics-monitoring-using-tick-stack/</a></p>
+<p>原文地址 <a href="https://medium.com/@esocogmbh/coroutines-in-pure-java-65661a379c85">https://medium.com/@esocogmbh/coroutines-in-pure-java-65661a379c85</a><br/>
+GitHub: <a href="https://github.com/esoco/coroutines">https://github.com/esoco/coroutines</a></p>
 </blockquote>
 
-<p>Worth nothing to mention that monitoring the performance and availability of applications is very important. This is one of the many cool features bundled with Spring boot, which since its first days comes with production ready features (i.e Actuator) to help us keeping an eye on apps performance. With the release of spring boot 2, <a href="https://docs.spring.io/spring-boot/docs/current/reference/html/production-ready.html">Actuator</a> got a huge boost, offering dev/ops more application metrics facade that supports numerous monitoring systems.</p>
+<p><img src="media/15475691484503/15475692393293.jpg" alt=""/></p>
 
-<p>In this post, we&#39;ll see how we can easily monitor Spring boot applications using the <a href="https://www.influxdata.com/time-series-platform/">TICK stack</a>.</p>
+<p>After some experimenting with goroutines and Kotlin coroutines I was looking for a Java coroutine implementation. But the solutions I could find are not pure Java because they either use non-Java libraries via JNI or rely on special tools, like bytecode manipulation by special Java Agents that need to be run in parallel with an application.</p>
 
-<p><img src="media/15456638361570/15456639113571.jpg" alt=""/></p>
+<p>So the question is: Is it possible to implement coroutines in pure Java? For an answer it helps to look at the two core properties of coroutines:</p>
 
-<h3 id="toc_0">The TICK stack ?!</h3>
+<ol>
+<li> Coroutines are often called “light-weight” threads, meaning they don’t run on their own dedicated system thread but instead share existing threads cooperatively —hence <u>co</u>-routines. <u>Cooperatively</u> means that it is the responsibility of the coroutine developer to ensure that it doesn’t occupy a shared thread more than necessary. Explicit support for shared thread execution had been added to Java 7 with <u>ForkJoinTask</u> and enhanced in Java 8 with <u>CompletableFuture</u>.</li>
+<li> Coroutines may be suspended for indeterminate time, e.g. when waiting for I/O or to await other coroutines. During suspension coroutines don’t occupy any computational resources at all and resume execution only when the resource waited upon becomes available. Suspension is the part for which languages with coroutine features have special keywords and compiler support and where some of the existing libraries modify the bytecode of the executing program. But is it possible in pure Java without such tricks?</li>
+</ol>
 
-<p>The TICK stack is a collection of products from the developers of the time-series database InfluxDB. It is made up of the following components:</p>
+<p>The short answer to this question is: Yes. This article presents a pure Java implementation of coroutines, available as <a href="https://github.com/esoco/coroutines">Open Source on GitHub</a> under the Apache 2.0 license. It uses features available since Java 8 to make the declaration and execution of coroutines as simple as possible.</p>
 
-<ul>
-<li>  <strong>Telegraf</strong>: collects time-series data from a variety of sources.</li>
-<li>  <strong>InfluxDB</strong>: stores time-series data.</li>
-<li>  <strong>Chronograf</strong>: visualizes and graphs the time-series data.</li>
-<li>  <strong>Kapacitor</strong>: provides alerting and detects anomalies in time-series data.</li>
-</ul>
+<p>The current version is 0.9.0 to indicate that the code is still considered experimental and hasn’t been used in production yet. It should be expected to still have some bugs. Any feedback on the API and functionality are welcome and would help to have a 1.0 release soon. The library has only a single dependency to another of our projects which provides generic base functionality.</p>
 
-<p>We can use each of these components separately, but if we use them together, we&#39;ll have a scalable, integrated open-source system for processing time-series data.</p>
+<p>The coroutine execution part of this framework follows the pattern of <u>structured concurrency</u> and has been much inspired by the noteworthy essay <a href="https://vorpus.org/blog/notes-on-structured-concurrency-or-go-statement-considered-harmful/">_Notes on structured concurrency, or: Go statement considered harmful_</a> by Nathaniel J. Smith.I highly recommend this to anyone who is involved in the programming of concurrent code and/or wants to use this framework. It has also <a href="https://medium.com/@elizarov/structured-concurrency-722d765aa952">influenced the latest iteration of Kotlin coroutines</a>. As a quick summary, it states that concurrent code that runs on it’s own without any supervision by the application code is problematic and must be avoided.</p>
 
-<h3 id="toc_1">Configuring the TICK stack and spring boot</h3>
+<h3 id="toc_0">Declaring Coroutines</h3>
 
-<p>As I mentioned above, Spring Boot 2 actuator comes bundled with metrics facade easily integrated with many monitoring platforms including the Tick stack.</p>
+<p>As Java obviously lacks native mechanisms to declare suspensions the only way to implement suspending coroutines is with an API. Fortunately, the functional programming features introduced with Java 8, most notably lambda expressions and method references, provide a concise syntax for the declaration of executable code fragments. Together with the option of static imports the presented framework allows a simple declaration of coroutines.</p>
 
-<h4 id="toc_2">Configuring Spring Boot</h4>
+<p>Coroutines are defined as instances of the class <code>Coroutine</code>. A new coroutine is created either by invoking the constructor or by calling the static factory method <code>Coroutine.first()</code>. The latter is recommended because it is part of the <a href="https://en.wikipedia.org/wiki/Fluent_interface">fluent interface</a> for the declaration of coroutines. It’s complement is the instance method <code>Coroutine.then()</code> which extends a coroutine with additional functionality.</p>
 
-<p>First of all we need, obviously, to add spring boot actuator dependency to our application:</p>
+<p>These methods expect an instance of the abstract class <code>CoroutineStep</code> as their argument. The framework already contains several step implementations that cover the most common uses. The most generic step is <code>CodeExecution</code>. As all framework steps it provides static factory methods that supplement the fluent coroutine API. By invoking these methods with lambda expressions or method references a coroutine can be extended with arbitrary code. Here’s a simple example of such a declaration:</p>
 
-<pre><code>&lt;dependency&gt;  
-            &lt;groupId&gt;org.springframework.boot&lt;/groupId&gt;
-            &lt;artifactId&gt;spring-boot-starter-actuator&lt;/artifactId&gt;
-            &lt;version&gt;${actuator.version}&lt;/version&gt;
-        &lt;/dependency&gt;
+<pre><code class="language-java">import static de.esoco.coroutine.Coroutine.*;
+import static de.esoco.coroutine.step.CodeExecution.*;
 
+Coroutine&lt;String, Integer&gt; parseInteger =
+    Coroutine.first(apply(String::trim))
+             .then(apply(s -&gt; Integer.valueOf(s)));
 </code></pre>
 
-<p>If you are using spring boot 2, Actuator autoconfigure micrometer magically. if not and you&#39;re using a previous version, please check <a href="https://micrometer.io/docs/ref/spring/1.5">these configuration steps</a>.</p>
+<blockquote>
+<p>A simple coroutine</p>
+</blockquote>
 
-<p>On the other hand, <a href="https://www.influxdata.com/time-series-platform/telegraf/">Telegraf</a> is an agent written in Go and accepts StatsD protocol metrics over UDP, then periodically forwards the metrics to InfluxDB. <a href="https://micrometer.io/">Micrometer</a> supports three flavors of StatsD: the original <code>Etsy</code> format plus the <code>Datadog</code> and <code>Telegraf</code> extensions of StatsD that add dimensional support. Obviously we&#39;re going to use this registry to publish metrics to telegraf. For that we need to add these lines to our <code>application.properties</code> file:</p>
+<p>This reveals that coroutines are generically typed with an input and and output type, similar to the Java <code>Function</code> interface. Hence coroutines can be invoked with a specific input value to process and may return the result of a computation.</p>
 
-<pre><code>management.metrics.export.statsd.enabled=true  
-management.metrics.export.statsd.flavor=telegraf  
-management.metrics.export.statsd.port=8125  
+<p>An important trait of coroutines is that they are immutable. Once defined their sequence of steps cannot be modified anymore. The instance method <u>then</u> always returns a new coroutine instance that contains the additional step. This allows to create coroutine templates that can be used as building blocks for new coroutines, either as a starting point for added functionality or by using them as subroutines. Because of their immutability they can also be used in constant declarations.</p>
 
+<p>A coroutine can have an arbitrary number of steps. The more steps there are, the more suspension points a coroutine has. Each of these points shortly interrupts the execution, giving other concurrent code a chance to run. On the other hand each suspension has some management overhead. It needs to be determined which granularity is the right one for a particular solution.</p>
+
+<p>The framework includes several other coroutine steps that provide additional functionality, especially steps that implement coroutine suspension. But before we look into this let’s first see how coroutines are executed.</p>
+
+<h3 id="toc_1">Executing Coroutines</h3>
+
+<p>In the first iteration of the framework, coroutines where simply started to run in some pooled background thread. But after reading the <a href="https://vorpus.org/blog/notes-on-structured-concurrency-or-go-statement-considered-harmful/">_Notes on structured concurrency_</a> the code was changed to follow that pattern and always execute coroutines in a well-defined environment.</p>
+
+<h4 id="toc_2">CoroutineScope</h4>
+
+<p>This environment in which all coroutines need to be run is <code>CoroutineScope</code>. The main property of a scope is that it will block the invoking thread unless all coroutines that have been started in it have terminated, either successfully, by cancellation, or with an error. And if an error occurred in any coroutine the scope will also throw an exception instead of just continuing the current thread. This prevents losing track of coroutine executions and their error conditions.</p>
+
+<p>Furthermore, the scope gives it’s coroutines access to configuration data and provides them with a common place to share state through. Though the latter is an advanced topic because it may require synchronized access as different coroutines will normally run on different threads.</p>
+
+<p>A coroutine scope cannot be instantiated directly. Instead, it provides static methods which create a new scope and execute some application-provided code that in turn starts coroutines in the scope. The scope then blocks the invoking thread until the code and all coroutines that have been started by it have finished. If an error occurs during the executions the scope will throw an exception.</p>
+
+<p>The following example shows a scope execution that launches a million coroutines in parallel. Of course, how many coroutines will actually run in parallel depends very much on the runtime environment and especially on the number of processor cores available.</p>
+
+<pre><code class="language-java">Coroutine&lt;?, ?&gt; crunchNumbers =
+    first(run(() -&gt; Range.from(1).to(10).forEach(Math::sqrt)));
+
+CoroutineScope.launch(scope -&gt; {
+    for (int i = 0; i &lt; 1_000_000; i++) {
+        crunchNumbers.runAsync(scope);
+    }
+});
 </code></pre>
 
-<h4 id="toc_3">Configuring the TICK stack</h4>
+<blockquote>
+<p>Launching a million coroutines</p>
+</blockquote>
 
-<p>The <code>docker-compose</code> file below configures 4 services:</p>
+<p>If there were any code after the call to <u>launch</u> (i.e. after the closing <code>});</code>) it would not run before all coroutines have finished because as explained, the scope will await the termination of all it’s children.</p>
 
-<ul>
-<li>  <code>telegraf</code> service to collect data sent by micrometer. This service is configured using the <code>./etc/telegraf.conf</code> file. this service expose the port <code>8125</code> used by Actuator to send metrics</li>
-<li>  <code>influxdb</code> service that stores data sent from telegraf. we mount a volume to <code>./data/influxdb</code> to save data on host disk. It expose the port <code>8086</code> to access influxdb API.</li>
-<li>  <code>chronograf</code> service to visualize influxdb data, create dashboards and show alerts triggered from kapacitor. this service expose port <code>8888</code> to access this web application.</li>
-<li>  <code>kapacitor</code> service, analyse influxdb data and triggers alerts.</li>
-</ul>
+<p>The example runs one million instances of a coroutine in parallel. By default they are executed in the common thread pool of the Java runtime. If you would try to start that number of distinct threads instead there’s a good chance that it will cause an out of memory error. With lower counts threads will work but probably much slower than the coroutine solution (on my machine by a factor of around 20).</p>
 
-<pre><code>version: &#39;3&#39;
+<p>The single-step coroutine in this example has no deeper purpose than to occupy a few processing cycles by calculating the square roots of the values 1 to 10 (the <u>Range</u> class is a member of the base library the <u>coroutines</u> project depends on). The coroutine variable is declared with wildcard generic types because the in- and outputs are not needed in this example. It could also be declared as <u><Void,Void></u> because that is the actual type of the above declaration.</p>
 
-services:  
-  # Define a Telegraf service
-  telegraf:
-    image: telegraf:1.5.3
-    volumes:
-      - ./etc/telegraf.conf:/etc/telegraf/telegraf.conf:ro
-    links:
-      - influxdb
-    ports:
-      - &quot;8125:8125/udp&quot;
-  # Define an InfluxDB service
-  influxdb:
-    image: influxdb:1.5.1
-    volumes:
-      - ./data/influxdb:/var/lib/influxdb
-    ports:
-      - &quot;8086:8086&quot;
-  # Define a Chronograf service
-  chronograf:
-    image: chronograf:1.4.3.1
-    environment:
-      INFLUXDB_URL: http://influxdb:8086
-      KAPACITOR_URL: http://kapacitor:9092
-    ports:
-      - &quot;8888:8888&quot;
-    links:
-      - influxdb
-      - kapacitor
-  # Define a Kapacitor service
-  kapacitor:
-    image: kapacitor:1.4.1
-    environment:
-      KAPACITOR_HOSTNAME: kapacitor
-      KAPACITOR_INFLUXDB_0_URLS_0: http://influxdb:8086
-    links:
-      - influxdb
-    ports:
-      - &quot;9092:9092&quot;
+<p>The <u>launch</u> method performs the scope-execution. It’s argument is a functional interface with a method that expects a coroutine scope as it’s argument and returns nothing. Other than the typical Java functional interfaces, this one is allowed to throw arbitrary exceptions. This allows the application’s scope code to leave error handling to the code outside the scope because the scope will re-throw any exceptions that may occur.</p>
 
+<p>In most cases the code for the scope will probably be provided as a lambda expression, like in the examples. Coroutines can then be run from within by invoking their <u>runAsync</u> method with the scope as the argument and optionally an input value (which is not used in the example above). As the method name says, the coroutine is executed asynchronously in a different thread than the launching scope code is running on.</p>
+
+<h4 id="toc_3">Scope Futures</h4>
+
+<p>Sometimes it may be desirable to have a scope that produces a result when all it’s coroutines have finished. This can be achieved by starting the scope with the <u>produce</u> method instead of <u>launch</u>. While the latter has a void result and blocks, <u>produce</u> returns directly with an instance of Java’s <u>Future</u> interface. This instance can then be used to await the scope’s termination and query it’s result.</p>
+
+<p>To retrieve the result from the scope a corresponding function must be provided as the first argument to the <u>produce</u> factory method. In the following example this function is called <code>_TEXT_</code> which is actually a relation type from the <a href="/sdack/%7E/edit/drafts/-LQ3Vw--BLM5BVo2y76x/frameworks/objectrelations">ObjectRelations framework</a>. The usage of relations in coroutines is described at the end of this article.</p>
+
+<pre><code class="language-java">Future&lt;String&gt; futureResult = 
+  CoroutineScope.produce(TEXT, scope -&gt; someCoroutine.runAsync(scope, &quot;input&quot;));
+
+String result = futureResult.get();
 </code></pre>
 
-<p>The <code>telegraf.conf</code> file I&#39;ve used is very minimalist. it configures the telegraf agent properties as well as StatsD as input plugin and influxdb as output plugin:</p>
+<blockquote>
+<p>A producing scope</p>
+</blockquote>
 
-<pre><code># Telegraf Configuration
-# Global tags can be specified here in key=&quot;value&quot; format.
-[global_tags]
-# Configuration for telegraf agent
-[agent]
-## Default data collection interval for all inputs
-interval = &quot;10s&quot;  
-## Rounds collection interval to &#39;interval&#39;
-round_interval = true  
-## This controls the size of writes that Telegraf sends to output plugins.
-metric_batch_size = 1000  
-## This buffer only fills when writes fail to output plugin(s).
-metric_buffer_limit = 10000  
-## Collection jitter is used to jitter the collection by a random amount.
-collection_jitter = &quot;0s&quot;  
-flush_interval = &quot;10s&quot;  
-flush_jitter = &quot;0s&quot;  
-precision = &quot;&quot;
+<h4 id="toc_4">Continuation</h4>
 
-## Logging configuration:
-debug = false  
-## Run telegraf in quiet mode (error log messages only).
-quiet = false  
-## Specify the log file name. The empty string means to log to stderr.
-logfile = &quot;&quot;  
-## Override default hostname, if empty use os.Hostname()
-hostname = &quot;&quot;  
-## If set to true, do no set the &quot;host&quot; tag in the telegraf agent.
-omit_hostname = false
+<p>When a coroutine is started, an instance of <code>Continuation</code> is returned as shown in the example code below. The continuation has the same generic type as the output type of the associated coroutine and serves two purposes:</p>
 
-###############################################################################
-#                            OUTPUT PLUGINS                                   #
-###############################################################################
+<ol>
+<li> Provide a shared state for all steps that are executed in a coroutine.</li>
+<li> Allow the starting code to control the coroutine execution and to access it’s result after finishing.</li>
+</ol>
 
-# Configuration for influxdb server to send metrics to
-[[outputs.influxdb]]
-## The full HTTP or UDP URL for your InfluxDB instance.
-urls = [&quot;http://influxdb:8086&quot;] # required  
-## The target database for metrics (telegraf will create it if not exists).
-database = &quot;telegraf&quot; # required
+<pre><code class="language-java">Coroutine&lt;String, Integer&gt; parseInteger =
+    Coroutine.first(String::trim)).then(apply(s -&gt; Integer.valueOf(s)));
 
-## Name of existing retention policy to write to.  Empty string writes to
-## the default retention policy.
-retention_policy = &quot;&quot;  
-## Write consistency (clusters only), can be: &quot;any&quot;, &quot;one&quot;, &quot;quorum&quot;, &quot;all&quot;
-write_consistency = &quot;any&quot;
-
-## Write timeout (for the InfluxDB client), formatted as a string.
-timeout = &quot;5s&quot;
-
-###############################################################################
-#                            INPUT PLUGINS                                    #
-###############################################################################
-
-# # Statsd UDP/TCP Server
- [[inputs.statsd]]
-#   ## Protocol, must be &quot;tcp&quot;, &quot;udp&quot;, &quot;udp4&quot; or &quot;udp6&quot; (default=udp)
-   protocol = &quot;udp&quot;
-#
-#   ## MaxTCPConnection - applicable when protocol is set to tcp (default=250)
-   max_tcp_connections = 250
-#
-#   ## Address and port to host UDP listener on
-   service_address = &quot;:8125&quot;
-#
-#   ## The following configuration options control when telegraf clears it&#39;s cache
-#   ## of previous values. If set to false, then telegraf will only clear it&#39;s
-#   ## cache when the daemon is restarted.
-#   ## Reset gauges every interval (default=true)
-   delete_gauges = true
-#   ## Reset counters every interval (default=true)
-   delete_counters = true
-#   ## Reset sets every interval (default=true)
-   delete_sets = true
-#   ## Reset timings &amp; histograms every interval (default=true)
-   delete_timings = true
-#
-#   ## Percentiles to calculate for timing &amp; histogram stats
-   percentiles = [90]
-#
-#   ## separator to use between elements of a statsd metric
-   metric_separator = &quot;_&quot;
-#
-#   ## Parses tags in the datadog statsd format
-#   ## http://docs.datadoghq.com/guides/dogstatsd/
-   parse_data_dog_tags = false
-#   ## Number of UDP messages allowed to queue up, once filled,
-#   ## the statsd server will start dropping packets
-   allowed_pending_messages = 10000
-#
-#   ## Number of timing/histogram values to track per-measurement in the
-#   ## calculation of percentiles. Raising this limit increases the accuracy
-#   ## of percentiles but also increases the memory usage and cpu time.
-   percentile_limit = 1000
-
+launch(scope -&gt; {
+    Continuation&lt;Integer&gt; parsing = parseInteger.runAsync(scope, &quot;12345&quot;);
+    int parsedValue = parsing.getResult(); // blocks current thread until coroutine finishes
+});
 </code></pre>
 
-<h4 id="toc_4">Show me the graphs</h4>
+<blockquote>
+<p>Getting the coroutine result from a continuation</p>
+</blockquote>
 
-<p>If everything is good, you should see metrics stored in <code>influxdb</code> from the <code>chronograf</code> application. The UX is so fluent and lean. After 5 min only I was able to build this very simple dashboard:<br/>
-<img src="media/15456638361570/15456639407892.jpg" alt=""/><br/>
-Yaaay visibility!</p>
+<p>All steps that are executed in a coroutine receive the current continuation as their argument. For example, the <code>CodeExecution</code> class mentioned before has alternative factory methods that accept functions with an additional continuation argument. The step can then use the continuation to get or set state values, query configuration data, or access the scope it is running in.</p>
 
-<h3 id="toc_5">Configuring alerts</h3>
+<p>Continuations are always local to a single coroutine execution. Therefore it can be accessed by steps without synchronization because the steps of a coroutine are always executed sequentially and therefore cannot access the continuation concurrently.</p>
 
-<p>One of the great features of the TICK stack is the alerting and detecting anomalies in the data. It support many alert endpoints(TCP, HipChat, Slack, SMTP, Talk, log, Telegram ...). The configuration of <code>Kapacitor</code> from <code>chronograf</code> is very easy and straightforward. I&#39;ve set up a <code>Memory usage</code> alert in a matter of seconds. (Well, it&#39;s a very basic alert! configuring real world, complexe alerts will need more time obviously ;))<br/>
-<img src="media/15456638361570/15456639514924.jpg" alt=""/></p>
+<p>The application code can use the returned continuation object to query the execution state of the coroutine, await it’s termination, or cancel it. The continuation also provides access to the result after a successful termination or to errors that may have occurred. The starting code should not modify any state of the continuation while the coroutine is still running because that could cause concurrent modification issues.</p>
 
-<p>The <a href="https://docs.influxdata.com/chronograf/v1.4/guides/create-a-kapacitor-alert/">official documentation</a> explains the required step to create your first alert!</p>
+<p>The easiest way to access the result of a coroutine is to query the <u>getResult</u> method of the continuation as shown in the example above. This method will block the calling thread until the result is available or throw an exception if the coroutine failed or has been cancelled.</p>
 
-<h3 id="toc_6">Securing Chronograf</h3>
+<p>To wait for the coroutine to finish the method <u>await</u> can be used instead. This will neither return a result nor throw an exception on errors. Any error handling must then be performed by the invoking code. If such explicit error handling is done the application must notify the continuation by calling it’s method <u>errorHandled</u>. That will clear the error in the scope, which would otherwise throw an exception on termination.</p>
 
-<p>The community edition of the TICK stack does not ship with security by default. To secure <code>Chronograf</code> we can put it behind a web server and configure Basic authentication. The second option, which I prefer, would be to use <a href="https://www.keycloak.org/">keycloak</a> proxy as I explained previously in <a href="https://github.com/aboullaite/kibana-keycloak">this post</a>!</p>
+<p>The continuation can also be used to cancel the execution if it hasn’t finished yet by invoking it’s <u>cancel</u> method. Cancellation will be automatically checked between step executions but it can also be queried from within a step implementation by querying <u>isCancelled</u> on the current continuation.</p>
 
-<hr/>
+<h4 id="toc_5">CoroutineContext</h4>
 
-<h5 id="toc_7">Ressources</h5>
+<p>As mentioned before, by default coroutines are executed in the common thread pool of the Java runtime (<code>ForkJoinPool.commonPool()</code>). But the thread pool and other parameters of the execution are actually provided by the <code>CoroutineContext</code>. The purpose of the context is to provide coroutines in one or more scopes with an execution environment. It can also be used to share configuration and synchronized resources between scopes.</p>
 
-<ul>
-<li>  <a href="https://micrometer.io/docs">https://micrometer.io/docs</a></li>
-<li>  <a href="https://docs.spring.io/spring-boot/docs/current/reference/htmlsingle/#production-ready">https://docs.spring.io/spring-boot/docs/current/reference/htmlsingle/#production-ready</a></li>
-<li>  <a href="https://www.influxdata.com/time-series-platform/">https://www.influxdata.com/time-series-platform/</a></li>
-<li>  <a href="https://www.digitalocean.com/community/tutorials/how-to-monitor-system-metrics-with-the-tick-stack-on-centos-7">https://www.digitalocean.com/community/tutorials/how-to-monitor-system-metrics-with-the-tick-stack-on-centos-7</a></li>
-</ul>
+<p>The framework has a default context which can be queried and changed through static methods of the global <code>Coroutines</code> class. But it is also possible to instantiate and configure contexts only for certain executions if necessary. A non-default context can be provided when launching a new scope which will then use the context for all coroutines it launches. But for many use cases the default context should be sufficient.</p>
+
+<h3 id="toc_6">Suspension and Channels</h3>
+
+<p>The examples shown so far have only executed some simple code concurrently which could also be achieved with regular threads. But an important feature of coroutines is the ability to suspend their execution completely while waiting for some condition. In suspended state a coroutine won’t consume or block any processing resources (like threads) and simply lie dormant until the condition is met.</p>
+
+<p>A typical case of suspension is the communication between coroutines through so-called <u>Channels</u> (not to be confused with the <code>java.nio.Channel</code> Interface). Channels are queue-like data structures with a fixed capacity that data can be written to or read from. A coroutine that tries to read from an empty channel or write to a full channel will be suspended until data or capacity becomes availability.</p>
+
+<p>The coroutines framework contains support for suspending steps in general and also for channels in particular. Channels are identified by a <code>ChannelId</code> which has the main purpose of defining the channel data type with it’s generic type parameter. The following code shows an example of channel communication. It again uses static imports for all key elements for a concise notation.</p>
+
+<pre><code class="language-java">...
+import static de.esoco.coroutine.step.ChannelReceive.receive;
+import static de.esoco.coroutine.step.ChannelSend.send;
+...
+
+ChannelId&lt;String&gt; testChannel = stringChannel(&quot;TestChannel&quot;);
+
+Coroutine&lt;String, ?&gt; sendHello = first(apply((String s) -&gt; &quot;Hello &quot; + s))
+                                 .then(send(testChannel));
+
+Coroutine&lt;?, String&gt; receiveToUpperCase = first(receive(testChannel))
+                                          .then(apply(s -&gt; s.toUpperCase()));
+
+launch(scope -&gt; {
+    Continuation&lt;String&gt; receiving = receive.runAsync(scope);
+    Threads.sleep(1000); // wait a second to demonstrate suspension
+    Continuation&lt;?&gt;  = send.runAsync(scope, &quot;World&quot;);
+    
+    System.out.println(receiving.getResult());
+});
+</code></pre>
+
+<blockquote>
+<p>Suspending coroutine communication through a channel</p>
+</blockquote>
+
+<p>This code first defines a channel ID and two coroutines, one for sending a string into the channel and one to receive data from it. It achieves that by adding the coroutine steps <code>ChannelSend</code> and <code>ChannelReceive</code> (through their static factory methods) with the channel ID as their configuration parameter.</p>
+
+<p>If a channel doesn’t exist when it is accessed for the first time it will be created automatically with a capacity of 1. If a higher capacity is needed the channel needs to be created in advance with <u>createChannel</u>, either in the scope or the context.</p>
+
+<p>The coroutines are then executed in a launched scope. The call to <code>Threads.sleep(1000)</code> in this example only serves to demonstrate the suspension of the receiving coroutine (_Threads_ is a class from the dependency that also performs exception handling). When the <u>receive</u> coroutine is started the channel with the ID <u>testChannel</u> will be created automatically with a capacity of 1 and is initially empty. Therefore the coroutine is suspended until data becomes available in the channel.</p>
+
+<p>The code then sleeps 1000 milliseconds before starting the <u>send</u> coroutine. Since capacity is available in the channel the send will succeed immediately (otherwise <u>send</u> would be suspended). And now data has become available in the channel, so the <u>receive</u> coroutine will be resumed and process that data. Finally the result of the processing can be retrieved from the continuation.</p>
+
+<p>By default channels are created in the coroutine scope. Alternatively channels can be created in the context, thereby allowing coroutines in different scopes to communicate through channels. In that case the channel must be created in advance by calling <u>createChannel</u> on the context with the desired channel ID and capacity.</p>
+
+<p>Channels are a very powerful mechanism for communication between coroutines. For example, simple Boolean channels with the default capacity of 1 can be used as semaphore to exchange signals between coroutines. And larger channels with a complex datatype may be used to transfer data between different processing stages that run concurrently. In neither case is it necessary to perform complex synchronization like in traditional concurrent code. Sending to or receiving from a channel within a coroutine is sufficient to achieve synchronization.</p>
+
+<h3 id="toc_7">Selection</h3>
+
+<p>Selection is a coroutine concept that is often associated with (and sometimes constrained to) receiving from channels. Languages with coroutine support typically have a <u>select</u> statement for this purpose. The statement suspends on multiple channels to receive from and resumes as soon as data becomes available in one of the channels.</p>
+
+<p>In this framework selection is implemented as a suspending coroutine step. It extends the concept by allowing to select from an arbitrary number of coroutines, not only from channels. The example below shows a (contrived) example where the select consists of one channel receive and two hypothetical coroutines that also suspend until data is available. If executed, the <u>selectFirst</u> coroutine would resume execution as soon as one of the coroutines selected from resumes. The other coroutines will then be cancelled.</p>
+
+<pre><code class="language-java">import static de.esoco.coroutine.step.Select.select;
+
+Coroutine&lt;Void, String&gt; selectFirst =
+    first(select(receive(testChannel))
+             .or(getNetworkData())
+             .or(queryUserInput()));
+</code></pre>
+
+<blockquote>
+<p>Selection from multiple coroutines</p>
+</blockquote>
+
+<p>Normally, selection will be performed on a set of suspending coroutines. If the set would contain a non-suspending coroutine the select would never suspend because that coroutine would be selected immediately. But this trait can also be used to add default behavior to a selecting coroutine: select a suspending value or, if not available, use the default. In such a case it would typically be necessary to have some surrounding control structure, e.g. a loop to repeat the selection until a suspension resumes. Another option would be to precede the default path with a suspending delay, thereby converting it to a suspending coroutine itself.</p>
+
+<h4 id="toc_8">Collection</h4>
+
+<p>The framework also extends the selection concept to collection. If you replace <u>select</u> with <u>collect</u> and <u>or</u> with <u>and</u> in the example above, you get the equivalent code for the collection of multiple coroutines. While selection continues if the first suspension becomes available, collection will only resume when all suspensions have resumed. Consequentially, whereas selection continues with a single value, collection produces a collection of all values for further processing by subsequent steps.</p>
+
+<h3 id="toc_9">NIO</h3>
+
+<p>An obvious use case for suspension is waiting for I/O. The <u>coroutines</u> library contains a couple of suspending steps that are built upon the asynchronous APIs of the Java New IO package. They allow to send and receive to and from sockets, to read or write files, and to listen on server sockets. Their usage is analog to the channel steps. These steps can also serve as examples for how to create new suspending steps based on existing asynchronous APIs.</p>
+
+<h3 id="toc_10">Subroutines, Conditions, Loops, and more</h3>
+
+<p>Because coroutines need to be declared through the coroutine API, existing Java constructs like conditional and loop expressions cannot be used in a suspending way. The framework provides special coroutine steps for these and some other common purposes. Besides, it is always easily possible to subclass <code>CoroutineStep</code> to create new steps if the existing implementations don’t suffice.</p>
+
+<h4 id="toc_11">Subroutines</h4>
+
+<p>Any existing coroutine can be invoked as a subroutine of another coroutine, by using the step <code>CallSubroutine</code>. This allows to compose new coroutines from existing ones and therefore to build libraries of coroutine functionalities as a base for such compositions.</p>
+
+<h4 id="toc_12">Conditional Execution</h4>
+
+<p>Sometimes it may be necessary to execute different steps (including subroutines) based on the result of a certain condition. This can be achieved with the step <code>Condition</code> which provides multiple variants to execute different steps, depending on the evaluation of a predicate:</p>
+
+<pre><code class="language-java">import static de.esoco.coroutine.step.Condition.doIf;
+import static de.esoco.coroutine.step.Condition.doIfElse;
+
+Coroutine&lt;String, String&gt; ifElse = first(doIfElse(s -&gt; s.equals(&quot;true&quot;),
+                                                  supply(() -&gt; &quot;Hello&quot;),
+                                                  supply(() -&gt; &quot;World&quot;)));
+
+Coroutine&lt;String, String&gt; ifOrElse = first(doIf((String s) -&gt; s.equals(&quot;true&quot;),
+                                                supply(() -&gt; &quot;Hello&quot;))
+                                           .orElse(supply(() -&gt; &quot;World&quot;)));
+</code></pre>
+
+<blockquote>
+<p>Conditional coroutine execution</p>
+</blockquote>
+
+<h4 id="toc_13">Loops</h4>
+
+<p>Instead of looping in the code that is executed by a step it may be a better choice to repeat the execution of a certain step or subroutine based on a Boolean condition, because this allows the framework to suspend on each loop cycle:</p>
+
+<pre><code class="language-java">mport static de.esoco.coroutine.step.Loop.loopWhile;
+
+Coroutine&lt;Integer, Integer&gt; countUp = first(loopWhile(i -&gt; i &lt; 10, apply(i -&gt; i + 1)));
+</code></pre>
+
+<blockquote>
+<p>Looping in a coroutine</p>
+</blockquote>
+
+<h4 id="toc_14">Iteration</h4>
+
+<p>For the common case of looping over a collection or another object that implements the <code>java.lang.Iterable</code> interface the <code>Iteration</code> step can be used. It applies another coroutine step to each element of a collection and can optionally collect the results into a new collection. As with loops the coroutine is suspended between each iteration round. The following example revisits the first coroutine execution example and uses the iteration step to process each element in a range:</p>
+
+<pre><code class="language-java">Coroutine&lt;?, ?&gt; crunchNumbers =
+    first(supply(() -&gt; from(1).to(10)))
+    .then(forEach(consume(i -&gt; Math.sqrt(i))));
+
+CoroutineScope.launch(scope -&gt; {
+    for (int i = 0; i &lt; 1_000_000; i++) {
+        crunchNumbers.runAsync(scope);
+    }
+});
+</code></pre>
+
+<blockquote>
+<p>Iteration in a coroutine</p>
+</blockquote>
+
+<h4 id="toc_15">Delayed Execution</h4>
+
+<p>When using dedicated threads an application can wait for a certain amount of time by calling <code>Thread.sleep</code>. But that method must be avoided when working with thread pools because letting a pooled thread sleep will block it for any other use. Furthermore, with coroutines it is desirable to suspend the execution while a coroutine is not processing anything.</p>
+
+<p>Therefore the framework provides the special step <code>Delay</code> which has several factory methods that suspend a coroutine for a certain time. This can be used as any other step and the implementation behind it should be sufficient for most use cases. If not it may be replaced by setting a different scheduler for such delayed executions in the context.</p>
+
+<h3 id="toc_16">ObjectRelations</h3>
+
+<p>As mentioned, the coroutines project has one dependency, and that is to the <u>ObjectRelations</u> project. Apart from some base functionality (like the <u>Range</u> and <u>Threads</u> classes used in the previous examples) this library implements a new development concept. This concept allows the generic modeling of the relations between objects in object-oriented programming. Very shortly, you can think of relations as typed and intelligent object references that can be set on arbitrary objects. And they can have relations themselves, providing an easy and generic way to apply meta-data. A detailed introduction can be found <a href="https://esoco.gitbook.io/sdack/frameworks/objectrelations">on the documentation site</a>.</p>
+
+<p>The <u>coroutines</u> library can be used without further knowledge of the <u>ObjectRelations</u> framework. But applying relations can make the concept even more versatile. For example, relations can be used for arbitrary shared state and configuration data in continuations, scopes, and contexts. They are also used by the coroutines themselves for these purposes and more, like the registration of coroutine event listeners or automatic closing of resources.</p>
+
+<h3 id="toc_17">Conclusion</h3>
+
+<p>This article hopefully provides an appropriate introduction to the coroutines framework and it’s basic use. Please be reminded that it’s a first release, so it may still contain some bugs and inconsistencies. Any feedback as well as questions are welcome, as are contributions to the project.</p>
 
                         
                       </div>
@@ -352,10 +416,10 @@ Yaaay visibility!</p>
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/12/24</span>
+                    <span class="date">2019/1/16</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Spring.html'>Spring</a></span>
+          					    <span class="posted-in"><a href='Java.html'>Java</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -445,31 +509,31 @@ Yaaay visibility!</p>
 	      
 		      
 			      <li class="post">
-			        <a href="15459058392039.html">Reliable Domain Events</a>
+			        <a href="15517999043443.html">The Art of Crafting Architectural Diagrams</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
+			        <a href="15517997955971.html">为什么说我们需要软件架构图？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
+			        <a href="15516128677869.html">DNS Servers That Offer Privacy and Filtering</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
+			        <a href="15516123108194.html">Airbnb's Migration from Monolith to Services</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
+			        <a href="15516097487470.html">Events As First-Class Citizens</a>
 			      </li>
 		     
 		  

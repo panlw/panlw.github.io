@@ -105,85 +105,184 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15453866242265.html">
+                <a class="clearlink" href="15516093053616.html">
                 
-                  <h1>Design Of A Modern Cache</h1>
+                  <h1>Monitoring and Managing Workflows Across Collaborating Microservices</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
-                        	<blockquote>
-<p>原文地址 <a href="http://highscalability.com/blog/2016/1/25/design-of-a-modern-cache.html">http://highscalability.com/blog/2016/1/25/design-of-a-modern-cache.html</a></p>
-</blockquote>
-
-<pre><code>MONDAY, JANUARY 25, 2016 AT 8:56AM
+                        	<pre><code>Feb 28, 2019 13 min read
 </code></pre>
 
-<p><img src="https://c2.staticflickr.com/2/1584/23979355273_e1ea8b2397_o.png" alt=""/></p>
+<blockquote>
+<p>原文地址 <a href="https://www.infoq.com/articles/monitor-workflow-collaborating-microservices">https://www.infoq.com/articles/monitor-workflow-collaborating-microservices</a></p>
+</blockquote>
 
-<p><u>This is a guest post by <a href="https://github.com/ben-manes">Benjamin Manes</a>, who did engineery things for Google and is now doing engineery things for a new load documentation startup, <a href="https://loaddocs.co/">LoadDocs</a>.</u></p>
-
-<p>Caching is a common approach for improving performance, yet most implementations use strictly classical techniques. In this article we will explore the modern methods used by <a href="https://github.com/ben-manes/caffeine">Caffeine</a>, an open-source Java caching library, that <strong>yield high hit rates and excellent concurrency</strong>. These ideas can be translated to your favorite language and hopefully some readers will be inspired to do just that.</p>
-
-<h3 id="toc_0">Eviction Policy</h3>
-
-<p>A cache’s <strong>eviction policy tries to predict which entries are most likely to be used again</strong> in the near future, thereby maximizing the hit ratio. The Least Recently Used (LRU) policy is perhaps the most popular due to its simplicity, good runtime performance, and a decent hit rate in common workloads. Its ability to predict the future is limited to the history of the entries residing in the cache, preferring to give the last access the highest priority by guessing that it is the most likely to be reused again soon.</p>
-
-<p>Modern caches extend the usage history to include the recent past and give preference to entries based on recency and frequency. One approach for retaining history is to use a popularity sketch (a compact, probabilistic data structure) to identify the “heavy hitters” in a large stream of events. Take for example <a href="http://dimacs.rutgers.edu/%7Egraham/pubs/papers/cmsoft.pdf">CountMin Sketch</a>, which <strong>uses a matrix of counters and multiple hash functions</strong>. The addition of an entry increments a counter in each row and the frequency is estimated by taking the minimum value observed. This approach lets us tradeoff between space, efficiency, and the error rate due to collisions by adjusting the matrix’s width and depth.</p>
-
-<p><img src="https://docs.google.com/drawings/d/sPS-0VWjzfHp6DtvEQKU0Hg/image?w=470&amp;h=177&amp;rev=1&amp;ac=1" alt=""/></p>
-
-<p><a href="http://arxiv.org/pdf/1512.00727.pdf">Window TinyLFU</a> (W-TinyLFU) <strong>uses the sketch as a filter, admitting a new entry</strong> if it has a higher frequency than the entry that would have to be evicted to make room for it. Instead of filtering immediately, an admission window gives an entry a chance to build up its popularity. This avoids consecutive misses, especially in cases like sparse bursts where an entry may not be deemed suitable for long-term retention. To keep the history fresh an aging process is performed periodically or incrementally to halve all of the counters.</p>
-
-<p><img src="https://docs.google.com/drawings/d/sHXTg0FelH7DQ0ctP3zAnYg/image?w=511&amp;h=123&amp;rev=94&amp;ac=1" alt=""/></p>
-
-<p>W-TinyLFU uses the Segmented LRU (SLRU) policy for long term retention. An entry starts in the probationary segment and on a subsequent access it is promoted to the protected segment (capped at 80% capacity). When the protected segment is full it evicts into the probationary segment, which may trigger a probationary entry to be discarded. This ensures that entries with a small reuse interval (the hottest) are retained and those that are less often reused (the coldest) become eligible for eviction.</p>
-
-<p><img src="https://lh5.googleusercontent.com/FMyO_6DWOaAU-ulD38My9G-KpmYdAe8IQupR0n9MUEDVlDJ9xjvnJtccy2lms-rzQ3bPkbB773lPsCS67WgvOrLn-LpVBkVNCjfavzi4QD3BSNwWp0gGQEI_21rfhKytOLp-N2A" alt=""/></p>
-
-<p><img src="https://lh4.googleusercontent.com/KzGH8Y4W-2qZ4bGpqmHQVb6rXb6DbYiBcrm4UwKfdDyIoiwUXAAnLSPHW4r9WEqhIVEat7pelOPiB5w_VbWI-vC_trza1WU_DVsYW2quV-1RIb9uUnY32PSPF8GklwJySYruC94" alt=""/></p>
-
-<p>As the database and search traces show, there is a lot of opportunity to improve upon LRU by taking into account recency and frequency. More advanced policies such as <a href="https://www.usenix.org/event/fast03/tech/full_papers/megiddo/megiddo.pdf">ARC</a>, <a href="http://web.cse.ohio-state.edu/hpcs/WWW/HTML/publications/papers/TR-02-6.pdf">LIRS</a>, and <a href="http://arxiv.org/pdf/1512.00727.pdf">W-TinyLFU</a> narrow the gap to provide a near optimal hit rate. For additional workloads see the research papers and try our <a href="https://github.com/ben-manes/caffeine/wiki/Simulator">simulator</a> if you have your own traces to experiment with.</p>
-
-<h3 id="toc_1">Expiration Policy</h3>
-
-<p>Expiration is often implemented as variable per entry and expired entries are evicted lazily due to a capacity constraint. This pollutes the cache with dead items, so sometimes a scavenger thread is used to periodically sweep the cache and reclaim free space. This strategy tends to work better than ordering entries by their expiration time on a O(lg n) priority queue due to hiding the cost from the user instead of incurring a penalty on every read or write operation.</p>
-
-<p>Caffeine takes a different approach by <strong>observing that most often a fixed duration is preferred</strong>. This constraint allows for organizing entries on O(1) time ordered queues. A time to live duration is a write order queue and a time to idle duration is an access order queue. The cache can reuse the eviction policy’s queues and the concurrency mechanism described below, so that expired entries are discarded during the cache’s maintenance phase.</p>
-
-<h3 id="toc_2">Concurrency</h3>
-
-<p>Concurrent access to a cache is viewed as a difficult problem because in <strong>most policies every access is a write to some shared state</strong>. The traditional solution is to guard the cache with a single lock. This might then be improved through lock striping by splitting the cache into many smaller independent regions. Unfortunately that tends to have a limited benefit due to hot entries causing some locks to be more contented than others. When contention becomes a bottleneck the next classic step has been to <strong>update only per entry metadata</strong> and use either a <a href="http://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.110.8469&amp;rep=rep1&amp;type=pdf">random sampling</a> or a <a href="https://en.wikipedia.org/wiki/Page_replacement_algorithm#Second-chance">FIFO-based</a> eviction policy. Those techniques can have great read performance, poor write performance, and difficulty in choosing a good victim.</p>
-
-<p>An <a href="http://web.cse.ohio-state.edu/hpcs/WWW/HTML/publications/papers/TR-09-1.pdf">alternative</a> is to <strong>borrow an idea from database theory where writes are scaled by using a commit log</strong>. Instead of mutating the data structures immediately, the <strong>updates are written to a log and replayed in asynchronous batches</strong>. This same idea can be applied to a cache by performing the hash table operation, recording the operation to a buffer, and scheduling the replay activity against the policy when deemed necessary. The policy is still guarded by a lock, or a try lock to be more precise, but shifts contention onto appending to the log buffers instead.</p>
-
-<p>In Caffeine <strong>separate buffers are used for cache reads and writes</strong>. An access is recorded into a <strong>striped ring buffer</strong> where the stripe is chosen by a thread specific hash and the number of stripes grows when contention is detected. When a ring buffer is full an asynchronous drain is scheduled and subsequent additions to that buffer are discarded until space becomes available. When the access is not recorded due to a full buffer the cached value is still returned to the caller. The loss of policy information does not have a meaningful impact because W-TinyLFU is able to identify the hot entries that we wish to retain. By using a thread-specific hash instead of the key’s hash the cache avoids popular entries from causing contention by more evenly spreading out the load.</p>
-
-<p><img src="https://docs.google.com/drawings/d/sxSo8y3_uR8QZ_NbIqnCwzA/image?w=313&amp;h=121&amp;rev=371&amp;ac=1" alt=""/></p>
-
-<p>In the case of a write a more traditional concurrent queue is used and every change schedules an immediate drain. While data loss is unacceptable, there are still ways to optimize the write buffer. Both types of buffers are written to by multiple threads but only consumed by a single one at a given time. This multiple producer / single consumer behavior allows for simpler, more efficient algorithms to be employed. </p>
-
-<p>The buffers and fine grained writes introduce a race condition where operations for an entry may be recorded out of order. An insertion, read, update, and removal can be replayed in any order and if improperly handled the policy could retain dangling references. The solution to this is a state machine defining the lifecycle of an entry.</p>
-
-<p> <img src="https://docs.google.com/drawings/d/scG-jsP3Cfr4YfwBQn9_bpQ/image?w=529&amp;h=133&amp;rev=173&amp;ac=1" alt=""/></p>
-
-<p>In <a href="https://github.com/ben-manes/caffeine/wiki/Benchmarks#read-100-1">benchmarks</a> the cost of the buffers is relatively cheap and scales with the underlying hash table. <strong>Reads scale linearly with the number of CPUs</strong> at about 33% of the hash table’s throughput. Writes have a 10% penalty, but only because contention when updating the hash table is the dominant cost.</p>
-
-<p><img src="https://lh5.googleusercontent.com/Zrb2daVCRylwYZpSKykg1HVxCwsJI6N4sB7KQZ6wTfVdhdZNf75PNi38kO9BKMGn0PW5hHgaEDg2JfFtqbAPU3r4kQZ1toHJ0k7b7gTFII0pXbAJw0pbJ1oPjmqL6ZVEKBHSzLY" alt=""/></p>
-
-<h3 id="toc_3">Conclusion</h3>
-
-<p>There are many pragmatic topics that have not been covered. This could include tricks to minimize the memory overhead, testing techniques to retain quality as complexity grows, and ways to analyze performance to determine whether a optimization is worthwhile. These are areas that practitioners must keep an eye on, because once neglected it can be difficult to restore confidence in one’s own ability to manage the ensuing complexity.</p>
-
-<p>The design and implementation of <a href="https://github.com/ben-manes/caffeine">Caffeine</a> is the result of numerous insights and the hard work of many contributors. Its evolution over the years wouldn’t have been possible without the help from the following people: Charles Fry, Adam Zell, Gil Einziger, Roy Friedman, Kevin Bourrillion, Bob Lee, Doug Lea, Josh Bloch, Bob Lane, Nitsan Wakart, Thomas Müeller, Dominic Tootell, Louis Wasserman, and Vladimir Blagojevic. Thanks to Nitsan Wakart, Adam Zell, Roy Friedman, and Will Chu for their feedback on drafts of this article.</p>
-
-<h2 id="toc_4">Related Articles </h2>
+<h3 id="toc_0">Key Takeaways</h3>
 
 <ul>
-<li>  <a href="https://news.ycombinator.com/item?id=10968521">On HackerNews</a></li>
-<li>  <a href="https://www.reddit.com/r/programming/comments/42s3ku/design_of_a_modern_cache/">On Reddit</a> </li>
-<li>  <a href="https://github.com/dgryski/go-tinylfu">TinyLFU</a> - cache admission policy</li>
+<li>  Peer-to-peer communication between components can lead to emergent behavior, which is challenging for developers, operators and business analysts to understand.</li>
+<li>  You need to make sure to have the overview of all of the backwards-and-forwards communication that is going on in order to fulfill a business capability.</li>
+<li>  Solutions that provide an overview range from distributed tracing, which typically misses the business perspective; data lakes, which require some effort to tune to what you need to know; process tracking, where you have to model a workflow for the tracking; process mining, which can discover the workflow; all the way through to orchestration, which comes with visibility built-in.</li>
+<li>  In this article we argue that you need to balance orchestration and choreography in a microservices architecture in order to be able to understand, manage and change the system.</li>
 </ul>
+
+<p>Last year I met an architect from a big e-commerce organisation. He told me that they do all the right things and divide their functionality into smaller pieces along domain boundaries, even if they don’t call this architectural style “microservices”. Then we talked about how these services collaborate to carry out business logic that crosses service boundaries, as this is typically where the rubber meets the road. He told me their services interact via events published on an event bus, which is typically known as “<a href="https://blog.bernd-ruecker.com/why-service-collaboration-needs-choreography-and-orchestration-239c4f9700fa">choreography</a>” (and this concept will be explained in greater detail later). They considered this to be optimal in terms of decoupling. But the problem they face is that it becomes hard to understand what’s happening and even harder to change something. “This is not like that choreographed dances you see in slides of some microservices talks; this is unmanageable pogo jumping!” </p>
+
+<p>This matches what other customers tell me, e.g. <a href="https://medium.com/@sitapati/node-js-client-for-zeebe-microservices-orchestration-engine-72287e4c7d94">Josh Wulf from Credit Sense said</a>, “the system we are replacing uses a complex peer-to-peer choreography that requires reasoning across multiple codebases to understand.”</p>
+
+<p><img src="https://res.infoq.com/articles/monitor-workflow-collaborating-microservices/en/resources/1monitor-workflow-collaborating-microservices-1-1551187247423.jpg" alt=""/></p>
+
+<p><small><strong><a href="https://medium.com/r/?url=https%3A%2F%2Fwww.flickr.com%2Fphotos%2F23447193%40N06%2F7849857232">Photo by</a><a href="https://commons.wikimedia.org/wiki/File:Moshing_BMTH_RAL_2013.jpg">Pedobear19</a><a href="https://creativecommons.org/licenses/by-sa/4.0/deed.en">available under CC BY-SA 4.0</a></strong></small></p>
+
+<p>Let’s investigate this further using a simplified example. Assume you build an order fulfillment application. You choose to implement the system using an event-driven architecture and you use, for example, Apache Kafka as an event bus. Whenever somebody places an order, an event is fired from the checkout service and picked up by a payment service. This payment service now collects money and fires an event which gets picked up by an inventory service. </p>
+
+<p><img src="https://res.infoq.com/articles/monitor-workflow-collaborating-microservices/en/resources/1monitor-workflow-collaborating-microservices-2-1551187248305.jpg" alt=""/></p>
+
+<p><small><strong>Choreographed event flow</strong></small></p>
+
+<p>The advantage of this way of working is that you can easily include new components into the system. Assume you want to build a notification service to send emails to your customer; you can simply add a new service and subscribe to relevant events, without touching any of the other services. You can now manage communication settings and handle all complexity of <a href="https://eugdpr.org/">GDPR</a> compliant customer notifications in that central place. </p>
+
+<p><img src="https://res.infoq.com/articles/monitor-workflow-collaborating-microservices/en/resources/1monitor-workflow-collaborating-microservices-3-1551187246590.jpg" alt=""/></p>
+
+<p>This architectural style is called choreography, as there is no orchestrator required which tells others what to do. In contrast, every component emits events and others can be reactiveto them. The assumption is that this style reduces coupling between the components and systems become easier to develop and change, which is true for the sketched notification service. </p>
+
+<h2 id="toc_1">Losing Sight of the Flow of Events</h2>
+
+<p>In this article I want to concentrate on the most-often asked question whenever I discuss this architecture: How do we avoid losing sight (and probably control) of the flow of events?In <a href="https://blog.camunda.com/post/2018/09/microservices-orchestration-survey-results-2018/">a recent survey</a>, Camunda (the company I work for) asked about the adoption of microservices. 92% of all respondents at least consider microservices, and 64% already do microservices in some form. It is more than just hype. But in that survey we also asked about challenges , and found a clear confirmation of this risk; the top answer was about lack of visibility into end-to-end business processes that span multiple services.</p>
+
+<p><img src="https://res.infoq.com/articles/monitor-workflow-collaborating-microservices/en/resources/1monitor-workflow-collaborating-microservices-4-1551187247761.jpg" alt=""/></p>
+
+<p>Remember architectures based on a lot of database triggers? Architectures where you never exactly knew what would happen if you did this - and wait - why did that happen now? Challenges with reactive microservices sometimes remind me a bit of this, even if this comparison is clearly misplaced. </p>
+
+<h2 id="toc_2">Establishing Visibility</h2>
+
+<p>But what can we do about it? The following approaches can help you get back visibility, but each have their different pros and cons:</p>
+
+<ol>
+<li> Distributed tracing (e.g. Zipkin or Jaeger)</li>
+<li> Data lakes or analytic tools (e.g. Elastic)</li>
+<li> Process mining (e.g. ProM)</li>
+<li> Tracking using workflow automation (e.g. Camunda)</li>
+</ol>
+
+<p>Please be aware that all approaches observe a running system and inspect instances flowing through it. I do not know any static analysis tool that yields useful information.</p>
+
+<h3 id="toc_3">Distributed Tracing</h3>
+
+<p>Distributed tracing wants to trace call-stacks across different systems and services. This is done by creating unique trace ids that are typically added to certain headers generically (e.g. HTTP or messaging headers). If everybody in your universe understands or at least forwards these headers, you can leave breadcrumbs while a request hops through different services. </p>
+
+<p><img src="https://res.infoq.com/articles/monitor-workflow-collaborating-microservices/en/resources/1monitor-workflow-collaborating-microservices-5-1551187248588.jpg" alt=""/></p>
+
+<p>Distributed tracing is typically used to understand how requests flow through the system, to pinpoint failures or to investigate the root of performance bottlenecks. The great thing about distributed tracing is that there are mature toolswith a lively ecosystem around. So it is relatively easy to get started, even if you typically have to (potentially invasively) instrument your applications or containers. </p>
+
+<p>So why not use this to actually understand how business processes emergeby events flowing through our system? Well, basically two reasons make it hard to apply distributed tracing for this use case:</p>
+
+<ul>
+<li>  Traces are hard to understand for non-engineers. My personal experiments aiming to show traces to non tech people failed miserably. It was far better to invest some time to redraw the same information with boxes and arrows. And even if all the information about method calls and messages is totally useful to understand communication behaviors, it is too fine-grained to understand the essence of cross-service business processes.</li>
+<li>  To manage the overwhelming mass of fine-grained data, distributed tracing uses so-called sampling. This means only a small portion of all requests are collected. Typically, more than 90% of the requests are never recorded. A good take on this is <a href="https://lightstep.com/blog/three-pillars-zero-answers-towards-new-scorecard-observability/">Three Pillars with Zero Answers - towards a New Scorecard for Observability</a>. So you never have a complete view of what’s happening. </li>
+</ul>
+
+<h3 id="toc_4">Data Lakes or Analytic Tools </h3>
+
+<p>So, out-of-the-box tracing will probably not be the way to go. The logical next step is to do something comparable, but bespoke to the problem at hand. That basically means not collecting traces, but instead collecting meaningful business or domain eventsthat you might have flowing around already anyway. This often boils down to building a service to listen to all events and storing them in a data store that can take some load. Currently a lot of our customers use Elastic for this purpose. </p>
+
+<p><img src="https://res.infoq.com/articles/monitor-workflow-collaborating-microservices/en/resources/1monitor-workflow-collaborating-microservices-6-1551187248965.jpg" alt=""/></p>
+
+<p>This is a powerful mechanism which is relatively easy to build. Most customers who work in an event-driven manner have this setup already. The biggest barrier for introduction is often the question of who will operate such a tool within a large organization, as it definitely needs to be managed by some centralized facility. It is also easy to build you own user interfaces on top of this to find relevant information for certain questions easily.</p>
+
+<p><img src="https://res.infoq.com/articles/monitor-workflow-collaborating-microservices/en/resources/1monitor-workflow-collaborating-microservices-7-1551187245374.jpg" alt=""/></p>
+
+<p><small><strong><a href="http://github.com/berndruecker/flowing-retail">Example event monitor UI</a></strong></small></p>
+
+<p>One shortcoming is the lack of graphicsto make sense out of a list of events. But you could build that into this infrastructure by for example projecting events onto some visualisation like BPMN. </p>
+
+<p>Lightweight frameworks like bpmn.io allow to add information to such a diagram in simple HTML pages (<a href="https://github.com/berndruecker/flowing-retail/tree/master/kafka/java/monitor">an example can be found here</a>) which could also be packaged into a Kibana Plugin.)</p>
+
+<p><img src="https://res.infoq.com/articles/monitor-workflow-collaborating-microservices/en/resources/1monitor-workflow-collaborating-microservices-8-1551187246331.jpg" alt=""/></p>
+
+<p>This model is not executed by some workflow engine; it is a diagram used to visualize the captured events in a different way. In that sense you also have some freedom as to what granularity it will show, and it is also OK to have models that show events from different microservices in one diagram, as this is what you are especially interested in: the big picture. The good news is that this diagram does not stop you from deploying changes to individual services, so it does not hinder agility in your organization, but the tradeoff is that that introduces the risk of diagrams becoming outdated, when compared with the current state of the system operating in production.</p>
+
+<h3 id="toc_5">Process Mining Tools</h3>
+
+<p>In the above approach you have to explicitly model the diagram you use for visualization, but if the nature of the event-flow is not known in advance, it needs to be discovered first. </p>
+
+<p>This process discovery could be done by process mining tools. They can derive the overall blueprint and show that graphically, often even allowing to dig into a lot of detailed data, especially around bottlenecks or optimization opportunities. </p>
+
+<p><img src="https://res.infoq.com/articles/monitor-workflow-collaborating-microservices/en/resources/1monitor-workflow-collaborating-microservices-9-1551187245799.jpg" alt=""/></p>
+
+<p><small><strong><a href="http://www.promtools.org/doku.php">image source</a></strong></small></p>
+
+<p>This sounds like a perfect fit for our problem. Unfortunately, the tools are most often used to discover process flows within legacy architectures, so they focus on log file analysis and are not really good at ingesting live event streams. Another issue with these tools is that they are either very scientific and hard to use (like ProM) — or very much heavyweight (like Celonis). So in our experience it is often impractical to introduce these tools into typical microservice endeavors.</p>
+
+<p><img src="https://res.infoq.com/articles/monitor-workflow-collaborating-microservices/en/resources/1monitor-workflow-collaborating-microservices-10-1551187247127.jpg" alt=""/></p>
+
+<p><small><strong><a href="https://www.celonis.com/de/intelligent-business-cloud/process-discovery/">image source</a></strong></small></p>
+
+<p>Nevertheless, process discovery and mining add interesting capabilities into the mix in order to get visibility into your event-flows and business processes. I hope that there will be technology emerging soon that offers comparable functionality but is also lightweight, developer-friendly and easily adoptable. </p>
+
+<h3 id="toc_6">Tracking via Workflow Automation</h3>
+
+<p>Another interesting approach is to model the workflow, but then deploy and run it on a real workflow engine. The workflow model is special in a sense, in that it is only tracking events, and not doing anything actively itself. So it does not steer anything -- it simply records. I talked about this at the <a href="https://www.confluent.io/kafka-summit-sf18/the_big_picture">Kafka Summit San Francisco 2018</a>, and the recording includes a live demo using <a href="https://kafka.apache.org/">Apache Kafka</a> and the open source workflow engine <a href="https://zeebe.io/">Zeebe</a>.</p>
+
+<p><img src="https://res.infoq.com/articles/monitor-workflow-collaborating-microservices/en/resources/1monitor-workflow-collaborating-microservices-11-1551187246056.jpg" alt=""/></p>
+
+<p>This option is especially interesting as there is a lot of innovation in the workflow engine market, which is resulting in the emergence of tools that are lightweight, developer-friendly and highly-scalable. I wrote about this in <a href="https://www.infoq.com/articles/events-workflow-automation">Events, Flows and Long-Running Services: A Modern Approach to Workflow Automation</a>. The obvious downside is that you have to model the workflow upfront. But in contrast to event monitoring, this model is executed on a workflow engine - in fact you start workflow instances for incoming events or correlate events to that workflow instance. This also allows conformance checks - does the reality fit into what you modeled? </p>
+
+<p>And this approach allows you to leverage the complete tool chain of workflow automation platforms, which allows to see what’s currently going on, monitor SLA’s and detect stuck instances or do extensive analysis on historical audit data. </p>
+
+<p><img src="https://res.infoq.com/articles/monitor-workflow-collaborating-microservices/en/resources/1monitor-workflow-collaborating-microservices-12-1551187246875.jpg" alt=""/></p>
+
+<p><small><strong>Sample workflow monitoring (from camunda.com)</strong></small></p>
+
+<p>When I validated this approach with customers it was easy to set up. We just had to build a generic component picking up events from the bus and correlate it to the workflow engine. Whenever an event could not be correlated, we used a small decision table to decide if it could be ignored or would yield in an incident to be checked later. We also instrumented <a href="https://www.slideshare.net/BerndRuecker/camundacon-the-role-of-workflows-in-microservices/40">workflow engines used within microservices to execute business logic</a> to generate certain events (e.g. workflow instance started, ended or milestone reached) to be used in the big picture.</p>
+
+<p>This workflow tracking is a bit like event-monitoring, but with a business process focus. Unlike tracing, it can record 100% of your business events and provide a view that is suitable for the various stakeholders.</p>
+
+<h2 id="toc_7">The Business Perspective</h2>
+
+<p>One big advantage of having the business process available in monitoring is that you understand the context. For a certain instance you can always see how and why it ended up in the current state, which enables you to understand which path it did nottake (but other instances often do) and what events or data lead to certain decisions. You can also get an idea of what might happen in the near future. This is something you miss in other forms of monitoring. And even if it is often not currently hip to discuss the alignment between business and IT, it is absolutely necessary that non-engineers also understand business processes and how events flow through various microservices. </p>
+
+<h2 id="toc_8">A Journey from Tracking to Managing</h2>
+
+<p>Process tracking is fine, as this gives you operational monitoring, reporting, KPIs and visibility as an important pillar to keep agility. But in current projects this tracking approach is actually just the first step in a journey towards more management and orchestration in your microservice landscape.</p>
+
+<p>A simple example could be that you start to monitor timeouts for your end-to-end process. Whenever this timeout is hit, some action is taken automatically. In the following example we would inform the customer of a delay after 14 days — but still keep waiting. After 21 days we give up and cancel the order.</p>
+
+<p><img src="https://res.infoq.com/articles/monitor-workflow-collaborating-microservices/en/resources/1monitor-workflow-collaborating-microservices-13-1551187249236.jpg" alt=""/></p>
+
+<p>One interesting aspect in the above picture is the sending of the command cancel order. This is orchestration -- and this is sometimes discussed in a controversial fashion. </p>
+
+<h2 id="toc_9">Orchestration</h2>
+
+<p>I often hear that orchestration should be avoided with the argument that it introduces coupling or violates autonomy of single microservices. And of course it is true that orchestration can be done badly, but it also can be done in a way that aligns with microservices principles while adding a lot of value to the business. At <a href="https://berndruecker.io/complex-event-flows-in-distributed-systems/">InfoQ New York 2018</a> I  talked specifically about this misconception. </p>
+
+<p>In its essence, orchestration for me means that one service can command another to do something. That’s it.That’s not tighter coupling, it is just coupled the other way round.  Take the order example. It might be a good idea that the checkout service just emits an order placed event but does not know who processes it. The order service listens to that order placed event. The receiver knows about the event and decides to do something about it; the coupling is on the receiving side. </p>
+
+<p>It is different with the payment, because it would be quite unnatural that the payment service knows what the payment is for. But it would need that knowledge in order to react on the right events, like order placed or order created. This also means it has to be changed whenever you want to receive payments for new products or services. Many projects work around this unfavorable coupling by issuing payment required events, but these are not events, as the sender wants somebody else to do something. This is a command! The order service commands the payment to retrieve money. In this case the sender knows about the command to send and decides to use it; the coupling is on the sending side. </p>
+
+<p>Every communication between two services involves some degree of coupling in order to be effective, but depending on the problem at hand it may be more appropriate to implement the coupling within one side over the other.</p>
+
+<p><img src="https://res.infoq.com/articles/monitor-workflow-collaborating-microservices/en/resources/1monitor-workflow-collaborating-microservices-14-1551187248047.jpg" alt=""/></p>
+
+<p>The order service might even be responsible of orchestrating more services and keeping track of the sequence of steps in order fulfillment. I discussed the advantages in the above mentioned talk in detail. The tricky part is that a good architecture needs to balance orchestration and choreography, which is not always easy to do.</p>
+
+<p>But for this article I wanted to focus on visibility. And there is an obvious advantage of orchestration using a workflow engine; the model is not only the code to execute the orchestration, it can also be used directly for visibility of the flow.</p>
+
+<p><img src="https://res.infoq.com/articles/monitor-workflow-collaborating-microservices/en/resources/1monitor-workflow-collaborating-microservices-15-1551187249488.jpg" alt=""/></p>
+
+<h2 id="toc_10">Summary</h2>
+
+<p>It is essential to get visibility into your business processes, independently of the way they are implemented. I discussed multiple possibilities, and in most real-world situations it typically boils down to some event-monitoring using Elastic-like tools or process tracking using workflow engines. This might depend slightly on the use case and role involved, so business analysts need to understand the data collected from all instances on the correct granularity, whereas operations need to look into one specific instance in varying granularity and probably want to have tools to resolve system-level incidents quickly.</p>
+
+<p>If you are a choreographed shop, process-tracking can lead you to a journey towards more orchestration, which I think is a very important step in keeping control of your business processes in the long run. Otherwise, you might “make nicely decoupled systems with event notification, without realizing that you’re losing sight of that larger-scale flow, and thus set yourself up for trouble in future years”, <a href="https://martinfowler.com/articles/201701-event-driven.html">as Martin Fowler puts it</a>. If you are working on a more greenfield system, you should find a good balance for orchestration and choreography right from the beginning.</p>
+
+<p>However, regardless of the implementation details of your system, make sure you have a business-friendly view of your business processes implemented by collaborating services.</p>
+
+<h2 id="toc_11">About the Author</h2>
+
+<p><strong><img src="https://res.infoq.com/articles/monitor-workflow-collaborating-microservices/en/resources/1Bernd-ruecker-1551189452268.jpeg" alt=""/>Bernd Ruecker</strong> is co-founder and technologist at Camunda. Previously, he has helped automating highly scalable core workflows at global companies including T-Mobile, Lufthansa, Zalando. He is currently focused on new workflow automation paradigms that fit into modern architectures around distributed systems, microservices, domain-driven design, event-driven architecture and reactive systems.</p>
 
                         
                       </div>
@@ -192,10 +291,10 @@
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/12/21</span>
+                    <span class="date">2019/3/3</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Cache.html'>Cache</a></span>
+          					    <span class="posted-in"><a href='Microservice.html'>Microservice</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -285,31 +384,31 @@
 	      
 		      
 			      <li class="post">
-			        <a href="15459058392039.html">Reliable Domain Events</a>
+			        <a href="15517999043443.html">The Art of Crafting Architectural Diagrams</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
+			        <a href="15517997955971.html">为什么说我们需要软件架构图？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
+			        <a href="15516128677869.html">DNS Servers That Offer Privacy and Filtering</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
+			        <a href="15516123108194.html">Airbnb's Migration from Monolith to Services</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
+			        <a href="15516097487470.html">Events As First-Class Citizens</a>
 			      </li>
 		     
 		  

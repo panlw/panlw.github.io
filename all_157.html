@@ -105,357 +105,452 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15281293926383.html">
+                <a class="clearlink" href="15301811361753.html">
                 
-                  <h1>在 Spring Boot 中集成 SOFABoot 类隔离能力</h1>
+                  <h1>架构设计：负载均衡层设计方案（5）——LVS单节点安装</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p>张奇龙 <a href="https://zhuanlan.zhihu.com/p/36909393">https://zhuanlan.zhihu.com/p/36909393</a></p>
-
-<h2 id="toc_0">SOFABoot 类隔离能力简介</h2>
+<p><a href="https://blog.csdn.net/yinwenjie/article/details/47010569">https://blog.csdn.net/yinwenjie/article/details/47010569</a></p>
 </blockquote>
 
-<p>SOFABoot 是蚂蚁金服中间件团队开源的基于 Spring Boot 的一个开发框架，其在 Spring Boot 基础能力之上，增加了类隔离能力。蚂蚁金服内部丰富的实践场景表明，类隔离能力对解决类冲突、版本管控有其特殊的优势。</p>
+<h1 id="toc_0"><a></a>1、概述</h1>
 
-<p>SOFABoot 的类隔离能力由单独的组件 SOFAArk 实现，相比业界遵循 OSGi（<a href="https://link.zhihu.com/?target=https%3A//www.osgi.org/">https://www.osgi.org</a>） 规范的 Equinox 或者 Felix，SOFAArk 专注于类隔离，简化了类加载模型，是一款更加轻量的类隔离框架。</p>
+<p>上篇文章《架构设计：负载均衡层设计方案（4）——LVS 原理》（<a href="http://blog.csdn.net/yinwenjie/article/details/46845997">http://blog.csdn.net/yinwenjie/article/details/46845997</a>），我们介绍了 LVS 的工作模式，和每一种模式的具体工作过程。这篇文章中，我们将介绍单一 LVS 节点的安装方式。比起上一篇文章，这一片要提到的安装和配置就是非常简单的了，只要您了解原理，实践就是从容的事情。</p>
 
-<p>本文将介绍 SOFABoot 类隔离能力的背景及其使用方式。</p>
+<p>您可以在您的电脑上使用 VMware 虚拟机，按照下面介绍的过程一步一步实践。我们将采用两台虚拟机，一台作为 LVS 节点，另外一台安装了 Nginx 的服务器作为 Real Server 节点。</p>
 
-<h2 id="toc_1">1. 背景</h2>
+<h1 id="toc_1"><a></a>2、LVS-NAT 模式安装</h1>
 
-<p>在 Java 世界中，依赖的 JAR 包之间相互冲突永远是一个痛，Spring Boot 采用统一的依赖管理机制规避了大部分依赖冲突问题。理想很美好，现实却很骨感，作为蚂蚁金服这类大体量的公司，各业务线纷繁复杂、基础服务组件繁多，很难做到对所有 JAR 包做统一管控，尤其涉及到多个跨团队模块组件相互依赖时，因为各自技术栈历史包袱的存在，难以有效统一冲突包版本。</p>
+<h2 id="toc_2"><a></a>2.1、准备工作——LVS Server：</h2>
 
-<p>假设如下场景，工程需要引入两个三方组件：A 和 B，组件 A 需要依赖 Hessian 3，组件 B 需要依赖 Hessian 4，因为 Hessian 3 和 Hessian 4 是不兼容的。作为开发者，遇到这种包冲突问题，如果不借助类隔离框架，只能耗费精力升级到统一版本。</p>
-
-<p><img src="https://pic2.zhimg.com/v2-523ebc71ae694f6bbe1196b458711c38_b.jpg" alt=""/><img src="https://pic2.zhimg.com/v2-523ebc71ae694f6bbe1196b458711c38_r.jpg" alt=""/></p>
-
-<p>为了彻底解决类似的包冲突问题，我们需要借助类隔离机制，使用不同的类加载器加载冲突的三方依赖包，进而做到在同一个应用运行时共存。</p>
-
-<p>基于此背景，SOFABoot 提供了一个轻量级的类隔离框架，也是本文的主角，SOFAArk。</p>
-
-<h2 id="toc_2">2. 基本原理</h2>
-
-<p>在介绍 SOFAArk 类隔离框架使用之前，我们简单了解下其背后的实现原理。正如前文中描述，SOFAArk 是通过独立的类加载器加载相互冲突的三方依赖包，从而做到隔离包冲突。那么我们不禁要问，SOFAArk 是如何区分应用中哪些依赖包是需要单独的类加载器加载呢？原因是 Ark Plugin，它是 SOFAArk 框架定义的一种特殊的 JAR 包文件格式，SOFAArk 框架会自动识别 Ark Plugin 这种特殊依赖。</p>
-
-<p>何为 Ark Plugin ? Ark Plugin 本质上是一个 FatJar，借助 SOFABoot 官方提供的 maven 打包插件，开发者可以把若干普通的 JAR 包打包成 Ark Plugin 供应用依赖或者把普通的 Java 模块改造成 Ark Plugin。通常来说，如果把一个普通 JAR 打包成 Ark Plugin，那么该 JAR 包依赖的其他三方包也会被打入同一个 Ark Plugin，默认情况下 SOFABoot 官方打包插件会自动把间接依赖也打入到 Ark Plugin。</p>
-
-<p>应用使用添加 maven 依赖的方式引入 Ark Plugin，运行时，SOFAArk 框架会自动识别应用的三方依赖包中是否含有 Ark Plugin，进而使用单独的类加载器加载。为了更加直观，下图是应用运行时逻辑分层图：</p>
-
-<p><img src="https://pic3.zhimg.com/v2-af38a66b654feefe65e91996a60a2700_b.jpg" alt=""/><img src="https://pic3.zhimg.com/v2-af38a66b654feefe65e91996a60a2700_r.jpg" alt=""/></p>
-
-<p>可以看到，在应用运行时，SOFAArk 容器处于最底层，负责启动应用。应用依赖的所有 Ark Plugin 处于中间层，每个 Ark Plugin 都由 SOFAArk 容器使用独立的类加载器加载，相互隔离。应用业务代码及其他非 Ark Plugin 的普通三方依赖包，为了描述简单，统称为 Ark Biz，它运行在最上层，需要依赖中间层的 Ark Plugin。</p>
-
-<p>一个标准 Ark Plugin 会包含一些配置文件，主要包含导出类和导入类配置。导出类即把 Ark Plugin 中的类导出给 Ark Biz 和其他 Ark Plugin 可见。默认情况下，所有 Ark Plugin 的导出类对于 Ark Biz 来说都是可见的，即 Ark Biz 可以使用 Ark Plugin 的导出类。对于 Ark Plugin 来说，如果需要使用其他 Ark Plugin 的导出类，必须声明为自身的导入类。关于 Ark Plugin 详细说明可以参考文末相关链接。</p>
-
-<p>下面我们来演示如何开发一个简单的 Ark Plugin。</p>
-
-<h2 id="toc_3">3. Java 模块改造成 Ark Plugin</h2>
-
-<h2 id="toc_4">3.1 新建工程</h2>
-
-<p>Demo <a href="https://link.zhihu.com/?target=https%3A//github.com/QilongZhang/ark-plugin-demo">工程地址</a></p>
-
-<p>运行需要 JDK 6 及以上、 Maven 3.2.5 以上。</p>
-
-<p>首先我们在 IDE 里新建一个普通 Maven 工程，并创建三个普通的 Java 模块。以前文描述的 Hessian 冲突为例，在演示工程中定义了三个模快：</p>
+<p>LVS Server：LSV Server 有两张网卡。</p>
 
 <ul>
-<li>  pojo-module: 定义了一个简单的 PoJo 类 SamplePoJo，并设置为导出类，打包成 <code>pojo-ark-plugin</code> 。</li>
-<li>  hessian3-module：定义了一个服务类 Hessian3Service，实现了简单的序列化和反序列逻辑，使用的版本是 Hessian 3，并导入了 SamplePoJo，打包成 <code>hessian3-ark-plugin</code> 。</li>
-<li>  hessian4-module：定义了一个服务类 Hessian4Service，和 Hessian3Service 功能类似，使用的版本是 Hessian 4，并导入了 SamplePoJo，打包成 <code>hessian4-ark-plugin</code> 。</li>
+<li>  eth0：192.168.100.10：这张网卡对应一个封闭的内网，不能访问外网资源，外网也不能直接通过这个 IP 访问这台主机</li>
+<li><p>eth1：192.168.220.100：这张网卡设置的 IP 可以访问外网，也可以被外网访问。eth1 的网关：192.168.220.1。</p>
+
+<pre><code>以下是设置的eth0    ip信息，
+[root@lvs1 ~]# cat /etc/sysconfig/network-scripts/ifcfg-eth0
+DEVICE=&quot;eth0&quot;
+BOOTPROTO=&quot;static&quot;
+HWADDR=&quot;00:0C:29:3E:4A:4F&quot;
+ONBOOT=&quot;yes&quot;
+TYPE=&quot;Ethernet&quot;
+IPADDR=&quot;192.168.100.10&quot;
+NETMASK=&quot;255.255.255.0&quot;
+====================================
+以下是设置的eth1  ip信息
+[root@lvs1 ~]# cat /etc/sysconfig/network-scripts/ifcfg-eth1
+DEVICE=&quot;eth1&quot;
+BOOTPROTO=&quot;static&quot;
+HWADDR=&quot;00:0C:29:3E:4A:59&quot;
+ONBOOT=&quot;yes&quot;
+TYPE=&quot;Ethernet&quot;
+IPADDR=&quot;192.168.220.100&quot;
+NETMASK=&quot;255.255.255.0&quot;
+GATEWAY=&quot;192.168.220.1&quot;
+
+</code></pre></li>
 </ul>
 
-<p>该用例是为了演示如何将普通的 Java 模块及其三方依赖包打包成 Ark Plugin，以 <code>hessian3-module</code> 模块为例来讲解打包流程。</p>
+<p>记得设置完成后，要重启 network 服务：</p>
 
-<h2 id="toc_5">3.2 编写服务类</h2>
-
-<p>在 <code>hessian3-module</code>中，提供了一个简单的序列化和反序列化功能类 Hessian3Service：</p>
-
-<pre><code>package com.alipay.sofa.demo.hessian3;
-
-import com.caucho.hessian.io.HessianInput;
-import com.caucho.hessian.io.HessianOutput;
-
-import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
-
-/**
- * @author qilong.zql
- */
-public class Hessian3Service {
-    public byte[] serialize(Object obj) throws IOException {
-        if(obj==null) throw new NullPointerException();
-
-        ByteArrayOutputStream os = new ByteArrayOutputStream();
-        HessianOutput ho = new HessianOutput(os);
-        ho.writeObject(obj);
-        return os.toByteArray();
-    }
-
-    public Object deserialize(byte[] by) throws IOException {
-        if(by==null) throw new NullPointerException();
-
-        ByteArrayInputStream is = new ByteArrayInputStream(by);
-        HessianInput hi = new HessianInput(is);
-        return hi.readObject();
-    }
-}
+<pre><code>[root@lvs1 ~]# service network restart
 
 </code></pre>
 
-<p>该功能类非常简单，提供了两个方法调用，分别实现对象的序列化和发序列化。</p>
+<p>ping ping 更健康（说明到外网的网管工作是正常的）：</p>
 
-<h2 id="toc_6">3.3 Ark Plugin 配置</h2>
-
-<p>因为 Ark Plugin 的配置大同小异，在这里以普通的 Java 模块 <code>hessian3-module</code> 打包成 <code>hessian3-ark-plugin</code> 为例，介绍 Ark Plugin 的一般配置。</p>
-
-<p>首先，我们需要添加 SOFABoot 官方提供的 maven 打包插件：</p>
-
-<pre><code>&lt;plugin&gt;
-    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
-    &lt;artifactId&gt;sofa-ark-plugin-maven-plugin&lt;/artifactId&gt;
-    &lt;version&gt;0.2.0&lt;version&gt;
-&lt;/plugin&gt;
+<pre><code>[root@lvs1 ~]# ping 192.168.220.1
+PING 192.168.220.1 (192.168.220.1) 56(84) bytes of data.
+64 bytes from 192.168.220.1: icmp_seq=1 ttl=128 time=0.447 ms
+64 bytes from 192.168.220.1: icmp_seq=2 ttl=128 time=0.154 ms
 
 </code></pre>
 
-<p>然后在<code>hessian3-module</code> 演示用例中，只需要在模块 <code>pom.xml</code> 文件中添加一个导出类和一个导入类配置，配置如下：</p>
+<p>另外还可以通过 route 命令检查：</p>
 
-<pre><code>&lt;build&gt;
-    &lt;plugins&gt;
-        &lt;plugin&gt;
-            &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
-            &lt;artifactId&gt;sofa-ark-plugin-maven-plugin&lt;/artifactId&gt;
-            &lt;version&gt;0.2.0&lt;/version&gt;
-            &lt;executions&gt;
-                &lt;execution&gt;
-                    &lt;id&gt;default-cli&lt;/id&gt;
-                    &lt;goals&gt;
-                        &lt;goal&gt;ark-plugin&lt;/goal&gt;
-                    &lt;/goals&gt;
-
-                    &lt;configuration&gt;
-                        &lt;!-- configure imported class --&gt;
-                        &lt;imported&gt;
-                            &lt;!-- configure class-level imported class --&gt;
-                            &lt;classes&gt;
-                                &lt;class&gt;com.alipay.sofa.demo.pojo.SamplePoJo&lt;/class&gt;
-                            &lt;/classes&gt;
-                        &lt;/imported&gt;
-
-                        &lt;!-- configure exported class --&gt;
-                        &lt;exported&gt;
-                            &lt;!-- configure class-level exported class --&gt;
-                            &lt;classes&gt;
-                                &lt;class&gt;com.alipay.sofa.demo.hessian3.Hessian3Service&lt;/class&gt;
-                            &lt;/classes&gt;
-                        &lt;/exported&gt;
-                    &lt;/configuration&gt;
-                &lt;/execution&gt;
-            &lt;/executions&gt;
-        &lt;/plugin&gt;
-    &lt;/plugins&gt;
-&lt;/build&gt;
+<pre><code>[root@lvs1 ~]# route
+Kernel IP routing table
+Destination     Gateway         Genmask         Flags Metric Ref    Use Iface
+192.168.100.0   *               255.255.255.0   U     1      0        0 eth0
+192.168.220.0   *               255.255.255.0   U     1      0        0 eth1
+default         192.168.220.1   0.0.0.0         UG    0      0        0 eth1
 
 </code></pre>
 
-<p>可以看到，<code>hessian3-ark-plugin</code> 导入基础实体类 <code>com.alipay.sofa.demo.pojo.SamplePoJo</code>，导出服务类 <code>com.alipay.sofa.demo.hessian3.Hessian3Service</code> 供 Ark Biz 使用。</p>
+<p>注意，route 表中有一项 eth1 的 default 的信息，指向 192.168.220.1。说明路由配置是正确的。</p>
 
-<p>使用 maven 打包命令 <code>maven package</code> 即可将 <code>hessian3-module</code> 打包成 Ark Plugin，该插件包含模块代码及其依赖包，其 maven 坐标为：</p>
+<h2 id="toc_3"><a></a>2.2、准备工作——Real Server：</h2>
 
-<pre><code>&lt;dependency&gt;
-    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
-    &lt;artifactId&gt;hessian3-ark-plugin&lt;/artifactId&gt;
-    &lt;classifier&gt;ark-plugin&lt;/classifier&gt;
-    &lt;version&gt;1.0.0&lt;/version&gt;
-&lt;/dependency&gt;
-
-</code></pre>
-
-<p>关于 Ark Plugin 的导入、导出类，这里强调一下，在实际开发中，和业务本身无关的实体类或者基础服务类，如果多个 Ark Plugin 和 Ark Biz 都需要统一版本时，可以把这类基础 Jar 统一打包成 Ark Plugin 设置为导出类。在该演示用例中，我们假设 <code>SamplePoJo</code> 是一个基础实体类，和业务逻辑无关，而 <code>hessian3-ark-plugin</code> 和 <code>hessian4-ark-plugin</code> 都需要使用，于是单独打包成了一个 Ark Plugin。</p>
-
-<p>到此为止，这就是一个简单的 Ark Plugin 从开发的步骤，看起来是不是很简单呢？</p>
-
-<p>下面，我们演示下如何在 Spring Boot 工程中，快速集成 SOFABoot 的类隔离能力，并使用这三个 Ark Plugin。</p>
-
-<h2 id="toc_7">4. Spring Boot 工程集成 SOFAArk 组件</h2>
-
-<p>Demo <a href="https://link.zhihu.com/?target=https%3A//github.com/QilongZhang/springboot-ark-demo">工程地址</a></p>
-
-<p>运行需要 JDK 6 及以上、 Maven 3.2.5 以上。Spring Boot 版本要求 1.4.2.RELEASE 以上，目前还不兼容 2.0.0 及以上版本。</p>
-
-<p>该用例工程主要为了演示如何在 Spring Boot 工程中集成 SOFABoot 类隔离能力并使用 Ark Plugin。这里以前文提到的 Ark Plugin 为例，示例工程将会引入三个 Ark Plugin:<code>pojo-ark-plugin</code>，<code>hessian3-ark-plugin</code> 和 <code>hessian4-ark-plugin</code>，并使用后两者的导出类 <code>Hessian3Service</code> 和 <code>Hessian4Service</code>。</p>
-
-<h2 id="toc_8">4.1 新建工程</h2>
-
-<p>在 Spring Boot 官网 <a href="https://link.zhihu.com/?target=https%3A//start.spring.io/">https://start.spring.io</a> 新建一个 web 工程，并设置 Spring Boot 版本号为 1.4.2.RELEASE。在 Spring Boot 工程中集成 SOFABoot 类隔离能力，只需要添加 SOFABoot 提供的类隔离框架 starter。修改 maven 项目的配置文件 <code>pom.xml</code>，将</p>
-
-<pre><code>&lt;parent&gt;
-    &lt;groupId&gt;org.springframework.boot&lt;/groupId&gt;
-    &lt;artifactId&gt;spring-boot-starter-parent&lt;/artifactId&gt;
-    &lt;version&gt;1.4.2.RELEASE&lt;/version&gt;
-    &lt;relativePath/&gt; 
-&lt;/parent&gt;
-
-</code></pre>
-
-<p>替换为：</p>
-
-<pre><code>&lt;parent&gt;
-    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
-    &lt;artifactId&gt;sofaboot-dependencies&lt;/artifactId&gt;
-    &lt;version&gt;2.3.1&lt;/version&gt;
-&lt;/parent&gt;
-
-</code></pre>
-
-<p>并添加如下 SOFAArk Starter 依赖：</p>
-
-<pre><code>&lt;!--ark spring boot starter--&gt;
-&lt;dependency&gt;
-    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
-    &lt;artifactId&gt;sofa-ark-springboot-starter&lt;/artifactId&gt;
-&lt;/dependency&gt;
-
-</code></pre>
-
-<p>如此，一个 Spring Boot 工程便集成了 SOFABoot 提供的类隔离能力。</p>
-
-<h2 id="toc_9">4.2 添加 Ark Plugin 依赖</h2>
-
-<p>前文中提到，将普通 Java 模块打包成 Ark Plugin，其 maven 坐标不会发生变化，但是需要添加 <code>classifier=ark-plugin</code> 标志，因此如下添加三个 Ark Plugin 的依赖：</p>
-
-<pre><code>&lt;!--ark plugin--&gt;
-&lt;dependency&gt;
-    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
-    &lt;artifactId&gt;pojo-ark-plugin&lt;/artifactId&gt;
-    &lt;classifier&gt;ark-plugin&lt;/classifier&gt;
-    &lt;version&gt;1.0.0&lt;/version&gt;
-&lt;/dependency&gt;
-
-&lt;dependency&gt;
-    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
-    &lt;artifactId&gt;hessian3-ark-plugin&lt;/artifactId&gt;
-    &lt;classifier&gt;ark-plugin&lt;/classifier&gt;
-    &lt;version&gt;1.0.0&lt;/version&gt;
-&lt;/dependency&gt;
-
-&lt;dependency&gt;
-    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
-    &lt;artifactId&gt;hessian4-ark-plugin&lt;/artifactId&gt;
-    &lt;classifier&gt;ark-plugin&lt;/classifier&gt;
-    &lt;version&gt;1.0.0&lt;/version&gt;
-&lt;/dependency&gt;
-
-</code></pre>
-
-<p>需要指出的是，因为 ark plugin 是一个 FatJar，为了让应用编译期通过，需要在工程主 <code>pom.xml</code> 中增加如下依赖：</p>
-
-<pre><code>&lt;!--just for compile success--&gt;
-&lt;dependency&gt;
-    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
-    &lt;artifactId&gt;pojo-ark-plugin&lt;/artifactId&gt;
-    &lt;version&gt;1.0.0&lt;/version&gt;
-    &lt;scope&gt;provided&lt;/scope&gt;
-&lt;/dependency&gt;
-
-&lt;dependency&gt;
-    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
-    &lt;artifactId&gt;hessian3-ark-plugin&lt;/artifactId&gt;
-    &lt;version&gt;1.0.0&lt;/version&gt;
-    &lt;scope&gt;provided&lt;/scope&gt;
-&lt;/dependency&gt;
-
-&lt;dependency&gt;
-    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
-    &lt;artifactId&gt;hessian4-ark-plugin&lt;/artifactId&gt;
-    &lt;version&gt;1.0.0&lt;/version&gt;
-    &lt;scope&gt;provided&lt;/scope&gt;
-&lt;/dependency&gt;
-
-</code></pre>
-
-<p>4.3 编写 Rest 接口</p>
-
-<p>为了演示更加直观，编写如下 Rest 接口：</p>
-
-<pre><code>package com.alipay.sofa.springbootarkdemo.controller;
-
-import com.alipay.sofa.demo.hessian3.Hessian3Service;
-import com.alipay.sofa.demo.hessian4.Hessian4Service;
-import com.alipay.sofa.demo.pojo.SamplePoJo;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RestController;
-
-import java.io.IOException;
-
-/**
- * @author qilong.zql
- */
-@RestController
-public class HelloController {
-
-    @RequestMapping(&quot;/hello-hessian3&quot;)
-    public String hessian3() throws IOException {
-        SamplePoJo samplePoJo = new SamplePoJo(&quot;Hello, hessian3.&quot;);
-        Hessian3Service hessian3Service = new Hessian3Service();
-        byte[] bytes = hessian3Service.serialize(samplePoJo);
-        Object pojo = hessian3Service.deserialize(bytes);
-        return pojo.toString();
-    }
-
-    @RequestMapping(&quot;/hello-hessian4&quot;)
-    public String hessian4() throws IOException {
-        SamplePoJo samplePoJo = new SamplePoJo(&quot;Hello, hessian4.&quot;);
-        Hessian4Service hessian4Service = new Hessian4Service();
-        byte[] bytes = hessian4Service.serialize(samplePoJo);
-        Object pojo = hessian4Service.deserialize(bytes);
-        return pojo.toString();
-    }
-
-}
-
-</code></pre>
-
-<p>该 Rest 接口主要为了本地启动应用后，能够直观演示 Ark Plugin 使用结果。启动该 Web Spring 工程，可以看到控制台打印结果：</p>
-
-<pre><code>...
-2018-05-14 10:04:06.573  INFO 85393 --- [           main] s.b.c.e.t.TomcatEmbeddedServletContainer : Tomcat started on port(s): 8080 (http)
-2018-05-14 10:04:06.577  INFO 85393 --- [           main] c.a.s.s.SpringbootArkDemoApplication     : Started SpringbootArkDemoApplication in 2.111 seconds (JVM running for 3.562)
-2018-05-14 10:04:06,578 INFO  main                             - Finish to start biz: Startup In IDE
-2018-05-14 10:04:06,578 INFO  main                             - Finish to process pipeline stage: com.alipay.sofa.ark.container.pipeline.DeployBizStage
-Ark container started in 2720 ms.
-
-</code></pre>
-
-<p>可以看到类似 <code>Ark container started in XXXXms</code> 字样，即表示该工程运行在 SOFABoot 类隔离框架之上。访问如下两个请求即可看到工程调用 <code>Hessian3Service</code> 和 <code>Hessian4Service</code> 的调用结果</p>
+<p>Real Server：Real Server 有一张网卡，在一个封闭的内网环境中。</p>
 
 <ul>
-<li>  <code>http://localhost:8080/hello-hessian3</code></li>
-<li>  <code>http://localhost:8080/hello-hessian4</code></li>
+<li><p>eth0:192.168.100.11：这样 LVS Server 和 Real Server 就组成了一个相对封闭的局域网络。注意按照我们介绍的 NAT 原理，Real Server 的 eth0 的默认网关要设置成 Lvs Server：192.168.100.10.</p></li>
+<li><p>在 Real Server 上运行了一个 Nginx 程序，在 80 端口上。这样以便在后续的过程中，测试 LVS-NAT 的工作是否正常。</p></li>
 </ul>
 
-<p>以上就是 Spring Boot 集成 SOFABoot 类隔离框架的一般步骤。可以看到，作为开发者，基本上无需过多关心自身应用是否使用类隔离框架，只需要引入 SOFABoot 提供的类隔离框架 Starter，即可快速完成类隔离能力的集成。</p>
+<p>以下是设置的 Real Server eth0 的 IP 信息：</p>
 
-<h2 id="toc_10">5. 总结</h2>
+<pre><code>[root@vm1 ~]# cat /etc/sysconfig/network-scripts/ifcfg-eth0 
+DEVICE=&quot;eth0&quot;
+BOOTPROTO=&quot;static&quot;
+HWADDR=&quot;00:0C:29:45:04:32&quot;
+ONBOOT=&quot;yes&quot;
+TYPE=&quot;Ethernet&quot;
+IPADDR=192.168.100.11
+NETMASK=255.255.255.0
+GATEWAY=&quot;192.168.100.10&quot;
 
-<p>本文主要介绍了 SOFABoot 基于 Spring Boot 开发的类隔离框架组件 SOFAArk。通过两个简单的用例工程，分别介绍了如何开发一个自己的 Ark Plugin 以及在 Spring Boot 快速集成 SOFABoot 的类隔离能力。SOFABoot 官方提供了 SOFARPC 打包的 Ark Plugin，开发者可以按需隔离 SOFARPC 和自身应用。另外，在 SOFAArk 类隔离容器之上，SOFABoot 提供了一整套兼容 JUnit 和 TestNG 测试框架的方案，感兴趣的读者可以下载文末给出的 Demo 工程，并按照官方文档学习。</p>
+</code></pre>
 
-<h2 id="toc_11">6. 相关资源</h2>
+<p>一定注意 Real Server 的网管要设置到 LVS 的 IP：192.168.100.10。接着，看看 Nginx 是不是工作正常的：</p>
+
+<p><img src="https://img-blog.csdn.net/20150725111742203" alt=""/></p>
+
+<p>当然，同样的 ping ping 更健康：</p>
+
+<pre><code>[root@vm1 ~]# ping 192.168.100.10
+PING 192.168.100.10 (192.168.100.10) 56(84) bytes of data.
+64 bytes from 192.168.100.10: icmp_seq=1 ttl=64 time=0.259 ms
+64 bytes from 192.168.100.10: icmp_seq=2 ttl=64 time=0.215 ms
+64 bytes from 192.168.100.10: icmp_seq=3 ttl=64 time=0.227 ms
+
+</code></pre>
+
+<p>另外一个检查方式，也可以通过 route 命令：</p>
+
+<pre><code>[root@vm1 ~]# route
+Kernel IP routing table
+Destination     Gateway         Genmask         Flags Metric Ref    Use Iface
+192.168.100.0   *               255.255.255.0   U     1      0        0 eth0
+default         192.168.100.10  0.0.0.0         UG    0      0        0 eth0
+
+</code></pre>
+
+<p>注意，默认的路由指向 192.168.100.10。<br/>
+<strong>完成准备工作后，我们可以开始安装和配置 LVS 了。</strong></p>
+
+<h2 id="toc_4"><a></a>2.3、开始安装和配置 LVS-NAT 模式：</h2>
+
+<p>ipvsadm 是一个 LVS 的管理程序。我们队 LVS 的配置都是通过这个管理程序进行实现的。首先我们要安装 ipvsadm：</p>
+
+<pre><code>yum -y install ipvsadm
+
+</code></pre>
+
+<p>然后开始配置。首先我们要设置 LVS 机器支持 IP 转发功能。注意默认 IP 转发功能是关闭的，重启机器后，又会关闭：</p>
+
+<pre><code>[root@lvs1 ~]# echo 1 &gt;&gt; /proc/sys/net/ipv4/ip_forward
+
+</code></pre>
+
+<p>然后我们查看一下，是否改写成功：</p>
+
+<pre><code>[root@lvs1 ~]# cat /proc/sys/net/ipv4/ip_forward 
+1
+
+</code></pre>
+
+<p>注意，如果您使用 vim 或者 vi 命令，改写文件，是不会成功的。因为这个文件存在于内存。不在硬盘上。所以只能通过 echo 这样的命令改写。</p>
+
+<p>接下来执行如下的命令：</p>
+
+<pre><code>[root@lvs1 ~]# ipvsadm -At 192.168.220.100:80 -s rr
+[root@lvs1 ~]# ipvsadm -at 192.168.220.100:80 -r 192.168.100.11 -m
+
+</code></pre>
+
+<p>我们来解释一下其中的参数：</p>
+
+<pre><code>-A --add-service 在内核的虚拟服务器表中添加一条新的虚拟服务器记录。也就是增加一台新的虚拟服务器。
+-t --tcp-service service-address 说明虚拟服务器提供的是tcp 的服务。
+-s --scheduler scheduler 使用的调度算法，可选项包括：rr|wrr|lc|wlc|lblc|lblcr|dh|sh|sed|nq（关于调度算法我们在上篇文章中已经详细介绍了）
+-r --real-server server-address 真实的服务器[Real-Server:port]。
+-m --masquerading 指定LVS 的工作模式为NAT 模式。
+
+</code></pre>
+
+<p>当然 ipvsadm 还包括很多参数，后面慢慢讲，然后再本文章的最后部分，会给出一个比较完整的参数汇总。最后我们测试一下：</p>
+
+<p><img src="https://img-blog.csdn.net/20150725115900158" alt=""/></p>
+
+<p>我们在相对于 Real Server 的外网，通过 192.168.220.100 的 LVS Server IP 访问到了 Real Server 上的 Nginx 服务。安装和配置成功。</p>
+
+<h2 id="toc_5"><a></a>2.4、关于 iptables 和重启服务的说明</h2>
+
+<p>在配置 LVA-NAT 过程中，建议关闭 LVS 和 Real Server 的防火墙服务。这样可以避免不必要的错误发生，增加一次配置成功的几率。但是正常生产环境中，LVS 的防火墙根据实际情况最好还是要打开。</p>
+
+<p><strong>请注意，刚才使用 ipvsadm 配置的信息，在 LVS 服务器重启后，就会失效。包括 ip_forward 的配置</strong>。所以，最好制作一个脚本文件，并加入到 / etc/profile 中：</p>
+
+<pre><code>vim /usr/lvsshell.sh
+
+#!/bin/bash
+echo 1 &gt; /proc/sys/net/ipv4/ip_forward 
+ipvsadm -C
+ipvsadm -At 192.168.220.100:80 -s rr
+ipvsadm -at 192.168.220.100:80 -r 192.168.100.11 -m
+
+</code></pre>
+
+<h1 id="toc_6"><a></a>3、LVS-DR 模式安装</h1>
+
+<h2 id="toc_7"><a></a>3.1、准备工作——LVS Server</h2>
+
+<p>为了让您了解 LVS 的另外设置方式，本次我们使用 VIP 的方式，而不是两张网卡的方式（当然您也可以用两张网卡的方式）。VIP 的方式是后面我们将讲到的 LVS + Keepalived 组合工作模式的常用方式。所谓 VIP 就死虚拟 IP，是指这个 IP 不会固定捆绑到某一个网卡设备，而是通过 ifconfig 命令绑定，并在 “适当时候” 这种绑定关系会随之变化：</p>
+
+<p>DIP：192.168.220.137<br/>
+VIP：192.168.220.100</p>
+
+<p>首先我们看看在没有设置 VIP 之前，LVS 主机上的 IP 信息：</p>
+
+<pre><code>[root@lvs1 ~]# ifconfig 
+eth1      Link encap:Ethernet  HWaddr 00:0C:29:3E:4A:59  
+          inet addr:192.168.220.137  Bcast:192.168.220.255  Mask:255.255.255.0
+          inet6 addr: fe80::20c:29ff:fe3e:4a59/64 Scope:Link
+          UP BROADCAST RUNNING MULTICAST  MTU:1500  Metric:1
+          RX packets:2612 errors:0 dropped:0 overruns:0 frame:0
+          TX packets:117 errors:0 dropped:0 overruns:0 carrier:0
+          collisions:0 txqueuelen:1000 
+          RX bytes:159165 (155.4 KiB)  TX bytes:8761 (8.5 KiB)
+
+lo        Link encap:Local Loopback  
+          inet addr:127.0.0.1  Mask:255.0.0.0
+          inet6 addr: ::1/128 Scope:Host
+          UP LOOPBACK RUNNING  MTU:16436  Metric:1
+          RX packets:210 errors:0 dropped:0 overruns:0 frame:0
+          TX packets:210 errors:0 dropped:0 overruns:0 carrier:0 
+          collisions:0 txqueuelen:0 
+          RX bytes:16944 (16.5 KiB)  TX bytes:16944 (16.5 KiB)
+
+</code></pre>
+
+<p>然后我们来设置 VIP 信息：</p>
+
+<pre><code>[root@lvs1 ~]# ifconfig eth1:0 192.168.220.100 broadcast 192.168.220.100 netmask 255.255.255.255 up
+[root@lvs1 ~]# route add -host 192.168.220.100 dev eth1:0
+
+</code></pre>
+
+<p>路由表会有新的路由信息：</p>
+
+<pre><code>[root@lvs1 ~]# route
+Kernel IP routing table
+Destination     Gateway         Genmask         Flags Metric Ref    Use Iface
+192.168.220.100 *               255.255.255.255 UH    0      0        0 eth1
+192.168.100.0   *               255.255.255.0   U     1      0        0 eth0
+192.168.220.0   *               255.255.255.0   U     1      0        0 eth1
+default         192.168.220.1   0.0.0.0         UG    0      0        0 eth1
+
+</code></pre>
+
+<p>这时，通过一个外网 IP，可以 ping 通这个 VIP（下面这个 DOS 系统是 VM 的母机）：</p>
+
+<pre><code>C:\Users\yinwenjie&gt;  ping 192.168.220.100
+正在 Ping 192.168.220.100 具有 32 字节的数据:
+来自 192.168.220.100 的回复: 字节=32 时间&lt;1ms TTL=64
+来自 192.168.220.100 的回复: 字节=32 时间&lt;1ms TTL=64
+
+</code></pre>
+
+<p>以上，我们完成了 LVS 主机设置 LVS-DR 工作模式的准备工作。注意：</p>
 
 <ul>
-<li>  <a href="https://link.zhihu.com/?target=https%3A//github.com/QilongZhang/ark-plugin-demo">ark-plugin-demo</a></li>
-<li>  <a href="https://link.zhihu.com/?target=https%3A//github.com/QilongZhang/springboot-ark-demo">springboot-ark-demo</a></li>
-<li>  <a href="https://link.zhihu.com/?target=https%3A//github.com/alipay/sofa-boot">SOFABoot 源码</a></li>
-<li>  <a href="https://link.zhihu.com/?target=https%3A//github.com/alipay/sofa-rpc">SOFARPC 源码</a></li>
-<li>  <a href="https://link.zhihu.com/?target=https%3A//github.com/alipay/sofa-rpc-boot-projects">SOFARPC Ark Plugin</a></li>
-<li>  <a href="https://link.zhihu.com/?target=https%3A//github.com/alipay/sofa-ark">SOFAArk 源码</a></li>
-<li>  <a href="https://link.zhihu.com/?target=https%3A//alipay.github.io/sofastack.github.io/docs/ark-plugin.html">Ark Plugin 文档</a></li>
+<li>  <strong>在您设置过程中，防火前最好关闭，但在正式生产环境中，LVS 的防火强最好打开。</strong></li>
+<li>  <strong>VIP 信息在 LVS 主机重启后，会消失。所以您最好将设置 VIP 的命令做成一个脚本。</strong></li>
 </ul>
+
+<h2 id="toc_8"><a></a>3.2、准备工作——Real Server</h2>
+
+<p>RIP：192.168.220.132</p>
+
+<p>真实服务器的准备工作，需要保证真实服务器能够访问外网网关，并且保证由 LVS 改写的报文能够被 Real Server 处理（请参见我的上一篇介绍 LVS 原理的博文），这就需要做一个回环 IP。首先我们看看没有开始设置之前的 IP 信息：</p>
+
+<pre><code>[root@localhost ~]# ifconfig 
+eth0      Link encap:Ethernet  HWaddr 00:0C:29:FC:91:FC  
+          inet addr:192.168.220.132  Bcast:192.168.220.255  Mask:255.255.255.0
+          inet6 addr: fe80::20c:29ff:fefc:91fc/64 Scope:Link
+          UP BROADCAST RUNNING MULTICAST  MTU:1500  Metric:1
+          RX packets:2384 errors:0 dropped:0 overruns:0 frame:0
+          TX packets:1564 errors:0 dropped:0 overruns:0 carrier:0
+          collisions:0 txqueuelen:1000 
+          RX bytes:1551652 (1.4 MiB)  TX bytes:144642 (141.2 KiB)
+
+lo        Link encap:Local Loopback  
+          inet addr:127.0.0.1  Mask:255.0.0.0
+          inet6 addr: ::1/128 Scope:Host
+          UP LOOPBACK RUNNING  MTU:65536  Metric:1
+          RX packets:44 errors:0 dropped:0 overruns:0 frame:0
+          TX packets:44 errors:0 dropped:0 overruns:0 carrier:0
+          collisions:0 txqueuelen:0 
+          RX bytes:3361 (3.2 KiB)  TX bytes:3361 (3.2 KiB)
+
+</code></pre>
+
+<p>使用 route 命令，查看原始 route 信息：</p>
+
+<pre><code>[root@localhost ~]# route
+Kernel IP routing table
+Destination     Gateway         Genmask         Flags Metric Ref    Use Iface
+192.168.220.0   *               255.255.255.0   U     1      0        0 eth0
+default         192.168.220.1   0.0.0.0         UG    0      0        0 eth0
+
+</code></pre>
+
+<p>另外，这台 Real Server 上有一个 Nginx，以保证我们观测 LVS-DR 的运行情况。我们在外网使用 192.168.220.132 这个 IP，能够访问到 Nginx 的页面：</p>
+
+<p><img src="https://img-blog.csdn.net/20150726085859705" alt=""/></p>
+
+<p>接下来，我们开始设置 Real Server 上的回环 IP，首先关闭这台机器进行 ARP 查询的功能，否则，Real Server 会在路由器或者交换机上去查询 192.168.220.100 这个 IP 对应的 MAC 地址（注意，以下的信息都会被还原）：</p>
+
+<pre><code>echo &quot;1&quot; &gt;/proc/sys/net/ipv4/conf/lo/arp_ignore
+echo &quot;2&quot; &gt;/proc/sys/net/ipv4/conf/lo/arp_announce
+echo &quot;1&quot; &gt;/proc/sys/net/ipv4/conf/all/arp_ignore
+echo &quot;2&quot; &gt;/proc/sys/net/ipv4/conf/all/arp_announce
+
+</code></pre>
+
+<p>然后可以设置回环 IP 了：</p>
+
+<pre><code>[root@vm3 ~]# ifconfig lo:0 192.168.220.100 broadcast 192.168.220.100 netmask 255.255.255.255 up
+[root@vm3 ~]# route add -host 192.168.220.100 dev lo:0
+
+</code></pre>
+
+<p>检查新的路由信息：</p>
+
+<pre><code>[root@vm3 ~]# route 
+Kernel IP routing table
+Destination     Gateway         Genmask         Flags Metric Ref    Use Iface
+192.168.220.100 *               255.255.255.255 UH    0      0        0 lo
+192.168.220.0   *               255.255.255.0   U     1      0        0 eth0
+default         192.168.220.1   0.0.0.0         UG    0      0        0 eth0
+
+</code></pre>
+
+<p>以上设置完成。<strong>完成后，您需要通过 ping 命令，检查一下网关是否可用（最好可以瓶 ping 一下外网的某个地址，例如 163.com）。LVS-DR 模式下，Real Server 是直接向请求方返回结果，所以一定要保证网关时可用的。</strong></p>
+
+<h2 id="toc_9"><a></a>3.3、开始安装和配置 LVS-DR 模式</h2>
+
+<p>在验证了 LVS Server 和 Real Server 都准备好以后，就可以进行 LVS-DR 模式的设置了。LVS 管理软件 ipvsadm 的安装我们就不敷述了，在 LVS-NAT 的小结中有关于 LVS 管理软件安装的介绍。</p>
+
+<pre><code>[root@lvs1 ~]# echo 1 &gt; /proc/sys/net/ipv4/ip_forward
+[root@lvs1 ~]# cat /proc/sys/net/ipv4/ip_forward
+1
+[root@lvs1 ~]# ipvsadm -C
+[root@lvs1 ~]# ipvsadm -At 192.168.220.100:81 -s rr 
+[root@lvs1 ~]# ipvsadm -at 192.168.220.100:81 -r 192.168.220.132 -g
+
+</code></pre>
+
+<p>介绍一下新出现的参数：</p>
+
+<ul>
+<li>  -g –gatewaying 指定 LVS 的工作模式为直接路由模式 DR 模式（也是 LVS 默认的模式）</li>
+</ul>
+
+<p>配置完成，是不是很简单。接下来，我们就可以在外网，通过 192.168.220.100 这个 IP 访问 132 这台 Real Server 上的 Nginx 服务了：</p>
+
+<p><img src="https://img-blog.csdn.net/20150726091844324" alt=""/></p>
+
+<h1 id="toc_10"><a></a>4、LVS-TUN 模式安装</h1>
+
+<p>LVS-TUN 模式的安装我不打算再花很大的篇幅讲了，在您通过上一篇文章了解了 DR 和 TUN 的不同以后，其配置的过程都是差不多的，只不过一个可以跨越子网，一个不能。所以 LVS-TUN 模式的安装和配置请首先参考 LVS-DR 模式。</p>
+
+<h1 id="toc_11"><a></a>5、IPVSADM 参数汇总</h1>
+
+<p>-A –add-service 在内核的虚拟服务器表中添加一条新的虚拟服务器记录。也就是增加一台新的虚拟服务器。</p>
+
+<p>-E –edit-service 编辑内核虚拟服务器表中的一条虚拟服务器记录。</p>
+
+<p>-D –delete-service 删除内核虚拟服务器表中的一条虚拟服务器记录。</p>
+
+<p>-C –clear 清除内核虚拟服务器表中的所有记录。</p>
+
+<p>-R –restore 恢复虚拟服务器规则</p>
+
+<p>-S –save 保存虚拟服务器规则，输出为 - R 选项可读的格式</p>
+
+<p>-a –add-server 在内核虚拟服务器表的一条记录里添加一条新的真实服务器记录。也就是在一个虚拟服务器中增加一台新的真实服务器</p>
+
+<p>-e –edit-server 编辑一条虚拟服务器记录中的某条真实服务器记录</p>
+
+<p>-d –delete-server 删除一条虚拟服务器记录中的某条真实服务器记录</p>
+
+<p>-L –list 显示内核虚拟服务器表</p>
+
+<p>-Z –zero 虚拟服务表计数器清零（清空当前的连接数量等）</p>
+
+<p>–set tcp tcpfin udp 设置连接超时值</p>
+
+<p>–start-daemon 启动同步守护进程。他后面可以是 master 或 backup，用来说明 LVS Router 是 master 或是 backup。在这个功能上也可以采用 keepalived 的 VRRP 功能。</p>
+
+<p>–stop-daemon 停止同步守护进程</p>
+
+<p>-t –tcp-service service-address 说明虚拟服务器提供的是 tcp 的服务 [vip:port] or [real-server-ip:port]</p>
+
+<p>-u –udp-service service-address 说明虚拟服务器提供的是 udp 的服务 [vip:port] or [real-server-ip:port]</p>
+
+<p>-f –fwmark-service fwmark 说明是经过 iptables 标记过的服务类型。</p>
+
+<p>-s –scheduler scheduler 使用的调度算法，选项：rr|wrr|lc|wlc|lblc|lblcr|dh|sh|sed|nq, 默认的调度算法是： wlc.</p>
+
+<p>-p –persistent [timeout] 持久稳固的服务。这个选项的意思是来自同一个客户的多次请求，将被同一台真实的服务器处理。timeout 的默认值为 300 秒。</p>
+
+<p>-M –netmask netmask persistent granularity mask</p>
+
+<p>-r –real-server server-address 真实的服务器 [Real-Server:port]</p>
+
+<p>-g –gatewaying 指定 LVS 的工作模式为直接路由模式 DR 模式（也是 LVS 默认的模式）</p>
+
+<p>-i –ipip 指定 LVS 的工作模式为隧道模式</p>
+
+<p>-m –masquerading 指定 LVS 的工作模式为 NAT 模式</p>
+
+<p>-w –weight weight 真实服务器的权值</p>
+
+<p>–mcast-interface interface 指定组播的同步接口</p>
+
+<p>-c</p>
+
+<p>–connection 显示 LVS 目前的连接 如：ipvsadm -L -c</p>
+
+<p>–timeout 显示 tcp tcpfin udp 的 timeout 值 如：ipvsadm -L –timeout</p>
+
+<p>–daemon 显示同步守护进程状态</p>
+
+<p>–stats 显示统计信息</p>
+
+<p>–rate 显示速率信息</p>
+
+<p>–sort 对虚拟服务器和真实服务器排序输出</p>
+
+<p>–numeric -n 输出 IP 地址和端口的数字形式</p>
+
+<p>好吧，这个就是我网上抄的。</p>
+
+<h1 id="toc_12"><a></a>6、后文介绍</h1>
+
+<p><strong>LVS 的设置实际上没有什么难度，充其量是一个高级玩意儿，是解决特定问题的特定方法</strong>。您需要的基础知识涉及到 IP 协议、子网分割、IP 映射、Linux 脚本等基本知识。打通任督二脉才是您的根本。</p>
+
+<p>LVS 的设置过程中肯定会遇到实际问题，特别是您头几次配置。别慌，别怕，透过现象猜测本质，一个一个的解决问题。就我的经验总结，无非几种问题分类：</p>
+
+<ul>
+<li>  网关不通</li>
+<li>  回环 IP 设置问题</li>
+<li>  防火墙问题</li>
+<li>  VIP 设置问题</li>
+<li>  网段或者子网问题</li>
+</ul>
+
+<p>通过包括这篇博客在内的这几篇文章，您已经分别了解了 Nginx、LVS 的功能、原理、特 点和工作模式。后面一篇文章，我们将把这些负载层的技术混合在一起，介绍 Nginx + Keepalived、LVS + Keepalived、LVS + Keepalived + Nginx 的安装和配置方式。</p>
+
+<p>（本人这个月 “持之以恒” 奖已经拿到了，笑一个：哈哈哈）</p>
+
+<p>补充一下：由于工作的原因，期间可能还会推出一篇关于 Apache Camel 的文章，就算提前进入业务通信层的讨论吧。不过这个看当时的时间安排。目前情况下还是以负载均衡层的讨论为主线。</p>
 
                         
                       </div>
@@ -464,10 +559,10 @@ Ark container started in 2720 ms.
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/6/5</span>
+                    <span class="date">2018/6/28</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Microservice.html'>Microservice</a></span>
+          					    <span class="posted-in"><a href='Network.html'>Network</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -557,31 +652,31 @@ Ark container started in 2720 ms.
 	      
 		      
 			      <li class="post">
-			        <a href="15459058392039.html">Reliable Domain Events</a>
+			        <a href="15517999043443.html">The Art of Crafting Architectural Diagrams</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
+			        <a href="15517997955971.html">为什么说我们需要软件架构图？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
+			        <a href="15516128677869.html">DNS Servers That Offer Privacy and Filtering</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
+			        <a href="15516123108194.html">Airbnb's Migration from Monolith to Services</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
+			        <a href="15516097487470.html">Events As First-Class Citizens</a>
 			      </li>
 		     
 		  

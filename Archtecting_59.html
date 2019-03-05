@@ -105,225 +105,88 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15287284144985.html">
+                <a class="clearlink" href="15319631527349.html">
                 
-                  <h1>Code Review Best Practices</h1>
+                  <h1>高可用Redis服务架构分析与搭建</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://medium.com/palantir/code-review-best-practices-19e02780015f">https://medium.com/palantir/code-review-best-practices-19e02780015f</a></p>
+<p><a href="https://www.cnblogs.com/xuning/p/8464625.html">https://www.cnblogs.com/xuning/p/8464625.html</a></p>
 </blockquote>
 
-<p><img src="https://cdn-images-1.medium.com/max/800/1*6u51C_pl-UH3X3CbggmCjA.png" alt=""/><br/>
-<a href="https://xkcd.com/1513/">XKCD ‘Code Quality’, copied under CC BY-NC 2.5</a></p>
+<p>基于内存的 Redis 应该是目前各种 web 开发业务中最为常用的 key-value 数据库了，我们经常在业务中用其存储用户登陆态（Session 存储），加速一些热数据的查询（相比较 mysql 而言，速度有数量级的提升），做简单的消息队列（LPUSH 和 BRPOP）、订阅发布（PUB/SUB）系统等等。规模比较大的互联网公司，一般都会有专门的团队，将 Redis 存储以基础服务的形式提供给各个业务调用。</p>
 
-<p>The Internet provides a wealth of material on code reviews: <a href="https://blog.fullstory.com/what-we-learned-from-google-code-reviews-arent-just-for-catching-bugs/">on the effect of code reviews on company culture</a>, <a href="https://www.owasp.org/images/2/2e/OWASP_Code_Review_Guide-V1_1.pdf">on formal security reviews</a>, <a href="https://github.com/thoughtbot/guides/tree/master/code-review">shorter guides</a>, <a href="https://www.codeproject.com/Articles/524235/Codeplusreviewplusguidelines">longer checklists</a>, <a href="http://www.processimpact.com/articles/humanizing_reviews.html">humanized reviews</a>, <a href="https://smartbear.com/learn/code-review/why-review-code/">reasons for doing code reviews in the first place</a>, <a href="https://smartbear.com/learn/code-review/best-practices-for-peer-code-review/">best practices</a>, <a href="https://www.atlassian.com/agile/software-development/code-reviews">more best practices</a>, <a href="https://blog.codinghorror.com/code-reviews-just-do-it/">statistics on code review effectiveness for catching bugs</a>, and <a href="https://blog.fogcreek.com/effective-code-reviews-9-tips-from-a-converted-skeptic/">examples of code reviews gone wrong</a>. Oh, and of course there are <a href="https://books.google.com/books/about/Peer_Reviews_in_Software.html?id=d7BQAAAAMAAJ">books</a>, too. Long story short, this blog post presents Palantir’s take on code reviews. Organizations with deep cultural reluctance to peer reviews may want to consult Karl E. Wiegers’ excellent essay on <a href="http://www.processimpact.com/articles/humanizing_reviews.html">Humanizing Peer Reviews</a> before trying to follow this guide.</p>
+<p>不过任何一个基础服务的提供方，都会被调用方问起的一个问题是：你的服务是否具有高可用性？最好不要因为你的服务经常出问题，导致我这边的业务跟着遭殃。最近我所在的项目中也自己搭了一套小型的 “高可用”Redis 服务，在此做一下自己的总结和思考。</p>
 
-<p>This post is copied from the <a href="https://github.com/palantir/gradle-baseline/tree/develop/docs">best practices guides</a> of our Java Code Quality tool chain, <a href="https://github.com/palantir/gradle-baseline">Baseline</a>, and covers the following topics:</p>
+<p>首先我们要定义一下对于 Redis 服务来说怎样才算是高可用，即在各种出现异常的情况下，依然可以正常提供服务。或者宽松一些，出现异常的情况下，只经过很短暂的时间即可恢复正常服务。所谓异常，应该至少包含了以下几种可能性：</p>
 
-<ul>
-<li>  Why, what, and when to do code reviews</li>
-<li>  Preparing code for review</li>
-<li>  Performing code reviews</li>
-<li>  Code review examples</li>
-</ul>
+<p>【异常 1】某个节点服务器的某个进程突然 down 掉（例如某开发手残，把一台服务器的 redis-server 进程 kill 了）</p>
 
-<h3 id="toc_0">Motivation</h3>
+<p>【异常 2】某台节点服务器 down 掉，相当于这个节点上所有进程都停了（例如某运维手残，把一个服务器的电源拔了；例如一些老旧机器出现硬件故障）</p>
 
-<p>We perform code reviews (CRs) in order to improve code quality and benefit from <a href="https://blog.fullstory.com/what-we-learned-from-google-code-reviews-arent-just-for-catching-bugs">positive effects on team and company culture</a>. For example:</p>
+<p>【异常 3】任意两个节点服务器之间的通信中断了（例如某临时工手残，把用于两个机房通信的光缆挖断了）</p>
 
-<ul>
-<li>  <strong>Committers are motivated</strong> by the notion of a set of reviewers who will look over the change request: the committer tends to clean up loose ends, consolidate TODOs, and generally improve the commit. Recognition of coding expertise through peers is a source of pride for many programmers.</li>
-<li>  <strong>Sharing knowledge</strong> helps development teams in several ways:
+<p>其实以上任意一种异常都是小概率事件，而做到高可用性的基本指导思想就是：多个小概率事件同时发生的概率可以忽略不计。只要我们设计的系统可以容忍短时间内的单点故障，即可实现高可用性。</p>
 
-<ul>
-<li>A CR explicitly communicates added/altered/removed functionality to team members who can subsequently build on the work done.</li>
-<li>The committer may use a technique or algorithm that reviewers can learn from. More generally, code reviews help <a href="https://blog.fullstory.com/what-we-learned-from-google-code-reviews-arent-just-for-catching-bugs/">raise the quality bar across the organization</a>.</li>
-<li>Reviewers may possess knowledge about programming techniques or the code base that can help improve or consolidate the change; for example, someone else may be concurrently working on a similar feature or fix.</li>
-<li>Positive interaction and communication strengthens social bonds between team members.</li>
-</ul></li>
-<li>  <strong>Consistency</strong> in a code base makes code easier to read and understand, helps prevent bugs, and facilitates collaboration between regular and migratory developer species.</li>
-<li>  <strong>Legibility</strong> of code fragments is hard to judge for the author whose brain child it is, and easy to judge for a reviewer who does not have the full context. Legible code is more reusable, bug-free, and future-proof.</li>
-<li>  <strong>Accidental errors</strong> (e.g., typos) as well as <strong>structural errors</strong> (e.g., dead code, logic or algorithm bugs, performance or architecture concerns) are often much easier to spot for critical reviewers with an outside perspective. Studies have found that even short and informal code reviews have significant <a href="https://blog.codinghorror.com/code-reviews-just-do-it/">impact on code quality and bug frequency</a>.</li>
-<li>  <strong>Compliance</strong> and regulatory environments often demand reviews. CRs are a great way to avoid common security traps. If your feature or environment has significant security requirements it will benefit from (and probably require) review by your local security curmudgeons (<a href="https://www.owasp.org/index.php/Code_Review_Introduction">OWASP’s guide</a> is a good example of the process).</li>
-</ul>
+<p>对于搭建高可用 Redis 服务，网上已有了很多方案，例如 Keepalived，Codis，Twemproxy，Redis Sentinel。其中 Codis 和 Twemproxy 主要是用于大规模的 Redis 集群中，也是在 Redis 官方发布 Redis Sentinel 之前 twitter 和豌豆荚提供的开源解决方案。我的业务中数据量并不大，所以搞集群服务反而是浪费机器了。最终在 Keepalived 和 Redis Sentinel 之间做了个选择，选择了官方的解决方案 Redis Sentinel。</p>
 
-<h3 id="toc_1">What to review</h3>
+<p>Redis Sentinel 可以理解为一个监控 Redis Server 服务是否正常的进程，并且一旦检测到不正常，可以自动地将备份（slave）Redis Server 启用，使得外部用户对 Redis 服务内部出现的异常无感知。我们按照由简至繁的步骤，搭建一个最小型的高可用的 Redis 服务。</p>
 
-<p>There is no eternally true answer to this question and each development team should agree on its own approach. Some teams prefer to review every change merged into the main branch, while others will have a “triviality” threshold under which a review is not required. The trade-off is between effective use of engineers’ (both authors’ and reviewers’) time and maintaining code quality. In certain regulatory environments, code review may be required even for trivial changes.</p>
+<p><strong>方案 1：单机版 Redis Server，无 Sentinel</strong></p>
 
-<p>Code reviews are classless: being the most senior person on the team does not imply that your code does not need review. Even if, in the rare case, code is flawless, the review provides an opportunity for mentorship and collaboration, and, minimally, diversifies the understanding of code in the code base.</p>
+<p><img src="https://images2018.cnblogs.com/blog/566097/201802/566097-20180224104757825-317365999.png" alt=""/></p>
 
-<h3 id="toc_2">When to review</h3>
+<p>一般情况下，我们搭的个人网站，或者平时做开发时，会起一个单实例的 Redis Server。调用方直接连接 Redis 服务即可，甚至 Client 和 Redis 本身就处于同一台服务器上。这种搭配仅适合个人学习娱乐，毕竟这种配置总会有单点故障的问题无法解决。一旦 Redis 服务进程挂了，或者服务器 1 停机了，那么服务就不可用了。并且如果没有配置 Redis 数据持久化的话，Redis 内部已经存储的数据也会丢失。</p>
 
-<p>Code reviews should happen after automated checks (tests, style, other CI) have completed successfully, but before the code merges to the repository’s mainline branch. We generally don’t perform formal code review of aggregate changes since the last release.</p>
+<p><strong>方案 2：主从同步 Redis Server，单实例 Sentinel</strong></p>
 
-<p>For complex changes that should merge into the mainline branch as a single unit but are too large to fit into one reasonable CR, consider a stacked CR model: Create a primary branch <code>feature/big-feature</code> and a number of secondary branches (e.g., <code>feature/big-feature-api</code>, <code>feature/big-feature-testing</code>, etc.) that each encapsulate a subset of the functionality and that get individually code-reviewed against the <code>feature/big-feature</code> branch. Once all secondary branches are merged into <code>feature/big-feature</code>, create a CR for merging the latter into the main branch.</p>
+<p><img src="https://images2018.cnblogs.com/blog/566097/201802/566097-20180224104938975-2014456086.png" alt=""/></p>
 
-<h3 id="toc_3">Preparing code for review</h3>
+<p>为了实现高可用，解决方案 1 中所述的单点故障问题，我们必须增加一个备份服务，即在两台服务器上分别各启动一个 Redis Server 进程，一般情况下由 master 提供服务，slave 只负责同步和备份。与此同时，在额外启动一个 Sentinel 进程，监控两个 Redis Server 实例的可用性，以便在 master 挂掉的时候，及时把 slave 提升到 master 的角色继续提供服务，这样就实现了 Redis Server 的高可用。这基于一个高可用服务设计的依据，即单点故障本身就是个小概率事件，而多个单点同时故障（即 master 和 slave 同时挂掉），可以认为是（基本）不可能发生的事件。</p>
 
-<p>It is the author’s responsibility to submit CRs that are easy to review in order not to waste reviewers’ time and motivation:</p>
+<p>对于 Redis 服务的调用方来说，现在要连接的是 Redis Sentinel 服务，而不是 Redis Server 了。常见的调用过程是，client 先连接 Redis Sentinel 并询问目前 Redis Server 中哪个服务是 master，哪些是 slave，然后再去连接相应的 Redis Server 进行操作。当然目前的第三方库一般都已经实现了这一调用过程，不再需要我们手动去实现（例如 Nodejs 的 ioredis，PHP 的 predis，Golang 的 go-redis/redis，JAVA 的 jedis 等）。</p>
 
-<ul>
-<li>  <strong>Scope and size</strong>. Changes should have a narrow, well-defined, self-contained scope that they cover exhaustively. For example, a change may implement a new feature or fix a bug. Shorter changes are preferred over longer ones. If a CR makes substantive changes to more than ~5 files, or took longer than 1–2 days to write, or would take more than 20 minutes to review, consider splitting it into multiple self-contained CRs. For example, a developer can submit one change that defines the API for a new feature in terms of interfaces and documentation, and a second change that adds implementations for those interfaces.</li>
-<li>  Only submit <strong>complete, self-reviewed</strong> (by diff), and <strong>self-tested</strong> CRs. In order to save reviewers’ time, test the submitted changes (i.e., run the test suite) and make sure they pass all builds as well as all tests and code quality checks, both locally and on the CI servers, <u>before assigning reviewers</u>.</li>
-<li>  <strong>Refactoring changes</strong> should not alter behavior; conversely, a behavior-changing changes should avoid refactoring and code formatting changes. There are multiple good reasons for this:
+<p>然而，我们实现了 Redis Server 服务的主从切换之后，又引入了一个新的问题，即 Redis Sentinel 本身也是个单点服务，一旦 Sentinel 进程挂了，那么客户端就没办法链接 Sentinel 了。所以说，方案 2 的配置并无法实现高可用性。</p>
 
-<ul>
-<li>Refactoring changes often touch many lines and files and will consequently be <a href="https://smartbear.com/learn/code-review/best-practices-for-peer-code-review/">reviewed with less attention</a>. Unintended behavior changes can leak into the code base without anyone noticing.</li>
-<li>Large refactoring changes break cherry-picking, rebasing, and other source control magic. It is very onerous to undo a behavior change that was introduced as part of a repository-wide refactoring commit.</li>
-<li>Expensive human review time should be spent on the program logic rather than style, syntax, or formatting debates. We prefer settling those with automated tooling like <a href="http://checkstyle.sourceforge.net/">Checkstyle</a>, <a href="https://github.com/palantir/tslint">TSLint</a>, <a href="https://github.com/palantir/gradle-baseline">Baseline</a>, <a href="https://github.com/prettier/prettier">Prettier</a>, etc.</li>
-</ul></li>
-</ul>
+<p><strong>方案 3：主从同步 Redis Server，双实例 Sentinel</strong></p>
 
-<h3 id="toc_4">Commit messages</h3>
+<p><img src="https://images2018.cnblogs.com/blog/566097/201802/566097-20180224105121774-2039349597.png" alt=""/></p>
 
-<p>The following is an example of a good commit message following a <a href="http://tbaggery.com/2008/04/19/a-note-about-git-commit-messages.html">widely quoted standard</a>:</p>
+<p>为了解决方案 2 的问题，我们把 Redis Sentinel 进程也额外启动一份，两个 Sentinel 进程同时为客户端提供服务发现的功能。对于客户端来说，它可以连接任何一个 Redis Sentinel 服务，来获取当前 Redis Server 实例的基本信息。通常情况下，我们会在 Client 端配置多个 Redis Sentinel 的链接地址，Client 一旦发现某个地址连接不上，会去试图连接其他的 Sentinel 实例，这当然也不需要我们手动实现，各个开发语言中比较热门的 redis 连接库都帮我们实现了这个功能。我们预期是：即使其中一个 Redis Sentinel 挂掉了，还有另外一个 Sentinel 可以提供服务。</p>
 
-<pre><code>Capitalized, short (80 chars or less) summary
-</code></pre>
+<p>然而，愿景是美好的，现实却是很残酷的。如此架构下，依然无法实现 Redis 服务的高可用。方案 3 示意图中，红线部分是两台服务器之间的通信，而我们所设想的异常场景（【异常 2】）是，某台服务器整体 down 机，不妨假设服务器 1 停机，此时，只剩下服务器 2 上面的 Redis Sentinel 和 slave Redis Server 进程。这时，Sentinel 其实是不会将仅剩的 slave 切换成 master 继续服务的，也就导致 Redis 服务不可用，因为 Redis 的设定是只有当超过 50% 的 Sentinel 进程可以连通并投票选取新的 master 时，才会真正发生主从切换。本例中两个 Sentinel 只有一个可以连通，等于 50% 并不在可以主从切换的场景中。</p>
 
-<pre><code>More detailed explanatory text, if necessary. Wrap it to about 120 characters or so. In some contexts, the firstline is treated as the subject of an email and the rest of the text as the body. The blank line separating thesummary from the body is critical (unless you omit the body entirely); tools like rebase can get confused if you runthe two together.
-</code></pre>
+<p>你可能会问，为什么 Redis 要有这个 50% 的设定？假设我们允许小于等于 50% 的 Sentinel 连通的场景下也可以进行主从切换。试想一下【异常 3】，即服务器 1 和服务器 2 之间的网络中断，但是服务器本身是可以运行的。如下图所示：</p>
 
-<pre><code>Write your commit message in the imperative: &quot;Fix bug&quot; and not &quot;Fixed bug&quot; or &quot;Fixes bug.&quot; This convention matchesup with commit messages generated by commands like git merge and git revert.
-</code></pre>
+<p><img src="https://images2018.cnblogs.com/blog/566097/201802/566097-20180224105223591-314651630.png" alt=""/></p>
 
-<pre><code>Further paragraphs come after blank lines.
-</code></pre>
+<p>实际上对于服务器 2 来说，服务器 1 直接 down 掉和服务器 1 网络连不通是一样的效果，反正都是突然就无法进行任何通信了。假设网络中断时我们允许服务器 2 的 Sentinel 把 slave 切换为 master，结果就是你现在拥有了两个可以对外提供服务的 Redis Server。Client 做任何的增删改操作，有可能落在服务器 1 的 Redis 上，也有可能落在服务器 2 的 Redis 上（取决于 Client 到底连通的是哪个 Sentinel），造成数据混乱。即使后面服务器 1 和服务器 2 之间的网络又恢复了，那我们也无法把数据统一了（两份不一样的数据，到底该信任谁呢？），数据一致性完全被破坏。</p>
 
-<pre><code>- Bullet points are okay, too
-</code></pre>
+<p><strong>方案 4：主从同步 Redis Server，三实例 Sentinel</strong></p>
 
-<p>Try to describe both what the commit changes and how it does it:</p>
+<p><img src="https://images2018.cnblogs.com/blog/566097/201802/566097-20180224105313568-148145342.png" alt=""/></p>
 
-<pre><code>&gt; BAD. Don&#39;t do this.Make compile again
-</code></pre>
+<p>鉴于方案 3 并没有办法做到高可用，我们最终的版本就是上图所示的方案 4 了。实际上这就是我们最终搭建的架构。我们引入了服务器 3，并且在 3 上面又搭建起一个 Redis Sentinel 进程，现在由三个 Sentinel 进程来管理两个 Redis Server 实例。这种场景下，不管是单一进程故障、还是单个机器故障、还是某两个机器网络通信故障，都可以继续对外提供 Redis 服务。</p>
 
-<pre><code>&gt; Good.Add jcsv dependency to fix IntelliJ compilation
-</code></pre>
+<p>实际上，如果你的机器比较空闲，当然也可以把服务器 3 上面也开启一个 Redis Server，形成 1 master + 2 slave 的架构，每个数据都有两个备份，可用性会提升一些。当然也并不是 slave 越多越好，毕竟主从同步也是需要时间成本的。</p>
 
-<h3 id="toc_5">Finding reviewers</h3>
+<p>在方案 4 中，一旦服务器 1 和其他服务器的通信完全中断，那么服务器 2 和 3 会将 slave 切换为 master。对于客户端来说，在这么一瞬间会有 2 个 master 提供服务，并且一旦网络恢复了，那么所有在中断期间落在服务器 1 上的新数据都会丢失。如果想要部分解决这个问题，可以配置 Redis Server 进程，让其在检测到自己网络有问题的时候，立即停止服务，避免在网络故障期间还有新数据进来（可以参考 Redis 的 min-slaves-to-write 和 min-slaves-max-lag 这两个配置项）。</p>
 
-<p>It is customary for the committer to propose one or two reviewers who are familiar with the code base. Often, one of the reviewers is the project lead or a senior engineer. Project owners should consider subscribing to their projects in order to get notified of new CRs. Code reviews among more than three parties are often unproductive or even counter-productive since different reviewers may propose contradictory changes. This may indicate fundamental disagreement on the correct implementation and should be resolved outside a code review in a higher-bandwidth forum, for example in person or in a video conference with all involved parties.</p>
+<p>至此，我们就用 3 台机器搭建了一个高可用的 Redis 服务。其实网上还有更加节省机器的办法，就是把一个 Sentinel 进程放在 Client 机器上，而不是服务提供方的机器上。只不过在公司里面，一般服务的提供方和调用方并不来自同一个团队。两个团队共同操作同一个机器，很容易因为沟通问题导致一些误操作，所以出于这种人为因素的考虑，我们还是采用了方案 4 的架构。并且由于服务器 3 上面只跑了一个 Sentinel 进程，对服务器资源消耗并不多，还可以用服务器 3 来跑一些其他的服务。</p>
 
-<h3 id="toc_6">Performing code reviews</h3>
+<p><strong>易用性：像使用单机版 Redis 一样使用 Redis Sentinel</strong></p>
 
-<p>A code review is a synchronization point among different team members and thus has the potential to block progress. Consequently, code reviews need to be prompt (on the order of hours, not days), and team members and leads need to be aware of the time commitment and prioritize review time accordingly. If you don’t think you can complete a review in time, please let the committer know right away so they can find someone else.</p>
+<p>作为服务的提供方，我们总是会讲到用户体验问题。在上述方案当中始终有一个让 Client 端用的不是那么舒服的地方。对于单机版 Redis，Client 端直接连接 Redis Server，我们只需要给一个 ip 和 port，Client 就可以使用我们的服务了。而改造成 Sentinel 模式之后，Client 不得不采用一些支持 Sentinel 模式的外部依赖包，并且还要修改自己的 Redis 连接配置，这对于 “矫情” 的用户来讲显然是不能接收的。有没有办法还是像在使用单机版的 Redis 那样，只给 Client 一个固定的 ip 和 port 就可以提供服务呢？</p>
 
-<p>A review should be thorough enough that the reviewer could explain the change at a reasonable level of detail to another developer. This ensures that the details of the code base are known to more than a single person.</p>
+<p><img src="https://images2018.cnblogs.com/blog/566097/201802/566097-20180224105513939-1484357459.png" alt=""/></p>
 
-<p>As a reviewer, it is your responsibility to enforce coding standards and keep the quality bar up. Reviewing code is more of an art than a science. The only way to learn it is to do it; an experienced reviewer should consider putting other less experienced reviewers on their changes and have them do a review first. Assuming the author has followed the guidelines above (especially with respect to self-review and ensuring the code runs), here’s an list of things a reviewer should pay attention to in a code review:</p>
+<p>答案当然是肯定的。这可能就要引入虚拟 IP（Virtual IP，VIP），如上图所示。我们可以把虚拟 IP 指向 Redis Server master 所在的服务器，在发生 Redis 主从切换的时候，会触发一个回调脚本，回调脚本中将 VIP 切换至 slave 所在的服务器。这样对于 Client 端来说，他仿佛在使用的依然是一个单机版的高可用 Redis 服务。</p>
 
-<h4 id="toc_7">Purpose</h4>
+<p><strong>结语</strong></p>
 
-<ul>
-<li>  <strong>Does this code accomplish the author’s purpose?</strong> Every change should have a specific reason (new feature, refactor, bugfix, etc). Does the submitted code actually accomplish this purpose?</li>
-<li>  <strong>Ask questions.</strong> Functions and classes should exist for a reason. When the reason is not clear to the reviewer, this may be an indication that the code needs to be rewritten or supported with comments or tests.</li>
-</ul>
-
-<h4 id="toc_8">Implementation</h4>
-
-<ul>
-<li>  <strong>Think about how you would have solved the problem.</strong> If it’s different, why is that? Does your code handle more (edge) cases? Is it shorter/easier/cleaner/faster/safer yet functionally equivalent? Is there some underlying pattern you spotted that isn’t captured by the current code?</li>
-<li>  <strong>Do you see potential for useful abstractions?</strong> Partially duplicated code often indicates that a more abstract or general piece of functionality can be extracted and then reused in different contexts.</li>
-<li>  <strong>Think like an adversary, but be nice about it.</strong> Try to “catch” authors taking shortcuts or missing cases by coming up with problematic configurations/input data that breaks their code.</li>
-<li>  <strong>Think about libraries or existing product code.</strong> When someone re-implements existing functionality, more often than not it’s simply because they don’t know it already exists. Sometimes, code or functionality is duplicated on purpose, e.g., in order to avoid dependencies. In such cases, a code comment can clarify the intent. Is the introduced functionality already provided by an existing library?</li>
-<li>  <strong>Does the change follow standard patterns?</strong> Established code bases often exhibit patterns around naming conventions, program logic decomposition, data type definitions, etc. It is usually desirable that changes are implemented in accordance with existing patterns.</li>
-<li>  <strong>Does the change add compile-time or run-time dependencies (especially between sub-projects)?</strong> We want to keep our products loosely coupled, with as few dependencies as possible. Changes to dependencies and the build system should be scrutinized heavily.</li>
-</ul>
-
-<h4 id="toc_9">Legibility and style</h4>
-
-<ul>
-<li>  <strong>Think about your reading experience.</strong> Did you grasp the concepts in a reasonable amount of time? Was the flow sane and were variable and methods names easy to follow? Were you able to keep track through multiple files or functions? Were you put off by inconsistent naming?</li>
-<li>  <strong>Does the code adhere to coding guidelines and code style?</strong> Is the code consistent with the project in terms of style, API conventions, etc.? As mentioned above, we prefer to settle style debates with automated tooling.</li>
-<li>  <strong>Does this code have TODOs?</strong> TODOs just pile up in code, and become stale over time. Have the author submit a ticket on GitHub Issues or JIRA and attach the issue number to the TODO. The proposed code change should not contain commented-out code.</li>
-</ul>
-
-<h4 id="toc_10">Maintainability</h4>
-
-<ul>
-<li>  <strong>Read the tests.</strong> If there are no tests and there should be, ask the author to write some. Truly untestable features are rare, while untested implementations of features are unfortunately common. Check the tests themselves: are they covering interesting cases? Are they readable? Does the CR lower overall test coverage? Think of ways this code could break. Style standards for tests are often different than core code, but still important.</li>
-<li>  <strong>Does this CR introduce the risk of breaking test code, staging stacks, or integrations tests?</strong> These are often not checked as part of the pre-commit/merge checks, but having them go down is painful for everyone. Specific things to look for are: removal of test utilities or modes, changes in configuration, and changes in artifact layout/structure.</li>
-<li>  <strong>Does this change break backward compatibility?</strong> If so, is it OK to merge the change at this point or should it be pushed into a later release? Breaks can include database or schema changes, public API changes, user workflow changes, etc.</li>
-<li>  <strong>Does this code need integration tests?</strong> Sometimes, code can’t be adequately tested with unit tests alone, especially if the code interacts with outside systems or configuration.</li>
-<li>  <strong>Leave feedback on code-level documentation, comments, and commit messages.</strong> Redundant comments clutter the code, and terse commit messages mystify future contributors. This isn’t always applicable, but quality comments and commit messages will pay for themselves down the line. (Think of a time you saw an excellent, or truly terrible, commit message or comment.)</li>
-<li>  <strong>Was the external documentation updated?</strong> If your project maintains a README, CHANGELOG, or other documentation, was it updated to reflect the changes? Outdated documentation can be more confusing than none, and it will be more costly to fix it in the future than to update it now.</li>
-</ul>
-
-<p>Don’t forget to praise concise/readable/efficient/elegant code. Conversely, declining or disapproving a CR is not rude. If the change is redundant or irrelevant, decline it with an explanation. If you consider it unacceptable due to one or more fatal flaws, disapprove it, again with an explanation. Sometimes the right outcome of a CR is “let’s do this a totally different way” or even “let’s not do this at all.”</p>
-
-<p>Be respectful to the reviewees. While adversarial thinking is handy, it’s not your feature and you can’t make all the decisions. If you can’t come to an agreement with your reviewee with the code as is, switch to real-time communication or seek a third opinion.</p>
-
-<h4 id="toc_11">Security</h4>
-
-<p>Verify that API endpoints perform appropriate authorization and authentication consistent with the rest of the code base. Check for other common weaknesses, e.g., weak configuration, malicious user input, missing log events, etc. When in doubt, refer the CR to an application security expert.</p>
-
-<h4 id="toc_12">Comments: concise, friendly, actionable</h4>
-
-<p>Reviews should be concise and written in neutral language. Critique the code, not the author. When something is unclear, ask for clarification rather than assuming ignorance. Avoid possessive pronouns, in particular in conjunction with evaluations: “_my_ code worked before <u>your</u> change”, “_your_ method has a bug”, etc. Avoid absolute judgements: “this can <u>never</u> work”, “the result is <u>always</u> wrong”.</p>
-
-<p>Try to differentiate between suggestions (e.g., “Suggestion: extract method to improve legibility”), required changes (e.g., “Add @Override”), and points that need discussion or clarification (e.g., “Is this really the correct behavior? If so, please add a comment explaining the logic.”). Consider providing links or pointers to in-depth explanations of a problem.</p>
-
-<p>When you’re done with a code review, indicate to what extent you expect the author to respond to your comments and whether you would like to re-review the CR after the changes have been implemented (e.g., “Feel free to merge after responding to the few minor suggestions” vs. “Please consider my suggestions and let me know when I can take another look.”).</p>
-
-<h3 id="toc_13">Responding to reviews</h3>
-
-<p>Part of the purpose of the code review is improve the author’s change request; consequently, don’t be offended by your reviewer’s suggestions and take them seriously even if you don’t agree. Respond to every comment, even if it’s only a simple “ACK” or “done.” Explain why you made certain decisions, why some function exists, etc. If you can’t come to an agreement with the reviewer, switch to real-time communication or seek an outside opinion.</p>
-
-<p>Fixes should be pushed to the same branch, but in a separate commit. Squashing commits during the review process makes it hard for the reviewer to follow up on changes.</p>
-
-<p>Different teams have different merge policies: some teams allow only project owners to merge, while other teams allow the contributor to merge after a positive code review.</p>
-
-<h4 id="toc_14">In-person code reviews</h4>
-
-<p>For the majority of code reviews, asynchronous diff-based tools such as Reviewable, Gerrit or, GitHub are a great choice. Complex changes, or reviews between parties with very different expertise or experience can be more efficient when performed in person, either in front of the same screen or projector, or remotely via VTC or screen share tools.</p>
-
-<h3 id="toc_15">Examples</h3>
-
-<p>In the following examples, suggested review comments are indicated by <code>//R: ...</code> comments in the code blocks.</p>
-
-<h4 id="toc_16">Inconsistent naming</h4>
-
-<pre>class MyClass {
-  private int countTotalPageVisits; //R: name variables consistently
-  private int uniqueUsersCount;
-}</pre>
-
-<h4 id="toc_17">Inconsistent method signatures</h4>
-
-<pre>interface MyInterface {
-  /** Returns {@link Optional#empty} if s cannot be extracted. */
-  public Optional<String> extractString(String s);</pre>
-
-<pre>  /** Returns null if {@code s} cannot be rewritten. */
-  //R: should harmonize return values: use Optional<> here, too
-  public String rewriteString(String s);
-}</pre>
-
-<h4 id="toc_18">Library use</h4>
-
-<pre>//R: remove and replace by Guava's MapJoiner
-String joinAndConcatenate(Map<String, String> map, String keyValueSeparator, String keySeparator);</pre>
-
-<h4 id="toc_19">Personal taste</h4>
-
-<pre>int dayCount; //R: nit: I usually prefer numFoo over fooCount; up to you, but we should keep it consistent in this project</pre>
-
-<h4 id="toc_20">Bugs</h4>
-
-<pre>//R: This performs numIterations+1 iterations, is that intentional?
-//   If it is, consider changing the numIterations semantics?
-for (int i = 0; i <= numIterations; ++i) {
-  ...
-}</pre>
-
-<h4 id="toc_21">Architectural concerns</h4>
-
-<pre>otherService.call(); //R: I think we should avoid the dependency on OtherService. Can we discuss this in person?</pre>
+<p>搭建任何一个服务，做到 “能用” 其实是非常简单的，就像我们运行一个单机版的 Redis。不过一旦要做到“高可用”，事情就会变得复杂起来。业务中使用了额外的两台服务器，3 个 Sentinel 进程 + 1 个 Slave 进程，只是为了保证在那小概率的事故中依然做到服务可用。在实际业务中我们还启用了 supervisor 做进程监控，一旦进程意外退出，会自动尝试重新启动。</p>
 
                         
                       </div>
@@ -332,10 +195,10 @@ for (int i = 0; i <= numIterations; ++i) {
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/6/11</span>
+                    <span class="date">2018/7/19</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='QA.html'>QA</a></span>
+          					    <span class="posted-in"><a href='Cache.html'>Cache</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -425,31 +288,31 @@ for (int i = 0; i <= numIterations; ++i) {
 	      
 		      
 			      <li class="post">
-			        <a href="15459058392039.html">Reliable Domain Events</a>
+			        <a href="15517999043443.html">The Art of Crafting Architectural Diagrams</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
+			        <a href="15517997955971.html">为什么说我们需要软件架构图？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
+			        <a href="15516128677869.html">DNS Servers That Offer Privacy and Filtering</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
+			        <a href="15516123108194.html">Airbnb's Migration from Monolith to Services</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
+			        <a href="15516097487470.html">Events As First-Class Citizens</a>
 			      </li>
 		     
 		  

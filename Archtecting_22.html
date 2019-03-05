@@ -105,454 +105,315 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15374968439284.html">
+                <a class="clearlink" href="15462168709575.html">
                 
-                  <h1>OpenID Connect explained</h1>
+                  <h1>分布式锁</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://connect2id.com/learn/openid-connect">https://connect2id.com/learn/openid-connect</a></p>
+<p>原文地址 <a href="https://zhuanlan.zhihu.com/p/51988123">https://zhuanlan.zhihu.com/p/51988123</a></p>
 </blockquote>
 
-<p>OpenID Connect has become the leading standard for single sign-on and identity provision on the Internet. Its formula for success: simple JSON-based identity tokens (JWT), delivered via OAuth 2.0 flows designed for web, browser-based and native / mobile applications.</p>
+<p>【小宅按】现在面试都会聊聊分布式系统，通常面试官都会从服务框架（Spring Cloud、Dubbo），一路聊到分布式事务、分布式锁、ZooKeeper 等知识。今天就来聊聊分布式锁这块的知识，先具体的来看看 Redis 分布式锁的实现原理。</p>
 
-<h2 id="toc_0"><a href="#intro">1. Local user authentication vs Identity Providers</a></h2>
+<p>如果在公司里落地生产环境用分布式锁的时候，一定是会用开源类库的，比如 Redis 分布式锁，一般就是用 Redisson 框架就好了，非常的简便易用。感兴趣可以去 Redisson 官网看看如何在项目中引入 Redisson 的依赖，然后基于 Redis 实现分布式锁的加锁与释放锁。</p>
 
-<p><img src="https://connect2id.com/assets/learn/openid-connect/enter.png" alt=""/></p>
+<p>一段简单的使用代码片段，先直观的感受一下：<br/>
+<img src="media/15462168709575/15462169730534.jpg" alt=""/></p>
 
-<p>Applications often need to identify their users. The simplistic approach is to create a local database for the users’ accounts and credentials. Given enough technical care this can be made to work well. However, local authentication can be bad for business:</p>
+<p>是不是感觉简单的不行！此外，还支持 Redis 单实例、Redis 哨兵、Redis Cluster、redis master-slave 等各种部署架构，都可以完美实现。</p>
 
-<ul>
-<li><p>People find sign up and account creation tedious, and rightly so. Consumer web sites and apps may suffer abandoned shopping carts because of that, which means loss of business and sales.</p></li>
-<li><p>For enterprises with many apps, maintenance of separate user databases can easily become an administrative and security nightmare. You may want to put your IT resources to better use.</p></li>
-</ul>
+<h2 id="toc_0"><strong>Redisson 实现 Redis 分布式锁的底层原理</strong></h2>
 
-<p>The established solution to these problems is to delegate user authentication and provisioning to a dedicated, purpose-built service, called an Identity Provider (IdP).</p>
+<p>现在通过一张手绘图，说说 Redisson 这个开源框架对 Redis 分布式锁的实现原理。<br/>
+<img src="media/15462168709575/15462169812635.jpg" alt=""/></p>
 
-<p>Google, Facebook and Twitter, where many people on the internet are registered, offer such IdP services for their users. A consumer web site can greatly streamline user onboarding by integrating login with these IdPs.</p>
+<p><strong>加锁机制</strong></p>
 
-<p>In a enterprise, this would ideally be one internal IdP service, for employees and contractors to log into the internal applications. Centralisation has considerable benefits, such as easier administration and potentially faster development cycles for new apps. You may ask: Isn’t that going to create a single point of failure? No, not when the IdP service is built for redundancy.</p>
+<p>看上面那张图，现在某个客户端要加锁。如果该客户端面对的是一个 Redis Cluster 集群，他首先会根据 Hash 节点选择一台机器。</p>
 
-<h2 id="toc_1"><a href="#oidc">2. Enter OpenID Connect</a></h2>
+<p>注：仅仅只是选择一台机器！然后发送一段 Lua 脚本到 Redis 上，那段 Lua 脚本如下所示：<br/>
+<img src="media/15462168709575/15462169890243.jpg" alt=""/></p>
 
-<p><img src="https://connect2id.com/assets/learn/openid-connect/openid.png" alt=""/></p>
+<p>为啥要用 Lua 脚本呢？因为一大坨复杂的业务逻辑，可以通过封装在 Lua 脚本中发送给 Redis，保证这段复杂业务逻辑执行的原子性。</p>
 
-<p><a href="https://openid.net/specs/openid-connect-core-1_0.html">OpenID Connect</a>, published in 2014, is not the first standard for IdP, but definitely the best in terms of usability and simplicity, having learned the lessons from past efforts such as <a href="https://en.wikipedia.org/wiki/Security_Assertion_Markup_Language">SAML</a> and OpenID 1.0 and 2.0.</p>
+<p>那么，这段 Lua 脚本是什么意思呢？这里 KEYS[1] 代表的是你加锁的那个 Key，比如说：RLock lock = redisson.getLock(&quot;myLock&quot;)；这里你自己设置了加锁的那个锁 Key 就是 “myLock”。</p>
 
-<p>What is the formula for success of OpenID Connect?</p>
+<p>ARGV[1] 代表的就是锁 Key 的默认生存时间，默认 30 秒。ARGV[2] 代表的是加锁的客户端的 ID，类似于下面这样：8743c9c0-0795-4907-87fd-6c719a6b4586:1。</p>
 
-<ul>
-<li><p><strong>Easy to consume identity tokens</strong>: Clients receive the user’s identity encoded in a secure JSON Web Token (JWT), called an ID token. JWTs are appreciated for their elegance and portability, and for their ready support for a wide range of signature and encryption algorithms. All that makes JWT outstanding for the ID token job.</p></li>
-<li><p><strong>Based on the OAuth 2.0 protocol</strong>: The ID token is obtained via a standard OAuth 2.0 flow, with support for web applications as well as native / mobile apps. OAuth 2.0 also means having one protocol for authentication and authorisation (obtaining access tokens).</p></li>
-<li><p><strong>Simplicity</strong>: OpenID Connect is simple enough to integrate with basic apps, but it also has the features and security options to match demanding enterprise requirements.</p></li>
-</ul>
+<p>第一段 if 判断语句，就是用 “exists myLock” 命令判断一下，如果你要加锁的那个锁 Key 不存在的话，你就进行加锁。如何加锁呢？很简单，用下面的命令：hset myLock。</p>
 
-<h2 id="toc_2"><a href="#id-token">3. The identity token</a></h2>
+<p>8743c9c0-0795-4907-87fd-6c719a6b4586:1 1，通过这个命令设置一个 Hash 数据结构，这行命令执行后，会出现一个类似下面的数据结构：<br/>
+<img src="media/15462168709575/15462170001398.jpg" alt=""/></p>
 
-<p><img src="https://connect2id.com/assets/learn/openid-connect/id-card.png" alt=""/></p>
+<p>上述就代表 “8743c9c0-0795-4907-87fd-6c719a6b4586:1” 这个客户端对 “myLock” 这个锁 Key 完成了加锁。</p>
 
-<p>The <a href="https://openid.net/specs/openid-connect-core-1_0.html#IDToken">ID token</a> resembles the concept of an identity card, in a standard <a href="https://tools.ietf.org/html/rfc7523">JWT</a> format, signed by the OpenID Provider (OP). To obtain one the client needs to send the user to their OP with an authentication request.</p>
+<p>接着会执行 “pexpire myLock 30000” 命令，设置 myLock 这个锁 Key 的生存时间是 30 秒，加锁完成。</p>
 
-<p>Features of the ID token:</p>
+<p><strong>锁互斥机制</strong></p>
 
-<ul>
-<li>  Asserts the identity of the user, called <u>subject</u> in OpenID (sub).</li>
-<li>  Specifies the issuing authority (iss).</li>
-<li>  Is generated for a particular <u>audience</u>, i.e. client (aud).</li>
-<li>  May contain a nonce (nonce).</li>
-<li>  May specify when (auth_time) and how, in terms of strength (acr), the user was authenticated.</li>
-<li>  Has an issue (iat) and expiration time (exp).</li>
-<li>  May include additional requested details about the subject, such as name and email address.</li>
-<li>  Is digitally signed, so it can be verified by the intended recipients.</li>
-<li>  May optionally be encrypted for confidentiality.</li>
-</ul>
+<p>这个时候，如果客户端 2 来尝试加锁，执行了同样的一段 Lua 脚本，会怎样？</p>
 
-<p>The ID token statements, or claims, are packaged in a simple JSON object:</p>
+<p>第一个 if 判断会执行 “exists myLock”，发现 myLock 这个锁 Key 已经存在了。</p>
 
-<pre><code>{
-  &quot;sub&quot;       : &quot;alice&quot;,
-  &quot;iss&quot;       : &quot;https://openid.c2id.com&quot;,
-  &quot;aud&quot;       : &quot;client-12345&quot;,
-  &quot;nonce&quot;     : &quot;n-0S6_WzA2Mj&quot;,
-  &quot;auth_time&quot; : 1311280969,
-  &quot;acr&quot;       : &quot;c2id.loa.hisec&quot;,
-  &quot;iat&quot;       : 1311280970,
-  &quot;exp&quot;       : 1311281970
-}
-</code></pre>
+<p>第二个 if 判断，判断 myLock 锁 Key 的 Hash 数据结构中，是否包含客户端 2 的 ID，但是明显不是的，因为那里包含的是客户端 1 的 ID。</p>
 
-<p>The ID token header, claims JSON and signature are encoded into a base 64 URL-safe string, for easy passing arround, for example as URL parameter.</p>
+<p>所以，客户端 2 会获取到 pttl myLock 返回的一个数字，这个数字代表了 myLock 这个锁 Key 的剩余生存时间。比如还剩 15000 毫秒的生存时间。此时客户端 2 会进入一个 while 循环，不停的尝试加锁。</p>
 
-<pre><code>eyJhbGciOiJSUzI1NiIsImtpZCI6IjFlOWdkazcifQ.ewogImlzcyI6ICJodHRw
-Oi8vc2VydmVyLmV4YW1wbGUuY29tIiwKICJzdWIiOiAiMjQ4Mjg5NzYxMDAxIiw
-KICJhdWQiOiAiczZCaGRSa3F0MyIsCiAibm9uY2UiOiAibi0wUzZfV3pBMk1qIi
-wKICJleHAiOiAxMzExMjgxOTcwLAogImlhdCI6IDEzMTEyODA5NzAKfQ.ggW8hZ
-1EuVLuxNuuIJKX_V8a_OMXzR0EHR9R6jgdqrOOF4daGU96Sr_P6qJp6IcmD3HP9
-9Obi1PRs-cwh3LO-p146waJ8IhehcwL7F09JdijmBqkvPeB2T9CJNqeGpe-gccM
-g4vfKjkM8FcGvnzZUN4_KSP0aAp1tOJ1zZwgjxqGByKHiOtX7TpdQyHE5lcMiKP
-XfEIQILVq0pc_E2DzL7emopWoaoZTF_m0_N0YzFC6g6EJbOEoRoSK5hoDalrcvR
-YLSrQAZZKflyuVCyixEoV9GfNQC3_osjzw2PAithfubEEBLuVVk4XUVrWOLrLl0
-nx7RkKU8NXNHq-rvKMzqg
-</code></pre>
+<p><strong>watch dog 自动延期机制</strong></p>
 
-<p>You can read more about the JWT data structure and its encoding in <a href="https://tools.ietf.org/html/rfc7519">RFC 7519</a>.</p>
+<p>客户端 1 加锁的锁 Key 默认生存时间才 30 秒，如果超过了 30 秒，客户端 1 还想一直持有这把锁，怎么办呢？</p>
 
-<h2 id="toc_3"><a href="#auth-request">4. How to request an ID token</a></h2>
+<p>只要客户端 1 加锁成功，就会启动一个 watch dog 看门狗，这个后台线程，会每隔 10 秒检查一下，如果客户端 1 还持有锁 Key，就会不断的延长锁 Key 的生存时间。</p>
 
-<p><img src="https://connect2id.com/assets/learn/openid-connect/walk.png" alt=""/></p>
+<p><strong>可重入加锁机制</strong></p>
 
-<p>Now that we know what an <a href="#id-token">ID token</a> is, how can a client, called Relying Party (RP) in OpenID Connect, request one?</p>
+<p>那如果客户端 1 都已经持有了这把锁了，结果可重入的加锁会怎么样呢？如下代码：<br/>
+<img src="media/15462168709575/15462170089600.jpg" alt=""/></p>
 
-<p>Authentication must take place at the identity provider, where the user’s session or credentials will be checked. For that a trusted agent is required, and this role is usually performed by the web browser.</p>
+<p>分析一下上面那段 Lua 脚本。第一个 if 判断肯定不成立，“exists myLock” 会显示锁 Key 已经存在了。</p>
 
-<p>A browser popup is the preferred way for a web application to redirect the user to the IdP. Mobile apps on platforms such as Android or iOS should launch the system browser for that purpose. Embedded web views are not be trusted, as there’s nothing to prevent the app from snooping on the user password. User authentication must always occur in a trusted context that is separate from the app (e.g. the browser).</p>
+<p>第二个 if 判断会成立，因为 myLock 的 Hash 数据结构中包含的那个 ID，就是客户端 1 的那个 ID，也就是 “8743c9c0-0795-4907-87fd-6c719a6b4586:1”。</p>
 
-<p>Note that OpenID Connect doesn’t specify how users should actually be authenticated, this is <a href="#auth-methods">left up to the provider to decide</a>.</p>
+<p>此时就会执行可重入加锁的逻辑，incrby myLock 8743c9c0-0795-4907-87fd-6c71a6b4586:1 1，通过这个命令，对客户端 1 的加锁次数，累加 1。</p>
 
-<p>ID tokens are requested via the <a href="oauth-2">OAuth 2.0 protocol</a>, which has been a tremendous success on its own. OAuth was originally devised as a simple authorisation mechanism for apps to obtain access tokens for web APIs or other protected resources. It has <u>flows</u> designed for all application type: traditional server-based web applications, browser (JavaScript) only apps, and native / mobile apps.</p>
+<p>此时 myLock 数据结构变为下面这样：<br/>
+<img src="media/15462168709575/15462171028604.jpg" alt=""/></p>
 
-<p>So what are those flows, or paths, for obtaining ID tokens?</p>
+<p>myLock 的 Hash 数据结构中的那个客户端 ID，就对应着加锁的次数。</p>
 
-<ul>
-<li><p><a href="https://openid.net/specs/openid-connect-core-1_0.html#CodeFlowAuth">Authorisation code flow</a> — the most commonly used flow, intended for traditional web apps as well as native / mobile apps. Involves an initial browser redirection to / from the OP for user authentication and consent, then a second back-channel request to retrieve the ID token. This flow offers optimal security, as tokens are not revealed to the browser and the client can also be authenticated.</p></li>
-<li><p><a href="https://openid.net/specs/openid-connect-core-1_0.html#ImplicitFlowAuth">Implicit flow</a> — for browser (JavaScript) based apps that don’t have a backend. The ID token is received directly with the redirection response from the OP. No back-channel request is required here.</p></li>
-<li><p><a href="https://openid.net/specs/openid-connect-core-1_0.html#HybridFlowAuth">Hybrid flow</a> — rarely used, allows the application front-end and back-end to receive tokens separately from one another. Essentially a combination of the code and implicit flows.</p></li>
-</ul>
+<p><strong>释放锁机制</strong></p>
 
-<p>The OpenID Connect spec provides a nice <a href="https://openid.net/specs/openid-connect-core-1_0.html#Authentication">comparison</a> of the three flows, reproduced here in a simplified form.</p>
+<p>如果执行 lock.unlock()，就可以释放分布式锁，此时的业务逻辑也是非常简单的。就是每次都对 myLock 数据结构中的那个加锁次数减 1。</p>
 
-<p><colgroup><col> <col style="width: 18%"> <col style="width: 18%"> <col style="width: 18%"></colgroup><br/>
-| Flow property | Code | Implicit | Hybrid |<br/>
-| Browser redirection step | ✔ | ✔ | ✔ |<br/>
-| Backend request step | ✔ | ✕ | ✔ |<br/>
-| Tokens revealed to browser | ✕ | ✔ | ✔ |<br/>
-| Client can be authenticated | ✔ | ✕ | ✔ |</p>
+<p>如果发现加锁次数是 0 了，说明这个客户端已经不再持有锁了，此时就会用：“del myLock” 命令，从 Redis 里删除这个 Key。</p>
 
-<h2 id="toc_4"><a href="#cool-id-token-uses">5. Cool ID token uses</a></h2>
+<p>而另外的客户端 2 就可以尝试完成加锁了。这就是所谓的分布式锁的开源 Redisson 框架的实现机制。</p>
 
-<p><img src="https://connect2id.com/assets/learn/openid-connect/checkin.png" alt=""/></p>
+<p>一般我们在生产系统中，可以用 Redisson 框架提供的这个类库来基于 Redis 进行分布式锁的加锁与释放锁。</p>
 
-<p>An <a href="#id-token">ID token</a> can be put to uses beyond basic sign-in:</p>
+<p><strong>上述 Redis 分布式锁的缺点</strong></p>
 
-<ul>
-<li><p><strong>Stateless sessions</strong> — Put into a browser cookie the ID token can implement a lightweight stateless session. This does away with the need to store sessions on the server side (in memory or on disk), which can be a burden to manage and scale. The session is checked by validating the ID token. When the token reaches some predefined age past its issue timestamp (iat) the application can simply ask the OP for a new one via a silent <u>prompt=none</u> request.</p></li>
-<li><p><strong>Passing identity to 3rd parties</strong> — The ID token may be passed to other application components or to backend services when knowledge of the user’s identity is required, for example to log audit trails.</p></li>
-<li><p><strong>Token exchange</strong> — The ID token may be exchanged for an access token at the token endpoint of an OAuth 2.0 authorisation server (<a href="https://tools.ietf.org/html/draft-ietf-oauth-token-exchange-12">draft-ietf-oauth-token-exchange-12</a>). There are real world scenarios when an identity document is required to obtain access, for example when you check in at a hotel to get your room key. Token exchange has uses in distributed and enterprise applications.</p></li>
-</ul>
+<p>上面那种方案最大的问题，就是如果你对某个 Redis Master 实例，写入了 myLock 这种锁 Key 的 Value，此时会异步复制给对应的 Master Slave 实例。</p>
 
-<h2 id="toc_5"><a href="#example-auth-code-flow">6. Example OpenID authentication</a></h2>
+<p>但是这个过程中一旦发生 Redis Master 宕机，主备切换，Redis Slave 变为了 Redis Master。</p>
 
-<p><img src="https://connect2id.com/assets/learn/openid-connect/browser.png" alt=""/></p>
+<p>会导致客户端 2 尝试加锁时，在新的 Redis Master 上完成加锁，客户端 1 也以为自己成功加锁。</p>
 
-<p>We will now go through a minimal example of how to obtain an ID token for a user from an OP, using the <a href="https://openid.net/specs/openid-connect-core-1_0.html#CodeFlowAuth">authorisation code flow</a>. This is the most commonly used flow by traditional web applications. Examples of the <a href="https://openid.net/specs/openid-connect-core-1_0.html#ImplicitFlowAuth">implicit</a> and <a href="https://openid.net/specs/openid-connect-core-1_0.html#HybridFlowAuth">hybrid flow</a> can be found in the <a href="https://openid.net/specs/openid-connect-core-1_0.html">OpenID Connect spec</a>.</p>
+<p>此时就会导致多个客户端对一个分布式锁完成了加锁。这时系统在业务语义上一定会出现问题，导致各种脏数据的产生。</p>
 
-<p>The code flow has two steps:</p>
+<p>所以这个就是 Redis Cluster，或者是 redis master-slave 架构的主从异步复制导致的 Redis 分布式锁的最大缺陷：在 Redis Master 实例宕机的时候，可能导致多个客户端同时完成加锁。</p>
 
-<p><colgroup><col> <col style="width: 40%"> <col style="width: 40%"></colgroup><br/>
-|  | Step 1 | Step 2 |<br/>
-| <strong>Purpose</strong> | 1. Authenticate user<br/>
-2. Receive user consent | 1. Authenticate client (optional)<br/>
-2. Exchange code for token(s) |<br/>
-| <strong>Via</strong> | Front-channel request<br/>
-<small>(browser redirection)</small> | Back-channel request<br/>
-<small>(app to web server)</small> |<br/>
-| <strong>To</strong> | Authorisation endpoint | Token endpoint |<br/>
-| <strong>Result on success</strong> | Authorisation code<br/>
-<small>(step 2 input)</small> | ID token<br/>
-<small>(+ OAuth 2.0 access token)</small> |</p>
+<h2 id="toc_1"><strong>七张图彻底讲清楚 ZooKeeper 分布式锁的实现原理</strong></h2>
 
-<h3 id="toc_6"><a href="#example-auth-code-flow-step-1">Code flow: Step 1</a></h3>
+<p>下面再聊一下 ZooKeeper 实现分布式锁的原理。同理，我是直接基于比较常用的 Curator 这个开源框架，聊一下这个框架对 ZooKeeper（以下简称 ZK）分布式锁的实现。</p>
 
-<p>The RP initiates user authentication by redirecting the browser to the <a href="https://tools.ietf.org/html/rfc6749#section-3.1">OAuth 2.0 authorisation endpoint</a> of the OpenID Provider. The OpenID <a href="https://openid.net/specs/openid-connect-core-1_0.html#AuthRequest">authentication request</a> is essentially an OAuth 2.0 <a href="https://tools.ietf.org/html/rfc6749#section-4.1.1">authorisation request</a> to access the user’s identity, indicated by an <code>openid</code> value in the scope parameter.</p>
+<p>一般除了大公司是自行封装分布式锁框架之外，建议大家用这些开源框架封装好的分布式锁实现，这是一个比较快捷省事的方式。</p>
 
-<p>Example authentication redirection to the OP:</p>
+<p><strong>ZooKeeper 分布式锁机制</strong></p>
 
-<pre><code>HTTP/1.1 302 Found
-Location: https://openid.c2id.com/login?
-          response_type=code
-          &amp;scope=openid
-          &amp;client_id=s6BhdRkqt3
-          &amp;state=af0ifjsldkj
-          &amp;redirect_uri=https%3A%2F%2Fclient.example.org%2Fcb
-</code></pre>
+<p>看看多客户端获取及释放 ZK 分布式锁的整个流程及背后的原理。首先看看下图，如果现在有两个客户端一起要争抢 ZK 上的一把分布式锁，会是个什么场景？<br/>
+<img src="media/15462168709575/15462171167551.jpg" alt=""/></p>
 
-<p>The request parameters are encoded in the URI query:</p>
+<p>如果大家对 ZK 还不太了解的话，建议先自行百度一下，简单了解点基本概念，比如 ZK 有哪些节点类型等等。</p>
 
-<ul>
-<li><p><strong>response_type</strong> Set to <code>code</code> to indicate an authorisation code flow.</p></li>
-<li><p><strong>scope</strong> Used to specify the scope of the requested authorisation in OAuth. The scope value <code>openid</code> signals a request for OpenID authentication and ID token.</p></li>
-<li><p><strong>client_id</strong> The client identifier of the RP at the OP. This identifier is assigned when the RP is registered with the OP, via the client registration API, a developer console, or some other method.</p></li>
-<li><p><strong>state</strong> Opaque value set by the RP to maintain state between request and callback.</p></li>
-<li><p><strong>redirect_uri</strong> The RP callback URI for the authentication response.</p></li>
-</ul>
+<p>参见上图。ZK 里有一把锁，这个锁就是 ZK 上的一个节点。两个客户端都要来获取这个锁，具体是怎么来获取呢？</p>
 
-<p>At the OP, the user will typically be authenticated by checking if they have a valid session (established by a browser cookie), and in the absence of that, by prompting the user to login. After that the user will typically be asked whether they agree to sign into the RP.</p>
+<p>假设客户端 A 抢先一步，对 ZK 发起了加分布式锁的请求，这个加锁请求是用到了 ZK 中的一个特殊的概念，叫做 “临时顺序节点”。</p>
 
-<p><img src="https://connect2id.com/assets/learn/openid-connect/op-login-consent.png" alt=""/></p>
+<p>简单来说，就是直接在 &quot;my_lock&quot; 这个锁节点下，创建一个顺序节点，这个顺序节点有 ZK 内部自行维护的一个节点序号。</p>
 
-<p>The OP will then call the client <code>redirect_uri</code> with an authorisation code (on success) or an error code (if access was denied, or some other error occurred, such a malformed request was detected).</p>
+<p>比如第一个客户端来搞一个顺序节点，ZK 内部会给起个名字叫做：xxx-000001。</p>
 
-<pre><code>HTTP/1.1 302 Found
-Location: https://client.example.org/cb?
-          code=SplxlOBeZQQYbYS6WxSbIA
-          &amp;state=af0ifjsldkj
-</code></pre>
+<p>然后第二个客户端来搞一个顺序节点，ZK 可能会起个名字叫做：xxx-000002。</p>
 
-<p>The RP must validate the <code>state</code> parameter, and use the <code>code</code> to proceed to the <a href="#example-auth-code-flow-step-2">next step</a> - exchanging the code for the ID token.</p>
+<p>注意，最后一个数字都是依次递增的，从 1 开始逐次递增。ZK 会维护这个顺序。</p>
 
-<h3 id="toc_7"><a href="#example-auth-code-flow-step-2">Code flow: Step 2</a></h3>
+<p>所以这个时候，假如说客户端 A 先发起请求，就会搞出来一个顺序节点，大家看下图，Curator 框架大概会弄成如下的样子：<br/>
+<img src="media/15462168709575/15462171244417.jpg" alt=""/></p>
 
-<p>The authorisation code is an intermediate credential, which encodes the authorisation obtained at <a href="#example-auth-code-flow-step-1">step 1</a>. It is therefore opaque to the RP and only has meaning to the OP server. To retrieve the ID token the RP must submit the code to the OP, but this time with a direct back-channel request. This is done for two reasons:</p>
+<p>客户端 A 发起一个加锁请求，先在要加锁的 node 下搞一个临时顺序节点，这列长名字都是 Curator 框架自己生成出来的。</p>
+
+<p>然后，那个最后一个数字是 &quot;1&quot;。因为客户端 A 是第一个发起请求的，所以给他搞出来的顺序节点的序号是 &quot;1&quot;。</p>
+
+<p>接着客户端 A 创建完一个顺序节点。还没完，他会查一下 &quot;my_lock&quot; 这个锁节点下的所有子节点，并且这些子节点是按照序号排序的，这个时候他大概会拿到这么一个集合：<br/>
+<img src="media/15462168709575/15462171334054.jpg" alt=""/></p>
+
+<p>接着客户端 A 会走一个关键性的判断：这个集合里创建的顺序节点，是否排在首位？</p>
+
+<p>如果是的话，就可以加锁，因为明明我就是第一个来创建顺序节点的人，所以我就是第一个尝试加分布式锁的人啊！</p>
+
+<p>加锁成功！看下图，再来直观的感受一下整个过程：<br/>
+<img src="media/15462168709575/15462171389866.jpg" alt=""/></p>
+
+<p>接着假如说，客户端 A 都加完锁了，客户端 B 过来想要加锁了，这个时候他会干一样的事儿：先是在 &quot;my_lock&quot; 这个锁节点下创建一个临时顺序节点，此时名字会变成类似于：<br/>
+<img src="media/15462168709575/15462171449715.jpg" alt=""/></p>
+
+<p>下图：<br/>
+<img src="media/15462168709575/15462171518242.jpg" alt=""/></p>
+
+<p>客户端 B 因为是第二个来创建顺序节点的，所以 ZK 内部会维护序号为 &quot;2&quot;。</p>
+
+<p>接着客户端 B 会走加锁判断逻辑，查询 &quot;my_lock&quot; 锁节点下的所有子节点，按序号顺序排列，此时他看到的类似于：<br/>
+<img src="media/15462168709575/15462171636274.jpg" alt=""/></p>
+
+<p>同时检查自己创建的顺序节点，是不是集合中的第一个？明显不是啊，此时第一个是客户端 A 创建的那个顺序节点，序号为 &quot;01&quot; 的那个。所以加锁失败！</p>
+
+<p>加锁失败了以后，客户端 B 就会通过 ZK 的 API 对他的顺序节点的上一个顺序节点加一个监听器。ZK 天然就可以实现对某个节点的监听。</p>
+
+<p>如果大家还不知道 ZK 的基本用法，可以百度查阅，非常的简单。客户端 B 的顺序节点是：<br/>
+<img src="media/15462168709575/15462171716419.jpg" alt=""/></p>
+
+<p>他的上一个顺序节点，不就是下面这个吗？<br/>
+<img src="media/15462168709575/15462171768326.jpg" alt=""/></p>
+
+<p>即客户端 A 创建的那个顺序节点！所以，客户端 B 会对：<br/>
+<img src="media/15462168709575/15462171823543.jpg" alt=""/></p>
+
+<p>这个节点加一个监听器，监听这个节点是否被删除等变化！大家看下图：<br/>
+<img src="media/15462168709575/15462171895824.jpg" alt=""/></p>
+
+<p>接着，客户端 A 加锁之后，可能处理了一些代码逻辑，然后就会释放锁。那么，释放锁是个什么过程呢？</p>
+
+<p>其实就是把自己在 ZK 里创建的那个顺序节点，也就是：<br/>
+<img src="media/15462168709575/15462171959976.jpg" alt=""/></p>
+
+<p>这个节点删除。删除了那个节点之后，ZK 会负责通知监听这个节点的监听器，也就是客户端 B 之前加的那个监听器，说：你监听的那个节点被删除了，有人释放了锁。<br/>
+<img src="media/15462168709575/15462172020977.jpg" alt=""/></p>
+
+<p>此时客户端 B 的监听器感知到了上一个顺序节点被删除，也就是排在他之前的某个客户端释放了锁。</p>
+
+<p>此时，就会通知客户端 B 重新尝试去获取锁，也就是获取 &quot;my_lock&quot; 节点下的子节点集合，此时为：<br/>
+<img src="media/15462168709575/15462172087811.jpg" alt=""/></p>
+
+<p>集合里此时只有客户端 B 创建的唯一的一个顺序节点了！然后呢，客户端 B 判断自己居然是集合中的第一个顺序节点，Bingo！可以加锁了！直接完成加锁，运行后续的业务代码即可，运行完了之后再次释放锁。<br/>
+<img src="media/15462168709575/15462172150011.jpg" alt=""/></p>
+
+<p>其实如果有客户端 C、客户端 D 等 N 个客户端争抢一个 ZK 分布式锁，原理都是类似的：</p>
 
 <ul>
-<li>  To authenticate confidential clients with the OP before revealing the tokens;</li>
-<li>  To deliver the tokens straight to the RP, thus avoid exposing them to the browser.</li>
+<li>  大家都是上来直接创建一个锁节点下的一个接一个的临时顺序节点。</li>
+<li>  如果自己不是第一个节点，就对自己上一个节点加监听器。</li>
+<li>  只要上一个节点释放锁，自己就排到前面去了，相当于是一个排队机制。</li>
 </ul>
 
-<p>The code-for-token exchange happens at the <a href="#token-endpoint">token endpoint</a> of the OP:</p>
+<p>而且用临时顺序节点的另外一个用意就是，如果某个客户端创建临时顺序节点之后，不小心自己宕机了也没关系，ZK 感知到那个客户端宕机，会自动删除对应的临时顺序节点，相当于自动释放锁，或者是自动取消自己的排队。</p>
 
-<pre><code>POST /token HTTP/1.1
-Host: openid.c2id.com
-Content-Type: application/x-www-form-urlencoded
-Authorization: Basic czZCaGRSa3F0MzpnWDFmQmF0M2JW
+<p>最后，咱们来看下用 Curator 框架进行加锁和释放锁的一个过程：<br/>
+<img src="media/15462168709575/15462172259888.jpg" alt=""/></p>
 
-grant_type=authorization_code
- &amp;code=SplxlOBeZQQYbYS6WxSbIA
- &amp;redirect_uri=https%3A%2F%2Fclient.example.org%2Fcb
-</code></pre>
+<p>其实用开源框架就是方便。这个 Curator 框架的 ZK 分布式锁的加锁和释放锁的实现原理，就是上面我们说的那样子。</p>
 
-<p>The client ID and secret are passed via the <code>Authorization</code> header. Apart from <a href="https://tools.ietf.org/html/rfc6749#section-2.3.1">HTTP basic authentication</a> OpenID Connect also supports authentication with a <a href="https://tools.ietf.org/html/rfc7523">JWT</a>, which doesn’t expose the client credentials with the token request, has expiration, and thus provides stronger security.</p>
+<p>但是如果你要手动实现一套那个代码的话，要考虑到各种细节，异常处理等等。所以大家如果考虑用 ZK 分布式锁，可以参考下本文的思路。</p>
 
-<p>The token request parameters are form-encoded:</p>
+<h2 id="toc_2"><strong>每秒上千订单场景下的分布式锁高并发优化实践</strong></h2>
+
+<p>接着聊一个有意思的话题：每秒上千订单场景下，如何对分布式锁的并发能力进行优化？</p>
+
+<p>首先，我们一起来看看这个问题的背景。前段时间有个朋友在外面面试，然后有一天找我聊说：有一个国内不错的电商公司，面试官给他出了一个场景题：</p>
+
+<p>假如下单时，用分布式锁来防止库存超卖，但是是每秒上千订单的高并发场景，如何对分布式锁进行高并发优化来应对这个场景？</p>
+
+<p>他说他当时没答上来，因为没做过没什么思路。其实我当时听到这个面试题心里也觉得有点意思，因为如果是我来面试候选人的话，给的范围会更大一些。比如，让面试的同学聊一聊电商高并发秒杀场景下的库存超卖解决方案，各种方案的优缺点以及实践，进而聊到分布式锁这个话题。</p>
+
+<p>因为库存超卖问题是有很多种技术解决方案的，比如悲观锁，分布式锁，乐观锁，队列串行化，Redis 原子操作，等等吧。但是既然那个面试官兄弟限定死了用分布式锁来解决库存超卖，我估计就是想问一个点：在高并发场景下如何优化分布式锁的并发性能。</p>
+
+<p>面试官提问的角度还是可以接受的，因为在实际落地生产的时候，分布式锁这个东西保证了数据的准确性，但是他天然并发能力有点弱。</p>
+
+<p>刚好我之前在自己项目的其他场景下，确实是做过高并发场景下的分布式锁优化方案，因此正好是借着这个朋友的面试题，把分布式锁的高并发优化思路，给大家来聊一聊。</p>
+
+<p><strong>库存超卖现象是怎么产生的？</strong></p>
+
+<p>先来看看如果不用分布式锁，所谓的电商库存超卖是啥意思？大家看下图：<br/>
+<img src="media/15462168709575/15462172368454.jpg" alt=""/></p>
+
+<p>这个图其实很清晰了，假设订单系统部署在两台机器上，不同的用户都要同时买 10 台 iPhone，分别发了一个请求给订单系统。</p>
+
+<p>接着每个订单系统实例都去数据库里查了一下，当前 iPhone 库存是 12 台，大于了要买的 10 台数量。</p>
+
+<p>于是每个订单系统实例都发送 SQL 到数据库里下单，然后扣减了 10 个库存，其中一个将库存从 12 台扣减为 2 台，另外一个将库存从 2 台扣减为 -8 台。</p>
+
+<p>现在库存出现了负数！没有 20 台 iPhone 发给两个用户啊！怎么办？</p>
+
+<p><strong>用分布式锁如何解决库存超卖问题？</strong></p>
+
+<p>我们用分布式锁如何解决库存超卖问题呢？回忆一下上次我们说的那个分布式锁的实现原理：</p>
+
+<p>同一个锁 Key，同一时间只能有一个客户端拿到锁，其他客户端会陷入无限的等待来尝试获取那个锁，只有获取到锁的客户端才能执行下面的业务逻辑。<br/>
+<img src="media/15462168709575/15462172445492.jpg" alt=""/></p>
+
+<p>代码如上图，分析一下为什么这样可以避免库存超卖？<br/>
+<img src="media/15462168709575/15462172507567.jpg" alt=""/></p>
+
+<p>大家可以顺着上面的那个步骤序号看一遍，马上就明白了。</p>
+
+<p>从上图可以看到，只有一个订单系统实例可以成功加分布式锁，然后只有他一个实例可以查库存、判断库存是否充足、下单扣减库存，接着释放锁。释放锁之后，另外一个订单系统实例才能加锁，接着查库存，一下发现库存只有 2 台了，库存不足，无法购买，下单失败。不会将库存扣减为 -8 的。</p>
+
+<p><strong>有没其他方案解决库存超卖问题？</strong></p>
+
+<p>当然有！比如悲观锁，分布式锁，乐观锁，队列串行化，异步队列分散，Redis 原子操作，等等，很多方案，我们对库存超卖有自己的一整套优化机制。但是前面说过，这篇文章就聊一个分布式锁的并发优化，不是聊库存超卖的解决方案，所以库存超卖只是一个业务场景而已。</p>
+
+<p><strong>分布式锁的方案在高并发场景下</strong></p>
+
+<p>现在我们来看看，分布式锁的方案在高并发场景下有什么问题？分布式锁一旦加了之后，对同一个商品的下单请求，会导致所有客户端都必须对同一个商品的库存锁 Key 进行加锁。</p>
+
+<p>比如，对 iPhone 这个商品的下单，都必对 “iphone_stock” 这个锁 Key 来加锁。这样会导致对同一个商品的下单请求，就必须串行化，一个接一个的处理。大家再回去对照上面的图反复看一下，应该能想明白这个问题。</p>
+
+<p>假设加锁之后，释放锁之前，查库存→创建订单→扣减库存，这个过程性能很高吧，算他全过程 20 毫秒，这应该不错了。那么 1 秒是 1000 毫秒，只能容纳 50 个对这个商品的请求依次串行完成处理。如一秒钟 50 个请求，都是对 iPhone 下单的，那么每个请求处理 20 毫秒，逐个来，最后 1000 毫秒正好处理完 50 个请求。</p>
+
+<p>大家看下图，加深印象。<br/>
+<img src="media/15462168709575/15462172584887.jpg" alt=""/></p>
+
+<p>所以看到这里，大家起码也明白了，简单的使用分布式锁来处理库存超卖问题，存在什么缺陷。</p>
+
+<p>同一商品多用户同时下单时，会基于分布式锁串行化处理，导致没法同时处理同一个商品的大量下单的请求。这种方案应对那种低并发、无秒杀场景的普通小电商系统，可能还可以接受。</p>
+
+<p>因为如果并发量很低，每秒就不到 10 个请求，没有瞬时高并发秒杀单个商品的场景的话，其实也很少会对同一个商品在 1 秒内瞬间下 1000 个订单，因为小电商系统没那场景。</p>
+
+<p><strong>如何对分布式锁进行高并发优化？</strong></p>
+
+<p>那么现在怎么办呢？面试官说，我现在就卡死，库存超卖就是用分布式锁来解决，而且一秒对一个 iPhone 下上千订单，怎么优化？</p>
+
+<p>现在按照刚才的计算，你 1 秒钟只能处理针对 iPhone 的 50 个订单。其实说出来也很简单，相信很多人看过 Java 里的 ConcurrentHashMap 的源码和底层原理，应该知道里面的核心思路，就是分段加锁！</p>
+
+<p>把数据分成很多个段，每个段是一个单独的锁，所以多个线程过来并发修改数据的时候，可以并发的修改不同段的数据。不至于说，同一时间只能有一个线程独占修改 ConcurrentHashMap 中的数据。</p>
+
+<p>另外，Java 8 中新增了一个 LongAdder 类，也是针对 Java 7 以前的 AtomicLong 进行的优化，解决的是 CAS 类操作在高并发场景下，使用乐观锁思路，会导致大量线程长时间重复循环。LongAdder 中也采用了类似的分段 CAS 操作，失败则自动迁移到下一个分段进行 CAS 的思路。</p>
+
+<p>其实分布式锁的优化思路也是类似的，之前我们是在另外一个业务场景下落地了这个方案到生产中，不是在库存超卖问题里用的。但是库存超卖这个业务场景不错，很容易理解，所以我们就用这个场景来说一下。</p>
+
+<p>大家看下图：<br/>
+<img src="media/15462168709575/15462172667397.jpg" alt=""/></p>
+
+<p>这就是分段加锁。假如现在 iPhone 有 1000 个库存，完全可以给拆成 20 个库存段。</p>
+
+<p>要是你愿意，可以在数据库的表里建 20 个库存字段，比如 stock_01，stock_02，类似这样的，也可以在 Redis 之类的地方放 20 个库存 Key。</p>
+
+<p>总之，就是把你的 1000 件库存给他拆开，每个库存段是 50 件库存，比如 stock_01 对应 50 件库存，stock_02 对应 50 件库存。</p>
+
+<p>接着，每秒 1000 个请求过来了！此时可以自己写一个简单的随机算法，每个请求都是随机在 20 个分段库存里，选择一个进行加锁。</p>
+
+<p>这样同时可以有最多 20 个下单请求一起执行，每个下单请求锁了一个库存分段，然后在业务逻辑里面，就对数据库或者是 Redis 中的那个分段库存进行操作即可，包括查库存→判断库存是否充足→扣减库存。</p>
+
+<p>这相当于一个 20 毫秒，可以并发处理掉 20 个下单请求，那么 1 秒，也就可以依次处理掉 20 * 50 = 1000 个对 iPhone 的下单请求了。</p>
+
+<p>一旦对某个数据做了分段处理之后，有一个坑大家一定要注意：就是如果某个下单请求，咔嚓加锁，然后发现这个分段库存里的库存不足了。这时你得自动释放锁，然后立马换下一个分段库存，再次尝试加锁后尝试处理。这个过程一定要实现。</p>
+
+<p><strong>分布式锁并发优化方案有什么不足？</strong></p>
+
+<p>最大的不足是很不方便，实现太复杂：</p>
 
 <ul>
-<li><p><strong>grant_type</strong> Set to <code>authorization_code</code>.</p></li>
-<li><p><strong>code</strong> The code obtained from <a href="#example-auth-code-flow-step-1">step 1</a>.</p></li>
-<li><p><strong>redirect_uri</strong> Repeats the callback URI from step 1.</p></li>
+<li>  <strong>首先，</strong>你得对一个数据分段存储，一个库存字段本来好好的，现在要分为 20 个库存字段。</li>
+<li>  <strong>其次，</strong>你在每次处理库存的时候，还得自己写随机算法，随机挑选一个分段来处理。</li>
+<li>  <strong>最后，</strong>如果某个分段中的数据不足了，你还得自动切换到下一个分段数据去处理。</li>
 </ul>
 
-<p>On success the OP will return a JSON object with the ID token, an access token and an optional refresh token:</p>
+<p>这个过程都是要手动写代码实现的，还是有点工作量。不过我们确实在一些业务场景里，因为用到了分布式锁，然后又必须要进行锁并发的优化，又进一步用到了分段加锁的技术方案，效果当然是很好的了，一下子并发性能可以增长几十倍。</p>
 
-<pre><code>HTTP/1.1 200 OK
-Content-Type: application/json
-Cache-Control: no-store
-Pragma: no-cache
-
-{
-  &quot;id_token&quot;: &quot;eyJhbGciOiJSUzI1NiIsImtpZCI6IjFlOWdkazcifQ.ewogImlzc
-    yI6ICJodHRwOi8vc2VydmVyLmV4YW1wbGUuY29tIiwKICJzdWIiOiAiMjQ4Mjg5
-    NzYxMDAxIiwKICJhdWQiOiAiczZCaGRSa3F0MyIsCiAibm9uY2UiOiAibi0wUzZ
-    fV3pBMk1qIiwKICJleHAiOiAxMzExMjgxOTcwLAogImlhdCI6IDEzMTEyODA5Nz
-    AKfQ.ggW8hZ1EuVLuxNuuIJKX_V8a_OMXzR0EHR9R6jgdqrOOF4daGU96Sr_P6q
-    Jp6IcmD3HP99Obi1PRs-cwh3LO-p146waJ8IhehcwL7F09JdijmBqkvPeB2T9CJ
-    NqeGpe-gccMg4vfKjkM8FcGvnzZUN4_KSP0aAp1tOJ1zZwgjxqGByKHiOtX7Tpd
-    QyHE5lcMiKPXfEIQILVq0pc_E2DzL7emopWoaoZTF_m0_N0YzFC6g6EJbOEoRoS
-    K5hoDalrcvRYLSrQAZZKflyuVCyixEoV9GfNQC3_osjzw2PAithfubEEBLuVVk4
-    XUVrWOLrLl0nx7RkKU8NXNHq-rvKMzqg&quot;
-  &quot;access_token&quot;: &quot;SlAV32hkKG&quot;,
-  &quot;token_type&quot;: &quot;Bearer&quot;,
-  &quot;expires_in&quot;: 3600,
-}
-</code></pre>
-
-<p>The ID token is a JWT and must be properly <a href="https://openid.net/specs/openid-connect-core-1_0.html#IDTokenValidation">validated</a> by the RP before it can be accepted.</p>
-
-<p>Note that a <a href="https://tools.ietf.org/html/rfc6750">bearer access token</a> is also included. This is to ensure the <a href="https://tools.ietf.org/html/rfc6749#section-4.1.4">token response</a> is compliant with the <a href="https://tools.ietf.org/html/rfc6749">OAuth 2.0</a> spec. For basic OpenID authentication requests where only an ID token is requested this access token is nominal and may be safely ignored. The access token however comes into play when also requesting access to user profile data at the UserInfo endpoint. More on this in the <a href="#claims">next chapter</a>.</p>
-
-<h2 id="toc_8"><a href="#claims">7. Claims (user info)</a></h2>
-
-<p><img src="https://connect2id.com/assets/learn/openid-connect/userinfo.png" alt=""/></p>
-
-<p>OpenID Connect specifies a set of <a href="https://openid.net/specs/openid-connect-core-1_0.html#StandardClaims">standard claims</a>, or user attributes. They are intended to supply the client with consented user details such as email, name and picture, upon request. <a href="https://en.wikipedia.org/wiki/IETF_language_tag">Language tags</a> enable localisation.</p>
-
-<table>
-<thead>
-<tr>
-<th>Scope value</th>
-<th>Associated claims</th>
-</tr>
-</thead>
-
-<tbody>
-<tr>
-<td>email</td>
-<td>email, email_verified</td>
-</tr>
-<tr>
-<td>phone</td>
-<td>phone_number, phone_number_verified</td>
-</tr>
-<tr>
-<td>profile</td>
-<td>name, family_name, given_name, middle_name, nickname, preferred_username, profile, picture, website, gender, birthdate, zoneinfo, locale, updated_at</td>
-</tr>
-<tr>
-<td>address</td>
-<td>address</td>
-</tr>
-</tbody>
-</table>
-
-<p>Clients can request claims in two ways:</p>
-
-<ul>
-<li>  An entire claims category by its <code>scope</code> value (see the above table for the scope value to claim mappings)</li>
-<li>  Individually, with the optional <a href="https://openid.net/specs/openid-connect-core-1_0.html#ClaimsParameter">claims</a> request parameter.</li>
-</ul>
-
-<p>Example request to access the user’s identity (ID token) and email, by simply setting the scope to <code>openid email</code>:</p>
-
-<pre><code>HTTP/1.1 302 Found
-Location: https://openid.c2id.com/login?
-          response_type=code
-          &amp;scope=openid%20email
-          &amp;client_id=s6BhdRkqt3
-          &amp;state=af0ifjsldkj
-          &amp;redirect_uri=https%3A%2F%2Fclient.example.org%2Fcb
-</code></pre>
-
-<p>If you’re an application developer, respect the user’s privacy and keep the requested claims down to the very essential. This will increase your chances of user conversion and will also ensure compliance with recent privacy laws.</p>
-
-<p>Note that even if a user allows an application to access their identity, they may choose to deny release of some claims. The application should be able to handle such decisions gracefully.</p>
-
-<p>The claims format is JSON:</p>
-
-<pre><code>{
-   &quot;sub&quot;                     : &quot;alice&quot;,
-   &quot;email&quot;                   : &quot;alice@wonderland.net&quot;,
-   &quot;email_verified&quot;          : true,
-   &quot;name&quot;                    : &quot;Alice Adams&quot;,
-   &quot;given_name&quot;              : &quot;Alice&quot;,
-   &quot;family_name&quot;             : &quot;Adams&quot;,
-   &quot;phone_number&quot;            : &quot;+359 (99) 100200305&quot;,
-   &quot;profile&quot;                 : &quot;https://c2id.com/users/alice&quot;,
-   &quot;https://c2id.com/groups&quot; : [ &quot;audit&quot;, &quot;admin&quot; ]
- }
-</code></pre>
-
-<p>OpenID providers may extend the standard JSON claims schema to include <a href="https://openid.net/specs/openid-connect-core-1_0.html#AdditionalClaims">additional attributes</a>. Enterprises may for instance define claims such as employee role, manager, and department. The names of any additional claims should be prefixed by a URL to create a safe namespace for them and prevent collisions.</p>
-
-<h2 id="toc_9"><a href="#endpoints">8. OpenID Connect provider endpoints</a></h2>
-
-<p><img src="https://connect2id.com/assets/learn/openid-connect/endpoints.png" alt=""/></p>
-
-<p><colgroup><col style="width: 50%"> <col style="width: 50%"></colgroup><br/>
-| Core endpoints | Optional endpoints |<br/>
-| </p>
-
-<ul>
-<li>  <a href="#authz-endpoint">Authorisation</a></li>
-<li>  <a href="#token-endpoint">Token</a></li>
-<li><p><a href="#userinfo-endpoint">UserInfo</a></p>
-
-<p>| </p></li>
-<li><p><a href="#optional-endpoints">WebFinger</a></p></li>
-<li><p><a href="#optional-endpoints">Provider metadata</a></p></li>
-<li><p><a href="#optional-endpoints">Provider JWK set</a></p></li>
-<li><p><a href="#optional-endpoints">Client registration</a></p></li>
-<li><p><a href="#optional-endpoints">Session management</a></p>
-
-<p>|</p></li>
-</ul>
-
-<h3 id="toc_10"><a href="#authz-endpoint">8.1 Authorisation endpoint</a></h3>
-
-<p>This is the OP server endpoint where the user is asked to <a href="#auth-methods">authenticate</a> and grant the client access to the user’s identity (ID token) and potentially other requested details, such as email and name (called UserInfo claims).</p>
-
-<p>This is the only standard endpoint where users interact with the OP, via a user agent, which role is typically assumed by a web browser.</p>
-
-<h3 id="toc_11"><a href="#token-endpoint">8.2 Token endpoint</a></h3>
-
-<p>The token endpoint lets the client appf exchange the code received from the <a href="#authz-endpoint">authorisation endpoint</a> for an ID token and access token. If the client is confidential it will be required to authenticate at the token endpoint.</p>
-
-<p>The token endpoint it may also accept other OAuth 2.0 <a href="https://tools.ietf.org/html/rfc6749#section-1.3">grant types</a> to issue tokens, for example:</p>
-
-<ul>
-<li>  <a href="https://tools.ietf.org/html/rfc7523">JWT assertion</a></li>
-<li>  <a href="https://tools.ietf.org/html/rfc7522">SAML 2.0 assertion</a></li>
-</ul>
-
-<h3 id="toc_12"><a href="#userinfo-endpoint">8.3 UserInfo endpoint</a></h3>
-
-<p>The <a href="https://openid.net/specs/openid-connect-core-1_0.html#UserInfo">UserInfo endpoint</a> returns previously consented user profile information to the client. A valid access token is required for that.</p>
-
-<pre><code>GET /userinfo HTTP/1.1
-Host: openid.c2id.com
-Authorization: Bearer SlAV32hkKG
-</code></pre>
-
-<p>The UserInfo is JSON encoded and may optionally be packaged as a JWT that is signed or encrypted.</p>
-
-<pre><code>HTTP/1.1 200 OK
-Content-Type: application/json
-
-{
-  &quot;sub&quot;                     : &quot;alice&quot;,
-  &quot;email&quot;                   : &quot;alice@wonderland.net&quot;,
-  &quot;email_verified&quot;          : true,
-  &quot;name&quot;                    : &quot;Alice Adams&quot;,
-  &quot;picture&quot;                 : &quot;https://c2id.com/users/alice.jpg&quot;
-}
-</code></pre>
-
-<h3 id="toc_13"><a href="#optional-endpoints">8.4 Optional endpoints</a></h3>
-
-<p>OpenID Connect providers can have these additional endpoints:</p>
-
-<ul>
-<li><p><strong><a href="https://openid.net/specs/openid-connect-discovery-1_0.html#IssuerDiscovery">WebFinger</a></strong> — Enables dynamic discovery of the OpenID Connect provider for a given user, based on their email address or some other detail.</p></li>
-<li><p><strong><a href="https://openid.net/specs/openid-connect-discovery-1_0.html#ProviderMetadata">Provider metadata</a></strong> — JSON document listing the OP endpoint URLs and the OpenID Connect / OAuth 2.0 features it supports. Clients can use this information to configure their requests to the OP.</p></li>
-<li><p><strong>Provider JWK set</strong> — JSON document containing the provider’s public keys (typically RSA) in JSON Web Key (JWK) format. These keys are used to secure the issued ID tokens and other artifacts.</p></li>
-<li><p><strong><a href="https://openid.net/specs/openid-connect-registration-1_0.html">Client registration</a></strong> — RESTful web API for registering client apps with the OP. Registration may be protected (require pre-authorisation) or open (public).</p></li>
-<li><p><strong><a href="https://openid.net/specs/openid-connect-session-1_0.html">Session management</a></strong> — Enables client apps to check if a logged in user has still an active session with the OpenID Connect provider. Also to facilitate logout.</p></li>
-</ul>
-
-<h2 id="toc_14"><a href="#specs">9. Where is the spec?</a></h2>
-
-<p><img src="https://connect2id.com/assets/learn/openid-connect/done.png" alt=""/></p>
-
-<p>The standard was produced by a working group at the <a href="https://openid.net">OpenID foundation</a> and comprises a set of documents which can be explored at <a href="https://openid.net/connect/"></a><a href="https://openid.net/connect/">http://openid.net/connect/</a>.</p>
-
-<h2 id="toc_15"><a href="#faq">10. FAQ</a></h2>
-
-<p><img src="https://connect2id.com/assets/learn/openid-connect/faq.png" alt=""/></p>
-
-<h3 id="toc_16"><a href="#oidc-oauth-relationship">10.1 How is OpenID Connect related to OAuth 2.0?</a></h3>
-
-<p><a href="oauth-2">OAuth 2.0</a> is a framework for obtaining access tokens for protected resources such as web APIs. OpenID Connect utilises the OAuth 2.0 semantics and flows to allow clients (relying parties) to access the user’s identity, encoded in a JSON Web Token (JWT) called ID token. The access token facilitates retrieval of consented profile details (called claims or attributes) from the <a href="#userinfo">UserInfo</a> endpoint of the OpenID provider.</p>
-
-<h3 id="toc_17"><a href="#auth-methods">10.2 How do OpenID providers authenticate users?</a></h3>
-
-<p>OpenID Connect leaves this entirely up to the particular IdP. Implementors may use any method for authenticating users, or combine two methods for stronger security (2FA).</p>
-
-<ul>
-<li>  Username / password</li>
-<li>  Hardware tokens</li>
-<li>  SMS confirmation</li>
-<li>  Biometrics</li>
-<li>  Etc.</li>
-</ul>
-
-<p>The IdP may set the optional <code>acr</code> and <code>amr</code> claims in the <a href="#id-token">ID token</a> to inform the client how the user has been authenticated.</p>
-
-<p>Clients are also have control over authentication:</p>
-
-<ul>
-<li><p>The optional <code>prompt=login</code> parameter will cause the user to be (re)authenticated, even if they have a valid session (cookie) with the IdP.</p></li>
-<li><p>With IdPs that support various authentication strengths, the application may request stronger authentication using the optional <code>acr_values</code> parameter.</p></li>
-</ul>
-
-<h3 id="toc_18"><a href="#bearer-access-token">10.3 What is a bearer access token?</a></h3>
-
-<p>The access token resembles the concept of a physical token or ticket. It gives the holder access to a specific HTTP resource or web service, which is typically limited by scope and has an expiration time.</p>
-
-<p>Bearer access tokens are easy to use - whoever has one is permitted to call the protected resource. For that reason they must always be passed around over a secure channel (TLS / HTTPS) and stored securely.</p>
-
-<p>OpenID Connect employs OAuth 2.0 access tokens to allow client apps to retrieve consented <a href="#claims">user information</a> from the <a href="#userinfo-endpoint">UserInfo endpoint</a>.</p>
-
-<p>An OpenID provider may extend the access token scope to other protected resources and web APIs.</p>
+<p><strong>该优化方案的后续改进：</strong>以我们本文所说的库存超卖场景为例，你要是这么玩，会把自己搞的很痛苦！再次强调，我们这里的库存超卖场景，仅仅只是作为演示场景而已。</p>
 
                         
                       </div>
@@ -561,10 +422,10 @@ Content-Type: application/json
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/9/21</span>
+                    <span class="date">2018/12/31</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Authn&Authz.html'>Authn&Authz</a></span>
+          					    <span class="posted-in"><a href='Cocurrency.html'>Cocurrency</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -654,31 +515,31 @@ Content-Type: application/json
 	      
 		      
 			      <li class="post">
-			        <a href="15459058392039.html">Reliable Domain Events</a>
+			        <a href="15517999043443.html">The Art of Crafting Architectural Diagrams</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
+			        <a href="15517997955971.html">为什么说我们需要软件架构图？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
+			        <a href="15516128677869.html">DNS Servers That Offer Privacy and Filtering</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
+			        <a href="15516123108194.html">Airbnb's Migration from Monolith to Services</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
+			        <a href="15516097487470.html">Events As First-Class Citizens</a>
 			      </li>
 		     
 		  

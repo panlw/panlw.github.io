@@ -105,429 +105,155 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15401080666894.html">
+                <a class="clearlink" href="15480835823018.html">
                 
-                  <h1>Thread Pools in NGINX Boost Performance 9x!</h1>
+                  <h1>淺談 I/O Model</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
-                        	<blockquote>
-<p><a href="https://www.nginx.com/blog/thread-pools-boost-performance-9x/">https://www.nginx.com/blog/thread-pools-boost-performance-9x/</a></p>
-</blockquote>
-
-<p>It’s well known that NGINX uses an <a href="http://nginx.com/blog/inside-nginx-how-we-designed-for-performance-scale/">asynchronous, event‑driven approach to handling connections</a>. This means that instead of creating another dedicated process or thread for each request (like servers with a traditional architecture), it handles multiple connections and requests in one worker process. To achieve this, NGINX works with sockets in a non‑blocking mode and uses efficient methods such as <a href="http://man7.org/linux/man-pages/man7/epoll.7.html">epoll</a> and <a href="https://www.freebsd.org/cgi/man.cgi?query=kqueue">kqueue</a>.</p>
-
-<p>Because the number of full‑weight processes is small (usually only one per CPU core) and constant, much less memory is consumed and CPU cycles aren’t wasted on task switching. The advantages of such an approach are well‑known through the example of NGINX itself. It successfully handles millions of simultaneous requests and scales very well.</p>
-
-<p><img src="media/15401080666894/15401081464365.jpg" alt=""/></p>
+                        	<pre><code>Carl | Jan 31, 2018
+</code></pre>
 
 <blockquote>
-<p>Each process consumes additional memory, and each switch between them consumes CPU cycles and trashes L‑caches</p>
+<p>原文地址 <a href="https://medium.com/@clu1022/%E6%B7%BA%E8%AB%87i-o-model-32da09c619e6">https://medium.com/@clu1022/%E6%B7%BA%E8%AB%87i-o-model-32da09c619e6</a></p>
 </blockquote>
 
-<p>But the asynchronous, event‑driven approach still has a problem. Or, as I like to think of it, an “enemy”. And the name of the enemy is: <strong>blocking</strong>. Unfortunately, many third‑party modules use blocking calls, and users (and sometimes even the developers of the modules) aren’t aware of the drawbacks. Blocking operations can ruin NGINX performance and must be avoided at all costs.</p>
+<h2 id="toc_0">前言</h2>
 
-<p>Even in the current official NGINX code it’s not possible to avoid blocking operations in every case, and to solve this problem the new “thread pools” mechanism was <a href="http://hg.nginx.org/nginx/rev/466bd63b63d1">implemented in NGINX version 1.7.11</a> and <a href="http://nginx.com/blog/nginx-plus-r7-released/#thread-pools">NGINX Plus Release 7</a>. What it is and how it supposed to be used, we will cover later. Now let’s meet face to face with our enemy.</p>
-
-<p><u>Editor – For an overview of NGINX Plus R7, see <a href="https://www.nginx.com/blog/nginx-plus-r7-released/">Announcing NGINX Plus R7</a> on our blog.</u></p>
-
-<p>_For detailed discussions of other new features in NGINX Plus R7, see these related blog posts:</p>
+<p>我們常常會在開發 Java I/O 相關程式的時候看到以下幾種名詞:</p>
 
 <ul>
-<li>  <a href="https://www.nginx.com/blog/http2-r7/">HTTP/2 Now Fully Supported in NGINX Plus</a></li>
-<li>  <a href="https://www.nginx.com/blog/socket-sharding-nginx-release-1-9-1/">Socket Sharding in NGINX</a></li>
-<li>  <a href="https://www.nginx.com/blog/dashboard-r7">The New NGINX Plus Dashboard in Release 7</a></li>
-<li>  <a href="https://www.nginx.com/blog/tcp-load-balancing-r7">TCP Load Balancing in NGINX Plus R7</a>_ </li>
+<li>  <strong>blocking</strong></li>
+<li>  <strong>non-blocking</strong></li>
+<li>  <strong>synchronous</strong></li>
+<li>  <strong>asynchronous</strong></li>
 </ul>
 
-<h2 id="toc_0">The Problem</h2>
+<p>這麼多名詞其實還挺讓人頭痛的, 所以想在這邊整理一下我個人對於這部分的理解. 由於這種東西你在網路上可能會看到很多種說法, 因為每個人的知識背景以及職業都存在一定程度的差異, 所以討論時的 context 也不同. 這邊我想以 Richard Stevens 所著的 [Unix Network Programming, Volume 1: The Sockets Networking API (3rd Edition)] 的 6.2 節: I/O Models 為主要出發點來做個簡單的記錄, 且基本上只討論 user space 的 I/O, 以下大部分內容都是從原文翻譯過來的.</p>
 
-<p>First, for better understanding of the problem a few words about how NGINX works.</p>
+<p>對於一個 network I/O (以下以 read 為範例), 基本上會涉及到兩個系統層面的對象: 其一是呼叫此 I/O 的 process/thread, 再來就是系統 kernel, 而一個 read operation 基本上又會經歷以下兩個階段 (phase):</p>
 
-<p>In general, NGINX is an event handler, a controller that receives information from the kernel about all events occurring on connections and then gives commands to the operating system about what to do. In fact, NGINX does all the hard work by orchestrating the operating system, while the operating system does the routine work of reading and sending bytes. So it’s very important for NGINX to respond fast and in a timely manner.</p>
+<ol>
+<li> 等待資料準備 (<strong>Waiting for the data to be ready</strong>)</li>
+<li> 將資料從 kernel copy 至 process/thread 中 (<strong>Copying the data from the kernel to the process</strong>)</li>
+</ol>
 
-<p><img src="media/15401080666894/15401081641234.jpg" alt=""/></p>
+<p>這兩個階段很重要的原因是因為: 在這兩個階段的各部分中所存在的些微差異, 產生了以下將會談到的各種 I/O model.</p>
 
-<blockquote>
-<p>The worker process listens for and processes events from the kernel</p>
-</blockquote>
+<h4 id="toc_1">Blocking I/O</h4>
 
-<p>The events can be timeouts, notifications about sockets ready to read or to write, or notifications about an error that occurred. NGINX receives a bunch of events and then processes them one by one, doing the necessary actions. Thus all the processing is done in a simple loop over a queue in one thread. NGINX dequeues an event from the queue and then reacts to it by, for example, writing or reading a socket. In most cases, this is extremely quick (perhaps just requiring a few CPU cycles to copy some data in memory) and NGINX proceeds through all of the events in the queue in an instant.</p>
+<p>基本上, Linux 中大部分的 socket 都是 blocking 的. 以下是以 UDP 為範例的 blocking I/O 流程圖 (書上寫因為 TCP 比較複雜, 所以用 UDP 做範例).<br/>
+<img src="media/15480835823018/15480836768068.jpg" alt=""/></p>
 
-<p><img src="media/15401080666894/15401081758160.jpg" alt=""/></p>
+<p>當 user process 呼叫了 recvfrom 這個 system call 時, kernel 就會進入前面提到的 I/O 之第一階段: 等待資料準備. 就 network I/O 來說, 大多數情況下, 這個時間點都還沒有資料 (datagram) 到達, 甚至是可能發生錯誤了 (通常是 system call 被 interrupt signal 中斷). 這時候 user process 就會一直處於 blocking 的狀態, 直到 recvfrom 回傳準備好的資料, 並將資料從 kernel 複製至 user process 的 memory, 最後待 kernel 回傳結果(OK) 給 user process 後, user process 才解除 blocking 的狀態並且繼續運作.</p>
 
-<blockquote>
-<p>All processing is done in a simple loop by one thread</p>
-</blockquote>
+<p>從上圖來看, 可以知道所謂的 blocking 就是在 I/O 執行的兩個階段都被 block 住了. 在 system 歸還 process 控制權之前, process 都不能再做任何的事情.</p>
 
-<p>But what will happen if some long and heavy operation has occurred? The whole cycle of event processing will get stuck waiting for this operation to finish.</p>
+<p>在 Java 中, FileInputStream, FileOutputStream 以及對 Socket 的讀寫基本上就是屬於這種 model.</p>
 
-<p>So, by saying “a blocking operation” we mean any operation that stops the cycle of handling events for a significant amount of time. Operations can be blocking for various reasons. For example, NGINX might be busy with lengthy, CPU‑intensive processing, or it might have to wait to access a resource (such as a hard drive, or a mutex or library function call that gets responses from a database in a synchronous manner, etc.). The key point is that while processing such operations, the worker process cannot do anything else and cannot handle other events, even if there are more system resources available and some events in the queue could utilize those resources.</p>
+<h4 id="toc_2">Nonblocking I/O</h4>
 
-<p>Imagine a salesperson in a store with a long queue in front of him. The first guy in the queue asks for something that is not in the store but is in the warehouse. The salesperson goes to the warehouse to deliver the goods. Now the entire queue must wait a couple of hours for this delivery and everyone in the queue is unhappy. Can you imagine the reaction of the people? The waiting time of every person in the queue is increased by these hours, but the items they intend to buy might be right there in the shop.</p>
+<p>在 Linux 中如果把 socket 設置成 non-blocking 的話, 就相當於告訴 kernel: “在不讓 process 進行 sleep 的情況下, 若 request 無法得到回覆, 就直接回傳 error.” 其簡單的流程圖如下:<br/>
+<img src="media/15480835823018/15480836867606.jpg" alt=""/></p>
 
-<p><img src="media/15401080666894/15401081890992.jpg" alt=""/></p>
+<p>當 user process 呼叫 recvfrom 之後, 若 kernel 這邊的資料還沒有準備好, 就不要 block user process 了, 反之, 立刻回傳一個 error(EWOULDBOLCK). 所以站在 user process 的視角來看, 呼叫 recvfrom 後並不用卡在那邊等待, 而是可以立刻得到一個結果. 當 user process 發現回傳的是 error 時, 就可以知道資料還沒準備好, 這時就可以再次發送 recvfrom 操作. 當 kernel 這邊準備好資料後, 且又再次收到來自 user process 的 system call 時, kernel 就可以把資料 copy 到 user process 中 (maybe application buffer), 然後回傳結果.</p>
 
-<blockquote>
-<p>Everyone in the queue has to wait for the first person’s order</p>
-</blockquote>
+<p>所以, nonblocking 其實就是 user process 要不斷地去問 kernel 說資料好了沒. 這在 application 中的做法, 基本上就是用一個 loop 去一直 call recvfrom, 這其實就是我們常說的 polling. 儘管這種方式看來很浪費 CPU 時間, 但似乎還是滿常見的.</p>
 
-<p>Nearly the same situation happens with NGINX when it asks to read a file that isn’t cached in memory, but needs to be read from disk. Hard drives are slow (especially the spinning ones), and while the other requests waiting in the queue might not need access to the drive, they are forced to wait anyway. As a result, latencies increase and system resources are not fully utilized.</p>
+<p>對應到 Java 中, Socket Channel 就是基於這種 model 來運作的, 常見的一些 abstract class 如: ServerSocketChannel, SocketChannel 以及 DatagramChannel 等.</p>
 
-<p><img src="media/15401080666894/15401082010258.jpg" alt=""/></p>
+<h4 id="toc_3">I/O multiplexing</h4>
 
-<blockquote>
-<p>Just one blocking operation can delay all following operations for a significant time</p>
-</blockquote>
+<p>所謂的 I/O multiplexing, 其實就是 select/epoll. 相似的概念如 Java NIO 裡的 selector, event driven I/O… 等. 這種 model 的好處在於使用單個 process/thread 即可同時處理多個網路連接的 I/O. 其原理就是 select/epoll 這類的 function 會一直輪詢其所負責監視的 socket, 若當中有某個 socket 已經有資料了, 就通知 user process, 流程圖如下:<br/>
+<img src="media/15480835823018/15480836952667.jpg" alt=""/></p>
 
-<p>Some operating systems provide an asynchronous interface for reading and sending files and NGINX can use this interface (see the <a href="http://nginx.org/en/docs/http/ngx_http_core_module.html#aio">aio</a> directive). A good example here is FreeBSD. Unfortunately, we can’t say the same about Linux. Although Linux provides a kind of asynchronous interface for reading files, it has a couple of significant drawbacks. One of them is alignment requirements for file access and buffers, but NGINX handles that well. But the second problem is worse. The asynchronous interface requires the <code>O_DIRECT</code> flag to be set on the file descriptor, which means that any access to the file will bypass the cache in memory and increase load on the hard disks. That definitely doesn’t make it optimal for many cases.</p>
+<p>當 user space 呼叫了 select 或是 epoll(上圖以 select 為例), 整個 process 就會被 block 住, 同時, kernel 會去監視所有由 select 負責的 socket, 當其中任一 socket 有資料準備好了, select 就會立刻 return. 此時 user process 再呼叫 recvfrom 將資料 copy 至 application buffer 中.</p>
 
-<p>To solve this problem in particular, thread pools were introduced in NGINX 1.7.11 and NGINX Plus Release 7.</p>
+<p>這樣看來, I/O multiplexing 其實跟 blocking I/O 沒有什麼差別, 但事實上還是有的:</p>
 
-<p>Now let’s dive into what thread pools are about and how they work.</p>
+<ul>
+<li>  缺點: I/O multiplexing 要用兩次 system call, 以上圖為例, 就是 select/recvfrom, 而 blocking I/O 只需要一次 system call</li>
+<li>  優點: 可同時處理多個 connection</li>
+</ul>
 
-<h2 id="toc_1">Thread Pools</h2>
+<p>綜合來看, 如果 I/O multiplexing 要處理的 connection 數量沒有很多的話, 其效能不見得會比使用 blocking I/O 的 multi-thread 程式要來得好, 甚至可能還會有較高的 latency. 要注意的是, I/O multiplexing 的優勢不是對單個連接處理會更快, 而是可以在只使用單個 process/thread 的情況下, 監視 / 處理更多的 connection.</p>
 
-<p>Let’s return to our poor sales assistant who delivers goods from a faraway warehouse. But he has become smarter (or maybe he became smarter after being beaten by the crowd of angry clients?) and hired a delivery service. Now when somebody asks for something from the faraway warehouse, instead of going to the warehouse himself, he just drops an order to a delivery service and they will handle the order while our sales assistant will continue serving other customers. Thus only those clients whose goods aren’t in the store are waiting for delivery, while others can be served immediately.</p>
+<p>在 Java 中, 這種 model 被用在 Selector 上, 如此一來我們就可以只用一個或是少量的執行緒來達到控制多個 channel 的目的. 且這些 channel 基本上應該要是 nonblocking 的.</p>
 
-<p><img src="media/15401080666894/15401082115635.jpg" alt=""/></p>
+<h4 id="toc_4">Signal driven I/O</h4>
 
-<blockquote>
-<p>Passing an order to the delivery service unblocks the queue</p>
-</blockquote>
+<p>在這種 model 裡, 我們可以跟 kernel 說: 當資料準備好的時候, 給我們發個 SIGIO 信號. 這種就叫 Signal-Driven I/O, 示意圖如下:<br/>
+<img src="media/15480835823018/15480837061639.jpg" alt=""/></p>
 
-<p>In terms of NGINX, the thread pool is performing the functions of the delivery service. It consists of a task queue and a number of threads that handle the queue. When a worker process needs to do a potentially long operation, instead of processing the operation by itself it puts a task in the pool’s queue, from which it can be taken and processed by any free thread.</p>
+<p>當在 socket 上啟用 signal-driven I/O 後, 我們可以透過 sigaction 這個 system call 去安裝一個 signal handler. 這個 system call 會馬上回傳, 然後 user process 就可以繼續執行, 並不會被 block 住。當資料準備好了之後, kernel 會為 user process 產生一個 SIGIO 信號, 這時有兩種處理方式:</p>
 
-<p><img src="media/15401080666894/15401082238769.jpg" alt=""/></p>
+<ul>
+<li>  透過 recvfrom 從 signal handler 讀取資料, 然後通知 main loop 說資料已經準備好可以處理了</li>
+<li>  直接通知 main loop 說資料已經可以讀取了, 讓 main loop 自己去讀取跟處理</li>
+</ul>
 
-<blockquote>
-<p>The worker process offloads blocking operations to the thread pool</p>
-</blockquote>
+<p>不管用哪種方式處理信號, 我們在等待資料到來的過程中都不會被 block. 對 main loop 來說, 其可以繼續執行要做的工作, 並且只需要等待 signal handler 的通知即可, 不管是資料已經讀取好並準備接受處理了或者是資料已經準備好可以被讀取了.</p>
 
-<p>It seems then we have another queue. Right. But in this case the queue is limited by a specific resource. We can’t read from a drive faster than the drive is capable of producing data. Now at least the drive doesn’t delay processing of other events and only the requests that need to access files are waiting.</p>
+<h4 id="toc_5">Asynchronous I/O</h4>
 
-<p>The “reading from disk” operation is often used as the most common example of a blocking operation, but actually the thread pools implementation in NGINX can be used for any tasks that aren’t appropriate to process in the main working cycle.</p>
+<p>所謂的 asynchronous I/O, 就是告訴 kernel 去進行一個操作 (operation), 並且在整個操作完成(包含從 kernel 複製資料至 application buffer 裡) 的時候通知我們. 此 model 跟 signal-driven 的主要差異在於: signal-driven 中, kernel 會在 I/O 操作可以被初始化(<strong>initiated</strong>) 的時候通知我們; 但在 asynchronous 中, kernel 是在 I/O 操作完成後 (<strong>completed</strong>) 才通知我們.</p>
 
-<p>At the moment, offloading to thread pools is implemented only for three essential operations: the <code>read()</code> syscall on most operating systems, <code>sendfile()</code> on Linux, and <code>aio_write()</code> on Linux which is used when writing some temporary files such as those for the cache. We will continue to test and benchmark the implementation, and we may offload other operations to the thread pools in future releases if there’s a clear benefit.</p>
+<p>這種 model 的示意圖如下:<br/>
+<img src="media/15480835823018/15480837184838.jpg" alt=""/></p>
 
-<p><u>Editor – Support for the</u> <code>aio_write()</code> <u>syscall was added in <a href="http://hg.nginx.org/nginx/rev/fc72784b1f52">NGINX 1.9.13</a> and <a href="https://www.nginx.com/blog/nginx-plus-r9-released/#aio-write">NGINX Plus R9</a>.</u></p>
+<p>當 user process 啟動讀取的操作 (透過 aio_read) 將 descriptor, buffer pointer, buffer size, file offset 以及當整個操作結束後如何通知 user process 等參數傳給 kernel 後, 就會立刻回傳, 這樣就不會讓 user process 產生 block. 再來, 當 kernel 這邊等到資料準備完成, 並且將資料複製到 application buffer 後, 其會向 user process 發送一個 signal, 說這個讀取操作已經完成了, 可以把資料拿去做事了. 要補充的是, 這邊送給 user process 的 signal 是由 aio_read 指定的, 所以基本上也不會送錯人.</p>
 
-<h2 id="toc_2">Benchmarking</h2>
+<p>在 Java 中, asynchronous 主要被利用在 AsynchronousSocketChannel, AsynchronousServerSocketChannel 以及 AsynchronousFileChannel 等 class 之中.</p>
 
-<p>It’s time to move from theory to practice. To demonstrate the effect of using thread pools we are going to perform a synthetic benchmark that simulates the worst mix of blocking and nonblocking operations.</p>
+<h4 id="toc_6">各種 I/O Model 之比較</h4>
 
-<p>It requires a data set that is guaranteed not to fit in memory. On a machine with 48 GB of RAM, we have generated 256 GB of random data in 4‑MB files, and then have configured NGINX 1.9.0 to serve it.</p>
+<p>介紹完常見的這幾種 I/O model 後, 現在就可以來看開頭提到的那幾個名詞了:</p>
 
-<p>The configuration is pretty simple:</p>
+<p><strong>Blocking 與 nonblocking</strong> 從前面的解說中可以知道, blocking I/O 基本上會讓 user process 進入 block 的狀態, 直到操作完成才會繼續作業, 而 nonblocking 則是在 kernel 還在準備資料的情況下會立刻回傳.</p>
 
-<pre><code>worker_processes 16;
+<p><strong>Synchronous 與 Asynchronous</strong><br/>
+關於這兩個 model, POSIX 的定義是這樣寫的</p>
 
-events {
-    accept_mutex off;
-}
+<ul>
+<li>  A synchronous I/O operation causes the requesting process to be blocked until that I/O operation completes</li>
+<li>  An asynchronous I/O operation does not cause the requesting process to be blocked</li>
+</ul>
 
-http {
-    include mime.types;
-    default_type application/octet-stream;
+<p>所以我們可以這樣想: <strong>synchronous I/O 在執行 I/O operation 的時候會將 process/thread 給 block 住</strong>, 而 asynchronous 則不同, 其在 user process 觸發 I/O 操作後, 就直接回傳去做別的事了, 等到 kernel 處理完 I/O 後, 會發送一個信號給 user process, 說 I/O 已經結束了, 在這段過程中, user process 就沒有被 block 住 (就是叫別人去幫你等東西或是做事喇).</p>
 
-    access_log off;
-    sendfile on;
-    sendfile_max_chunk 512k;
+<p>再換個講法, 區別這兩者的關鍵就是<strong>到底是誰在進行真正的 I/O</strong>, 如果是主執行緒, 那就是 synchronous, 若是衍生出來的子執行緒, 待子執行緒完成 I/O operation 後回報給主執行緒, 這就是 asynchronous.</p>
 
-    server {
-        listen 8000;
+<p>講到這邊可能有些地方還是會讓人搞混, 譬如說 non-blocking 可能會被認為沒有 block 產生因而被歸類在 asynchronous 之下, 但事實上是有的. 前一段講到, synchronous I/O 在執行 I/O operation 的時候會將 process 給 block 住, 這邊對 I/O operation 的定義指的是<strong>真實的 I/O 操作 (物理意義上的)</strong>. 什麼是真實的 I/O 操作呢? 像是 recvfrom 這種 system call 就是. 確實, 在 nonblocking 中, 我們會一直問 kernel 東西好了沒, 沒好就不管, 但是若好了的話呢? 這時我們就必須透過 recvfrom 來將資料 copy 至 application buffer 中, 在 copy 的這個過程, user process 就是被 block 住的. 所以也有人會說 nonblocking 是指當前這次的 I/O operation 可以保證 constant time 回傳, 但回傳的可能只有狀態 (因為資料還沒好), 所以你才要做 polling 一直去 check 看資料到底好了沒. 但在某些 context 之下, 譬如說討論一個 API 的 return 速度時, asynchronous 與 nonblocking 其實都是立刻 return, 所以在這種 context 之下, 就沒有必要那麼嚴格的區分了 (當然, 如果你用 asynchronous 去 call 一個 blocking API, 那你還是要等的, 因為 blocking 本身就不保證 constant time return). 這也是為什麼在開頭就要先限制 context 的範圍再開始介紹這些 model 的原因之一.</p>
 
-        location / {
-            root /storage;
-        }
-    }
-}
-</code></pre>
-
-<p>As you can see, to achieve better performance some tuning was done: <code>[logging](http://nginx.org/en/docs/http/ngx_http_log_module.html#access_log)</code> and <code>[accept_mutex](http://nginx.org/en/docs/ngx_core_module.html#accept_mutex)</code> were disabled, <code>[sendfile](http://nginx.org/en/docs/http/ngx_http_core_module.html#sendfile)</code> was enabled, and <code>[sendfile_max_chunk](http://nginx.org/en/docs/http/ngx_http_core_module.html#sendfile_max_chunk)</code> was set. The last directive can reduce the maximum time spent in blocking <code>sendfile()</code> calls, since NGINX won’t try to send the whole file at once, but will do it in 512‑KB chunks.</p>
-
-<p>The machine has two Intel Xeon E5645 (12 cores, 24 HT‑threads in total) processors and a 10‑Gbps network interface. The disk subsystem is represented by four Western Digital WD1003FBYX hard drives arranged in a RAID10 array. All of this hardware is powered by Ubuntu Server 14.04.1 LTS.</p>
-
-<p><img src="media/15401080666894/15401082447034.jpg" alt=""/></p>
-
-<blockquote>
-<p>Configuration of load generators and NGINX for the benchmark</p>
-</blockquote>
-
-<p>The clients are represented by two machines with the same specifications. On one of these machines, <a href="https://github.com/wg/wrk"><code>wrk</code></a> creates load using a Lua script. The script requests files from our server in a random order using 200 parallel connections, and each request is likely to result in a cache miss and a blocking read from disk. Let’s call this load the <u>random</u> load.</p>
-
-<p>On the second client machine we will run another copy of <code>wrk</code> that will request the same file multiple times using 50 parallel connections. Since this file will be frequently accessed, it will remain in memory all the time. In normal circumstances, NGINX would serve these requests very quickly, but performance will fall if the worker processes are blocked by other requests. Let’s call this load the <u>constant</u> load.</p>
-
-<p>The performance will be measured by monitoring throughput of the server machine using <code>ifstat</code> and by obtaining <code>wrk</code> results from the second client.</p>
-
-<p>Now, the first run without thread pools does not give us very exciting results:</p>
-
-<pre><code>% ifstat -bi eth2
-eth2
-Kbps in  Kbps out
-5531.24  1.03e+06
-4855.23  812922.7
-5994.66  1.07e+06
-5476.27  981529.3
-6353.62  1.12e+06
-5166.17  892770.3
-5522.81  978540.8
-6208.10  985466.7
-6370.79  1.12e+06
-6123.33  1.07e+06
-</code></pre>
-
-<p>As you can see, with this configuration the server is able to produce about 1 Gbps of traffic in total. In the output from <code>top</code>, we can see that all of worker processes spend most of the time in blocking I/O (they are in a <code>D</code> state):</p>
-
-<pre><code>top - 10:40:47 up 11 days,  1:32,  1 user,  load average: 49.61, 45.77 62.89
-Tasks: 375 total,  2 running, 373 sleeping,  0 stopped,  0 zombie
-%Cpu(s):  0.0 us,  0.3 sy,  0.0 ni, 67.7 id, 31.9 wa,  0.0 hi,  0.0 si,  0.0 st
-KiB Mem:  49453440 total, 49149308 used,   304132 free,    98780 buffers
-KiB Swap: 10474236 total,    20124 used, 10454112 free, 46903412 cached Mem
-
-  PID USER     PR  NI    VIRT    RES     SHR S  %CPU %MEM    TIME+ COMMAND
- 4639 vbart    20   0   47180  28152     496 D   0.7  0.1  0:00.17 nginx
- 4632 vbart    20   0   47180  28196     536 D   0.3  0.1  0:00.11 nginx
- 4633 vbart    20   0   47180  28324     540 D   0.3  0.1  0:00.11 nginx
- 4635 vbart    20   0   47180  28136     480 D   0.3  0.1  0:00.12 nginx
- 4636 vbart    20   0   47180  28208     536 D   0.3  0.1  0:00.14 nginx
- 4637 vbart    20   0   47180  28208     536 D   0.3  0.1  0:00.10 nginx
- 4638 vbart    20   0   47180  28204     536 D   0.3  0.1  0:00.12 nginx
- 4640 vbart    20   0   47180  28324     540 D   0.3  0.1  0:00.13 nginx
- 4641 vbart    20   0   47180  28324     540 D   0.3  0.1  0:00.13 nginx
- 4642 vbart    20   0   47180  28208     536 D   0.3  0.1  0:00.11 nginx
- 4643 vbart    20   0   47180  28276     536 D   0.3  0.1  0:00.29 nginx
- 4644 vbart    20   0   47180  28204     536 D   0.3  0.1  0:00.11 nginx
- 4645 vbart    20   0   47180  28204     536 D   0.3  0.1  0:00.17 nginx
- 4646 vbart    20   0   47180  28204     536 D   0.3  0.1  0:00.12 nginx
- 4647 vbart    20   0   47180  28208     532 D   0.3  0.1  0:00.17 nginx
- 4631 vbart    20   0   47180    756     252 S   0.0  0.1  0:00.00 nginx
- 4634 vbart    20   0   47180  28208     536 D   0.0  0.1  0:00.11 nginx&lt;
- 4648 vbart    20   0   25232   1956    1160 R   0.0  0.0  0:00.08 top
-25921 vbart    20   0  121956   2232    1056 S   0.0  0.0  0:01.97 sshd
-25923 vbart    20   0   40304   4160    2208 S   0.0  0.0  0:00.53 zsh
-</code></pre>
-
-<p>In this case the throughput is limited by the disk subsystem, while the CPU is idle most of the time. The results from <code>wrk</code> are also very low:</p>
-
-<pre><code>Running 1m test @ http://192.0.2.1:8000/1/1/1
-  12 threads and 50 connections
-  Thread Stats   Avg    Stdev     Max  +/- Stdev
-    Latency     7.42s  5.31s   24.41s   74.73%
-    Req/Sec     0.15    0.36     1.00    84.62%
-  488 requests in 1.01m, 2.01GB read
-Requests/sec:      8.08
-Transfer/sec:     34.07MB
-</code></pre>
-
-<p>And remember, this is for the file that should be served from memory! The excessively large latencies are because all the worker processes are busy with reading files from the drives to serve the random load created by 200 connections from the first client, and cannot handle our requests in good time.</p>
-
-<p>It’s time to put our thread pools in play. For this we just add the <code>[aio](http://nginx.org/en/docs/http/ngx_http_core_module.html#aio)</code> <code>threads</code> directive to the <code>location</code> block:</p>
-
-<pre><code>location / {
-    root /storage;
-    aio threads;
-}
-</code></pre>
-
-<p>and ask NGINX to reload its configuration.</p>
-
-<p>After that we repeat the test:</p>
-
-<pre><code>% ifstat -bi eth2
-eth2
-Kbps in  Kbps out
-60915.19  9.51e+06
-59978.89  9.51e+06
-60122.38  9.51e+06
-61179.06  9.51e+06
-61798.40  9.51e+06
-57072.97  9.50e+06
-56072.61  9.51e+06
-61279.63  9.51e+06
-61243.54  9.51e+06
-59632.50  9.50e+06
-</code></pre>
-
-<p>Now our server produces <strong>9.5 Gbps</strong>, compared to ~1 Gbps without thread pools!</p>
-
-<p>It probably could produce even more, but it has already reached the practical maximum network capacity, so in this test NGINX is limited by the network interface. The worker processes spend most of the time just sleeping and waiting for new events (they are in <code>S</code> state in <code>top</code>):</p>
-
-<pre><code>top - 10:43:17 up 11 days,  1:35,  1 user,  load average: 172.71, 93.84, 77.90
-Tasks: 376 total,  1 running, 375 sleeping,  0 stopped,  0 zombie
-%Cpu(s):  0.2 us,  1.2 sy,  0.0 ni, 34.8 id, 61.5 wa,  0.0 hi,  2.3 si,  0.0 st
-KiB Mem:  49453440 total, 49096836 used,   356604 free,    97236 buffers
-KiB Swap: 10474236 total,    22860 used, 10451376 free, 46836580 cached Mem
-
-  PID USER     PR  NI    VIRT    RES     SHR S  %CPU %MEM    TIME+ COMMAND
- 4654 vbart    20   0  309708  28844     596 S   9.0  0.1  0:08.65 nginx
- 4660 vbart    20   0  309748  28920     596 S   6.6  0.1  0:14.82 nginx
- 4658 vbart    20   0  309452  28424     520 S   4.3  0.1  0:01.40 nginx
- 4663 vbart    20   0  309452  28476     572 S   4.3  0.1  0:01.32 nginx
- 4667 vbart    20   0  309584  28712     588 S   3.7  0.1  0:05.19 nginx
- 4656 vbart    20   0  309452  28476     572 S   3.3  0.1  0:01.84 nginx
- 4664 vbart    20   0  309452  28428     524 S   3.3  0.1  0:01.29 nginx
- 4652 vbart    20   0  309452  28476     572 S   3.0  0.1  0:01.46 nginx
- 4662 vbart    20   0  309552  28700     596 S   2.7  0.1  0:05.92 nginx
- 4661 vbart    20   0  309464  28636     596 S   2.3  0.1  0:01.59 nginx
- 4653 vbart    20   0  309452  28476     572 S   1.7  0.1  0:01.70 nginx
- 4666 vbart    20   0  309452  28428     524 S   1.3  0.1  0:01.63 nginx
- 4657 vbart    20   0  309584  28696     592 S   1.0  0.1  0:00.64 nginx
- 4655 vbart    20   0  30958   28476     572 S   0.7  0.1  0:02.81 nginx
- 4659 vbart    20   0  309452  28468     564 S   0.3  0.1  0:01.20 nginx
- 4665 vbart    20   0  309452  28476     572 S   0.3  0.1  0:00.71 nginx
- 5180 vbart    20   0   25232   1952    1156 R   0.0  0.0  0:00.45 top
- 4651 vbart    20   0   20032    752     252 S   0.0  0.0  0:00.00 nginx
-25921 vbart    20   0  121956   2176    1000 S   0.0  0.0  0:01.98 sshd
-25923 vbart    20   0   40304   3840    2208 S   0.0  0.0  0:00.54 zsh
-</code></pre>
-
-<p>There are still plenty of CPU resources.</p>
-
-<p>The results of <code>wrk</code>:</p>
-
-<pre><code>Running 1m test @ http://192.0.2.1:8000/1/1/1
-  12 threads and 50 connections
-  Thread Stats   Avg      Stdev     Max  +/- Stdev
-    Latency   226.32ms  392.76ms   1.72s   93.48%
-    Req/Sec    20.02     10.84    59.00    65.91%
-  15045 requests in 1.00m, 58.86GB read
-Requests/sec:    250.57
-Transfer/sec:      0.98GB
-</code></pre>
-
-<p>The average time to serve a 4‑MB file has been reduced from 7.42 seconds to 226.32 milliseconds (33 times less), and the number of requests per second has increased by 31 times (250 vs 8)!</p>
-
-<p>The explanation is that our requests no longer wait in the events queue for processing while worker processes are blocked on reading, but are handled by free threads. As long as the disk subsystem is doing its job as best it can serving our random load from the first client machine, NGINX uses the rest of the CPU resources and network capacity to serve requests of the second client from memory.</p>
-
-<h2 id="toc_3">Still Not a Silver Bullet</h2>
-
-<p>After all our fears about blocking operations and some exciting results, probably most of you already are going to configure thread pools on your servers. Don’t hurry.</p>
-
-<p>The truth is that fortunately most read and send file operations do not deal with slow hard drives. If you have enough RAM to store the data set, then an operating system will be clever enough to cache frequently used files in a so‑called “page cache”.</p>
-
-<p>The page cache works pretty well and allows NGINX to demonstrate great performance in almost all common use cases. Reading from the page cache is quite quick and no one can call such operations “blocking.” On the other hand, offloading to a thread pool has some overhead.</p>
-
-<p>So if you have a reasonable amount of RAM and your working data set isn’t very big, then NGINX already works in the most optimal way without using thread pools.</p>
-
-<p>Offloading read operations to the thread pool is a technique applicable to very specific tasks. It is most useful where the volume of frequently requested content doesn’t fit into the operating system’s VM cache. This might be the case with, for instance, a heavily loaded NGINX‑based streaming media server. This is the situation we’ve simulated in our benchmark.</p>
-
-<p>It would be great if we could improve the offloading of read operations into thread pools. All we need is an efficient way to know if the needed file data is in memory or not, and only in the latter case should the reading operation be offloaded to a separate thread.</p>
-
-<p>Turning back to our sales analogy, currently the salesman cannot know if the requested item is in the store and must either always pass all orders to the delivery service or always handle them himself.</p>
-
-<p>The culprit is that operating systems are missing this feature. The first attempts to add it to Linux as the <a href="https://lwn.net/Articles/371538/"><code>fincore()</code></a> syscall were in 2010 but that didn’t happen. Later there were a number of attempts to implement it as a new <code>preadv2()</code> syscall with the <code>RWF_NONBLOCK</code> flag (see <a href="https://lwn.net/Articles/612483/">Nonblocking buffered file read operations</a> and <a href="https://lwn.net/Articles/636967/">Asynchronous buffered read operations</a> at LWN.net for details). The fate of all these patches is still unclear. The sad point here is that it seems the main reason why these patches haven’t been accepted yet to the kernel is continuous <a href="http://bikeshed.com/">bikeshedding</a>.</p>
-
-<p>On the other hand, users of FreeBSD don’t need to worry at all. FreeBSD already has a sufficiently good asynchronous interface for reading files, which you should use instead of thread pools.</p>
-
-<h2 id="toc_4">Configuring Thread Pools</h2>
-
-<p>So if you are sure that you can get some benefit out of using thread pools in your use case, then it’s time to dive deep into configuration.</p>
-
-<p>The configuration is quite easy and flexible. The first thing you should have is NGINX version 1.7.11 or later, compiled with the <code>--with-threads</code> argument to the <code>configure</code> command. NGINX Plus users need Release 7 or later. In the simplest case, the configuration looks very plain. All you need is to include the <a href="http://nginx.org/en/docs/http/ngx_http_core_module.html#aio"><code>aio</code></a> <code>threads</code> directive in the appropriate context:</p>
-
-<pre><code># in the &#39;http&#39;, &#39;server&#39;, or &#39;location&#39; context
-aio threads;
-</code></pre>
+<p>以下這張圖是書中的 I/O 比較圖:<br/>
+<img src="media/15480835823018/15480837320919.jpg" alt=""/></p>
 
-<p>This is the minimal possible configuration of thread pools. In fact, it’s a short version of the following configuration:</p>
+<p>從這張圖來看, 我們也可以看到 nonblocking I/O 跟 asynchronous I/O 的差異其實很明顯. 對 nonblocking 來說, 確實大部分時間都沒有被 block, 但是 user process 還是要主動地去做 check 的動作, 然後在資料準備完後, 也要自己主動呼叫 recvfrom 去把資料 copy 至 application buffer 中; 而對 asynchronous 來說, 則是 user process 把 I/O operation 整個委託給 kernel 去完成, 然後 kernel 完成後會再發信號通知 user process, 這樣一來, user process 就不用自己去 check 還有 copy 資料了, 因為這些都會由 kernel 來代勞.</p>
 
-<pre><code># in the &#39;main&#39; context
-thread_pool default threads=32 max_queue=65536;
+<h4 id="toc_7">結論</h4>
 
-# in the &#39;http&#39;, &#39;server&#39;, or &#39;location&#39; context
-aio threads=default;
-</code></pre>
+<p>以上, 就是在 Java 中看到的各種 I/O 其背後的原理, 比較要注意的是對這些概念的分類要清晰, 才不會搞混.</p>
 
-<p>It defines a thread pool called <strong>default</strong> with 32 working threads and a maximum length for the task queue of 65536 tasks. If the task queue is overloaded, NGINX rejects the request and logs this error:</p>
+<ul>
+<li>  Synchronous I/O: 包含了 blocking I/O, nonblocking, I/O multiplexing(selector), 以及 signal-driven I/O</li>
+<li>  Asynchronous I/O: 就是 asynchronous I/O, 但它跟 nonblocking 還是差很多的</li>
+</ul>
 
-<pre><code>thread pool &quot;NAME&quot; queue overflow: N tasks waiting
-</code></pre>
+<p>其實對於 synchronous 這一詞, 我想還可以這樣看: 所謂的同步 (synchronous), 就是 <strong>user space 跟 kernel space 要一起合作</strong>, 由 user space trigger 一個 I/O operation, 然後由 kernel space 來回應這個 request. 至於在非同步 (asynchronous) 的概念裡, user space 就可以不用跟 kernel space 合作了, 我們可以從前面的例子中看到, 在非同步的場景下, user space 就像是買家在家裡網購一般, 一個訂單送出後, 等商家 (kernel) 把東西送到府上後再直接拿就好了. 講白了就是工具人喇.</p>
 
-<p>The error means it’s possible that the threads aren’t able to handle the work as quickly as it is added to the queue. You can try increasing the maximum queue size, but if that doesn’t help, then it indicates that your system is not capable of serving so many requests.</p>
+<p>最後, 在 Java NIO 一書裡, 有以下這段話, 我想在這邊紀錄一下以加深印象:</p>
 
-<p>As you already noticed, with the <a href="http://nginx.org/en/docs/ngx_core_module.html#thread_pool"><code>thread_pool</code></a> directive you can configure the number of threads, the maximum length of the queue, and the name of a specific thread pool. The last implies that you can configure several independent thread pools and use them in different places of your configuration file to serve different purposes:</p>
+<p><u>True readiness selection must be done by the operating system. One of the most important functions performed by an operating system is to handle I/O requests and notify processes when their data is ready. So it only makes sense to delegate this function down to the operating system. The Selector class provides the abstraction by which Java code can request readiness selection service from the underlying operating system in a portable way.</u></p>
 
-<pre><code># in the &#39;main&#39; context
-thread_pool one threads=128 max_queue=0;
-thread_pool two threads=32;
+<p>其實 Java 在 I/O 這塊還是相當依賴 OS 的, 所以要想真的了解 Java 中的 I/O, 就要先了解作業系統層面上的 I/O 原理才行.</p>
 
-http {
-    server {
-        location /one {
-            aio threads=one;
-        }
+<h4 id="toc_8">References</h4>
 
-        location /two {
-            aio threads=two;
-        }
-
-    }
-    # ...
-}
-</code></pre>
-
-<p>If the <code>max_queue</code> parameter isn’t specified, the value 65536 is used by default. As shown, it’s possible to set <code>max_queue</code> to zero. In this case the thread pool will only be able to handle as many tasks as there are threads configured; no tasks will wait in the queue.</p>
-
-<p>Now let’s imagine you have a server with three hard drives and you want this server to work as a “caching proxy” that caches all responses from your backends. The expected amount of cached data far exceeds the available RAM. It’s actually a caching node for your personal CDN. Of course in this case the most important thing is to achieve maximum performance from the drives.</p>
-
-<p>One of your options is to configure a RAID array. This approach has its pros and cons. Now with NGINX you can take another one:</p>
-
-<pre><code># We assume that each of the hard drives is mounted on one of these directories:
-# /mnt/disk1, /mnt/disk2, or /mnt/disk3
-
-# in the &#39;main&#39; context
-thread_pool pool_1 threads=16;
-thread_pool pool_2 threads=16;
-thread_pool pool_3 threads=16;
-
-http {
-    proxy_cache_path /mnt/disk1 levels=1:2 keys_zone=cache_1:256m max_size=1024G 
-                     use_temp_path=off;
-    proxy_cache_path /mnt/disk2 levels=1:2 keys_zone=cache_2:256m max_size=1024G 
-                     use_temp_path=off;
-    proxy_cache_path /mnt/disk3 levels=1:2 keys_zone=cache_3:256m max_size=1024G 
-                     use_temp_path=off;
-
-    split_clients $request_uri $disk {
-        33.3%     1;
-        33.3%     2;
-        *         3;
-    }
-
-    server {
-        # ...
-        location / {
-            proxy_pass http://backend;
-            proxy_cache_key $request_uri;
-            proxy_cache cache_$disk;
-            aio threads=pool_$disk;
-            sendfile on;
-        }
-    }
-}
-</code></pre>
-
-<p>In this configuration, the <code>thread_pool</code> directives define a dedicated, independent thread pool for each disk, and the <a href="http://nginx.org/en/docs/http/ngx_http_proxy_module.html#proxy_cache_path"><code>proxy_cache_path</code></a> directives define an dedicated, independent cache on each disk.</p>
-
-<p>The <a href="http://nginx.org/en/docs/http/ngx_http_split_clients_module.html"><code>split_clients</code></a> module is used for load balancing between the caches (and as a result between the disks), which perfectly fits this task.</p>
-
-<p>The <code>use_temp_path=off</code> parameter to the <code>proxy_cache_path</code> directive instructs NGINX to save temporary files into the same directories where the corresponding cache data is located. It is needed to avoid copying response data between the hard drives when updating our caches.</p>
-
-<p>All this together allows us to get maximum performance out of the current disk subsystem, because NGINX through separate thread pools interacts with the drives in parallel and independently. Each of the drives is served by 16 independent threads with a dedicated task queue for reading and sending files.</p>
-
-<p>I bet your clients like this custom‑tailored approach. Be sure that your hard drives like it too.</p>
-
-<p>This example is a good demonstration of how flexibly NGINX can be tuned specifically for your hardware. It’s like you are giving instructions to NGINX about the best way to interact with the machine and your data set. And by fine‑tuning NGINX in user space, you can ensure that your software, operating system, and hardware work together in the most optimal mode to utilize all the system resources as effectively as possible.</p>
-
-<h2 id="toc_5">Conclusion</h2>
-
-<p>Summing up, thread pools is a great feature that pushes NGINX to new levels of performance by eliminating one of its well‑known and long‑time enemies – blocking – especially when we are speaking about really large volumes of content.</p>
-
-<p>And there is even more to come. As previously mentioned, this brand‑new interface potentially allows offloading of any long and blocking operation without any loss of performance. NGINX opens up new horizons in terms of having a mass of new modules and functionality. Lots of popular libraries still do not provide an asynchronous nonblocking interface, which previously made them incompatible with NGINX. We may spend a lot of time and resources on developing our own nonblocking prototype of some library, but will it always be worth the effort? Now, with thread pools on board, it is possible to use such libraries relatively easily, making such modules without an impact on performance.</p>
-
-<p>Stay tuned.</p>
+<ul>
+<li>  <a href="https://www.amazon.com/Unix-Network-Programming-Sockets-Networking/dp/0131411551">Unix Network Programming, Volume 1: The Sockets Networking API (3rd Edition)</a></li>
+<li>  <a href="https://www.amazon.com/dp/0596002882/?tag=stackoverflow17-20">Java NIO (1st Edition)</a></li>
+</ul>
 
                         
                       </div>
@@ -536,7 +262,7 @@ http {
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/10/21</span>
+                    <span class="date">2019/1/21</span>
                     <span>posted in&nbsp;</span> 
           				  
           					    <span class="posted-in"><a href='RPC&NIO.html'>RPC&NIO</a></span>
@@ -629,31 +355,31 @@ http {
 	      
 		      
 			      <li class="post">
-			        <a href="15459058392039.html">Reliable Domain Events</a>
+			        <a href="15517999043443.html">The Art of Crafting Architectural Diagrams</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
+			        <a href="15517997955971.html">为什么说我们需要软件架构图？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
+			        <a href="15516128677869.html">DNS Servers That Offer Privacy and Filtering</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
+			        <a href="15516123108194.html">Airbnb's Migration from Monolith to Services</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
+			        <a href="15516097487470.html">Events As First-Class Citizens</a>
 			      </li>
 		     
 		  

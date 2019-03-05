@@ -105,446 +105,397 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15278222527057.html">
+                <a class="clearlink" href="15301794059091.html">
                 
-                  <h1>Cipher Security: How to harden TLS and SSH</h1>
+                  <h1>架构设计：负载均衡层设计方案（2）——Nginx 安装</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p>by Charles Fisher on November 23, 2015<br/>
-<a href="https://www.linuxjournal.com/content/cipher-security-how-harden-tls-and-ssh">https://www.linuxjournal.com/content/cipher-security-how-harden-tls-and-ssh</a></p>
+<p><a href="https://blog.csdn.net/yinwenjie/article/details/46620711">https://blog.csdn.net/yinwenjie/article/details/46620711</a></p>
 </blockquote>
 
-<p>Encryption and secure communications are critical to our life on the Internet. Without the ability to authenticate and preserve secrecy, we cannot engage in commerce, nor can we trust the words of our friends and colleagues.</p>
+<p>前一篇文章<a href="http://blog.csdn.net/yinwenjie/article/details/46605451">《架构设计：负载均衡层设计方案（1）——负载场景和解决方式》</a>中我们描述了要搭设负载均衡层的业务场景和负载均衡层搭建和扩展思路。从这篇文章开始的后几篇文章，我们将详细介绍 Nginx、LVS 和 Nginx+Keepalived、LVS+Keepalived 和 LVS+Nginx+Keepalived 的安装细节，以及它们的性能优化方式。</p>
 
-<p>It comes as some surprise then that insufficient attention has been paid in recent years to strong encryption, and many of our &quot;secure&quot; protocols have been easily broken. The recent Heartbleed, POODLE, CRIME and BEAST exploits put at risk our trust in our networks and in one another.</p>
+<p>Nginx 和 LVS 都是可以独立工作的，Keepalived 作为检测机制，不但可以和 Nginx、LVS 集成也可以和其他软件集成形成高可用方案（例如可以和 MySQL 数据库集成、可以和 Jetty 服务器集成、还可以和自己写的程序集成）。所以首先我们先来详细讲述 Nginx 和 LVS 的核心工作原理、安装过程和优化方式，再分别讲解他们和 Keepalived 的集成方式。这样的方式应该可以使您更快的掌握其中的核心，并能最快的融会贯通。</p>
 
-<p>Gathered here are best-practice approaches to close known exploits and strengthen communication security. These recommendations are by no means the final word on the subject—the goal here is to draw focus upon continuing best practice.</p>
+<h1 id="toc_0"><a></a>1、Nginx 重要算法介绍</h1>
 
-<p>Please note that many governments and jurisdictions have declared encryption illegal, and even where allowed, law enforcement has become increasingly desperate with growing opaque content (see the Resources section for articles on these topics). Ensure that both these techniques and the content that they protect are not overtly illegal.</p>
+<p>Nginx 是什么，请自行百度。我们先介绍几个关键的算法，如果您还不了解这些算法在 Nginx 中所起的作用，请不要着急，本文后半部分将说明它们的作用。</p>
 
-<p>This article focuses on Oracle Linux versions 5, 6 and 7 and close brethren (Red Hat, CentOS and Scientific Linux). From here forward, I refer to these platforms simply as V5, V6 and V7. Oracle&#39;s V7 runs only on the x86_64 platform, so that&#39;s this article&#39;s primary focus.</p>
+<h2 id="toc_1"><a></a>1.1、一致性 Hash 算法</h2>
 
-<p>These products rightly can be considered defective, in spite of constant vendor patches. The library designers would likely argue that their place is to implement mechanism, not policy, but the resulting products are nonetheless critically flawed. Here is how to fix them.</p>
+<p><img src="https://img-blog.csdn.net/20150703172857890" alt=""/></p>
 
-<h3 id="toc_0">Strong Ciphers in TLS</h3>
-
-<p>The Transport Layer Security (TLS) protocols emerged from the older Secure Sockets Layer (SSL) that originated in the Netscape browser and server software.</p>
-
-<p>It should come as no surprise that SSL must not be used in any context for secure communications. The last version, SSLv3, was rendered completely insecure by the recent POODLE exploit. No version of SSL is safe for secure communications of any kind—the design of the protocol is fatally flawed, and no implementation of it can be secure.</p>
-
-<p>TLS version 1.0 is also no longer safe. The immediate preference for secure communication is the modern TLS version 1.2 protocol, which, unfortunately, is not (yet) widely used. Despite the lack of popularity, prefer 1.2 if you value security.</p>
-
-<p>Yet, even with TLS version 1.2, there still are a number of important weaknesses that must be addressed to meet current best practice as specified in RFC 7525:</p>
+<p>一致性 Hash 算法是现代系统架构中的最关键算法之一，在分布式计算系统、分布式存储系统、数据分析等众多领域中广泛应用。针对这个系列的博文，在负载均衡层、业务通信层、数据存储层都会有他的身影。</p>
 
 <ul>
-<li><p>&quot;Implementations MUST NOT negotiate RC4 cipher suites.&quot; The RC4 cipher is enabled by default in many versions of TLS, and it must be disabled explicitly. This specific issue was previously addressed in RFC 7465.</p></li>
-<li><p>&quot;Implementations MUST NOT negotiate cipher suites offering less than 112 bits of security, including so-called &#39;export-level&#39; encryption (which provide 40 or 56 bits of security).&quot; In the days of SSL, the US government forced weak ciphers to be used in encryption products sold or given to foreign nationals. These weak &quot;export&quot; ciphers were created to be easily broken (with sufficient resources). They should have been removed long ago, and they recently have been used in new exploits against TLS.</p></li>
-<li><p>&quot;Implementations MUST NOT negotiate SSL version 3.&quot; This formalizes our distaste for the entire SSL suite.</p></li>
-<li><p>&quot;Implementations SHOULD NOT negotiate TLS version 1.0 (or) 1.1.&quot; Prefer TLS 1.2 whenever possible.</p></li>
+<li><p>hash 算法的关键在于它能够根据不同的属性数据，生成一串不相同的 hash 值，并且能够将这个 hash 值转换为</p>
+
+<p><span class="MathJax" id="MathJax-Element-1-Frame" tabindex="0" style="text-align: center; position: relative;" data-mathml="<math xmlns=&quot;http://www.w3.org/1998/Math/MathML&quot; display=&quot;block&quot;><nobr aria-hidden="true">0—232−1</nobr><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><mn>0</mn><mo>—</mo><msup><mn>2</mn><mrow class="MJX-TeXAtom-ORD"><mn>32</mn></mrow></msup><mo>−</mo><mn>1</mn></math><script type="math/tex; mode=display" id="MathJax-Element-1">0 — 2<sup>{32}-1</script>范围整数（即上图中的圆环）<mn>0</mn><mo>&amp;#x2014;</mo><msup><mn>2</mn>&lt;mrow</sup> class=&quot;MJX-TeXAtom-ORD&quot;&gt;<mn>32</mn></mrow></msup><mo>&amp;#x2212;</mo><mn>1</mn></math>&quot; role=&quot;presentation&quot;&gt;</span></p></li>
+<li><p>一台服务器的某个或者某一些属性当然也可以进行 hash 计算（通常是这个服务器的 IP 地址和开放端口），并且根据计算分布在这个圆环上的某一个点。也就是图中圆环上的蓝色点。</p></li>
+<li><p>一个处理请求当然也可以根据这个请求的某一个或者某一些属性进行 hash 计算（可以是这个请求的 IP、端口、cookie 值、URL 值或者请求时间等等），并且根据计算记过分布在这个圆环上的某一个点上。也就是上图圆环上的黄色点。</p></li>
+<li><p>我们约定落在某一个蓝点 A 左侧和蓝点 B 右侧的黄色点所代表的请求，都有蓝点 A 所代表的服务器进行处理，这样就完成解决了 “谁来处理” 的问题。在蓝色点稳定存在的前提下，来自于同一个 Hash 约定的请求所落在的位置都是一样的，这就保证了服务处理映射的稳定性。</p></li>
+<li><p>当某一个蓝色点由于某种原因下线，其所影响到的黄色点也是有限的。即下一次客户端的请求将由其他的蓝色点所代表的服务器进行处理。</p></li>
 </ul>
 
-<p>There are several implementations of the TLS protocols, and three competing libraries are installed on Oracle Linux systems by default: OpenSSL, NSS and GnuTLS. All of these libraries can provide Apache with TLS for HTTPS. It has been asserted that GnuTLS is of low code quality and unsafe for binary data, so exercise special care with this particular library in critical applications. This article focuses only on OpenSSL, as it is the most widely used.</p>
+<h2 id="toc_2"><a></a>1.2、轮询与加权轮询</h2>
 
-<p>For TLS cipher hardening under OpenSSL, I turn to Hynek Schlawack&#39;s Web site on the subject. He lists the following options for the SSL configuration of the Apache Web server:</p>
-
-<pre><code>
-SSLProtocol ALL -SSLv2 -SSLv3
-SSLHonorCipherOrder On
-SSLCipherSuite
-ECDH+AESGCM:DH+AESGCM:ECDH+AES256:DH+AES256:ECDH+
-↪AES128:DH+AES:ECDH+3DES:DH+3DES:RSA+AESGCM:
-↪RSA+AES:RSA+3DES:!aNULL:!MD5:!DSS
-
-</code></pre>
-
-<p>This configuration focuses upon the Advanced Encryption Standard (AES)—also known as the Rijndael cipher (as named by the cipher&#39;s originators), with 3DES as a fallback for old browsers. Note that 3DES generally is agreed to provide 80 bits of security, and it also is quite slow. These characteristics do not meet the above criteria, but we allow the legacy Data Encryption Standard (Triple-DES) cipher to provide continued access to older browsers.</p>
-
-<p>On an older V5 system (which does not implement TLS 1.1 or 1.2 in OpenSSL), the list of acceptable ciphers is relatively short:</p>
-
-<pre><code>
-$ cat /etc/oracle-release /etc/redhat-release 
-Oracle Linux Server release 5.11
-Red Hat Enterprise Linux Server release 5.11 (Tikanga)
-
-$ openssl ciphers -v
-&#39;ECDH+AESGCM:DH+AESGCM:ECDH+AES256:DH+AES256:ECDH+
-↪AES128:DH+AES:ECDH+3DES:DH+3DES:RSA+AESGCM:
-↪RSA+AES:RSA+3DES:!aNULL:!MD5:!DSS&#39;
-DHE-RSA-AES256-SHA   SSLv3 Kx=DH  Au=RSA Enc=AES(256)  Mac=SHA1
-DHE-RSA-AES128-SHA   SSLv3 Kx=DH  Au=RSA Enc=AES(128)  Mac=SHA1
-EDH-RSA-DES-CBC3-SHA SSLv3 Kx=DH  Au=RSA Enc=3DES(168) Mac=SHA1
-AES256-SHA           SSLv3 Kx=RSA Au=RSA Enc=AES(256)  Mac=SHA1
-AES128-SHA           SSLv3 Kx=RSA Au=RSA Enc=AES(128)  Mac=SHA1
-DES-CBC3-SHA         SSLv3 Kx=RSA Au=RSA Enc=3DES(168) Mac=SHA1
-
-</code></pre>
-
-<p>Note that TLS version 1.1 introduced new defenses against CBC exploits. CBC is used above only with the 3DES cipher, which calls into question the use of 3DES with TLS version 1.0. Removing 3DES and/or enforcing a minimal protocol of TLS version 1.1 might be required if your security concerns are very grave, but this will adversely impact compatibility with older browsers. Banishing CBC on OpenSSL 0.9.8e will leave you with few working ciphers indeed.</p>
-
-<p>On V7, the list of allowed ciphers is considerably longer:</p>
-
-<pre><code>
-$ cat /etc/oracle-release /etc/redhat-release 
-Oracle Linux Server release 7.1
-Red Hat Enterprise Linux Server release 7.1 (Maipo)
-
-$ openssl ciphers -v
-&#39;ECDH+AESGCM:DH+AESGCM:ECDH+AES256:DH+AES256:ECDH+
-↪AES128:DH+AES:ECDH+3DES:DH+3DES:RSA+AESGCM:
-↪RSA+AES:RSA+3DES:!aNULL:!MD5:!DSS&#39;
-ECDHE-RSA-AES256-GCM-SHA384 TLSv1.2 Kx=ECDH Au=RSA  
- ↪Enc=AESGCM(256) Mac=AEAD
-ECDHE-ECDSA-AES256-GCM-SHA384 TLSv1.2 Kx=ECDH Au=ECDSA 
- ↪Enc=AESGCM(256) Mac=AEAD
-ECDH-RSA-AES256-GCM-SHA384 TLSv1.2 Kx=ECDH/RSA Au=ECDH 
- ↪Enc=AESGCM(256) Mac=AEAD
-ECDH-ECDSA-AES256-GCM-SHA384 TLSv1.2 Kx=ECDH/ECDSA 
- ↪Au=ECDH Enc=AESGCM(256) Mac=AEAD
-ECDHE-RSA-AES128-GCM-SHA256 TLSv1.2 Kx=ECDH Au=RSA 
- ↪Enc=AESGCM(128) Mac=AEAD
-ECDHE-ECDSA-AES128-GCM-SHA256 TLSv1.2 Kx=ECDH Au=ECDSA 
- ↪Enc=AESGCM(128) Mac=AEAD
-ECDH-RSA-AES128-GCM-SHA256 TLSv1.2 Kx=ECDH/RSA Au=ECDH 
- ↪Enc=AESGCM(128) Mac=AEAD
-ECDH-ECDSA-AES128-GCM-SHA256 TLSv1.2 Kx=ECDH/ECDSA 
- ↪Au=ECDH Enc=AESGCM(128) Mac=AEAD
-DHE-RSA-AES256-GCM-SHA384 TLSv1.2 Kx=DH Au=RSA 
- ↪Enc=AESGCM(256) Mac=AEAD
-DHE-RSA-AES128-GCM-SHA256 TLSv1.2 Kx=DH Au=RSA 
- ↪Enc=AESGCM(128) Mac=AEAD
-ECDHE-RSA-AES256-SHA384 TLSv1.2 Kx=ECDH Au=RSA 
- ↪Enc=AES(256) Mac=SHA384
-ECDHE-ECDSA-AES256-SHA384 TLSv1.2 Kx=ECDH Au=ECDSA 
- ↪Enc=AES(256) Mac=SHA384
-ECDHE-RSA-AES256-SHA    SSLv3 Kx=ECDH  Au=RSA  
- ↪Enc=AES(256) Mac=SHA1
-ECDHE-ECDSA-AES256-SHA  SSLv3 Kx=ECDH Au=ECDSA 
- ↪Enc=AES(256) Mac=SHA1
-ECDH-RSA-AES256-SHA384  TLSv1.2 Kx=ECDH/RSA Au=ECDH 
- ↪Enc=AES(256) Mac=SHA384
-ECDH-ECDSA-AES256-SHA384 TLSv1.2 Kx=ECDH/ECDSA 
- ↪Au=ECDH Enc=AES(256) Mac=SHA384
-ECDH-RSA-AES256-SHA     SSLv3 Kx=ECDH/RSA Au=ECDH 
- ↪Enc=AES(256) Mac=SHA1
-ECDH-ECDSA-AES256-SHA   SSLv3 Kx=ECDH/ECDSA Au=ECDH 
- ↪Enc=AES(256) Mac=SHA1
-DHE-RSA-AES256-SHA256   TLSv1.2 Kx=DH  Au=RSA  
- ↪Enc=AES(256) Mac=SHA256
-DHE-RSA-AES256-SHA      SSLv3 Kx=DH    Au=RSA  
- ↪Enc=AES(256) Mac=SHA1
-ECDHE-RSA-AES128-SHA256 TLSv1.2 Kx=ECDH Au=RSA 
- ↪Enc=AES(128) Mac=SHA256
-ECDHE-ECDSA-AES128-SHA256 TLSv1.2 Kx=ECDH      
- ↪Au=ECDSA Enc=AES(128) Mac=SHA256
-ECDHE-RSA-AES128-SHA    SSLv3 Kx=ECDH  Au=RSA  
- ↪Enc=AES(128) Mac=SHA1
-ECDHE-ECDSA-AES128-SHA  SSLv3 Kx=ECDH Au=ECDSA 
- ↪Enc=AES(128) Mac=SHA1
-ECDH-RSA-AES128-SHA256  TLSv1.2 Kx=ECDH/RSA 
- ↪Au=ECDH Enc=AES(128) Mac=SHA256
-ECDH-ECDSA-AES128-SHA256 TLSv1.2 Kx=ECDH/ECDSA 
- ↪Au=ECDH Enc=AES(128) Mac=SHA256
-ECDH-RSA-AES128-SHA     SSLv3 Kx=ECDH/RSA Au=ECDH 
- ↪Enc=AES(128) Mac=SHA1
-ECDH-ECDSA-AES128-SHA   SSLv3 Kx=ECDH/ECDSA 
- ↪Au=ECDH Enc=AES(128) Mac=SHA1
-DHE-RSA-AES128-SHA256   TLSv1.2 Kx=DH  Au=RSA  
- ↪Enc=AES(128) Mac=SHA256
-DHE-RSA-AES128-SHA      SSLv3 Kx=DH    Au=RSA  
- ↪Enc=AES(128) Mac=SHA1
-ECDHE-RSA-DES-CBC3-SHA  SSLv3 Kx=ECDH  Au=RSA  
- ↪Enc=3DES(168) Mac=SHA1
-ECDHE-ECDSA-DES-CBC3-SHA SSLv3 Kx=ECDH Au=ECDSA 
- ↪Enc=3DES(168) Mac=SHA1
-ECDH-RSA-DES-CBC3-SHA   SSLv3 Kx=ECDH/RSA Au=ECDH 
- ↪Enc=3DES(168) Mac=SHA1
-ECDH-ECDSA-DES-CBC3-SHA SSLv3 Kx=ECDH/ECDSA 
- ↪Au=ECDH Enc=3DES(168) Mac=SHA1
-EDH-RSA-DES-CBC3-SHA    SSLv3 Kx=DH    Au=RSA  
- ↪Enc=3DES(168) Mac=SHA1
-AES256-GCM-SHA384       TLSv1.2 Kx=RSA Au=RSA  
- ↪Enc=AESGCM(256) Mac=AEAD
-AES128-GCM-SHA256       TLSv1.2 Kx=RSA Au=RSA  
- ↪Enc=AESGCM(128) Mac=AEAD
-AES256-SHA256           TLSv1.2 Kx=RSA Au=RSA  
- ↪Enc=AES(256) Mac=SHA256
-AES256-SHA              SSLv3 Kx=RSA   Au=RSA  
- ↪Enc=AES(256) Mac=SHA1
-AES128-SHA256           TLSv1.2 Kx=RSA Au=RSA  
- ↪Enc=AES(128) Mac=SHA256
-AES128-SHA              SSLv3 Kx=RSA   Au=RSA  
- ↪Enc=AES(128) Mac=SHA1
-DES-CBC3-SHA            SSLv3 Kx=RSA   Au=RSA  
- ↪Enc=3DES(168) Mac=SHA1
-
-</code></pre>
-
-<p>If possible under your release of Apache, also issue an <code>SSLCompression Off</code> directive. Compression should not be used with TLS because of the CRIME attack.</p>
-
-<p>If you have connectivity problems with Web clients, try disabling the Cipher Order directive first. Custom HTTP clients may not fully implement the TLS negotiation, which might be solved by allowing the client to pick the cipher.</p>
-
-<p>The cipher selector above also prevents any exploit of the &quot;Logjam&quot; (weak Diffie-Hellman primes) security flaw that recently has surfaced. If your version of Apache supports an alternate dh-prime configuration, it is recommended that you follow this procedure:</p>
-
-<pre><code>
-openssl dhparam -out /home/httpd/conf/dhparams.pem 2048
-
-</code></pre>
-
-<p>Then add the following line to your Apache SSL configuration:</p>
-
-<pre><code>
-SSLOpenSSLConfCmd DHParameters &quot;/home/httpd/conf/dhparams.pem&quot;
-
-</code></pre>
-
-<p>Ensure that you have appropriate permissions on your dhparams.pem file, and note that V5 does not support this configuration.</p>
-
-<p>When you have applied these configuration changes to your Apache Web server, use the SSLlabs.com scan tool to rate your server (see Resources). If you are on an older V5 platform that uses the OpenSSL 0.9.8e release, the grade assigned to your server should be a &quot;B&quot;—your final security grade will be higher if you are on a later release.</p>
-
-<p>It is also important to restart your TLS Web server for key regeneration every day, as is mentioned in the Apache changelog:</p>
-
-<blockquote>
-<p>Session ticket creation uses a random key created during web server startup and recreated during restarts. No other key recreation mechanism is available currently. Therefore using session tickets without restarting the web server with an appropriate frequency (e.g. daily) compromises perfect forward secrecy.</p>
-</blockquote>
-
-<p>This information is not well known, and has been met with some surprise and dismay in the security community: &quot;You see, it turns out that generating fresh RSA keys is a bit costly. So modern web servers don&#39;t do it for every single connection. In fact, Apache mod_ssl by default will generate a single export-grade RSA key when the server starts up, and will simply re-use that key for the lifetime of that server&quot; (from <a href="http://blog.cryptographyengineering.com/2015/03/attack-of-week-freak-or-factoring-nsa.html">http://blog.cryptographyengineering.com/2015/03/attack-of-week-freak-or-factoring-nsa.html</a>).</p>
-
-<p>Note that Hynek Schlawack&#39;s site provides configuration instructions for nginx and HAProxy in addition to Apache. Several other applications allow a custom cipher specification—two that I mention here are stunnel and sendmail.</p>
-
-<p>The stunnel &quot;TLS shim&quot; allows clear-text socket applications to be wrapped in TLS encryption transparently. In your stunnel configuration, specify the <code>cipher=</code> directive with the above string to force stunnel to best practice. Also, on the V7 platform, supply the <code>fips=no</code> directive; otherwise, you will be locked to the TLS version 1 protocol with the message <code>&#39;sslVersion = TLSv1&#39; is required in FIPS mode.</code></p>
-
-<p>The sendmail transport agent has received recent patches to specify ciphers fully. You can add the following options to your sendmail.cf to force best practice ciphers:</p>
-
-<pre><code>
-O CipherList=ECDH+AESGCM:DH+AESGCM:ECDH+AES256:DH+
-↪AES256:ECDH+AES128:DH+AES:ECDH+3DES:DH+3DES:
-↪RSA+AESGCM:RSA+AES:RSA+3DES:!aNULL:!MD5:!DSS
-O ServerSSLOptions=+SSL_OP_NO_SSLv2 +SSL_OP_NO_SSLv3
- ↪+SSL_OP_CIPHER_SERVER_PREFERENCE
-O ClientSSLOptions=+SSL_OP_NO_SSLv2 +SSL_OP_NO_SSLv3
- ↪+SSL_OP_CIPHER_SERVER_PREFERENCE
-
-</code></pre>
-
-<p>With these settings, you will see encryption information in your mail logs:</p>
-
-<pre><code>
-May 12 10:17:58 myhost sendmail[1234]: STARTTLS=client,
- ↪relay=mymail.linuxjournal.com., version=TLSv1/SSLv3, 
- ↪verify=FAIL, cipher=AES128-SHA, bits=128/128
-May 12 10:38:28 myhost sendmail[5678]: STARTTLS=client,
- ↪relay=mymail.linuxjournal.com., version=TLSv1/SSLv3, 
- ↪verify=FAIL, cipher=AES128-SHA, bits=128/128
-
-</code></pre>
-
-<p>The <code>verify=FAIL</code> indicates that your keys are not signed by a certificate authority (which is not as important for an SMTP server). The encryption is listed as AES128-SHA.</p>
-
-<p>For a public mailserver, it is important to be more permissive with the allowed ciphers to prevent SMTP sessions from going clear text. Behind a corporate firewall, however, it is likely better to force strong TLS ciphers more rigorously.</p>
-
-<p>It is also important to apply vendor patches promptly for TLS. It recently was discovered that later TLS versions were using SSLv3 padding functions directly in violation of the standards, rendering the latest versions vulnerable (this was more a concern for NSS than OpenSSL). Prompt patching is a requirement for a secure TLS configuration.</p>
-
-<p>I would like to thank Hynek Schlawack for his contribution to and thoughtful commentary on TLS security.</p>
-
-<h3 id="toc_1">Strong Ciphers in SSH</h3>
-
-<p>It is now well-known that (some) SSH sessions can be decrypted (potentially in real time) by an adversary with sufficient resources. SSH best practice has changed in the years since the protocols were developed, and what was reasonably secure in the past is now entirely unsafe.</p>
-
-<p>The first concern for an SSH administrator is to disable protocol 1 as it is thoroughly broken. Despite a stream of vendor updates, older Linux releases maintain this flawed configuration, requiring the system manager to remove it by hand. Do so by ensuring &quot;Protocol 2&quot; appears in your sshd_config, and all reference to &quot;Protocol 2,1&quot; is deleted. Encouragement also is offered to remove it from client SSH applications as well, in case a server is inaccessible or otherwise overlooked.</p>
-
-<p>For further hardening of Protocol 2 ciphers, I turn to the Stribika SSH Guide. These specifications are for the very latest versions of SSH and directly apply only to Oracle Linux 7.1.</p>
-
-<p>For older versions of SSH, I turn to the Stribika Legacy SSH Guide, which contains relevant configuration details for Oracle Linux 5, 6 and 7.</p>
-
-<p>There are only two recommended sshd_config changes for Oracle Linux 5:</p>
-
-<pre><code>
-Ciphers aes256-ctr,aes192-ctr,aes128-ctr
-MACs hmac-ripemd160
-
-</code></pre>
-
-<p>Unfortunately, the PuTTY suite of SSH client programs for Win32 are incompatible with the <code>MACs hmac-ripemd160</code> setting and will not connect to a V5 server when this configuration is implemented. As PuTTY quietly has become a corporate standard, this likely is an insurmountable incompatibility, so most enterprise deployments will implement only the Cipher directive.</p>
-
-<p>Version 0.58 of PuTTY also does not implement the strong AES-CTR ciphers (these appear to have been introduced in the 0.60 release) and likewise will not connect to an SSH server where they are used exclusively. It is strongly recommended that you implement the Cipher directive, as it removes RC4 (arcfour), which is totally inappropriate for modern SSH. It is not unreasonable to expect corporate clients to run the latest versions of PuTTY, as new releases are trivially easy to install.</p>
-
-<p>Oracle Linux 5 has a role of special importance as it is the underlying OS for the Linux version of the Oracle Exadata architecture (the alternate OS being Solaris). If you are an Exadata customer, confirm with Oracle that you will retain vendor support if you change cipher and protocol settings on a supported Exadata appliance.</p>
-
-<p>V5&#39;s default SSH ciphers will be pruned especially hard:</p>
-
-<pre><code>
-$ man sshd_config | col -b | awk &quot;/Ciphers/,/ClientAlive/&quot;
-
-Ciphers
-
-Specifies the ciphers allowed for protocol version 2\.  
-Multiple ciphers must be comma-separated. The 
-supported ciphers are 3des-cbc, aes128-cbc, aes192-cbc, 
-aes256-cbc, aes128-ctr, aes192-ctr, aes256-ctr, arcfour128,
-arcfour256, arcfour, blowfish-cbc, and cast128-cbc. The
-default is
-
-    aes128-ctr,aes192-ctr,aes256-ctr,arcfour256,arcfour128,
-    aes128-cbc,3des-cbc,blowfish-cbc,cast128-cbc,aes192-cbc,
-    aes256-cbc,arcfour
-
-</code></pre>
-
-<p>It is possible to install a newer version of OpenSSH on V5, but it is not easy. Attempting to compile the latest release results in the following error:</p>
-
-<pre><code>
-error: OpenSSL &gt;= 0.9.8f required (have &quot;0090802f 
- ↪(OpenSSL 0.9.8e-fips-rhel5 01 Jul 2008)&quot;)
-
-</code></pre>
-
-<p>It is possible to compile OpenSSH without OpenSSL dependencies with the following:</p>
-
-<pre><code>
---without-openssl Disable use of OpenSSL; use only 
- ↪limited internal crypto **EXPERIMENTAL**
-
-</code></pre>
-
-<p>Enterprise deployments are likely unwilling to use experimental code, so I won&#39;t go into further details. If you obtain binary RPMs for upgrade, ensure that you know how they were produced.</p>
-
-<p>Oracle Linux 7 lacks a few ciphers from the latest releases of SSH and differs only slightly from the recommended settings:</p>
-
-<pre><code>
-HostKey /etc/ssh/ssh_host_rsa_key
-Ciphers aes256-gcm@openssh.com,aes128-gcm@openssh.com,
-↪aes256-ctr,aes192-ctr,aes128-ctr
-KexAlgorithms diffie-hellman-group-exchange-sha256
-MACs hmac-sha2-512-etm@openssh.com,hmac-sha2-256-
-↪etm@openssh.com,hmac-ripemd160-etm@openssh.com,
-↪umac-128-etm@openssh.com,hmac-sha2-512,hmac-sha2-256,
-↪hmac-ripemd160,umac-128@openssh.com
-
-</code></pre>
-
-<p>Oracle Linux 7.1 can be configured exactly as recommended, including the new ed25519 hostkey:</p>
-
-<pre><code>
-HostKey /etc/ssh/ssh_host_ed25519_key
-HostKey /etc/ssh/ssh_host_rsa_key
-Ciphers chacha20-poly1305@openssh.com,aes256-
-↪gcm@openssh.com,aes128-gcm@openssh.com,
-↪aes256-ctr,aes192-ctr,aes128-ctr
-KexAlgorithms curve25519-sha256@libssh.org,diffie-
-↪hellman-group-exchange-sha256
-MACs hmac-sha2-512-etm@openssh.com,hmac-sha2-256-
-↪etm@openssh.com,hmac-ripemd160-etm@openssh.com,
-↪umac-128-etm@openssh.com,hmac-sha2-512,hmac-sha2-
-↪256,hmac-ripemd160,umac-128@openssh.com
-
-</code></pre>
-
-<p>The Stribika Guide immediately dismisses the 3DES cipher, which is likely reasonable as it is slow and relatively weak, but also goes to some length to criticize the influence of NIST and the NSA. In the long view, this is not entirely fair, as the US government&#39;s influence over the field of cryptography has been largely productive. To quote cryptographer Bruce Schneier, &quot;It took the academic community two decades to figure out that the NSA &#39;tweaks&#39; actually improved the security of DES....DES did more to galvanize the field of cryptanalysis than anything else.&quot; Despite unfortunate recent events, modern secure communication has much to owe to the Data Encryption Standard and those who were involved in its introduction.</p>
-
-<p>Stribika levels specific criticism:</p>
-
-<blockquote>
-<p>...advising against the use of NIST elliptic curves because they are notoriously hard to implement correctly. So much so, that I wonder if it&#39;s intentional. Any simple implementation will seem to work but leak secrets through side channels. Disabling them doesn&#39;t seem to cause a problem; clients either have Curve25519 too, or they have good enough DH support. And ECDSA (or regular DSA for that matter) is just not a good algorithm, no matter what curve you use.</p>
-</blockquote>
-
-<p>In any case, there is technical justification for leaving 3DES in TLS, but removing it from SSH—there is a greater financial cost when browsers and customers cannot reach you than when your administrators are inconvenienced by a software standards upgrade.</p>
-
-<p>If you are using ssh-agent with a private key, you can strengthen the encryption of the password on the key using this method documented by Martin Kleppmann with PKCS#8. Here is the procedure summarized from the author:</p>
-
-<pre><code>
-cd ~/.ssh
-
-mv ~/.ssh/id_rsa ~/.ssh/id_rsa.old
-
-openssl pkcs8 -topk8 -v2 des3 -in ~/.ssh/id_rsa.old 
- ↪-out ~/.ssh/id_rsa
-
-chmod 600 ~/.ssh/id_rsa
-
-</code></pre>
-
-<p>The author estimates that this procedure provides the equivalent benefit of adding two extra characters to the password. It is important to note, however, that the PuTTY agent is not able to read the new format produced here. If you use pagent with PuTTY (or expect to), convert your OpenSSH key to pagent first, then run this procedure, assuming that retention of your key in both formats is allowed. It is likely wise to retain a copy of the original private key on offline media. It is also important to note that this procedure does not add any extra protection from a keylogger.</p>
-
-<p>User SSH keypairs are likely superior to passwords for many aspects of security. SSH servers cannot enforce password standards on remote keys (minimum password length, change frequency, reuse prevention and so on), and there are definite risks in forwarding the ssh-agent that would compromise server security. If you allow your users to authenticate with SSH keypairs that they generate, you should understand how they can be (ab)used.</p>
-
-<p>Finally, be aware that keystroke delay duration can be used as a side channel exploit in SSH via the application of the Viterbi Algorithm. Interactive SSH sessions are more revealing of content than most expect and should be avoided for those with high security requirements. Send batches of <code>ssh</code> commands, or implement a bandwidth &quot;fuzzer&quot; in a secondary session on the same channel if an interactive session is required but security is critical. Of particular note:</p>
+<p><img src="https://img-blog.csdn.net/20150705093244323" alt=""/></p>
 
 <ul>
-<li><p>The &quot;superuser&quot; command (that is, <code>su -</code>) creates a distinct traffic signature in the encrypted data stream that reveals the exact length of the target password, plus keystroke timing. It should not be used over an SSH session.</p></li>
-<li><p>If a user logs in to a remote SSH host, then uses the remote to log in to yet another host in a three-host configuration, this creates an even more distinct traffic signature in the encrypted data stream that essentially advertises the exact length of any passwords used. Avoid this practice.</p></li>
-<li><p>Depending upon the cipher used, a short password (less than seven characters) can be detected at login. Enforce a minimum password length larger than seven characters, especially for SSH sessions.</p></li>
+<li><p>当有任务需要传递到下层节点进行处理时，任务来源点会按照一个固定的顺序，将任务依次分配到下层节点，如果下层可用的节点数量为 X，那么第 N 个任务的分配规则为：</p>
+
+<p><span class="MathJax" id="MathJax-Element-2-Frame" tabindex="0" style="text-align: center; position: relative;" data-mathml="<math xmlns=&quot;http://www.w3.org/1998/Math/MathML&quot; display=&quot;block&quot;><nobr aria-hidden="true">目标节点 =(NmodX)+1</nobr> <math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><mrow class="MJX-TeXAtom-ORD"><mo>目</mo></mrow><mrow class="MJX-TeXAtom-ORD"><mo>标</mo></mrow><mrow class="MJX-TeXAtom-ORD"><mo>节</mo></mrow><mrow class="MJX-TeXAtom-ORD"><mo>点</mo></mrow> <mo>=</mo><mo stretchy="false">(</mo><mi>N</mi><mi>m</mi><mi>o</mi><mi>d</mi><mi>X</mi><mo stretchy="false">)</mo><mo>+</mo><mn>1</mn></math> <script type="math/tex; mode=display" id="MathJax-Element-2">目标节点 = (N mod X) + 1</script><mrow class=&quot;MJX-TeXAtom-ORD&quot;><mo>&amp;#x76EE;</mo></mrow><mrow class=&quot;MJX-TeXAtom-ORD&quot;><mo>&amp;#x6807;</mo></mrow><mrow class=&quot;MJX-TeXAtom-ORD&quot;><mo>&amp;#x8282;</mo></mrow><mrow class=&quot;MJX-TeXAtom-ORD&quot;><mo>&amp;#x70B9;</mo></mrow><mo>=</mo><mo stretchy=&quot;false&quot;>(</mo><mi>N</mi><mi>m</mi><mi>o</mi><mi>d</mi><mi>X</mi><mo stretchy=&quot;false&quot;>)</mo><mo>+</mo><mn>1</mn></math>&quot; role=&quot;presentation&quot;&gt;</span></p></li>
+<li><p>轮询处理在很多架构思想中都有体现：DNS 解析多 IP 时、LVS 向下转发消息时、Nginx 向下转发消息时、Zookeeper 向计算节点分配任务时。了解基本的轮询过程有助于我们在进行软件架构设计时进行思想借鉴。</p></li>
+<li><p>但是上面的轮询方式是有缺陷的，由于各种客观原因我们可能无法保证任务处理节点的处理能力都是一样的（CPU、IO、内存频率等不同）。所以 A 节点业务能同时处理 100 个任务，但是 B 节点可能同时只能处理 50 个任务。</p></li>
+<li><p>在这种情况下我们需要依据下层节点某个或者多个属性设置权值。这个属性可能是网络带宽、CPU 繁忙程度或者就是各一个固定的权值。</p></li>
 </ul>
 
-<p>I would like to thank Stribika for his contribution to and thoughtful commentary on SSH security.</p>
+<p>那么加权轮询的分配依据是什么呢？有很多分配依据，例如：概率算法（此算法中包括蒙特卡罗算法，拉斯维加斯算法和舍伍德算法，在网络上有很多介绍资料）、最大公约数法。这里我们对最大公约数算法进行介绍，因为该方法简单实用：</p>
 
-<h3 id="toc_2">Unbreakable Encryption</h3>
+<p><img src="https://img-blog.csdn.net/20150705113306874" alt=""/></p>
 
-<p>While the best practices above are helpful, these protocols have been entirely inadequate in assuring private communication channels, and they have been broken many times.</p>
+<ul>
+<li><p>首先按照某种规则计算得到每个处理节点的权值，上文已经说到计算规则可能是这个服务节点的 CPU 利用率、网络占用情况或者在配置文件中的固定权重。</p></li>
+<li><p>求这些权值的最大公约数，在上图中三个节点的权值分别是 100、80、60. 那么求得的最大公约数就是 20（如果您忘记了最大公约数的定义，请自行复习）。那么这三个节点的被除结果分别是 5、4、3，求和值为 12。</p></li>
+<li><p>得到以上的计算结果，就可以开始进行请求分配了，公式同样为：</p>
 
-<p>If your needs for secure communication are so dire that any risk of interception is too great, you likely should consider encryption tools that do not appear to have been broken as of yet.</p>
+<p><span class="MathJax" id="MathJax-Element-3-Frame" tabindex="0" style="text-align: center; position: relative;" data-mathml="<math xmlns=&quot;http://www.w3.org/1998/Math/MathML&quot; display=&quot;block&quot;><nobr aria-hidden="true">(NmodX)+1=Y</nobr><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><mo stretchy="false">(</mo><mi>N</mi><mi>m</mi><mi>o</mi><mi>d</mi><mi>X</mi><mo stretchy="false">)</mo><mo>+</mo><mn>1</mn><mo>=</mo><mi>Y</mi></math><script type="math/tex; mode=display" id="MathJax-Element-3">(N mod X) + 1 = Y</script><br/>
+其中 N 表示当前的第 N 次任务；X 表示整除后的求和结果；Y 为处理节点。<mo stretchy=&quot;false&quot;>(</mo><mi>N</mi><mi>m</mi><mi>o</mi><mi>d</mi><mi>X</mi><mo stretchy=&quot;false&quot;>)</mo><mo>+</mo><mn>1</mn><mo>=</mo><mi>Y</mi></math>&quot; role=&quot;presentation&quot;&gt;</span></p></li>
+</ul>
 
-<p>A careful parse of recent evidence indicates that the Gnu Privacy Guard implementation of Pretty Good Privacy (PGP) continues to present insurmountable difficulty to eavesdropping and unauthorized decryption.</p>
+<blockquote>
+<p>总结一下：加权轮询是轮询方案的补充，通过将处理节点的属性转换成权值可以有效的描述处理节点的处理能力，实现更科学的处理任务分配。加权轮询的关键在于加权算法，最大公约数算法简单实用，定位效率高。</p>
+</blockquote>
 
-<p>This utility is installed in all recent versions of Oracle Linux by default. It should be your first thought for secure communications, and you should realize that all the techniques described above are compromises for the sake of expedience.</p>
+<h1 id="toc_3"><a></a>2、Nginx 的安装</h1>
 
-<h3 id="toc_3">Resources</h3>
+<h2 id="toc_4"><a></a>2.1、准备工作</h2>
 
-<p>The Heartbleed Bug: <a href="http://heartbleed.com">http://heartbleed.com</a></p>
+<p>操作系统：centOS 6.5。</p>
 
-<p>&quot;Meaner POODLE bug that bypasses TLS crypto bites 10 percent of websites&quot; by Dan Goodin: <a href="http://arstechnica.com/security/2014/12/meaner-poodle-bug-that-bypasses-tls-crypto-bites-10-percent-of-websites">http://arstechnica.com/security/2014/12/meaner-poodle-bug-that-bypasses-tls-crypto-bites-10-percent-of-websites</a></p>
+<p>Nginx 的下载地址：<a href="http://nginx.org/en/download.html">http://nginx.org/en/download.html</a>。请下载 stable 的版本 1.8.0。后续 Nginx 肯定还会有升级，官网上面会持续更新 stable version。</p>
 
-<p>CRIME (&quot;Compression Ratio Info-leak Made Easy&quot;): <a href="https://en.wikipedia.org/wiki/CRIME">https://en.wikipedia.org/wiki/CRIME</a></p>
+<p>最小必备组件：<br/>
+yum -y install make zlib zlib-devel gcc gcc-c++ ssh libtool</p>
 
-<p>&quot;Beat the BEAST with TLS 1.1/1.2 and More&quot; by Omar Santos: <a href="http://blogs.cisco.com/security/beat-the-beast-with-tls">http://blogs.cisco.com/security/beat-the-beast-with-tls</a></p>
+<h2 id="toc_5"><a></a>2.2、正式安装</h2>
 
-<p>Cypto Law Survey: <a href="http://www.cryptolaw.org">http://www.cryptolaw.org</a></p>
+<ul>
+<li><p>下载 nginx1.8.0 版本<br/>
+<img src="https://img-blog.csdn.net/20150705120030369" alt=""/></p></li>
+<li><p>解压 nginx 的 tar 文件<br/>
+<img src="https://img-blog.csdn.net/20150705120225553" alt=""/></p></li>
+<li><p>进行源码编译<br/>
+<img src="https://img-blog.csdn.net/20150705120707338" alt=""/></p></li>
+</ul>
 
-<p>&quot;Homeland Security Begs Silicon Valley to Stop the Encyption&quot; by Annalee Newitz: <a href="http://gizmodo.com/dhs-secretary-begs-silicon-valley-to-stop-the-encryptio-1699273657">http://gizmodo.com/dhs-secretary-begs-silicon-valley-to-stop-the-encryptio-1699273657</a></p>
+<p>我们看到这时编译检查报错，报错写得很清楚，为了支持 HTTP 重写模块，Nginx 需要 PCRElib 的支持。那我们到 <a href="http://ncu.dl.sourceforge.net/project/pcre/pcre/8.37/pcre-8.37.tar.gz">http://ncu.dl.sourceforge.net/project/pcre/pcre/8.37/pcre-8.37.tar.gz</a> 下载一个稳定的 pcre 版本编译安装即可（不一定是 8.37 版本）。</p>
 
-<p>NIST Decprecates TLS 1.0 for Government Use by Bill Shelton: <a href="http://forums.juniper.net/t5/Security-Now/NIST-Deprecates-TLS-1-0-for-Government-Use/ba-p/242052">http://forums.juniper.net/t5/Security-Now/NIST-Deprecates-TLS-1-0-for-Government-Use/ba-p/242052</a></p>
+<ul>
+<li><p>再进行源码编译安装<br/>
+./configure –prefix=/usr/nginx-1.8.0<br/>
+make &amp;&amp; make install<br/>
+<img src="https://img-blog.csdn.net/20150705130214392" alt=""/></p></li>
+<li><p>整个验证、编译、安装过程不应该报任何错误。如果您使用 prefix 设置了安装目标目录，那么可能您还需要在 / etc/profix 文件中设置环境变量：<br/>
+<img src="https://img-blog.csdn.net/20150705130747519" alt=""/></p></li>
+</ul>
 
-<p>RFC 7525—Recommendations for Secure Use of Transport Layer Security (TLS) and Datagram Transport Layer Security (DTLS): <a href="https://www.rfc-editor.org/rfc/rfc7525.txt">https://www.rfc-editor.org/rfc/rfc7525.txt</a></p>
+<h2 id="toc_6"><a></a>2.3、安装验证和启动</h2>
 
-<p>RFC 7465—Prohibiting RC4 Cipher Suites: <a href="http://tools.ietf.org/html/rfc7465">http://tools.ietf.org/html/rfc7465</a></p>
+<p>下面介绍几个 nginx 常用的命令，如果您可以正常使用这些命令，那么说明 nginx 已经安装成功了。</p>
 
-<p>OpenSSL: <a href="http://www.openssl.org">http://www.openssl.org</a></p>
+<p>nginx：直接在命令行键入 nginx，就可以启动 nginx。</p>
 
-<p>NSS: <a href="http://nss-crypto.org">http://nss-crypto.org</a></p>
+<p>nginx -t：检查配置文件是否正确。这个命令可以检查 nginx.conf 配置文件其格式、语法是否正确。如果配置文件存在错误，则会出现相应提示；如果 nginx.conf 文件正确，也会出现相应的成功提示。</p>
 
-<p>The GnuTLS Transport Layer Security Library: <a href="http://gnutls.org">http://gnutls.org</a></p>
+<p>nginx -s reload：重加载 / 重启 nginx——以新的 nginx.conf 配置文件中的定义。</p>
 
-<p>GnuTLS considered harmful: <a href="http://www.openldap.org/lists/openldap-devel/200802/msg00072.html">http://www.openldap.org/lists/openldap-devel/200802/msg00072.html</a></p>
+<p>nginx -s stop：停止 nginx。</p>
 
-<p>Hardening Your Web Server&#39;s SSL Ciphers—Hynek Schlawack: <a href="https://hynek.me/articles/hardening-your-web-servers-ssl-ciphers">https://hynek.me/articles/hardening-your-web-servers-ssl-ciphers</a></p>
+<h1 id="toc_7"><a></a>3、进阶</h1>
 
-<p>The Logjam Attack: <a href="https://weakdh.org">https://weakdh.org</a></p>
+<p>Nginx 在安装完成后，不用更改任何配置信息就可以直接运行。但是很显然这不会满足我们生产环境的要求。所以我们要重点介绍 Nginx 的配置文件，以及其中重要的配置项的含义。</p>
 
-<p>SSL Labs Scan Tool: <a href="https://www.ssllabs.com">https://www.ssllabs.com</a></p>
+<h2 id="toc_8"><a></a>3.1、重要配置项</h2>
 
-<p>Apache changelog: <a href="http://www.apache.org/dist/httpd/CHANGES_2.4">http://www.apache.org/dist/httpd/CHANGES_2.4</a></p>
+<p>如果您是按照本文的描述方式安装的 Nginx，那么 Nginx 的主配置文件在：/usr/nginx-1.8.0/conf/nginx.conf 的位置，如果您在编译安装的时候并没有指定安装目录，那么 Nginx 的主配置文件在：/usr/local/nginx/conf/nginx.conf 的位置。当然您还可以在启动 Nginx 的时候使用 -c 的参数人为指定 Nginx 的配置文件位置（但是这种方式不建议）。</p>
 
-<p>&quot;Attack of the week: FREAK (or &#39;factoring the NSA for fun and profit&#39;)&quot; by Matthew Green: <a href="http://blog.cryptographyengineering.com/2015/03/attack-of-week-freak-or-factoring-nsa.html">http://blog.cryptographyengineering.com/2015/03/attack-of-week-freak-or-factoring-nsa.html</a></p>
+<p>我们重新整理了 Nginx 的配置文件，将其分块，以便于讲解：</p>
 
-<p>&quot;The POODLE bites again&quot;: <a href="https://www.imperialviolet.org/2014/12/08/poodleagain.html">https://www.imperialviolet.org/2014/12/08/poodleagain.html</a></p>
+<pre><code>#================================以下是全局配置项
+#指定运行nginx的用户和用户组，默认情况下该选项关闭（关闭的情况就是nobody）
+#user  nobody nobody;     
+#运行nginx的进程数量，后文详细讲解
+worker_processes  1;      
+#nginx运行错误的日志存放位置。当然您还可以指定错误级别
+#error_log  logs/error.log;    
+#error_log  logs/error.log  notice;
+#error_log  logs/error.log  info;
+#指定主进程id文件的存放位置，虽然worker_processes != 1的情况下，会有很多进程，管理进程只有一个
+#pid        logs/nginx.pid;    
 
-<p>Stribika SSH Guide: <a href="https://stribika.github.io/2015/01/04/secure-secure-shell.html">https://stribika.github.io/2015/01/04/secure-secure-shell.html</a></p>
+events {
+    #每一个进程可同时建立的连接数量，后问详细讲解
+    worker_connections  1024;   
+    #连接规则，可以采用[kqueue rtsig epoll select poll eventport ]，后文详细讲解
+    use   epoll;    
+}
+#================================以上是全局配置项
 
-<p>Stribika Legacy SSH Guide: <a href="https://github.com/stribika/stribika.github.io/wiki/Secure-Secure-Shell">https://github.com/stribika/stribika.github.io/wiki/Secure-Secure-Shell</a></p>
+http {
+    #================================以下是Nginx后端服务配置项
+    upstream backendserver1 {
+        #nginx向后端服务器分配请求任务的方式，默认为轮询；如果指定了ip_hash，就是hash算法（上文介绍的算法内容）
+        #ip_hash    
+        #后端服务器 ip:port ，如果有多个服务节点，这里就配置多个
+        server 192.168.220.131:8080; 
+        server 192.168.220.132:8080;    
+        #backup表示，这个是一个备份节点，只有当所有节点失效后，nginx才会往这个节点分配请求任务
+        #server 192.168.220.133:8080 backup;        
+        #weight，固定权重，还记得我们上文提到的加权轮询方式吧。
+        #server 192.168.220.134:8080 weight=100;    
+    }
+    #================================以上是Nginx后端服务配置项
 
-<p>&quot;Saluting the data encryption legacy&quot; by Bruce Schneier: <a href="http://www.cnet.com/news/saluting-the-data-encryption-legacy">http://www.cnet.com/news/saluting-the-data-encryption-legacy</a></p>
+    #=================================================以下是 http 协议主配置
+    #安装nginx后，在conf目录下除了nginx.conf主配置文件以外，有很多模板配置文件，这里就是导入这些模板文件
+    include       mime.types;
+    #HTTP核心模块指令，这里设定默认类型为二进制流，也就是当文件类型未定义时使用这种方式
+    default_type  application/octet-stream;     
+    #日志格式
+    #log_format  main  &#39;$remote_addr - $remote_user [$time_local] &quot;$request&quot; &#39;   
+                      &#39;$status $body_bytes_sent &quot;$http_referer&quot; &#39;
+                      &#39;&quot;$http_user_agent&quot; &quot;$http_x_forwarded_for&quot;&#39;;
 
-<p>&quot;Improving the security of your SSH private key files&quot; by Martin Kelppmann: <a href="http://martin.kleppmann.com/2013/05/24/improving-security-of-ssh-private-keys.html">http://martin.kleppmann.com/2013/05/24/improving-security-of-ssh-private-keys.html</a></p>
+    #日志文件存放的位置
+    #access_log  logs/access.log  main;         
 
-<p>&quot;Timing Analysis of Keystrokes and Timing Attacks on SSH&quot; by Dawn Xiaodong Song, David Wagner and Xuqing Tian: <a href="http://www.cs.berkeley.edu/%7Edawnsong/papers/ssh-timing.pdf">http://www.cs.berkeley.edu/~dawnsong/papers/ssh-timing.pdf</a></p>
+    #sendfile 规则开启
+    sendfile        on;
+    #指定一个连接的等待时间（单位秒），如果超过等待时间，连接就会断掉。注意一定要设置，否则高并发情况下会产生性能问题。
+    keepalive_timeout  65;                      
 
-<p>&quot;The Encryption Tools the NSA Still Can&#39;t Crack Revealed in New Leaks&quot; by Kelsey Campbell: <a href="http://gizmodo.com/the-encryption-tools-the-nsa-still-cant-crack-revealed-1675978237">http://gizmodo.com/the-encryption-tools-the-nsa-still-cant-crack-revealed-1675978237</a></p>
+    #开启数据压缩，后文详细介绍
+    gzip  on;                                   
+    #=================================================以上是 http 协议主配置
 
-<p>&quot;Prying Eyes: Inside the NSA&#39;s War on Internet Security&quot; by <u>SPIEGEL</u> Staff: <a href="http://www.spiegel.de/international/germany/inside-the-nsa-s-war-on-internet-security-a-1010361.html">http://www.spiegel.de/international/germany/inside-the-nsa-s-war-on-internet-security-a-1010361.html</a></p>
+    #=================================================以下是一个服务实例的配置
+    server {
+        #这个代理实例的监听端口
+        listen       80;
+        #server_name 取个唯一的实例名都要想半天？
+        server_name  localhost; 
+        #文字格式
+        charset utf-8;  
+        #access_log  logs/host.access.log  main;    
 
-<p>The GNU Privacy Guard: <a href="https://gnupg.org">https://gnupg.org</a></p>
+        #location将按照规则分流满足条件的URL。&quot;location /&quot;您可以理解为“默认分流位置”。
+        location / {
+            #root目录，这个html表示nginx主安装目录下的“html”目录。
+            root   html;   
+            #目录中的默认展示页面
+            index  index.html index.htm;        
+        }
+
+        #location支持正则表达式，“~” 表示匹配正则表达式。
+        location ~ ^/business/ {   
+            #方向代理。后文详细讲解。
+            proxy_pass http://backendserver1;   
+        }
+
+        #redirect server error pages to the static page /50x.html
+        #error_page  404              /404.html;
+        error_page   500 502 503 504  /50x.html;
+        location = /50x.html {
+            root   html;
+        }
+    }
+    #=================================================以上是一个服务实例的配置
+}
+
+</code></pre>
+
+<p>以上是一个完整的 nginx 配置信息，可以直接粘贴使用，但不建议您这样做。因为上文中很多关键的配置属性都还没有讲解。这样粘贴复制不利于您的工作和学习。</p>
+
+<h3 id="toc_9"><a></a>3.1.1、use [kqueue | rtsig | epoll | select | poll]</h3>
+
+<p>科技在发展，社会在进步，满足摩尔定义的 IT 行业更是这样。以前所有的连接都是阻断式的（blocking I/O）也就是说一个 TCP 连接线程在发出 Request 后，代码就不会再往下执行了，直到得到远端的 Response 为止；服务器端也一样的，在处理完某一个客户端的 Request 之前，其他客户端的请求都会等待。这种处理方式使客户端和服务器端的通讯性能大打折扣。</p>
+
+<p>很明显多线程貌似能够解决这个问题：一个线程处理不了，我可以再开线程来处理啊。但是多线程是有局限性的：</p>
+
+<ul>
+<li><p>创建一个线程会消耗有限的资源。以 JAVA JVM 为例，创建一个新的线程 JVM 会单独开放 1MB 的栈内存空间（通过 - Xss 参数可设置），虽然栈内存不受 - Xmx 和 - Xms 两个参数影响，但是可以说明线程的创建是需要消耗额外资源的。</p></li>
+<li><p>多线程工作时，计算机的 CPU 会耗费大量的资源让多线程在不同的状态下进行切换。在后续的文章中本书还会介绍依据这样的原理让计算机的 CPU 呈波形变化的编程方式。</p></li>
+<li><p>在 Linux 操作系统下，单个用户能够创建的线程和进程总数、整个操作系统能够创建的线程总数都是有限的。通过 limit -a 命令，您可以查看相关的内核参数。</p></li>
+<li><p>所以依靠线程来解决 bio 的问题是不靠谱的，只能起到缓解处理并行请求的作用。您可以想象一次并发 10 万个处理请求的问题，是不可能在计算机上同时创建 10 万个线程来解决的。</p></li>
+</ul>
+
+<p>基于上面的描述，NIO（no blocking I/O）技术就这样诞生了。依靠 event loop 机制（想看这个机制的详细分析，请持续关注我的博客 <sup>_<sup>），单个线程可以同时处理多个</sup></sup> request 请求，并在处理完产生 response 的时候，回调相关的远程事件。根据 NIO 实现机制的不同，技术名称也就不同了。我要说什么，您，应该懂了。</p>
+
+<p>epoll、kqueue 等这些组件都是对多路复用网络 I/O 模型的实现，其中 epoll 是 poll 的升级版本，在 linux 环境下可以使用但限于 linux2.6 及以上版本。kqueue 用在 bsd 上使用。</p>
+
+<h3 id="toc_10"><a></a>3.1.2、worker_processes 和 worker_connections</h3>
+
+<p><strong>worker_processes</strong>：操作系统启动多少个工作进程运行 Nginx。注意是工作进程，不是有多少个 nginx 工程。在 Nginx 运行的时候，会启动两种进程，一种是主进程 master process；一种是工作进程 worker process。例如我在配置文件中将 worker_processes 设置为 4，启动 Nginx 后，使用进程查看命令观察名字叫做 nginx 的进程信息，我会看到如下结果：</p>
+
+<p><img src="https://img-blog.csdn.net/20150707193821782" alt=""/></p>
+
+<p>图中可以看到 1 个 nginx 主进程，master process；还有四个工作进程，worker process。主进程负责监控端口，协调工作进程的工作状态，分配工作任务，工作进程负责进行任务处理。一般这个参数要和操作系统的 CPU 内核数成倍数。</p>
+
+<p><strong>worker_connections</strong>：这个属性是指单个工作进程可以允许同时建立外部连接的数量。无论这个连接是外部主动建立的，还是内部建立的。这里需要注意的是，一个工作进程建立一个连接后，进程将打开一个文件副本。所以这个数量还受<strong>操作系统设定的，进程最大可打开的文件数有关</strong>。网上 50% 的文章告诉了您这个事实，并要求您修改 worker_connections 属性的时候，一定要使用 ulimit -n 修改操作系统对进程最大文件数的限制，但是这样更改只能在当次用户的当次 shell 回话中起作用，并不是永久了。接着您继续 Google / 百度，发现 30% 的文章还告诉您，要想使 “进程最大可打开的文件数” 永久有效，还需要修改 / etc/security/limits.conf 这个主配置文件，但是您应该如何正确检查 “进程的最大可打开文件” 的方式，却没有说。</p>
+
+<p>下面本文告诉您全面的、正确的设置方式:</p>
+
+<ul>
+<li><p><strong>更改操作系统级别的 “进程最大可打开文件数” 的设置</strong>：<br/>
+首先您需要操作系统的 root 权限：</p>
+
+<blockquote>
+<p>叫您的操作系统管理员给您。</p>
+</blockquote>
+
+<p>修改 limits.conf 主配置文件</p>
+
+<blockquote>
+<p>vim /etc/security/limits.conf</p>
+</blockquote>
+
+<p>在主配置文件最后加入下面两句：</p>
+
+<blockquote>
+<ul>
+<li>soft nofile 65535</li>
+<li>hard nofile 65535</li>
+</ul>
+</blockquote>
+
+<p>注意 “_” 是要加到文件里面的。这两句话的含义是 soft（应用软件）级别限制的最大可打开文件数的限制，hard 表示操作系统级别限制的最大可打开文件数的限制，“_” 表示所有用户都生效。保存这个文件（只有 root 用户能够有权限）。</p>
+
+<p>保存这个文件后，配置是不会马上生效的，为了保证本次 shell 会话中的配置马上有效，我们需要通过 ulimit 命令更改本次的 shell 会话设置（当然您如果要重启系统，我也不能说什么）。</p>
+
+<blockquote>
+<p>ulimit -n 65535</p>
+</blockquote>
+
+<p>执行命令后，配置马上生效。您可以用 ulimit -a 查看目前会话中的所有核心配置：</p>
+
+<blockquote>
+<p>ulimit -a<br/>
+core file size (blocks, -c) 0<br/>
+data seg size (kbytes, -d) unlimited<br/>
+scheduling priority (-e) 0<br/>
+file size (blocks, -f) unlimited<br/>
+pending signals (-i) 7746<br/>
+max locked memory (kbytes, -l) 64<br/>
+max memory size (kbytes, -m) unlimited<br/>
+open files (-n) 65535<br/>
+pipe size (512 bytes, -p) 8<br/>
+POSIX message queues (bytes, -q) 819200<br/>
+real-time priority (-r) 0<br/>
+stack size (kbytes, -s) 10240<br/>
+cpu time (seconds, -t) unlimited<br/>
+max user processes (-u) 7746<br/>
+virtual memory (kbytes, -v) unlimited<br/>
+file locks (-x) unlimited</p>
+</blockquote>
+
+<p>请注意 open files 这一项。</p></li>
+<li><p><strong>更改 Nginx 软件级别的 “进程最大可打开文件数” 的设置：</strong><br/>
+刚才更改的只是操作系统级别的 “进程最大可打开文件” 的限制，作为 Nginx 来说，我们还要对这个软件进行更改。打开 nginx.conf 主陪文件。您需要配合 worker_rlimit_nofile 属性。如下：</p>
+
+<blockquote>
+<p>user root root;<br/>
+worker_processes 4;<br/>
+<strong>worker_rlimit_nofile 65535;</strong></p>
+
+<h1 id="toc_11">error_log logs/error.log;</h1>
+
+<h1 id="toc_12">error_log logs/error.log notice;</h1>
+
+<h1 id="toc_13">error_log logs/error.log info;</h1>
+
+<h1 id="toc_14">pid logs/nginx.pid;</h1>
+
+<p>events {<br/>
+use epoll;<br/>
+<strong>worker_connections 65535;</strong><br/>
+}</p>
+</blockquote>
+
+<p>这里只粘贴了部分代码，其他的配置代码和主题无关，也就不需要粘贴了。请注意代码行中加粗的两个配置项，请一定两个属性全部配置。配置完成后，请通过 nginx -s reload 命令重新启动 Nginx。</p></li>
+<li><p><strong>验证 Nginx 的 “进程最大可打开文件数” 是否起作用：</strong></p>
+
+<p>那么我们如何来验证配置是否起作用了呢？在 linux 系统中，所有的进程都会有一个临时的核心配置文件描述，存放路径在 / pro / 进程号 / limit。</p>
+
+<p>首先我们来看一下，没有进行参数优化前的进程配置信息：</p>
+
+<blockquote>
+<p>ps -elf | grep nginx<br/>
+1 S root 1594 1 0 80 0 - 6070 rt_sig 05:06 ? 00:00:00 nginx: master process /usr/nginx-1.8.0/sbin/nginx<br/>
+5 S root 1596 1594 0 80 0 - 6176 ep_pol 05:06 ? 00:00:00 nginx: worker process<br/>
+5 S root 1597 1594 0 80 0 - 6176 ep_pol 05:06 ? 00:00:00 nginx: worker process<br/>
+5 S root 1598 1594 0 80 0 - 6176 ep_pol 05:06 ? 00:00:00 nginx: worker process<br/>
+5 S root 1599 1594 0 80 0 - 6176 ep_pol 05:06 ? 00:00:00 nginx: worker process</p>
+</blockquote>
+
+<p>可以看到，nginx 工作进程的进程号是：1596 1597 1598 1599。我们选择一个进程，查看其核心配置信息：</p>
+
+<blockquote>
+<p>cat /proc/1598/limits</p>
+</blockquote>
+
+<p><img src="https://img-blog.csdn.net/20150707204548230" alt=""/></p>
+
+<p>请注意其中的 Max open files ，分别是 1024 和 4096。那么更改配置信息，并重启 Nginx 后，配置信息就是下图所示了：</p>
+
+<p><img src="https://img-blog.csdn.net/20150707204756789" alt=""/></p></li>
+</ul>
+
+<h3 id="toc_15"><a></a>3.1.3、max client 的计算方式：</h3>
+
+<p>这个小结我们主要来说明两个在网上经常说的公式：</p>
+
+<ul>
+<li><p>max_client = worker_processes * worker_connections</p></li>
+<li><p>max_client = worker_processes * worker_connections / 4</p></li>
+</ul>
+
+<p>这两个公式分别说明，在 Nginx 充当服务器（例如 nginx 上面装载 PHP）的时候，Nginx 可同时承载的连接数量是最大工作线程 * 每个线程允许的连接数量；当 Nginx 充当反向代理服务的时候，其可同时承载的连接数量是最大工作线程 * 每个线程允许的连接数量 / 4。</p>
+
+<p>第一个问题很好理解，关键是第二个问题：为什么会除以 4。网上的帖子给出的答案是。浏览器 -&gt;Nginx、Nginx-&gt; 后端服务器、后端服务器 -&gt;Nginx、Nginx-&gt; 浏览器，所以需要除以四，我想说 TCP 协议是双向全双工协议，为什么需要这样建立连接呢？所以这个说法肯定是错误的。</p>
+
+<p>在 nginx 官方文档上有这样一句话：</p>
+
+<blockquote>
+<p>Since a browser opens 2 connections by default to a server and nginx uses the fds (file descriptors) from the same pool to connect to the upstream backend。</p>
+</blockquote>
+
+<p>翻译成中文的描述就是，浏览器会建立两条连接到 Nginx（注意两条连接都是浏览器建立的），Nginx 也会建立对应的两条连接到后端服务器。这样就是四条连接了。</p>
+
+<h3 id="toc_16"><a></a>3.1.4、gzip</h3>
+
+<p>后文补讲，放在这里算是一个扣子 <sup>_^</sup></p>
+
+<h2 id="toc_17"><a></a>3.2、健康检查模块</h2>
+
+<p>后文补讲，放在这里算是一个扣子 <sup>_^</sup></p>
+
+<h2 id="toc_18"><a></a>3.3、图片处理模块</h2>
+
+<p>后文补讲，放在这里算是一个扣子 <sup>_^</sup></p>
+
+<h2 id="toc_19"><a></a>3.4、Nginx 的 Rewrite 功能</h2>
+
+<p>后文补讲，放在这里算是一个扣子 <sup>_^</sup></p>
+
+<h1 id="toc_20"><a></a>4、后文介绍</h1>
+
+<p>我原本计划一篇文章就把 Nginx 的主要特性都进行介绍，奈何 Nginx 的强大功能确实太多了。为了保证您对知识的全面消化，这边文章就写到这里了。LVS 的讲解再往后拖一周左右吧，下篇文章我们继续讲解 Nginx 的强大功能，包括 gzip 功能、强大的 rewrite 功能，以及两个扩展模块：健康检查模块和图片处理模块，至于 Nginx 集成 PHP 作为服务器的特性，为了保证这个系列文章的中心线络就不再讲了，那又是一套完整的知识体系。敬请期待我的下一篇博客，谢谢。另外，目前一周一篇文章的频率我觉得是比较合适的，后面的文章我争取保持这个速度。</p>
+
+<p><link rel="stylesheet" href="https://csdnimg.cn/release/phoenix/template/css/markdown_views-ea0013b516.css"></p>
 
                         
                       </div>
@@ -553,10 +504,10 @@ chmod 600 ~/.ssh/id_rsa
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/6/1</span>
+                    <span class="date">2018/6/28</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Security.html'>Security</a></span>
+          					    <span class="posted-in"><a href='Network.html'>Network</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -646,31 +597,31 @@ chmod 600 ~/.ssh/id_rsa
 	      
 		      
 			      <li class="post">
-			        <a href="15459058392039.html">Reliable Domain Events</a>
+			        <a href="15517999043443.html">The Art of Crafting Architectural Diagrams</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
+			        <a href="15517997955971.html">为什么说我们需要软件架构图？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
+			        <a href="15516128677869.html">DNS Servers That Offer Privacy and Filtering</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
+			        <a href="15516123108194.html">Airbnb's Migration from Monolith to Services</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
+			        <a href="15516097487470.html">Events As First-Class Citizens</a>
 			      </li>
 		     
 		  

@@ -105,175 +105,137 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15449526758162.html">
+                <a class="clearlink" href="15516097487470.html">
                 
-                  <h1>深入理解「分布式事务」</h1>
+                  <h1>Events As First-Class Citizens</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p>原文地址 <a href="https://zhuanlan.zhihu.com/p/51684618">https://zhuanlan.zhihu.com/p/51684618</a></p>
-
-<p>关键词 go/python、架构存储、分布式基础</p>
-
-<p>如果一个事务调用了不同服务器上的操作，那么它就成为了一个分布式事务。</p>
+<p>原文地址 <a href="https://hackernoon.com/events-as-first-class-citizens-8633e8479493">https://hackernoon.com/events-as-first-class-citizens-8633e8479493</a></p>
 </blockquote>
 
-<p>考虑下面一种场景：当你发了工资之后，把你的当月工资 ¥1024 从支付宝转到了余额宝。</p>
+<p>We’ve all heard of events and event-driven programming, but in my experience, events are not used nearly enough in our (software) lives. We often don’t appreciate how powerful this tool can be in our toolbox, and consequently we don’t take advantage of it when we really should.</p>
 
-<p>如果在支付宝账户扣除 ¥1024 之后，余额宝系统挂掉了，余额宝的账户并没有增加 ¥1024，这时候就出现了数据不一致的情况。</p>
+<p>In this post, I’ll discuss the lifecycle of a “fix” at Stitch Fix and how we use events to model it. I’ll suggest that we should think of events as a first-class citizen in our system, because they help us both to decouple parts of the system and to reason about them independently. Lastly, I’ll talk about how common it is to use events in the real world, and use the metaphor of software development itself to help develop intuition about event-based systems.</p>
 
-<p>在很多系统中都能找到上述情况的影子：</p>
+<h3 id="toc_0"><strong>The Lifecycle of a Fix</strong></h3>
+
+<p>At Stitch Fix, the engineering team builds and operates more than 70 individual applications and services, serving every aspect of Stitch Fix’s business. We have applications for our Merchandising team which is responsible for buying the clothes, our Warehouse Operations team which stores and ships them, and our thousands-strong Styling team which chooses them for our clients. We have applications used by our clients to schedule their Fixes, rate them, and pay for them. And we have applications used by our Client Experience team to help give our clients the best clothing purchase experience we can. Almost all of these applications and services operate on one or more of the core entities in our business — clients, items, fixes, etc. — in one way or another.</p>
+
+<p>To walk through just one motivating example, a nascent fix is created when a client tells us she’d like to receive it on a particular day (scheduling). Based on where and when that fix is shipping, we assign it to one of our warehouses around the US (warehouse assignment), and we make it available to be styled by one of our 3500 stylists (stylist assignment). The stylist selects 5 items she expects the client to enjoy (styling), and we’re ready to send it out. The warehouse team picks, packs, and ships the fix (shipping), and the client receives it on her doorstep. She keeps what she wants, and returns what she doesn’t (checkout). And the cycle is complete.</p>
+
+<p>We just described a moderately complicated workflow, with many individual steps, all operating on a single fix. Looked at through the lens of software engineering, the straightforward way to model this is as a state machine, with individual events that indicate that the fix has transitioned from one state to another. And that’s exactly how we implement it. Here’s a simplified representation of this workflow:</p>
 
 <ul>
-<li>  在下单的时候，需要在订单表中插入一条数据，然后把库存减去一</li>
-<li>  在搜索的时候如果点击了广告，需要先记录该点击事件，然后通知商家系统扣除广告费</li>
+<li>  Request a fix</li>
+<li>  -&gt; Fix is __scheduled_</li>
+<li>  Assign fix to warehouse</li>
+<li>  -&gt; Fix is __hizzy_assigned_ (we call our warehouses “hizzies”; don’t ask)</li>
+<li>  Assign fix to a stylist</li>
+<li>  -&gt; Fix is __stylist_assigned_</li>
+<li>  Style the fix</li>
+<li>  -&gt; Fix is __styled_</li>
+<li>  Pick the items for the fix</li>
+<li>  -&gt; Fix is __picked_</li>
+<li>  Pack the items into a box</li>
+<li>  -&gt; Fix is __packed_</li>
+<li>  Ship the fix via a shipping carrier</li>
+<li>  -&gt; Fix is __shipped_</li>
+<li>  Fix travels (as actual atoms!) to the client</li>
+<li>  -&gt; Fix is __delivered_</li>
+<li>  Client decides what to keep and return, pays for her fix</li>
+<li>  -&gt; Fix is __checked_out_</li>
 </ul>
 
-<blockquote>
-<p>在一个分布式事务结束的时候，事务的原子特性要求所有参与该事务的服务器必须全部提交或全部放弃该事务。为了实现这一点，其中一个服务器承担了协调者 (coordinater) 的角色，由它来保证所有的服务器获得相同的结果。</p>
-</blockquote>
-
-<p>协调者 (coordinater) 的工作方式取决于它选用的协议，“两阶段提交”是分布式事务最常用的协议。</p>
-
-<h2 id="toc_0">1、two-phase commit protocol</h2>
-
-<p><img src="media/15449526758162/15449527856306.jpg" alt=""/></p>
-
-<p>两阶段提交协议 (two-phase commit protocol) 的设计出发点是允许任何一个参与者自行放弃它自己的那部分事务。由于事务原子性的要求，如果部分事务被放弃，那么整个分布式事务也必须被放弃。</p>
-
-<p>在该协议的第一个阶段，每个参与者投票表决该事务是放弃还是提交，一旦参与者要求提交事务，那么就不允许放弃该事务。因此，在一个参与者要求提交事务之前，它必须保证最终能够执行分布式事务中自己的那部分，即使该参与者出现故障而被中途替换掉。</p>
-
-<p>一个事务的参与者如果最终能提交事务，那么可以说参与者处于事务的准备好 (<strong>prepared</strong>) 状态。为了保证能够提交，每个参与者必须将事务中所有发生改变的对象以及自身的状态 (<strong>prepared</strong>) 保存到持久性存储中。</p>
-
-<p>在该协议的第二个阶段，事务的每个参与者执行最终统一的决定。如果任何一个参与者投票放弃事务，那么最终的决定是放弃事务。如果所有的参与者都投票提交事务，那么最终的决定是提交事务。</p>
-
-<p>问题在于，要保证每个参与者都投票，并且达成一个共同的决定。在无故障时，该协议相当简单。但是，协议必须在出现各种故障 (例如服务器崩溃，消息丢失或服务暂时无法通信）时能够正常工作。</p>
-
-<h2 id="toc_1">2、两阶段提交的实现</h2>
-
-<p>为了实现两阶段提交协议，分布式事务中的协调者和参与者通常按照下面的接口进行通信：</p>
+<p>Several things immediately come to mind:</p>
 
 <ul>
-<li>  <strong>canCommit(trans) ?</strong></li>
+<li>  As the fix moves happily along, different applications or services do something with it, by enriching it with more (meta)data, by connecting it up with something else, or by doing something physical with the goods or the packaging. That doing of the something will take the fix from one state to another (_state transitions_).</li>
+<li>  The next application or service can only do its work when the previous one has done its, and consequently needs to know when to step up (_events_).</li>
+<li>  We can’t skip any of these steps, or there would be something missing — in many cases, quite literally. Said another way, from a given state, it’s only possible to go to a subset of the other states (_state machine_).</li>
+<li>  If we just remembered the current state of things — where the fix is right now — we’d be missing a lot. We want to be able to ask where the fix is right now, but we also want to know where it has been, how long it was there, and when it moved to the next step. So if we only stored its current-state in some database table and nothing else about it, we’d be stuck. Instead we need to also record all the steps along the way.</li>
 </ul>
 
-<p>协调者询问参与者是否可以提交事务，参与者回复自己的投票结果。</p>
+<h3 id="toc_1"><strong>Events as a First-Class Citizen</strong></h3>
+
+<p>Notice that if we only had the standard tools of the classic 3-tier architecture at our disposal, we’d be in trouble. We’re all familiar with these three fundamental application building blocks:</p>
 
 <ul>
-<li>  <strong>doCommit(trans)</strong></li>
+<li>  Presentation: The user interface where the user interacts with the system</li>
+<li>  Application: The “business logic” where we do the work, typically statelessly</li>
+<li>  Persistence: The place where we store things, typically in a database</li>
 </ul>
 
-<p>协调者告诉参与者提交它的那部分事务。</p>
+<p>I strongly believe that events represent a fourth fundamental building block:</p>
 
 <ul>
-<li>  <strong>doAbort(trans)</strong></li>
+<li>  Event: The statement that an interesting thing happened, or, according to Wikipedia, “_a significant change in state_”</li>
 </ul>
 
-<p>协调者告诉参与者放弃它的那部分事务。</p>
+<p>In a [micro]services architecture like we have at Stitch Fix, a given application or service might be a producer of events, a consumer of events, or both. For example, the styling application listens for the __stylist_assigned_ event, and displays all the information needed to the stylist for her to style the fix. When she is done with the fix, she clicks the “Ship It” button, which (among other things) publishes the __styled_ event. The warehouse services listen for that event, and can start their work, etc.</p>
+
+<p>Consuming these events and producing these events are first-class parts of these applications and services; they need these events to do their jobs. So when we talk about the “interface” of one of these services, let’s make this explicit. A service interface includes:</p>
 
 <ul>
-<li>  <strong>haveCommitted(trans, participant)</strong></li>
+<li>  Synchronous request-response operations (e.g., for use, this is REST/JSON, but it could just as easily be over gRPC, Thrift, etc.)</li>
+<li>  Events the service produces</li>
+<li>  Events the service consumes</li>
+<li>  Bulk reads and writes (e.g., an ETL that extracts data from the service into an analytics system)</li>
 </ul>
 
-<p>参与者用该操作向协调者确认它提交了事务。</p>
+<p>More generally, a service’s interface includes any mechanism for getting data into or out of the service. As a service owner or a service consumer, we forget this at our own peril.</p>
+
+<h3 id="toc_2"><strong>Events as Decoupling</strong></h3>
+
+<p>The producer of an event publishes it, and zero or more consumers subscribe to it. Maybe no one is listening; maybe one is; maybe many are. The producer does not know or care. This gives the nice property that the producer and consumer are completely decoupled from one another. We can add more consumers, remove them, or scale them up and down — without the producer being any the wiser.</p>
+
+<h3 id="toc_3"><strong>Events as Record</strong></h3>
+
+<p>Once we represent all the interesting state transitions for our entity as events, we can use those events as a record of what happened to that entity, and when. This is hugely valuable when we want to go back and see what went on. It’s common for our client experience team (think “customer support”, but with more smiles and empathy) to look up the history of a fix when they are trying to help out a client. It’s common for our data science team to use the events around a fix to optimize various aspects of our workflow. And it’s common for our engineering team to use this as a debugging and diagnosis tool.</p>
+
+<p>Taking this idea to its logical conclusion, we could imagine <em>only</em> retaining the events and never bothering to store the current state in any permanent way. After all we can always simply reconstruct it by playing the events forward. This is such a clever idea that people have already thought of it — it is called “event sourcing” (see the many writings of <a href="https://goodenoughsoftware.net/tag/event-sourcing/">Greg Young</a>, <a href="http://microservices.io/patterns/data/event-sourcing.html">Chris Richardson</a>, etc.), and it has a lot of wonderful resilience properties, particularly in distributed systems. In fact, there are entire software systems based on this idea (<a href="https://eventstore.org/">Event Store</a>, <a href="https://www.confluent.io/blog/apache-kafka-for-service-architectures/">Kafka</a>, <a href="https://doc.akka.io/docs/akka/2.5.4/scala/persistence.html#event-sourcing">Akka Persistence</a>, etc.). It’s also, of course, exactly how double-entry booking works in accounting, so even these (very smart) people were <a href="https://en.wikipedia.org/wiki/Double-entry_bookkeeping_system">preempted by the Medici 700 years ago</a>.</p>
+
+<h3 id="toc_4"><strong>Events are How the Real World Works™</strong></h3>
+
+<p>I often hear that it’s hard for developers to think in terms of events. It can feel a bit counterintuitive if you’re used to building the classic three-tier. What can trip people up is that at any given moment something might have happened in one part of our system, but the effects of that action are not yet visible in the other areas of our system. We use words like “eventual consistency” and “asynchrony” here, and they’ve earned their reputation for being hard to reason about. But I’d like to suggest that you have a lot more intuition about events than you think you do. If you can think about your problem as a workflow, you’re more than halfway there.</p>
+
+<p>So let’s take an example that will be familiar to every software engineer. Imagine a typical modern software development process, where we write code, check it into source control, test it, stage it, and deploy it. We often talk about this as a “lifecycle” or “pipeline” or “workflow”. Well, that sounds a lot like events. Let’s see.</p>
 
 <ul>
-<li>  <strong>getDecision(trans) ?</strong></li>
+<li>  Write code</li>
+<li>  -&gt; code is __submitted_</li>
+<li>  Test code</li>
+<li>  -&gt; code is __tested_</li>
+<li>  Deploy it to a staging server</li>
+<li>  -&gt; code is __staged_</li>
+<li>  Deploy it to production</li>
+<li>  -&gt; code is __deployed_</li>
 </ul>
 
-<p>当参与者在投 Yes 票后一段时间内未收到应答时，参与者用该操作向协调者询问事务的投票表决结果。该操作用于从服务器崩溃或从消息延迟中恢复。</p>
+<p>This seems super-familiar — we do this every day! And it’s not just a tangential thing off in the corner; for most of us, this is our job.</p>
 
-<pre><code>阶段一（投票阶段）：
-1）协调者向分布式事务的所有参与者发送canCommit？请求
-2）当参与者收到canCommit请求后，它向协调者回复自己的投票（Yes/No）。
-   在投Yes票之前，它在持久性存储中保存所有对象，准备提交。如果投No票，参与者立即放弃。
-阶段二（提交阶段）：
-1）协调者收集所有的投票（包括它自己的投票）。
-   a）如果不存在故障并且所有的投票都是Yes时，那么协调者将决定提交事务并向所有参与者发送doCommit
-      请求
-   b）否则，协调者决定放弃该事务，并向所有投Yes票的参与者发送doAbort请求
-2）投Yes票的等待者等待协调者发送的doCommit或者doAbort请求。一旦参与者接收到任何一种请求消息，
-   它将根据该请求放弃或者提交事务。如果请求是提交事务，那么他还要向协调者发送一个haveCommitted
-   来确认事务已经提交
+<p>Think if this did not behave like an asynchronous workflow, and we did all of this synchronously. Imagine that every time you hit return in your IDE, your code would be deployed to production. I’m all for continuous delivery, believe me, but this would be crazy.</p>
 
-</code></pre>
+<p>So this idea that you can’t reason about systems where there is an “inconsistency” between one part of the system and another is a little silly. For much of the day, your code has one version on your laptop, and another “stale” version in production, and everything works just fine.</p>
 
-<h2 id="toc_2">3、分布式事务的故障模型</h2>
+<h3 id="toc_5"><strong>Conclusion</strong></h3>
 
-<p>在分布式事务中执行的过程中，可能出现磁盘故障，进程崩溃以及消息的丢失，超时等。</p>
+<p>Thanks for reading this far. If you have, I hope I’ve got you thinking that you should reach for the “event” tool in your toolbox more often. It can help you in many ways.</p>
 
-<p>两阶段提交是一种达成共识的协议，在该系统中，如果进程崩溃，那么是不可能达成共识的。但是，两阶段提交却是在这些条件下达成了共识，这是由于进程的崩溃被屏蔽，崩溃的进程被一个新的进程取代，新进程的状态根据持久性存储中保存的信息和其他进程拥有的信息来设定。</p>
+<p>And if you’re having trouble reasoning about events, just think about what you do for 8, 10, 12 hours every day.</p>
 
-<p><strong>3.1、故障模型</strong></p>
+<h3 id="toc_6"><strong>Helpful Resources</strong></h3>
 
-<p>Lampson 提出过一个分布式事务的故障模型，包括了硬盘故障、服务器故障以及通信故障。该故障模型声称：可以保证算法在出现故障时正确工作，但是对于不可预见的灾难性故障则不能正确处理。尽管会出现错误，但是可以在发生不正确行为之前发现并处理这些错误。Lampson 的故障模型包括以下故障：</p>
+<p>If you are interested in deepening your knowledge of events and event-driven systems, check out:</p>
 
 <ul>
-<li>  对持久性存储的写操作可能发生故障（或因为写操作无效或因为写入错误的值）。例如，将数据写到错误的磁盘块被认为是灾难性故障。文件存储可能损坏。在持久性存储中读数据时可根据校验和来判断数据块是否损坏。</li>
-<li>  服务器可能偶尔崩溃。当一个崩溃的服务器由一个新进程取代后，它的可变内存被重置，崩溃之前的数据均丢失。此后新进程执行一个可恢复过程，根据持久存储中的信息以及从其他进程获得的信息设置对象的值，包括两阶段提交协议有关对象的值。当一个处理器出现故障时，服务器也会崩溃，这样它就不会发送错误的信息或将错误的值写入持久存储，即它不会产生随机故障。服务器崩溃可能出现在任何时候，特别是在恢复时也可能出现。</li>
-<li>  消息传递可能有任意长的延迟。消息可能丢失、重复或者损坏。接收方（通过校验和）能够检测到受损消息。未发现的受损消息和伪造的消息可能会导致灾难性故障。</li>
-</ul>
-
-<p>利用这个关于持久性存储、处理器和通信的故障模型能够设计出一个可靠系统，该系统的组件可对付任何单一故障，并提供一个简单的故障模型。特别是，<strong>可靠存储 (stable storage)</strong> 可以在出现一个 write 操作故障或者进程崩溃的情况下提供原子写操作。它是通过将每一个数据块复制到两个磁盘上实现的。此时一个 write 操作用于两个磁盘块，在一个磁盘出现故障的前提下，另一个好的磁盘也可以提供正确数据。<strong>可靠处理器 (stable processor)</strong> 使用可靠存储，用于在崩溃之后恢复对象。可通过可靠的远程过程调用机制来屏蔽通信错误。</p>
-
-<p><strong>3.2、两阶段提交协议的超时</strong></p>
-
-<p>在两阶段协议的不同阶段，协调者或参与者都会遇到这种场景：不能处理它的那部分协议，直到接收到下一个请求或应答为止。</p>
-
-<p>首先考虑这样的情形：某个投票者投 Yes 票并等待协调者发回最终决定，即告诉它是提交事务还是放弃事务。这样参与者的结果是<strong>不确定 (uncertain)</strong> 的，它在协调者处得到投票结果之前不能进行进一步处理。参与者不能单方面决定下一步做什么，同时该事务使用的对象也不能释放以用于其他事物。参与者向协调者发出 getDecision 请求来获取事务的结果，直到收到应答时，才能进入两阶段协议的第二阶段。</p>
-
-<p>同理，如果协调者发生故障，那么参与者将不能获得协定，直到协调者被替代为止，这可能导致不确定状态的参与者长时间的延迟。</p>
-
-<p>不依赖协调者获取最终决定的方法是通过参与者协作来获得决定。这种策略的优点是可以在协调者出故障时使用。（在本篇文章中我们不讨论这种方式）</p>
-
-<h2 id="toc_3">4、两阶段提交的故障处理</h2>
-
-<ul>
-<li><p>当参与者发生故障的时候：<br/>
-<img src="media/15449526758162/15449528046242.jpg" alt=""/></p></li>
-<li><p>当协调者发生故障的时候：<br/>
-<img src="media/15449526758162/15449528150927.jpg" alt=""/></p></li>
-</ul>
-
-<h2 id="toc_4">5、两阶段提交的性能</h2>
-
-<p>假设一切运转正常，即协调者参与者不出现故障，通信也正常时，有 N 个参与者的两阶段提交协议需要 N 个 <strong>canCommit</strong> 消息和应答，然后再有 N 个 <strong>doCommit</strong> 消息。这样消息开销和 3N 成正比，时间开销是 3 次消息往返。由于协议在没有 <strong>haveCommitted</strong> 消息时仍可以正常运作（它们的作用只是通知服务器删除过时的协调者消息），因此在估计协议开销上，不将 <strong>haveCommitted</strong> 消息计算在内。</p>
-
-<p>在最坏的情况下，两阶段提交协议在执行过程中可能出现任意多次服务器和通信故障。尽管协议不能指定协议完成的时间限制，但它能正确处理连续故障（服务崩溃或者消息丢失），并保证最终完成。</p>
-
-<h2 id="toc_5">6、使用消息队列来避免分布式事务</h2>
-
-<p><strong>5.1、消息队列</strong></p>
-
-<p>由于分布式事务存在严重的性能问题，在设计高并发服务的时候，往往通过其他途径来解决数据一致性问题。</p>
-
-<blockquote>
-<p>举例来讲，你在北京很有名的姚记炒肝点了炒肝并付了钱后，他们并不会直接把你点的炒肝给你，而是给你一张小票，然后让你拿着小票到出货区排队去取。为什么他们要将付钱和取货两个动作分开呢？原因很多，其中一个很重要的原因是为了使他们接待能力增强（并发量更高）。</p>
-</blockquote>
-
-<p>还是回到我们的问题，只要这张小票在，你最终是能拿到炒肝的。同理转账服务也是如此，当支付宝账户扣除 1 万后，我们只要生成一个凭证（消息）即可，这个凭证（消息）上写着 “让余额宝账户增加 1 万”，只要这个凭证（消息）能可靠保存，我们最终是可以拿着这个凭证（消息）让余额宝账户增加 1 万的，即我们能依靠这个凭证（消息）完成最终一致性。</p>
-
-<p>这样我们上述的转账就变成了如下过程：</p>
-
-<ul>
-<li>  支付宝在扣款事务提交之前，向消息队列发送消息。此时的消息队列只记录消息，而并没有将消息发往余额宝。</li>
-<li>  当支付宝扣款事务提交成功，向消息队列发送确认。在得到确认的指令后，消息队列向该消息发往余额宝。</li>
-<li>  当支付宝扣款事务提交失败，向消息队列发送取消。在得到取消的指令后，消息队列取消该消息，该消息将不会被发送。</li>
-<li>  对于那么未确认的消息，需要消息队列去支付宝系统查询这个消息的状态，并进行更新。（因为支付宝可能在扣款事务提交成功后挂掉，此时消息的状态未被更新为：“<strong>确认发送 “。</strong>从而导致消息不能被发送。</li>
-</ul>
-
-<p><strong>5.2、重复投递</strong></p>
-
-<p>还有一个严重的问题是<strong>消息重复投递</strong>，以我们支付宝转账到余额宝为例，如果相同的消息被重复投递两次，那么我们余额宝账户将会增加 2 万而不是 1 万了。<br/>
-<img src="media/15449526758162/15449528386270.jpg" alt=""/></p>
-
-<p>我们将在后续的文章讨论消息队列的两个问题：</p>
-
-<ul>
-<li>  Exactly-once delivery</li>
-<li>  Guaranteed order of messages</li>
+<li>  <a href="https://www.infoq.com/presentations/microservices-data-centric">Managing Data in Microservices</a>, slides / video from my talk at QCon New York 2017</li>
+<li>  <a href="https://www.youtube.com/watch?v=STKCRSUsyP0">The Many Meanings of Event-Driven Architecture</a>, video of <a href="https://martinfowler.com/">Martin Fowler</a>’s keynote at GOTO Chicago 2017</li>
+<li>  <a href="http://microservices.io/patterns/data/event-sourcing.html">Microservices and the Event Sourcing Pattern</a>, by <a href="http://chrisrichardson.net/">Chris Richardson</a></li>
+<li>  <a href="https://www.youtube.com/watch?v=JHGkaShoyNs">CQRS and Event Sourcing</a>, by <a href="https://goodenoughsoftware.net/">Greg Young</a></li>
+<li>  <a href="http://www.enterpriseintegrationpatterns.com/">Enterprise Integration Patterns</a>, the classic oldie-but-still-very-much-goodie book and pattern collection by <a href="http://www.enterpriseintegrationpatterns.com/gregor.html">Gregor Hohpe</a></li>
 </ul>
 
                         
@@ -283,10 +245,10 @@
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/12/16</span>
+                    <span class="date">2019/3/3</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='DTx.html'>DTx</a></span>
+          					    <span class="posted-in"><a href='MQ.html'>MQ</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -376,31 +338,31 @@
 	      
 		      
 			      <li class="post">
-			        <a href="15459058392039.html">Reliable Domain Events</a>
+			        <a href="15517999043443.html">The Art of Crafting Architectural Diagrams</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
+			        <a href="15517997955971.html">为什么说我们需要软件架构图？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
+			        <a href="15516128677869.html">DNS Servers That Offer Privacy and Filtering</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
+			        <a href="15516123108194.html">Airbnb's Migration from Monolith to Services</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
+			        <a href="15516097487470.html">Events As First-Class Citizens</a>
 			      </li>
 		     
 		  

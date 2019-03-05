@@ -105,421 +105,153 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15388979027531.html">
+                <a class="clearlink" href="15473953096527.html">
                 
-                  <h1>授权策略（Authorization Policy）基本元素</h1>
+                  <h1>分布式 Snapshot 和 Flink Checkpointing 简介</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
-                        	<pre><code>阿里云 &gt; 访问控制 RAM &gt; 授权策略管理
-</code></pre>
-
-<blockquote>
-<p>原文地址 <a href="https://help.aliyun.com/document_detail/28663.html">https://help.aliyun.com/document_detail/28663.html</a></p>
+                        	<blockquote>
+<p>原文地址 <a href="https://san-yun.iteye.com/blog/2372451">https://san-yun.iteye.com/blog/2372451</a></p>
 </blockquote>
 
-<p>RAM 中使用授权策略（Policy）来描述授权的具体内容，授权内容包含以下基本因素：效力（Effect）、资源（Resource）、对资源所授予的操作权限（Action）以及限制条件（Condition）。</p>
+<p>最近在学习 Flink 的 <a href="https://ci.apache.org/projects/flink/flink-docs-master/internals/stream_checkpointing.html">Fault Tolerance</a>，了解到 Flink 在 <a href="http://research.microsoft.com/en-us/um/people/lamport/pubs/chandy.pdf">Chandy Lamport Algorithm</a> 的基础上扩展实现了一套分布式 Checkpointing 机制，这个机制在论文 &quot;<a href="http://arxiv.org/abs/1506.08603">Lightweight Asynchronous Snapshots for Distributed Dataflows</a>&quot; 中进行了详尽的描述。怀着对 <a href="https://en.wikipedia.org/wiki/Leslie_Lamport">Lamport</a> 大神的敬仰，我分别下载研读了两篇论文，在这里把一些阅读的收获记录下来，希望能对学习 Flink/Blink 的同学能有些帮助。</p>
 
-<h2 id="toc_0">效力（Effect）</h2>
+<h1 id="toc_0">Chandy Lamport Algorithm</h1>
 
-<p>授权效力包括两种：允许（Allow）和拒绝（Deny）。</p>
+<p>我们先来看看 Chandy Lamport Algorithm，“Distributed Snapshots: Determining Global States of a Distributed System”，此文应该是分布式 SnapShot 的开山之作，发布于 1985 年（很多同学还没有出生 -_-），按照 Lamport 自己的说法，这篇文章是这么来的：</p>
 
-<h2 id="toc_1">资源（Resource）</h2>
+<blockquote>
+<p>“The distributed snapshot algorithm described here came about when I visited Chandy, who was then at the University of Texas in Austin. He posed the problem to me over dinner, but we had both had too much wine to think about it right then. The next morning, in the shower, I came up with the solution. When I arrived at Chandy&#39;s office, he was waiting for me with the same solution.”</p>
+</blockquote>
 
-<p>资源是指被授权的具体对象。</p>
+<p>所以说，大神的世界我们不懂，一言不合就写一篇论文。我们言归正传，开始介绍论文中描述的算法。</p>
 
-<p>比如，访问策略 “允许张三对资源 SampleBucket 执行 GetBucket 操作” 中的资源是“SampleBucket”。</p>
+<h2 id="toc_1">分布式系统模型和状态定义</h2>
 
-<h2 id="toc_2">操作权限（Action）</h2>
+<h3 id="toc_2">分布式系统模型</h3>
 
-<p>操作方法是指对具体资源的操作。</p>
+<p>分布式系统是一个包含有限进程和有限消息通道的系统，这些进程和通道可以用一个有向图描述，其中节点表示进程，边表示通道。如下图所示：p、q 分别是进程，c, c&#39;则是消息通道。</p>
 
-<p>比如，访问策略 “允许张三对资源 SampleBucket 执行 GetBucket 操作” 中的操作是“GetBucket”。</p>
+<p><a href="http://img4.tbcdn.cn/L1/461/1/f0c17a7bff49de1280df4390616fb7df5bbd6512"><img src="http://img4.tbcdn.cn/L1/461/1/f0c17a7bff49de1280df4390616fb7df5bbd6512" alt=""/></a></p>
 
-<h2 id="toc_3">限制条件（Condition）</h2>
+<p>另外为了问题描述的简洁，对上述模型还做了假设：消息通道只包含有限的 buffer、消息保序、通道可靠等</p>
 
-<p>限制条件是指授权生效的限制条件。</p>
+<h3 id="toc_3">分布式系统状态（State）</h3>
 
-<p>比如，访问策略 “允许张三在 2011 年 12 月 31 日之前对资源 SampleBucket 执行 GetBucket 操作” 中的限制条件是“在 2011 年 12 月 31 日之前”。</p>
+<p>所谓的 Distributed Snapshot，就是为了保存分布式系统的 State，那么首先我们需要定义清楚什么是分布式系统的 State。考虑到上述分布式模型的定义，分布式系统 State 同样是由 “进程状态” 和“通道状态”组成的。</p>
 
-<h2 id="toc_4">授权策略样例</h2>
+<ol>
+<li> Event：分布式系统中发生的一个事件，在类似于 Flink 这样的分布式计算系统中从 Source 输入的新消息相当于一个事件。在论文中作者给出了数学化的定义，具体参考论文。</li>
+<li> 进程状态：包含一个初始状态（initial state)，和持续发生的若干 Events。初始状态可以理解为 Flink 中刚启动的计算节点，计算节点每处理一条 Event，就转换到一个新的状态。</li>
+<li> 通道状态：我们用在通道上传输的消息（Event）来描述一个通道的状态。</li>
+</ol>
 
-<p>下面是一个权限策略实例，它描述的含义：允许对 OSS 的 samplebucket 进行只读操作，条件是请求者的 IP 来源为 <code>42.160.1.0</code>。</p>
+<p>在某一个时刻的某分布式系统的所有进程和所有通道状态的组合，就是这个分布式系统的全局状态。基于上述的双进程双通道的最简分布式系统，为了描述算法，作者设计了一个 “单令牌状态” 转换系统，两个进程通过接收和发出令牌，会在 S0、S1 两个 State 之间转换，整个分布式系统则会在如下所示的 4 种全局状态（Global State）之间转换。</p>
 
-<pre><code class="language-json">{
-      &quot;Version&quot;: &quot;1&quot;,
-      &quot;Statement&quot;:
-        [{
-          &quot;Effect&quot;: &quot;Allow&quot;,
-            &quot;Action&quot;: [&quot;oss:List*&quot;, &quot;oss:Get*&quot;],
-            &quot;Resource&quot;: [&quot;acs:oss:*:*:samplebucket&quot;, &quot;acs:oss:*:*:samplebucket/*&quot;],
-            &quot;Condition&quot;:
-             {
-                &quot;IpAddress&quot;:
-                 {
-                    &quot;acs:SourceIp&quot;: &quot;42.160.1.0&quot;
-                  }
-              }
-         }]
-}
+<p><a href="http://img4.tbcdn.cn/L1/461/1/3ba0c10310548303f3fcf8a32ed24e66a03c0665"><img src="http://img4.tbcdn.cn/L1/461/1/3ba0c10310548303f3fcf8a32ed24e66a03c0665" alt=""/></a></p>
+
+<p><a href="http://img4.tbcdn.cn/L1/461/1/11b322e4bd0871faacc1ff8075f02cde0328e00c"><img src="http://img4.tbcdn.cn/L1/461/1/11b322e4bd0871faacc1ff8075f02cde0328e00c" alt=""/></a></p>
+
+<h2 id="toc_4">Distributed Snapshots</h2>
+
+<p>有了系统状态和模型的定义，终于可以开始介绍分布式快照的算法了。对于一个分布式快照算法，我们有如下的两点要求：</p>
+
+<ol>
+<li> 正确性：能够准确的记录每一个进程、通道的状态，同时通过这些局部状态，能够准确表达一个分布式系统的全局状态。这里碰到的挑战是，每个进程、通道没法同时记录自身的状态，因为我们没有一个全局的时钟来保持状态记录的同步。</li>
+<li> 并行性：快照操作与分布式系统计算同时运行，但不能影响所有系统的正常功能，对性能、正确性等无影响。</li>
+</ol>
+
+<p>按照上一小节的描述，全局状态是进程和通道状态的组合，在论文中，作者证明了通道状态可以通过记录进程状态来记录和恢复，并提出了下述的分布式 snapshot 算法：</p>
+
+<p>对于进程 p、q，p-&gt;q 通过通道 c 连接，通过以下步骤记录 global state</p>
+
+<pre><code>// 进程p行为，通过向q发出Marker，发起snapshot
+begin
+       p record its state；
+then
+       send one Marker along c after p records its state and before p sends further messages along c
+end
+
+//进程q接受Marker后的行为，q记录自身状态，并记录通道c的状态
+if q has not recorded its state then
+        begin
+              q records its state;
+              q records the state c as the empty sequence
+        end
+else q records the state of c as the sequence of messages received along c after q’s state was recorded and before q received the marker along c. 
+
 </code></pre>
 
-<h2 id="toc_5">Policy 结构</h2>
+<p>进程 p 启动这个算法，记录自身状态，并发出 Marker。随着 Marker 不断的沿着分布式系统的相连通道逐渐传输到所有的进程，所有的进程都会执行算法以记录自身状态和入射通道的状态，待到所有进程执行完该算法，一个分布式 Snapshot 就完成了记录。Marker 相当于是一个信使，它随着消息流流经所有的进程，通知每个进程记录自身状态。且 Marker 对整个分布式系统的计算过程没有任何影响。只要保证 Marker 能在有限时间内通过通道传输到进程，每个进程能够在有限时间内完成自身状态的记录，这个算法就能在有限的时间内执行完成。</p>
 
-<p>授权策略（Policy）结构包括 Policy 版本号及授权语句（Statement）列表。每个授权语句又包括以下元素：Effect（授权类型）、Action（操作名称列表）、Resource（操作对象列表）以及 Condition（条件限制），其中 Condition 是可选项。</p>
+<p>以上就是这个算法的最主要内容，算法本身不是很复杂，但是 Chandy 和 Lamport 两位大神在论文中展现的对问题分析和思考的过程真的很值得玩味，定义问题 -&gt; 定义分布式模型 -&gt; 推导算法 -&gt; 分析特例 -&gt; 证明算法的完备性，层层推进，环环相扣，缺一不可，算法的数学之美展露无遗！</p>
 
-<p>Policy 结构简述如下：</p>
+<p>关于 Chandy-Lamport Algorithm 的主要介绍就到这里，论文中还有一些关于某些特殊情况的证明，大家有兴趣可以参考论文。</p>
 
-<p>图 1. Policy 结构<br/>
-<img src="media/15388979027531/15389054067698.png" alt=""/></p>
+<h1 id="toc_5">Flink Checkpointing 的实现原理</h1>
 
-<h2 id="toc_6">格式检查（JSON）</h2>
+<p>Flink 分布式 Checkpointing 是通过 Asynchronous Barrier Snapshots 的算法实现的，该算法借鉴了 Chandy-Lamport 算法的主要思想，同时做了一些改进，这些改进在论文 &quot;<a href="http://arxiv.org/abs/1506.08603">Lightweight Asynchronous Snapshots for Distributed Dataflows</a>&quot; 中进行了详尽的描述，结合这篇论文，我们来看看具体的实现。</p>
 
-<p>RAM 仅支持 JSON 格式的描述。当创建或更新 Policy 时，RAM 会首先检查 JSON 格式的正确性。</p>
+<h2 id="toc_6">Flink 流式计算模型</h2>
 
-<ul>
-<li>  关于 JSON 的语法标准请参考 <a href="http://tools.ietf.org/html/rfc7159">RFC 7159</a>。</li>
-<li>  用户也可以使用一些在线的 JSON 格式验证器和编辑器来校验 JSON 文本的有效性。</li>
-</ul>
+<p>Flink 流式计算模型中包含 Source Operator、Transformation Operators、Sink Operator 等三种不同类型的节点如下图所示，分别负责数据的输入、处理、和输出，对应计算拓扑的起点、中间节点和终点。计算模型的介绍不是我们的重点，细节请参考<a href="https://ci.apache.org/projects/flink/flink-docs-master/concepts/concepts.html">官方文档 - Concepts</a><br/>
+<a href="http://img3.tbcdn.cn/L1/461/1/1cfc1d29c4579ef53d8da6311c076e09f42481f6"><img src="http://img3.tbcdn.cn/L1/461/1/1cfc1d29c4579ef53d8da6311c076e09f42481f6" alt=""/></a></p>
 
-<hr/>
+<h2 id="toc_7">Asynchronous Barrier Snapshots</h2>
 
-<h2 id="toc_7">Policy 语法</h2>
+<p>这个算法基本上是 Chandy-Lamport 算法的变体，只在执行上有一些差别。论文中分别针对有向无环和有向有环的两种计算拓扑图，提出了两种不同的算法，其中后者是在前者的基础上进行了修改，在实际的使用中，绝大部分的系统都是有向无环图，因此我们只会针对前者进行介绍。</p>
 
-<p>了解 Policy 中用到的字符及规则，以及 Policy 语法描述。</p>
+<p>在 ABS 算法中用 Barrier 代替了 C-L 算法中的 Marker，针对 DAG 的 ABS 算法执行流程如下所示：</p>
 
-<p><strong>字符及规则</strong></p>
+<ol>
+<li><p>Barrier 周期性的被注入到所有的 Source 中，Source 节点看到 Barrier 后，会立即记录自己的状态，然后将 Barrier 发送到 Transformation Operator。</p></li>
+<li><p>当 Transformation Operator 从某个 input channel 收到 Barrier 后，它会立刻 Block 住这条通道，直到所有的 input channel 都收到 Barrier，此时该 Operator 就会记录自身状态，并向自己的所有 output channel 广播 Barrier。</p></li>
+<li><p>Sink 接受 Barrier 的操作流程与 Transformation Oper 一样。当所有的 Barrier 都到达 Sink 之后，并且所有的 Sink 也完成了 Checkpoint，这一轮 Snapshot 就完成了。</p></li>
+</ol>
 
-<p>Policy 中所包含的 JSON 字符有：<code>{ } [ ] &quot; , :</code>；描述语法使用的特殊字符有：<code>= &lt; &gt; ( ) |</code>。</p>
+<p>下面这个图展示了一个 ABS 算法的执行过程：<br/>
+<a href="http://img4.tbcdn.cn/L1/461/1/4575b05e326645e9eb62bab20addeecfe19f5e4c"><img src="http://img4.tbcdn.cn/L1/461/1/4575b05e326645e9eb62bab20addeecfe19f5e4c" alt=""/></a></p>
 
-<p>字符使用说明如下：</p>
+<p>下面是针对 DAG 拓扑图的算法伪代码：</p>
 
-<ul>
-<li>  当一个元素允许多值时，使用逗号和省略号来表达，比如：<code>[ &lt;action_string&gt;, &lt;action_string&gt;, ...]</code>。在所有支持多值的语法中，使用单值也是有效的。而且两种表达方式是等效的：<code>&quot;Action&quot;: [&lt;action_string&gt;]</code> 和 <code>&quot;Action&quot;: &lt;action_string&gt;</code></li>
-<li>  带有问号的元素表示这是一个可选元素，比如：<code>&lt;condition_block?&gt;</code></li>
-<li>  多值之间用竖线 （|）隔开，表示取值只能选取这些值中的某一个。比如：<code>(&quot;Allow&quot; | &quot;Deny&quot;)</code></li>
-<li>  使用双引号引起了的元素，表示它是文本串。比如： <code>&lt;version_block&gt; = &quot;Version&quot; : (&quot;1&quot;)</code></li>
-</ul>
+<pre><code>// 初始化Operator
+upon event (Init | input channels, output
+channels, fun, init state) 
+do
+    state := init_state; 
+    blocked_inputs := {};
+    inputs := input_channels;
+    out_puts := out_put channels; 
+    udf := fun;
 
-<p><strong>语法描述及说明</strong></p>
+// 收到Barrier的行为
+upon event (receive | input, (barrier)) 
+do
+//将当前input通道加入blocked 集合，并block该通道，此通道的消息处理暂停
+    if input != Nil then 
+        blocked inputs := blocked inputs ∪ {input};
+        trigger (block | input);
+//如果所有的通道都已经被block，说明所有的barrier都已经收到
+    if blocked inputs = inputs then 
+        blocked inputs := {}; 
+        broadcast (send | outputs, (barrier)); //向所有的outputs发出Barrier
+        trigger (snapshot | state); //记录本节点当前状态
+        for each inputs as input //解除所有通道的block，继续处理消息
+            trigger (unblock | input);
 
-<p>Policy 语法描述如下：</p>
-
-<pre><code>policy  = {
-     &lt;version_block&gt;,
-     &lt;statement_block&gt;
-}
-&lt;version_block&gt; = &quot;Version&quot; : (&quot;1&quot;)
-&lt;statement_block&gt; = &quot;Statement&quot; : [ &lt;statement&gt;, &lt;statement&gt;, ... ]
-&lt;statement&gt; = { 
-    &lt;effect_block&gt;,
-    &lt;action_block&gt;,
-    &lt;resource_block&gt;,
-    &lt;condition_block?&gt;
-}
-&lt;effect_block&gt; = &quot;Effect&quot; : (&quot;Allow&quot; | &quot;Deny&quot;)  
-&lt;action_block&gt; = (&quot;Action&quot; | &quot;NotAction&quot;) : 
-    (&quot;*&quot; | [&lt;action_string&gt;, &lt;action_string&gt;, ...])
-&lt;resource_block&gt; = (&quot;Resource&quot; | &quot;NotResource&quot;) : 
-    (&quot;*&quot; | [&lt;resource_string&gt;, &lt;resource_string&gt;, ...])
-&lt;condition_block&gt; = &quot;Condition&quot; : &lt;condition_map&gt;
-&lt;condition_map&gt; = {
-  &lt;condition_type_string&gt; : { 
-      &lt;condition_key_string&gt; : &lt;condition_value_list&gt;,
-      &lt;condition_key_string&gt; : &lt;condition_value_list&gt;,
-      ...
-  },
-  &lt;condition_type_string&gt; : {
-      &lt;condition_key_string&gt; : &lt;condition_value_list&gt;,
-      &lt;condition_key_string&gt; : &lt;condition_value_list&gt;,
-      ...
-  }, ...
-}  
-&lt;condition_value_list&gt; = [&lt;condition_value&gt;, &lt;condition_value&gt;, ...]
-&lt;condition_value&gt; = (&quot;String&quot; | &quot;Number&quot; | &quot;Boolean&quot;)
 </code></pre>
 
-<p>语法说明如下：</p>
+<p>在这个算法中 Block Input 实际上是有负面效果的，一旦某个 input channel 发生延迟，Barrier 迟迟未到，这会导致 Transformation Operator 上的其它通道全部堵塞，系统吞吐大幅下降。但是这么做的一个最大的好处就是能够实现 Exactly Once。我们来看看 Flink 文档中的描述：</p>
 
-<ul>
-<li>  <strong>版本</strong>：当前支持的 Policy 版本为 1。</li>
-<li>  <strong>授权语句</strong>：一个 Policy 可以有多条授权语句。
+<blockquote>
+<p>When the alignment is skipped, an operator keeps processing all inputs, even after some checkpoint barriers for checkpoint n arrived. That way, the operator also processes elements that belong to checkpoint n+1 before the state snapshot for checkpoint n was taken. On a restore, these records will occur as duplicates, because they are both included in the state snapshot of checkpoint n, and will be replayed as part of the data after checkpoint n.</p>
+</blockquote>
 
-<ul>
-<li>  每条授权语句要么是 Deny，要么是 Allow。一条授权语句中，Action 是一个支持多个操作的列表，Resource 也是一个支持多个对象的列表。</li>
-<li>  每条授权语句都支持独立的限制条件（Condition）。一个条件块可以支持多种条件操作类型，以及对这多种条件的逻辑组合。</li>
-</ul></li>
-<li>  <strong>Deny 优先</strong>： 一个用户可以被授予多个 Policy，当这些 Policy 存在多条授权语句既包含有 Allow 又包含有 Deny 时，遵循 Deny 优先（只认 Deny 不认 Allow）原则。</li>
-<li><p><strong>元素取值</strong>：</p>
+<p>不过 Flink 还是提供了选项，可以关闭 Exactly once 并仅保留 at least once，以提供最大限度的吞吐能力。</p>
 
-<ul>
-<li>  当取值为数字（Number）或布尔值（Boolean）时，与字符串类似，需要用双引号引起。</li>
-<li><p>当元素取值为字符串值（String）时，支持（*）和（？）模糊匹配。</p>
-
-<ul>
-<li>  (*) 代表 0 个或多个任意的英文字母。</li>
-<li>  (?) 代表 1 个任意的英文字母。</li>
-</ul>
-
-<p>比如，<code>ecs:Describe*</code> 可以表示 ecs 的所有以 Describe 开头的 API 操作名称。</p></li>
-</ul></li>
-</ul>
-
-<h2 id="toc_8">Policy 元素使用</h2>
-
-<p>了解 Policy 语法中各元素的使用规则。</p>
-
-<p><strong>Effect（授权类型）</strong></p>
-
-<p>Effect 取值 为 Allow 或 Deny。比如，<code>&quot;Effect&quot;: &quot;Allow&quot;</code></p>
-
-<p><strong>Action（操作名称列表）</strong></p>
-
-<p>Action 支持多值，取值为云服务所定义的 API 操作名称，其格式定义如下：</p>
-
-<pre><code>&lt;service-name&gt;:&lt;action-name&gt;
-</code></pre>
-
-<p><strong>格式说明</strong>：</p>
-
-<ul>
-<li>  service-name: 阿里云产品名称，如 ecs, rds, slb, oss, ots 等。</li>
-<li>  action-name: service 相关的 api 操作接口名称。</li>
-</ul>
-
-<p><strong>描述样例</strong>：</p>
-
-<pre><code>&quot;Action&quot;: [&quot;oss:ListBuckets&quot;, &quot;ecs:Describe*&quot;, &quot;rds:Describe*&quot;]
-</code></pre>
-
-<h2 id="toc_9">Resource（操作对象列表）</h2>
-
-<p>Resource 通常指操作对象，比如 ECS 虚拟机实例，OSS 存储对象。我们使用如下格式来命名阿里云服务的资源命名。</p>
-
-<pre><code>acs:&lt;service-name&gt;:&lt;region&gt;:&lt;account-id&gt;:&lt;relative-id&gt;
-</code></pre>
-
-<p><strong>格式说明</strong>：</p>
-
-<ul>
-<li>  <code>acs</code>: Aliyun Cloud Service 的首字母缩写，表示阿里云的公有云平台。</li>
-<li>  <code>service-name</code>: 阿里云提供的 Open Service 的名字，如 ecs, oss, ots 等。</li>
-<li>  <code>region</code>: 地区信息。如果不支持该项，可以使用通配符 “*” 号来代替。</li>
-<li>  <code>account-id</code>: 账号 ID，比如 <code>1234567890123456</code>，也可以用 “*” 代替。</li>
-<li>  <code>relative-id</code>: 与 service 相关的资源描述部分，其语义由具体 service 指定。这部分的格式描述支持类似于一个文件路径的树状结构。以 oss 为例，<code>relative-id = “mybucket/dir1/object1.jpg”</code> 表示一个 OSS 对象。</li>
-</ul>
-
-<p><strong>描述样例</strong>：</p>
-
-<pre><code>&quot;Resource&quot;: [&quot;acs:ecs:*:*:instance/inst-001&quot;, &quot;acs:ecs:*:*:instance/inst-002&quot;, &quot;acs:oss:*:*:mybucket&quot;, &quot;acs:oss:*:*:mybucket/*&quot;]
-</code></pre>
-
-<p><strong>Condition（条件限制）</strong></p>
-
-<p>条件块（Condition Block）由一个或多个条件子句构成。一个条件子句由条件操作类型、条件关键字和条件值组成。条件操作类型和条件关键字在下文中会有详细描述。</p>
-
-<p><strong>条件块判断逻辑</strong></p>
-
-<p>是否满足条件的判断原则如下图所示：</p>
-
-<p>图 2. 是否满足条件的判断原则<br/>
-<img src="media/15388979027531/15389054664258.png" alt=""/></p>
-
-<p>具体规则如下：</p>
-
-<ul>
-<li>  一个条件关键字可以指定一个或多个值，在条件检查时，如果条件关键字的值与指定值中的某一个相等，即可判定条件满足。</li>
-<li>  同一种条件操作类型的条件子句下的多个条件关键字同时满足的情况下，才能判定该条件子句满足。</li>
-<li>  条件块下的所有条件子句同时满足的情况下，才能判定该条件块满足。</li>
-</ul>
-
-<p><strong>条件操作类型</strong></p>
-
-<p>支持如下条件操作类型：字符串类型（String）、数字类型（Numeric）、日期类型（Data and time）、布尔类型（Boolean）和 IP 地址类型（IP address）。</p>
-
-<p>每种条件操作类型分别支持如下的方法：</p>
-
-<table>
-<thead>
-<tr>
-<th>String</th>
-<th>Numeric</th>
-<th>Date and time</th>
-<th>Boolean</th>
-<th>IP address</th>
-</tr>
-</thead>
-
-<tbody>
-<tr>
-<td>StringEquals</td>
-<td>NumericEquals</td>
-<td>DateEquals</td>
-<td>Bool</td>
-<td>IpAddress</td>
-</tr>
-<tr>
-<td>StringNotEquals</td>
-<td>NumericNotEquals</td>
-<td>DateNotEquals</td>
-<td>-</td>
-<td>NotIpAddress</td>
-</tr>
-<tr>
-<td>StringEqualsIgnoreCase</td>
-<td>NumericLessThan</td>
-<td>DateLessThan</td>
-<td>-</td>
-<td>-</td>
-</tr>
-<tr>
-<td>StringNotEqualsIgnoreCase</td>
-<td>NumericLessThanEquals</td>
-<td>DateLessThanEquals</td>
-<td>-</td>
-<td>-</td>
-</tr>
-<tr>
-<td>StringLike</td>
-<td>NumericGreaterThan</td>
-<td>DateGreaterThan</td>
-<td>-</td>
-<td>-</td>
-</tr>
-<tr>
-<td>StringNotLike</td>
-<td>NumericGreaterThanEquals</td>
-<td>DateGreaterThanEquals</td>
-<td>-</td>
-<td>-</td>
-</tr>
-</tbody>
-</table>
-
-<p><strong>条件关键字（Condition-key）</strong></p>
-
-<p>阿里云服务保留的条件关键字命名格式为：</p>
-
-<pre><code>acs:&lt;condition-key&gt;
-</code></pre>
-
-<p>阿里云服务保留的通用条件关键字如下：</p>
-
-<table>
-<thead>
-<tr>
-<th>通用条件关键字</th>
-<th>类型</th>
-<th>说明</th>
-</tr>
-</thead>
-
-<tbody>
-<tr>
-<td><code>acs:CurrentTime</code></td>
-<td>Date and time</td>
-<td>Web Server 接收到请求的时间，以 ISO 8601 格式表示，如 <code>2012-11-11T23:59:59Z</code></td>
-</tr>
-<tr>
-<td><code>acs:SecureTransport</code></td>
-<td>Boolean</td>
-<td>发送请求是否使用了安全信道，如 HTTPS</td>
-</tr>
-<tr>
-<td><code>acs:SourceIp</code></td>
-<td>IP address</td>
-<td>发送请求时的客户端 IP 地址</td>
-</tr>
-<tr>
-<td><code>acs:MFAPresent</code></td>
-<td>Boolean</td>
-<td>用户登录时是否使用了多因素认证（二步认证）</td>
-</tr>
-</tbody>
-</table>
-
-<p>云产品可以定义产品级别的条件关键字，格式如下：</p>
-
-<pre><code>&lt;service-name&gt;:&lt;condition-key&gt;
-</code></pre>
-
-<p>部分云产品定义的条件关键字如下：</p>
-
-<table>
-<thead>
-<tr>
-<th>产品名称</th>
-<th>条件关键字</th>
-<th>类型</th>
-<th>说明</th>
-</tr>
-</thead>
-
-<tbody>
-<tr>
-<td>ECS</td>
-<td><code>ecs:tag/&lt;tag-key&gt;</code></td>
-<td>String</td>
-<td>ECS 资源的标签关键字，可由用户自定义</td>
-</tr>
-<tr>
-<td>RDS</td>
-<td><code>rds:ResourceTag/&lt;tag-key&gt;</code></td>
-<td>String</td>
-<td>RDS 资源的标签关键字，可由用户自定义</td>
-</tr>
-<tr>
-<td>OSS</td>
-<td><code>oss:Delimiter</code></td>
-<td>String</td>
-<td>OSS 对 Object 名字进行分组的分隔符</td>
-</tr>
-<tr>
-<td></td>
-<td><code>oss:Prefix</code></td>
-<td>String</td>
-<td>OSS Object 名称的前缀</td>
-</tr>
-</tbody>
-</table>
-
-<h2 id="toc_10">Policy 样例</h2>
-
-<p>如下所示的 Policy 样例中，包含两条授权语句（Statement）：</p>
-
-<ul>
-<li>  第 1 条授权语句是允许对 region 华东 1（杭州）所有 ecs 资源有查看权限 (<code>ecs:Describe*</code>)；</li>
-<li>  第 2 条授权语句是允许对 oss 的 mybucket 存储桶中的对象具有读访问权限 (<code>oss:ListObjects</code>, <code>oss:GetObject</code>)，并限制请求者的 IP 来源必须是<code>42.120.88.10</code>或<code>42.120.66.0/24</code>。</li>
-</ul>
-
-<pre><code class="language-json">{
-    &quot;Version&quot;: &quot;1&quot;,
-    &quot;Statement&quot;: [
-        {
-            &quot;Effect&quot;: &quot;Allow&quot;,
-            &quot;Action&quot;: &quot;ecs:Describe*&quot;,
-            &quot;Resource&quot;: &quot;acs:ecs:cn-hangzhou:*:*&quot;
-        },
-        {
-            &quot;Effect&quot;: &quot;Allow&quot;,
-            &quot;Action&quot;: [
-                &quot;oss:ListObjects&quot;,
-                &quot;oss:GetObject&quot;
-            ],
-            &quot;Resource&quot;: [
-                &quot;acs:oss:*:*:mybucket&quot;,
-                &quot;acs:oss:*:*:mybucket/*&quot;
-            ],
-            &quot;Condition&quot;:{
-                &quot;IpAddress&quot;: {
-                    &quot;acs:SourceIp&quot;: [&quot;42.120.88.10&quot;, &quot;42.120.66.0/24&quot;]
-                }
-            }
-        }
-    ]
-}
-</code></pre>
+<p>本文仅从原理角度介绍了分布式 Snapshot 的基本原理以及 Flink 中的实现，从这篇文章出发，我们还需要阅读相关的源代码以及在实际的开发中去学习和理解。另外本文是基于我自己的理解写就，难免有疏漏和错误，如果大家发现问题，可以留言或者直接联系我，我们一起讨论。</p>
 
                         
                       </div>
@@ -528,10 +260,10 @@
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/10/7</span>
+                    <span class="date">2019/1/14</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Authn&Authz.html'>Authn&Authz</a></span>
+          					    <span class="posted-in"><a href='BigData-1.html'>BigData</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -621,31 +353,31 @@
 	      
 		      
 			      <li class="post">
-			        <a href="15459058392039.html">Reliable Domain Events</a>
+			        <a href="15517999043443.html">The Art of Crafting Architectural Diagrams</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
+			        <a href="15517997955971.html">为什么说我们需要软件架构图？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
+			        <a href="15516128677869.html">DNS Servers That Offer Privacy and Filtering</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
+			        <a href="15516123108194.html">Airbnb's Migration from Monolith to Services</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
+			        <a href="15516097487470.html">Events As First-Class Citizens</a>
 			      </li>
 		     
 		  

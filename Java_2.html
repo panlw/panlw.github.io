@@ -105,245 +105,395 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15456638361570.html">
+                <a class="clearlink" href="15468691916791.html">
                 
-                  <h1>Spring boot metrics monitoring using TICK stack</h1>
+                  <h1>JVM性能调优监控工具jps、jstack、jmap、jhat、jstat、hprof使用详解</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
-                        	<pre><code>Mohammed Aboullaite | 08 Apr 2018 | 6 min (1537 words)
+                        	<pre><code>优雅先生 2014/01/28
 </code></pre>
 
 <blockquote>
-<p>原文地址 <a href="https://aboullaite.me/spring-boot-metrics-monitoring-using-tick-stack/">https://aboullaite.me/spring-boot-metrics-monitoring-using-tick-stack/</a></p>
+<p>原文地址 <a href="https://my.oschina.net/feichexia/blog/196575">https://my.oschina.net/feichexia/blog/196575</a></p>
 </blockquote>
 
-<p>Worth nothing to mention that monitoring the performance and availability of applications is very important. This is one of the many cool features bundled with Spring boot, which since its first days comes with production ready features (i.e Actuator) to help us keeping an eye on apps performance. With the release of spring boot 2, <a href="https://docs.spring.io/spring-boot/docs/current/reference/html/production-ready.html">Actuator</a> got a huge boost, offering dev/ops more application metrics facade that supports numerous monitoring systems.</p>
-
-<p>In this post, we&#39;ll see how we can easily monitor Spring boot applications using the <a href="https://www.influxdata.com/time-series-platform/">TICK stack</a>.</p>
-
-<p><img src="media/15456638361570/15456639113571.jpg" alt=""/></p>
-
-<h3 id="toc_0">The TICK stack ?!</h3>
-
-<p>The TICK stack is a collection of products from the developers of the time-series database InfluxDB. It is made up of the following components:</p>
+<p>    现实企业级 Java 开发中，有时候我们会碰到下面这些问题：</p>
 
 <ul>
-<li>  <strong>Telegraf</strong>: collects time-series data from a variety of sources.</li>
-<li>  <strong>InfluxDB</strong>: stores time-series data.</li>
-<li>  <strong>Chronograf</strong>: visualizes and graphs the time-series data.</li>
-<li>  <strong>Kapacitor</strong>: provides alerting and detects anomalies in time-series data.</li>
+<li>  OutOfMemoryError，内存不足</li>
+<li>  内存泄露</li>
+<li>  线程死锁</li>
+<li>  锁争用（Lock Contention）</li>
+<li>  Java 进程消耗 CPU 过高</li>
+<li>  ......</li>
 </ul>
 
-<p>We can use each of these components separately, but if we use them together, we&#39;ll have a scalable, integrated open-source system for processing time-series data.</p>
+<p>    这些问题在日常开发中可能被很多人忽视（比如有的人遇到上面的问题只是重启服务器或者调大内存，而不会深究问题根源），但能够理解并解决这些问题是 Java 程序员进阶的必备要求。本文将对一些常用的 JVM 性能调优监控工具进行介绍，希望能起抛砖引玉之用。本文参考了网上很多资料，难以一一列举，在此对这些资料的作者表示感谢！关于 JVM 性能调优相关的资料，请参考文末。</p>
 
-<h3 id="toc_1">Configuring the TICK stack and spring boot</h3>
+<p><strong>A、</strong> jps(Java Virtual Machine Process Status Tool)      </p>
 
-<p>As I mentioned above, Spring Boot 2 actuator comes bundled with metrics facade easily integrated with many monitoring platforms including the Tick stack.</p>
+<p>    jps 主要用来输出 JVM 中运行的进程状态信息。语法格式如下：</p>
 
-<h4 id="toc_2">Configuring Spring Boot</h4>
-
-<p>First of all we need, obviously, to add spring boot actuator dependency to our application:</p>
-
-<pre><code>&lt;dependency&gt;  
-            &lt;groupId&gt;org.springframework.boot&lt;/groupId&gt;
-            &lt;artifactId&gt;spring-boot-starter-actuator&lt;/artifactId&gt;
-            &lt;version&gt;${actuator.version}&lt;/version&gt;
-        &lt;/dependency&gt;
-
+<pre><code>jps [options] [hostid]
 </code></pre>
 
-<p>If you are using spring boot 2, Actuator autoconfigure micrometer magically. if not and you&#39;re using a previous version, please check <a href="https://micrometer.io/docs/ref/spring/1.5">these configuration steps</a>.</p>
+<p>    如果不指定 hostid 就默认为当前主机或服务器。</p>
 
-<p>On the other hand, <a href="https://www.influxdata.com/time-series-platform/telegraf/">Telegraf</a> is an agent written in Go and accepts StatsD protocol metrics over UDP, then periodically forwards the metrics to InfluxDB. <a href="https://micrometer.io/">Micrometer</a> supports three flavors of StatsD: the original <code>Etsy</code> format plus the <code>Datadog</code> and <code>Telegraf</code> extensions of StatsD that add dimensional support. Obviously we&#39;re going to use this registry to publish metrics to telegraf. For that we need to add these lines to our <code>application.properties</code> file:</p>
+<p>    命令行参数选项说明如下：</p>
 
-<pre><code>management.metrics.export.statsd.enabled=true  
-management.metrics.export.statsd.flavor=telegraf  
-management.metrics.export.statsd.port=8125  
-
+<pre><code>-q 不输出类名、Jar名和传入main方法的参数
+-m 输出传入main方法的参数
+-l 输出main类或Jar的全限名
+-v 输出传入JVM的参数
 </code></pre>
 
-<h4 id="toc_3">Configuring the TICK stack</h4>
+<p>   比如下面：</p>
 
-<p>The <code>docker-compose</code> file below configures 4 services:</p>
-
-<ul>
-<li>  <code>telegraf</code> service to collect data sent by micrometer. This service is configured using the <code>./etc/telegraf.conf</code> file. this service expose the port <code>8125</code> used by Actuator to send metrics</li>
-<li>  <code>influxdb</code> service that stores data sent from telegraf. we mount a volume to <code>./data/influxdb</code> to save data on host disk. It expose the port <code>8086</code> to access influxdb API.</li>
-<li>  <code>chronograf</code> service to visualize influxdb data, create dashboards and show alerts triggered from kapacitor. this service expose port <code>8888</code> to access this web application.</li>
-<li>  <code>kapacitor</code> service, analyse influxdb data and triggers alerts.</li>
-</ul>
-
-<pre><code>version: &#39;3&#39;
-
-services:  
-  # Define a Telegraf service
-  telegraf:
-    image: telegraf:1.5.3
-    volumes:
-      - ./etc/telegraf.conf:/etc/telegraf/telegraf.conf:ro
-    links:
-      - influxdb
-    ports:
-      - &quot;8125:8125/udp&quot;
-  # Define an InfluxDB service
-  influxdb:
-    image: influxdb:1.5.1
-    volumes:
-      - ./data/influxdb:/var/lib/influxdb
-    ports:
-      - &quot;8086:8086&quot;
-  # Define a Chronograf service
-  chronograf:
-    image: chronograf:1.4.3.1
-    environment:
-      INFLUXDB_URL: http://influxdb:8086
-      KAPACITOR_URL: http://kapacitor:9092
-    ports:
-      - &quot;8888:8888&quot;
-    links:
-      - influxdb
-      - kapacitor
-  # Define a Kapacitor service
-  kapacitor:
-    image: kapacitor:1.4.1
-    environment:
-      KAPACITOR_HOSTNAME: kapacitor
-      KAPACITOR_INFLUXDB_0_URLS_0: http://influxdb:8086
-    links:
-      - influxdb
-    ports:
-      - &quot;9092:9092&quot;
-
+<pre><code>root@ubuntu:/# jps -m -l
+2458 org.artifactory.standalone.main.Main /usr/local/artifactory-2.2.5/etc/jetty.xml
+29920 com.sun.tools.hat.Main -port 9998 /tmp/dump.dat
+3149 org.apache.catalina.startup.Bootstrap start
+30972 sun.tools.jps.Jps -m -l
+8247 org.apache.catalina.startup.Bootstrap start
+25687 com.sun.tools.hat.Main -port 9999 dump.dat
+21711 mrf-center.jar
 </code></pre>
 
-<p>The <code>telegraf.conf</code> file I&#39;ve used is very minimalist. it configures the telegraf agent properties as well as StatsD as input plugin and influxdb as output plugin:</p>
+<p><strong>B、</strong> jstack</p>
 
-<pre><code># Telegraf Configuration
-# Global tags can be specified here in key=&quot;value&quot; format.
-[global_tags]
-# Configuration for telegraf agent
-[agent]
-## Default data collection interval for all inputs
-interval = &quot;10s&quot;  
-## Rounds collection interval to &#39;interval&#39;
-round_interval = true  
-## This controls the size of writes that Telegraf sends to output plugins.
-metric_batch_size = 1000  
-## This buffer only fills when writes fail to output plugin(s).
-metric_buffer_limit = 10000  
-## Collection jitter is used to jitter the collection by a random amount.
-collection_jitter = &quot;0s&quot;  
-flush_interval = &quot;10s&quot;  
-flush_jitter = &quot;0s&quot;  
-precision = &quot;&quot;
+<p>    jstack 主要用来查看某个 Java 进程内的线程堆栈信息。语法格式如下：</p>
 
-## Logging configuration:
-debug = false  
-## Run telegraf in quiet mode (error log messages only).
-quiet = false  
-## Specify the log file name. The empty string means to log to stderr.
-logfile = &quot;&quot;  
-## Override default hostname, if empty use os.Hostname()
-hostname = &quot;&quot;  
-## If set to true, do no set the &quot;host&quot; tag in the telegraf agent.
-omit_hostname = false
-
-###############################################################################
-#                            OUTPUT PLUGINS                                   #
-###############################################################################
-
-# Configuration for influxdb server to send metrics to
-[[outputs.influxdb]]
-## The full HTTP or UDP URL for your InfluxDB instance.
-urls = [&quot;http://influxdb:8086&quot;] # required  
-## The target database for metrics (telegraf will create it if not exists).
-database = &quot;telegraf&quot; # required
-
-## Name of existing retention policy to write to.  Empty string writes to
-## the default retention policy.
-retention_policy = &quot;&quot;  
-## Write consistency (clusters only), can be: &quot;any&quot;, &quot;one&quot;, &quot;quorum&quot;, &quot;all&quot;
-write_consistency = &quot;any&quot;
-
-## Write timeout (for the InfluxDB client), formatted as a string.
-timeout = &quot;5s&quot;
-
-###############################################################################
-#                            INPUT PLUGINS                                    #
-###############################################################################
-
-# # Statsd UDP/TCP Server
- [[inputs.statsd]]
-#   ## Protocol, must be &quot;tcp&quot;, &quot;udp&quot;, &quot;udp4&quot; or &quot;udp6&quot; (default=udp)
-   protocol = &quot;udp&quot;
-#
-#   ## MaxTCPConnection - applicable when protocol is set to tcp (default=250)
-   max_tcp_connections = 250
-#
-#   ## Address and port to host UDP listener on
-   service_address = &quot;:8125&quot;
-#
-#   ## The following configuration options control when telegraf clears it&#39;s cache
-#   ## of previous values. If set to false, then telegraf will only clear it&#39;s
-#   ## cache when the daemon is restarted.
-#   ## Reset gauges every interval (default=true)
-   delete_gauges = true
-#   ## Reset counters every interval (default=true)
-   delete_counters = true
-#   ## Reset sets every interval (default=true)
-   delete_sets = true
-#   ## Reset timings &amp; histograms every interval (default=true)
-   delete_timings = true
-#
-#   ## Percentiles to calculate for timing &amp; histogram stats
-   percentiles = [90]
-#
-#   ## separator to use between elements of a statsd metric
-   metric_separator = &quot;_&quot;
-#
-#   ## Parses tags in the datadog statsd format
-#   ## http://docs.datadoghq.com/guides/dogstatsd/
-   parse_data_dog_tags = false
-#   ## Number of UDP messages allowed to queue up, once filled,
-#   ## the statsd server will start dropping packets
-   allowed_pending_messages = 10000
-#
-#   ## Number of timing/histogram values to track per-measurement in the
-#   ## calculation of percentiles. Raising this limit increases the accuracy
-#   ## of percentiles but also increases the memory usage and cpu time.
-   percentile_limit = 1000
-
+<pre><code>jstack [option] pid
+jstack [option] executable core
+jstack [option] [server-id@]remote-hostname-or-ip
 </code></pre>
 
-<h4 id="toc_4">Show me the graphs</h4>
+<p>    命令行参数选项说明如下：</p>
 
-<p>If everything is good, you should see metrics stored in <code>influxdb</code> from the <code>chronograf</code> application. The UX is so fluent and lean. After 5 min only I was able to build this very simple dashboard:<br/>
-<img src="media/15456638361570/15456639407892.jpg" alt=""/><br/>
-Yaaay visibility!</p>
+<pre><code>-l long listings，会打印出额外的锁信息，在发生死锁时可以用jstack -l pid来观察锁持有情况
+-m mixed mode，不仅会输出Java堆栈信息，还会输出C/C++堆栈信息（比如Native方法）
+</code></pre>
 
-<h3 id="toc_5">Configuring alerts</h3>
+<p>    jstack 可以定位到线程堆栈，根据堆栈信息我们可以定位到具体代码，所以它在 JVM 性能调优中使用得非常多。下面我们来一个实例找出某个 Java 进程中最耗费 CPU 的 Java 线程并定位堆栈信息，用到的命令有 ps、top、printf、jstack、grep。</p>
 
-<p>One of the great features of the TICK stack is the alerting and detecting anomalies in the data. It support many alert endpoints(TCP, HipChat, Slack, SMTP, Talk, log, Telegram ...). The configuration of <code>Kapacitor</code> from <code>chronograf</code> is very easy and straightforward. I&#39;ve set up a <code>Memory usage</code> alert in a matter of seconds. (Well, it&#39;s a very basic alert! configuring real world, complexe alerts will need more time obviously ;))<br/>
-<img src="media/15456638361570/15456639514924.jpg" alt=""/></p>
+<p>    第一步先找出 Java 进程 ID，我部署在服务器上的 Java 应用名称为 mrf-center：</p>
 
-<p>The <a href="https://docs.influxdata.com/chronograf/v1.4/guides/create-a-kapacitor-alert/">official documentation</a> explains the required step to create your first alert!</p>
+<pre><code>root@ubuntu:/# ps -ef | grep mrf-center | grep -v grep
+root     21711     1  1 14:47 pts/3    00:02:10 java -jar mrf-center.jar
+</code></pre>
 
-<h3 id="toc_6">Securing Chronograf</h3>
+<p>    得到进程 ID 为 21711，第二步找出该进程内最耗费 CPU 的线程，可以使用 ps -Lfp pid 或者 ps -mp pid -o THREAD, tid, time 或者 top -Hp pid，我这里用第三个，输出如下：</p>
 
-<p>The community edition of the TICK stack does not ship with security by default. To secure <code>Chronograf</code> we can put it behind a web server and configure Basic authentication. The second option, which I prefer, would be to use <a href="https://www.keycloak.org/">keycloak</a> proxy as I explained previously in <a href="https://github.com/aboullaite/kibana-keycloak">this post</a>!</p>
+<p><img src="http://static.oschina.net/uploads/space/2014/0128/170402_A57i_111708.png" alt=""/></p>
 
-<hr/>
+<p>    TIME 列就是各个 Java 线程耗费的 CPU 时间，CPU 时间最长的是线程 ID 为 21742 的线程，用</p>
 
-<h5 id="toc_7">Ressources</h5>
+<pre><code>printf &quot;%x\n&quot; 21742
+</code></pre>
 
-<ul>
-<li>  <a href="https://micrometer.io/docs">https://micrometer.io/docs</a></li>
-<li>  <a href="https://docs.spring.io/spring-boot/docs/current/reference/htmlsingle/#production-ready">https://docs.spring.io/spring-boot/docs/current/reference/htmlsingle/#production-ready</a></li>
-<li>  <a href="https://www.influxdata.com/time-series-platform/">https://www.influxdata.com/time-series-platform/</a></li>
-<li>  <a href="https://www.digitalocean.com/community/tutorials/how-to-monitor-system-metrics-with-the-tick-stack-on-centos-7">https://www.digitalocean.com/community/tutorials/how-to-monitor-system-metrics-with-the-tick-stack-on-centos-7</a></li>
-</ul>
+<p>    得到 21742 的十六进制值为 54ee，下面会用到。    </p>
+
+<p>    OK，下一步终于轮到 jstack 上场了，它用来输出进程 21711 的堆栈信息，然后根据线程 ID 的十六进制值 grep，如下：</p>
+
+<pre><code>root@ubuntu:/# jstack 21711 | grep 54ee
+&quot;PollIntervalRetrySchedulerThread&quot; prio=10 tid=0x00007f950043e000 nid=0x54ee in Object.wait() [0x00007f94c6eda000]
+</code></pre>
+
+<p>    可以看到 CPU 消耗在 PollIntervalRetrySchedulerThread 这个类的 Object.wait()，我找了下我的代码，定位到下面的代码：</p>
+
+<pre><code>// Idle wait
+getLog().info(&quot;Thread [&quot; + getName() + &quot;] is idle waiting...&quot;);
+schedulerThreadState = PollTaskSchedulerThreadState.IdleWaiting;
+long now = System.currentTimeMillis();
+long waitTime = now + getIdleWaitTime();
+long timeUntilContinue = waitTime - now;
+synchronized(sigLock) {
+    try {
+        if(!halted.get()) {
+            sigLock.wait(timeUntilContinue);
+        }
+    } 
+    catch (InterruptedException ignore) {
+    }
+}
+</code></pre>
+
+<p>    它是轮询任务的空闲等待代码，上面的 sigLock.wait(timeUntilContinue) 就对应了前面的 Object.wait()。</p>
+
+<p><strong>C、</strong> jmap（Memory Map）和 jhat（Java Heap Analysis Tool）</p>
+
+<p>    jmap 用来查看堆内存使用状况，一般结合 jhat 使用。</p>
+
+<p>    jmap 语法格式如下：</p>
+
+<pre><code>jmap [option] pid
+jmap [option] executable core
+jmap [option] [server-id@]remote-hostname-or-ip
+</code></pre>
+
+<p>    如果运行在 64 位 JVM 上，可能需要指定 - J-d64 命令选项参数。</p>
+
+<pre><code>jmap -permstat pid
+</code></pre>
+
+<p>    打印进程的类加载器和类加载器加载的持久代对象信息，输出：类加载器名称、对象是否存活（不可靠）、对象地址、父类加载器、已加载的类大小等信息，如下图：</p>
+
+<p><img src="http://static.oschina.net/uploads/space/2014/0128/172247_5UEj_111708.png" alt=""/></p>
+
+<p>   使用 jmap -heap pid 查看进程堆内存使用情况，包括使用的 GC 算法、堆配置参数和各代中堆内存使用情况。比如下面的例子：</p>
+
+<pre><code>root@ubuntu:/# jmap -heap 21711
+Attaching to process ID 21711, please wait...
+Debugger attached successfully.
+Server compiler detected.
+JVM version is 20.10-b01
+
+using thread-local object allocation.
+Parallel GC with 4 thread(s)
+
+Heap Configuration:
+   MinHeapFreeRatio = 40
+   MaxHeapFreeRatio = 70
+   MaxHeapSize      = 2067791872 (1972.0MB)
+   NewSize          = 1310720 (1.25MB)
+   MaxNewSize       = 17592186044415 MB
+   OldSize          = 5439488 (5.1875MB)
+   NewRatio         = 2
+   SurvivorRatio    = 8
+   PermSize         = 21757952 (20.75MB)
+   MaxPermSize      = 85983232 (82.0MB)
+
+Heap Usage:
+PS Young Generation
+Eden Space:
+   capacity = 6422528 (6.125MB)
+   used     = 5445552 (5.1932830810546875MB)
+   free     = 976976 (0.9317169189453125MB)
+   84.78829520089286% used
+From Space:
+   capacity = 131072 (0.125MB)
+   used     = 98304 (0.09375MB)
+   free     = 32768 (0.03125MB)
+   75.0% used
+To Space:
+   capacity = 131072 (0.125MB)
+   used     = 0 (0.0MB)
+   free     = 131072 (0.125MB)
+   0.0% used
+PS Old Generation
+   capacity = 35258368 (33.625MB)
+   used     = 4119544 (3.9287033081054688MB)
+   free     = 31138824 (29.69629669189453MB)
+   11.683876009235595% used
+PS Perm Generation
+   capacity = 52428800 (50.0MB)
+   used     = 26075168 (24.867218017578125MB)
+   free     = 26353632 (25.132781982421875MB)
+   49.73443603515625% used
+   ....
+</code></pre>
+
+<p>    使用 jmap -histo[:live] pid 查看堆内存中的对象数目、大小统计直方图，如果带上 live 则只统计活对象，如下：</p>
+
+<pre><code>root@ubuntu:/# jmap -histo:live 21711 | more
+
+ num     #instances         #bytes  class name
+----------------------------------------------
+   1:         38445        5597736  &lt;constMethodKlass&gt;
+   2:         38445        5237288  &lt;methodKlass&gt;
+   3:          3500        3749504  &lt;constantPoolKlass&gt;
+   4:         60858        3242600  &lt;symbolKlass&gt;
+   5:          3500        2715264  &lt;instanceKlassKlass&gt;
+   6:          2796        2131424  &lt;constantPoolCacheKlass&gt;
+   7:          5543        1317400  [I
+   8:         13714        1010768  [C
+   9:          4752        1003344  [B
+  10:          1225         639656  &lt;methodDataKlass&gt;
+  11:         14194         454208  java.lang.String
+  12:          3809         396136  java.lang.Class
+  13:          4979         311952  [S
+  14:          5598         287064  [[I
+  15:          3028         266464  java.lang.reflect.Method
+  16:           280         163520  &lt;objArrayKlassKlass&gt;
+  17:          4355         139360  java.util.HashMap$Entry
+  18:          1869         138568  [Ljava.util.HashMap$Entry;
+  19:          2443          97720  java.util.LinkedHashMap$Entry
+  20:          2072          82880  java.lang.ref.SoftReference
+  21:          1807          71528  [Ljava.lang.Object;
+  22:          2206          70592  java.lang.ref.WeakReference
+  23:           934          52304  java.util.LinkedHashMap
+  24:           871          48776  java.beans.MethodDescriptor
+  25:          1442          46144  java.util.concurrent.ConcurrentHashMap$HashEntry
+  26:           804          38592  java.util.HashMap
+  27:           948          37920  java.util.concurrent.ConcurrentHashMap$Segment
+  28:          1621          35696  [Ljava.lang.Class;
+  29:          1313          34880  [Ljava.lang.String;
+  30:          1396          33504  java.util.LinkedList$Entry
+  31:           462          33264  java.lang.reflect.Field
+  32:          1024          32768  java.util.Hashtable$Entry
+  33:           948          31440  [Ljava.util.concurrent.ConcurrentHashMap$HashEntry;
+</code></pre>
+
+<p>    class name 是对象类型，说明如下：</p>
+
+<pre><code>B  byte
+C  char
+D  double
+F  float
+I  int
+J  long
+Z  boolean
+[  数组，如[I表示int[]
+[L+类名 其他对象
+</code></pre>
+
+<p>    还有一个很常用的情况是：用 jmap 把进程内存使用情况 dump 到文件中，再用 jhat 分析查看。jmap 进行 dump 命令格式如下：</p>
+
+<pre><code>jmap -dump:format=b,file=dumpFileName pid
+</code></pre>
+
+<p>    我一样地对上面进程 ID 为 21711 进行 Dump：</p>
+
+<pre><code>root@ubuntu:/# jmap -dump:format=b,file=/tmp/dump.dat 21711     
+Dumping heap to /tmp/dump.dat ...
+Heap dump file created
+</code></pre>
+
+<p>   dump 出来的文件可以用 MAT、VisualVM 等工具查看，这里用 jhat 查看：</p>
+
+<pre><code>root@ubuntu:/# jhat -port 9998 /tmp/dump.dat
+Reading from /tmp/dump.dat...
+Dump file created Tue Jan 28 17:46:14 CST 2014
+Snapshot read, resolving...
+Resolving 132207 objects...
+Chasing references, expect 26 dots..........................
+Eliminating duplicate references..........................
+Snapshot resolved.
+Started HTTP server on port 9998
+Server is ready.
+</code></pre>
+
+<p>     注意如果 Dump 文件太大，可能需要加上 - J-Xmx512m 这种参数指定最大堆内存，即 jhat -J-Xmx512m -port 9998 /tmp/dump.dat。然后就可以在浏览器中输入主机地址: 9998 查看了：</p>
+
+<p><img src="http://static.oschina.net/uploads/space/2014/0128/174715_FTKZ_111708.png" alt=""/></p>
+
+<p>    上面红线框出来的部分大家可以自己去摸索下，最后一项支持 OQL（对象查询语言）。</p>
+
+<p><strong>D、</strong>jstat（JVM 统计监测工具）</p>
+
+<p>    语法格式如下：</p>
+
+<pre><code>jstat [ generalOption | outputOptions vmid [interval[s|ms] [count]] ]
+</code></pre>
+
+<p>    vmid 是 Java 虚拟机 ID，在 Linux/Unix 系统上一般就是进程 ID。interval 是采样时间间隔。count 是采样数目。比如下面输出的是 GC 信息，采样时间间隔为 250ms，采样数为 4：</p>
+
+<pre><code>root@ubuntu:/# jstat -gc 21711 250 4
+ S0C    S1C    S0U    S1U      EC       EU        OC         OU       PC     PU    YGC     YGCT    FGC    FGCT     GCT   
+192.0  192.0   64.0   0.0    6144.0   1854.9   32000.0     4111.6   55296.0 25472.7    702    0.431   3      0.218    0.649
+192.0  192.0   64.0   0.0    6144.0   1972.2   32000.0     4111.6   55296.0 25472.7    702    0.431   3      0.218    0.649
+192.0  192.0   64.0   0.0    6144.0   1972.2   32000.0     4111.6   55296.0 25472.7    702    0.431   3      0.218    0.649
+192.0  192.0   64.0   0.0    6144.0   2109.7   32000.0     4111.6   55296.0 25472.7    702    0.431   3      0.218    0.649
+</code></pre>
+
+<p>    要明白上面各列的意义，先看 JVM 堆内存布局：</p>
+
+<p><img src="http://static.oschina.net/uploads/space/2014/0128/181847_dAR9_111708.jpg" alt=""/></p>
+
+<p>    可以看出：</p>
+
+<pre><code>堆内存 = 年轻代 + 年老代 + 永久代
+年轻代 = Eden区 + 两个Survivor区（From和To）
+</code></pre>
+
+<p>    现在来解释各列含义：</p>
+
+<pre><code>S0C、S1C、S0U、S1U：Survivor 0/1区容量（Capacity）和使用量（Used）
+EC、EU：Eden区容量和使用量
+OC、OU：年老代容量和使用量
+PC、PU：永久代容量和使用量
+YGC、YGT：年轻代GC次数和GC耗时
+FGC、FGCT：Full GC次数和Full GC耗时
+GCT：GC总耗时
+</code></pre>
+
+<p><strong>E、</strong>hprof（Heap/CPU Profiling Tool）</p>
+
+<p>    hprof 能够展现 CPU 使用率，统计堆内存使用情况。</p>
+
+<p>    语法格式如下：</p>
+
+<pre><code>java -agentlib:hprof[=options] ToBeProfiledClass
+java -Xrunprof[:options] ToBeProfiledClass
+javac -J-agentlib:hprof[=options] ToBeProfiledClass
+</code></pre>
+
+<p>    完整的命令选项如下：</p>
+
+<pre><code>Option Name and Value  Description                    Default
+---------------------  -----------                    -------
+heap=dump|sites|all    heap profiling                 all
+cpu=samples|times|old  CPU usage                      off
+monitor=y|n            monitor contention             n
+format=a|b             text(txt) or binary output     a
+file=&lt;file&gt;            write data to file             java.hprof[.txt]
+net=&lt;host&gt;:&lt;port&gt;      send data over a socket        off
+depth=&lt;size&gt;           stack trace depth              4
+interval=&lt;ms&gt;          sample interval in ms          10
+cutoff=&lt;value&gt;         output cutoff point            0.0001
+lineno=y|n             line number in traces?         y
+thread=y|n             thread in traces?              n
+doe=y|n                dump on exit?                  y
+msa=y|n                Solaris micro state accounting n
+force=y|n              force output to &lt;file&gt;         y
+verbose=y|n            print messages about dumps     y
+</code></pre>
+
+<p>    来几个官方指南上的实例。</p>
+
+<p>    CPU Usage Sampling Profiling(cpu=samples) 的例子：</p>
+
+<pre><code>java -agentlib:hprof=cpu=samples,interval=20,depth=3 Hello
+</code></pre>
+
+<p>    上面每隔 20 毫秒采样 CPU 消耗信息，堆栈深度为 3，生成的 profile 文件名称是 java.hprof.txt，在当前目录。 </p>
+
+<p>    CPU Usage Times Profiling(cpu=times) 的例子，它相对于 CPU Usage Sampling Profile 能够获得更加细粒度的 CPU 消耗信息，能够细到每个方法调用的开始和结束，它的实现使用了字节码注入技术（BCI）：</p>
+
+<pre><code>javac -J-agentlib:hprof=cpu=times Hello.java
+</code></pre>
+
+<p>    Heap Allocation Profiling(heap=sites) 的例子：</p>
+
+<pre><code>javac -J-agentlib:hprof=heap=sites Hello.java
+</code></pre>
+
+<p>    Heap Dump(heap=dump) 的例子，它比上面的 Heap Allocation Profiling 能生成更详细的 Heap Dump 信息：</p>
+
+<pre><code>javac -J-agentlib:hprof=heap=dump Hello.java
+</code></pre>
+
+<p>    <strong>虽然在 JVM 启动参数中加入 - Xrunprof:heap=sites 参数可以生成 CPU/Heap Profile 文件，但对 JVM 性能影响非常大，不建议在线上服务器环境使用。</strong></p>
+
+<p>其他 JVM 性能调优参考资料：</p>
+
+<p>《Java 虚拟机规范》</p>
+
+<p>《Java Performance》</p>
+
+<p>《Trouble Shooting Guide for JavaSE 6 with HotSpot VM》: <a href="http://www.oracle.com/technetwork/java/javase/tsg-vm-149989.pdf">http://www.oracle.com/technetwork/java/javase/tsg-vm-149989.pdf</a> </p>
+
+<p>《Effective Java》</p>
+
+<p>VisualVM: <a href="http://docs.oracle.com/javase/7/docs/technotes/guides/visualvm/">http://docs.oracle.com/javase/7/docs/technotes/guides/visualvm/</a></p>
+
+<p>jConsole: <a href="http://docs.oracle.com/javase/1.5.0/docs/guide/management/jconsole.html">http://docs.oracle.com/javase/1.5.0/docs/guide/management/jconsole.html</a></p>
+
+<p>Monitoring and Managing JavaSE 6 Applications: <a href="http://www.oracle.com/technetwork/articles/javase/monitoring-141801.html">http://www.oracle.com/technetwork/articles/javase/monitoring-141801.html</a></p>
+
+<p>BTrace：<a href="https://kenai.com/projects/btrace">https://kenai.com/projects/btrace</a></p>
 
                         
                       </div>
@@ -352,10 +502,10 @@ Yaaay visibility!</p>
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/12/24</span>
+                    <span class="date">2019/1/7</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Spring.html'>Spring</a></span>
+          					    <span class="posted-in"><a href='Debug.html'>Debug</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -445,31 +595,31 @@ Yaaay visibility!</p>
 	      
 		      
 			      <li class="post">
-			        <a href="15459058392039.html">Reliable Domain Events</a>
+			        <a href="15517999043443.html">The Art of Crafting Architectural Diagrams</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
+			        <a href="15517997955971.html">为什么说我们需要软件架构图？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
+			        <a href="15516128677869.html">DNS Servers That Offer Privacy and Filtering</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
+			        <a href="15516123108194.html">Airbnb's Migration from Monolith to Services</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
+			        <a href="15516097487470.html">Events As First-Class Citizens</a>
 			      </li>
 		     
 		  

@@ -105,156 +105,525 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15293215099975.html">
+                <a class="clearlink" href="15327632423477.html">
                 
-                  <h1>从节省Redis内存空间说开去</h1>
+                  <h1>A Guide to Java 9 Modularity</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://mp.weixin.qq.com/s/tsZxYwoFtWwzOH1E28y6zg">https://mp.weixin.qq.com/s/tsZxYwoFtWwzOH1E28y6zg</a><br/>
-<a href="https://blog.csdn.net/clevercode/article/details/46691645">https://blog.csdn.net/clevercode/article/details/46691645</a></p>
+<p><a href="http://www.baeldung.com/java-9-modularity">http://www.baeldung.com/java-9-modularity</a></p>
 </blockquote>
 
-<p><strong>前言</strong></p>
+<h2 id="toc_0"><strong>1. Overview</strong></h2>
 
-<p>上周部门会议上讨论的一个议题是如何节省 Redis 内存空间，其中有个小伙伴提到可以从压缩字符串入手，我觉得这是一个可以尝试的思路。因为有时候我们存在 Redis 中的值比较大，如果能对这些大字符串进行压缩，那么节省的内存空间还是很可观的。接下来将介绍几种常见的数据压缩算法，供大家参考。</p>
+<p>Java 9 introduces a new level of abstraction above packages, formally known as the Java Platform Module System (JPMS), or “Modules” for short.</p>
 
-<h1 id="toc_0">1 RLE</h1>
+<p>In this tutorial, we’ll go through the new system and discuss its various aspects.</p>
 
-<p>RLE 又叫 Run Length Encoding ，是一个针对无损压缩的非常简单的算法。它用重复字节和重复的次数来简单描述来代替重复的字节。尽管简单并且对于通常的压缩非常低效，但它有的时候却非常有用（例如， JPEG 就使用它）。</p>
+<p>We’ll also build a simple project to demonstrate all concepts we’ll be learning in this guide.</p>
 
-<h2 id="toc_1">1.1 原理</h2>
+<h2 id="toc_1"><strong>2. What’s a Module?</strong></h2>
 
-<p>图 2.1 显示了一个如何使用 RLE 算法来对一个数据流编码的例子，其中出现六次的符号‘ 93 ’已经用 3 个字节来代替：一个标记字节（‘ 0 ’在本例中）重复的次数（‘ 6 ’）和符号本身（‘ 93 ’）。</p>
+<p>First of all, we need to understand what a module is before we can understand how to use them.</p>
 
-<p>RLE 解码器遇到符号‘ 0 ’ 的时候，它表明后面的两个字节决定了需要输出哪个符号以及输出多少次。</p>
+<p><strong>A Module is a group of closely related packages and resources along with a new module descriptor file.</strong></p>
 
-<p><img src="https://mmbiz.qpic.cn/mmbiz_jpg/XA3sPCPib1l6jia5WKgazEEVDPjibKHOz8rslINaKDFMvfr4bOibjNz1LLxJSDU1oI34BCTibPjokcy8BgFbKjwXHNg/640?wx_fmt=jpeg" alt=""/></p>
+<p>In other words, it’s a “package of Java Packages” abstraction that allows us to make our code even more reusable.</p>
 
-<p>1.2 实现</p>
+<h3 id="toc_2"><strong>2.1. Packages</strong></h3>
 
-<p>RLE 可以使用很多不同的方法。基本压缩库中详细实现的方式是非常有效的一个。一个特殊的标记字节用来指示重复节的开始，而不是对于重复非重复节都 coding run 。</p>
+<p>The packages inside a module are identical to the Java packages we’ve been using since the inception of Java.</p>
 
-<p>因此非重复节可以有任意长度而不被控制字节打断，除非指定的标记字节出现在非重复节（顶多以两个字节来编码）的稀有情况下。为了最优化效率，标记字节应该是输入流中最少出现的符号（或许就不存在）。</p>
+<p>When we create a module, <strong>we organize the code internally in packages just like we previously did with any other project.</strong></p>
 
-<p>重复 runs 能够在 32768 字节的时候运转。少于 129 字节的要求 3 个字节编码（标记 + 次数 + 符号），而大雨 128 字节要求四个字节（标记 + 次数的高 4 位 |0x80+ 次数的低 4 位）。这是通常所有采用的压缩的做法，并且也是相比较三个字节固定编码（允许使用 3 个字节来编码 256 个字节）而言非常少见的有损压缩率的方法。</p>
+<p>Aside from organizing our code, packages are used to determine what code is publicly accessible outside of the module. We’ll spend more time talking about this later in the article.</p>
 
-<p>在这种模式下，最坏的压缩结果是：</p>
+<h3 id="toc_3"><strong>2.2. Resources</strong></h3>
 
-<p>输出大小 =257/256* 输入大小 +1</p>
+<p><strong>Each module is responsible for its resources, like media or configuration files.</strong></p>
 
-<h1 id="toc_2">2 哈夫曼</h1>
+<p>Previously we’d put all resources into the root level of our project and manually manage which resources belonged to different parts of the application.</p>
 
-<p>哈夫曼编码是无损压缩当中最好的方法。它使用预先二进制描述来替换每个符号，长度由特殊符号出现的频率决定。常见的符号需要很少的位来表示，而不常见的符号需要很多位来表示。</p>
+<p>With modules, we can ship required images and XML files with the module that needs it, making our projects much easier to manage.</p>
 
-<p>哈夫曼算法在改变任何符号二进制编码引起少量密集表现方面是最佳的。然而，它并不处理符号的顺序和重复或序号的序列。</p>
+<h3 id="toc_4"><strong>2.3. Module Descriptor</strong></h3>
 
-<h2 id="toc_3">2.1 原理</h2>
+<p>When we create a module, we include a descriptor file that defines several aspects of our new module:</p>
 
-<p>我不打算探究哈夫曼编码的所有实际的细节，但基本的原理是为每个符号找到新的二进制表示，从而通常符号使用很少的位，不常见的符号使用较多的位。</p>
+<ul>
+<li>  <strong>Name</strong> – the name of our module</li>
+<li>  <strong>Dependencies</strong> – a list of other modules that this module depends on</li>
+<li>  <strong>Public Packages</strong> – a list of all packages we want accessible from outside the module</li>
+<li>  <strong>Services Offered</strong> – we can provide service implementations that can be consumed by other modules</li>
+<li>  <strong>Services Consumed</strong> – allows the current module to be a consumer of a service</li>
+<li>  <strong>Reflection Permissions</strong> – explicitly allows other classes to use reflection to access the private members of a package</li>
+</ul>
 
-<p>简短的说，这个问题的解决方案是为了查找每个符号的通用程度，我们建立一个未压缩数据的柱状图；通过递归拆分这个柱状图为两部分来创建一个二叉树，每个递归的一半应该和另一半具有同样的权（权是 ∑ <sup style="box-sizing: border-box;outline: 0px;word-break: break-all;">N </sup><sub style="box-sizing: border-box;outline: 0px;word-break: break-all;">K </sub>=<sub style="box-sizing: border-box;outline: 0px;word-break: break-all;">1</sub> 符号数 <sub style="box-sizing: border-box;outline: 0px;word-break: break-all;">k </sub>, N 是分之中符号的数量，符号数 <sub style="box-sizing: border-box;outline: 0px;word-break: break-all;">k </sub>是符号 k 出现的次数 ）</p>
+<p>The module naming rules are similar to how we name packages (dots are allowed, dashes are not). It’s very common to do either project-style (my.module) or Reverse-DNS (_com.baeldung.mymodule_) style names. We’ll use project-style in this guide.</p>
 
-<p>这棵树有两个目的：</p>
+<p><strong>We need to list all packages we want to be public because by default all packages are module private.</strong></p>
 
-<p>1．   编码器使用这棵树来找到每个符号最优的表示方法<br/>
-2．   解码器使用这棵树唯一的标识在压缩流中每个编码的开始和结束，其通过在读压缩数据位的时候自顶向底的遍历树，选择基于数据流中的每个独立位的分支，一旦一个到达叶子节点，解码器知道一个完整的编码已经读出来了。</p>
+<p>The same is true for reflection. By default, we cannot use reflection on classes we import from another module.</p>
 
-<p>我们来看一个例子会让我们更清楚。图 2.2 显示了一个 10 个字节的未压缩的数据。</p>
+<p>Later in the article, we’ll look at examples of how to use the module descriptor file.</p>
 
-<p>根据符号频率，哈夫曼编码器生成哈夫曼树（图 2.4 ）和相应的编码表示（图 2.3 ）。</p>
+<h3 id="toc_5"><strong>2.4. Module Types</strong></h3>
 
-<p><img src="https://mmbiz.qpic.cn/mmbiz_jpg/XA3sPCPib1l6jia5WKgazEEVDPjibKHOz8rN4YBTn5M9deDfQ84oS1YicO18tc4XJVmgZcpCSGQP0nEnn1FDgf6O4w/640?wx_fmt=jpeg" alt=""/></p>
+<p>There are four types of modules in the new module system:</p>
 
-<p>你可以看到，常见的符号接近根，因此只要少数位来表示。于是最终的压缩数据流如图 2.5 所示。</p>
+<ul>
+<li>  <strong>System Modules</strong>– These are the modules listed when we run the _list-modules_ command above. They include the Java SE and JDK modules.</li>
+<li>  <strong>Application Modules</strong> – These modules are what we usually want to build when we decide to use Modules. They are named and defined in the compiled _module-info.class_ file included in the assembled JAR.</li>
+<li>  <strong>Automatic Modules</strong> – We can include unofficial modules by adding existing JAR files to the module path. The name of the module will be derived from the name of the JAR. Automatic modules will have full read access to every other module loaded by the path.</li>
+<li>  <strong>Unnamed Module</strong> – When a class or JAR is loaded onto the classpath, but not the module path, it’s automatically added to the unnamed module. It’s a catch-all module to maintain backward compatibility with previously-written Java code.</li>
+</ul>
 
-<p><img src="https://mmbiz.qpic.cn/mmbiz_jpg/XA3sPCPib1l6jia5WKgazEEVDPjibKHOz8rN5XbjThAK0X8TjTjvx1sATgTetFwyn6jL9sA8HFBX35RVOTHooYt1A/640?wx_fmt=jpeg" alt=""/></p>
+<h3 id="toc_6"><strong>2.5. Distribution</strong></h3>
 
-<p><img src="https://mmbiz.qpic.cn/mmbiz_jpg/XA3sPCPib1l6jia5WKgazEEVDPjibKHOz8rpfNt5vdooNB0tu2XO2wrByeZzTdHxlxeJWKsjyAB0EFUv0ibvC7W9Hg/640?wx_fmt=jpeg" alt=""/></p>
+<p>Modules can be distributed one of two ways: as a JAR file or as an “exploded” compiled project. This, of course, is the same as any other Java project so it should come as no surprise.</p>
 
-<p>压缩后的数据流是 24 位（三个字节），原来是 80 位（ 10 个字节）。当然，我应该存储哈夫曼树，这样解码器就能够解码出对应的压缩流了，这就使得该例子中的真正数据流比输入的流数据量大。这是相对较短的数据上的副作用。对于大数据量来说，上面的哈夫曼树就不占太多比例了。</p>
+<p>We can create multi-module projects comprised of a “main application” and several library modules.</p>
 
-<p><img src="https://mmbiz.qpic.cn/mmbiz_jpg/XA3sPCPib1l6jia5WKgazEEVDPjibKHOz8rwpdS3euibfb2eNiaAWD0PpCeF3qppC2KQbaZz2Zv7fVdts3becE6LYJw/640?wx_fmt=jpeg" alt=""/></p>
+<p><strong>We have to be careful though because we can only have one module per JAR file.</strong></p>
 
-<p>解码的时候，从上到下遍历树，为压缩的流选择从左 / 右分支，每次碰到一个叶子节点的时候，就可以将对应的字节写到解压输出流中，然后再从根开始遍历。</p>
+<p>When we set up our build file, we need to make sure to bundle each module in our project as a separate jar.</p>
 
-<h2 id="toc_4">2.2 实现</h2>
+<h2 id="toc_7"><strong>3. Default Modules</strong></h2>
 
-<p>哈夫曼编码器可以在基本压缩库中找到，其是非常直接的实现。</p>
+<p>When we install Java 9, we can see that the JDK now has a new structure.</p>
 
-<p>这个实现的基本缺陷是：</p>
+<p>They have taken all the original packages and moved them into the new module system.</p>
 
-<p>1．   慢位流实现<br/>
-2．   相当慢的解码（比编码慢）<br/>
-3．   最大的树深度是 32 （编码器在任何超过 32 位大小的时候退出）。如果我不是搞错的话，这是不可能的，除非输出的数据大于 2 <sup style="box-sizing: border-box;outline: 0px;word-break: break-all;">32</sup> 字节。</p>
+<p>We can see what these modules are by typing into the command line:</p>
 
-<p>另一方面，这个实现有几个优点：</p>
+<pre><code class="language-sh">java --list-modules
+</code></pre>
 
-<p>1．   哈夫曼树以一个紧密的形式每个符号要求 12 位（对于 8 位的符号）的方式存储，这意味着最大的头为 384 。<br/>
-2．   编码相当容易理解</p>
+<p>These modules are split into four major groups: _java, javafx, jdk, _and _Oracle_.</p>
 
-<p>哈夫曼编码在数据有噪音的情况（不是有规律的，例如 RLE ）下非常好，这中情况下大多数基于字典方式的编码器都有问题。</p>
+<p><u>java</u> modules are the implementation classes for the core SE Language Specification.</p>
 
-<h1 id="toc_5">3 Rice</h1>
+<p><u>javafx</u> modules are the FX UI libraries.</p>
 
-<p>对于由大 word （例如： 16 或 32 位）组成的数据和较低的数据值， Rice 编码能够获得较好的压缩比。音频和高动态变化的图像都是这种类型的数据，它们被预处理过（例如 delta 相邻的采样）。</p>
+<p><strong>Anything needed by the JDK itself is kept in the _jdk_ modules.</strong></p>
 
-<p>尽管哈夫曼编码处理这种数据是最优的，却由于几个原因而不适合处理这种数据（例如： 32 位大小要求 16GB 的柱状图缓冲区来进行哈夫曼树编码）。因此一个比较动态的方式更适合由大 word 组成的数据。</p>
+<p>And finally, <strong>anything that is Oracle-specific is in the _oracle_ modules.</strong></p>
 
-<h2 id="toc_6">3.1 原理</h2>
+<h2 id="toc_8"><strong>4. Module Declarations</strong></h2>
 
-<p>Rice 编码背后的基本思想是尽可能的用较少的位来存储多个字（正像使用哈夫曼编码一样）。实际上，有人可能想到 Rice 是静态的哈夫曼编码（例如，编码不是由实际数据内容的统计信息决定，而是由小的值比高的值常见的假定决定）。</p>
+<p><strong>To set up a module, we need to put a special file at the root of our packages named _module-info.java_.</strong></p>
 
-<p>编码非常简单：将值 X 用 X 个‘ 1 ’位之后跟一个 0 位来表示。</p>
+<p>This file is known as the module descriptor and contains all of the data needed to build and use our new module.</p>
 
-<h2 id="toc_7">3.2 实现</h2>
+<p>We construct the module with a declaration whose body is either empty or made up of module directives:</p>
 
-<p>在基本压缩库针对 Rice 做了许多优化：</p>
+<pre><code class="language-java">module myModuleName {
+    // all directives are optional
+}
+</code></pre>
 
-<p>1．   每个字最没有意义的位被存储为 k 和最有意义的 N-k 位用 Rice 编码。 K 作为先前流中少许采样的位平均数。这是通常最好使用 Rice 编码的方法，隐藏噪音且对于动态变化的范围并不导致非常长的 Rice 编码。<br/>
-2．   如果 rice 编码比固定的开端长， T ，一个可选的编码：输出 T 个‘ 1 ’位，紧跟（ log2(X-T) ）个‘ 1 ’和一个‘ 0 ’位，接着是 X-T （最没有意义的 (log2(X-T))-1 位）。这对于大值来说都是比较高效的代码并且阻止可笑的长 Rice 编码（最坏的情况，对于一个 32 位 word 单个 Rice 编码可能变成 2 <sup style="box-sizing: border-box;outline: 0px;word-break: break-all;">32 </sup>位或 512MB ）。</p>
+<p>We start the module declaration with the <u>module</u> keyword, and we follow that with the name of the module.</p>
 
-<p>如果开端是 4 ，下面是结果编码表：</p>
+<p>The module will work with this declaration, but we’ll commonly need more information.</p>
 
-<p><img src="https://mmbiz.qpic.cn/mmbiz_png/XA3sPCPib1l6jia5WKgazEEVDPjibKHOz8rOOibqB37z6QKMg3grXJh2GSTCkVFrLo5oIy3J9oxc8OORZ3nib9yCd9w/640?wx_fmt=png" alt=""/></p>
+<p>That is where the module directives come in.</p>
 
-<p>就像你看到的一样，在这个实现中使用 threshold 方法仅仅两个编码导致一个最坏的情况；剩下的编码产生比标准 Rice 编码还要短的编码。</p>
+<h3 id="toc_9"><strong>4.1. Requires</strong></h3>
 
-<h1 id="toc_8">4 Lempel-Ziv (LZ77)</h1>
+<p>Our first directive is _requires_. This module directive allows us to declare module dependencies:</p>
 
-<p>Lempel-Ziv 压缩模式有许多不同的变量。基本压缩库有清晰的 LZ77 算法的实现（ Lempel-Ziv ， 1977 ），执行的很好，源代码也非常容易理解。</p>
+<pre><code class="language-java">module my.module {
+    requires module.name;
+}
+</code></pre>
 
-<p>LZ 编码器能用来通用目标的压缩，特别对于文本执行的很好。它也在 RLE 和哈夫曼编码器（ RLE ， LZ ，哈夫曼）中使用来大多数情况下获得更多的压缩。</p>
+<p>Now, _my.module_ has <strong>both a runtime and a compile-time dependency</strong> on <u>module.name</u>.</p>
 
-<h2 id="toc_9">4.1 原理</h2>
+<p>And all public types exported from a dependency are accessible by our module when we use this directive.</p>
 
-<p>在 LZ 压缩算法的背后是使用 RLE 算法用先前出现的相同字节序列的引用来替代。</p>
+<h3 id="toc_10"><strong>4.2. Requires Static</strong></h3>
 
-<p>简单的讲， LZ 算法被认为是字符串匹配的算法。例如：在一段文本中某字符串经常出现，并且可以通过前面文本中出现的字符串指针来表示。当然这个想法的前提是指针应该比字符串本身要短。</p>
+<p>Sometimes we write code that references another module, but that users of our library will never want to use.</p>
 
-<p>例如，在上一段短语 “字符串” 经常出现，可以将除第一个字符串之外的所有用第一个字符串引用来表示从而节省一些空间。</p>
+<p>For instance, we might write a utility function that pretty-prints our internal state when another logging module is present. But, not every consumer of our library will want this functionality, and they don’t want to include an extra logging library.</p>
 
-<p>一个字符串引用通过下面的方式来表示：</p>
+<p>In these cases, we want to use an optional dependency. By using the _requires static_ directive, we create a compile-time-only dependency:</p>
 
-<p>1．   唯一的标记<br/>
-2．   偏移数量<br/>
-3．   字符串长度</p>
+<pre><code class="language-java">module my.module {
+    requires static module.name;
+}
+</code></pre>
 
-<p>由编码的模式决定引用是一个固定的或变动的长度。后面的情况经常是首选，因为它允许编码器用引用的大小来交换字符串的大小（例如，如果字符串相当长，增加引用的长度可能是值得的）。</p>
+<h3 id="toc_11"><strong>4.3. Requires Transitive</strong></h3>
 
-<h2 id="toc_10">4.2 实现</h2>
+<p>We commonly work with libraries to make our lives easier.</p>
 
-<p>使用 LZ77 的一个问题是由于算法需要字符串匹配，对于每个输入流的单个字节，每个流中此字节前面的哪个字节都必须被作为字符串的开始从而尽可能的进行字符串匹配，这意味着算法非常慢。</p>
+<p>But, we need to make sure that any module that brings in our code will also bring in these extra ‘transitive’ dependencies or they won’t work.</p>
 
-<p>另一个问题是为了最优化压缩而调整字符串引用的表示形式并不容易。例如，必须决定是否所有的引用和非压缩字节应该在压缩流中的字节边界发生。</p>
+<p>Luckily, we can use the _requires transitive_ directive to force any downstream consumers also to read our required dependencies:</p>
 
-<p>基本压缩库使用一个清晰的实现来保证所有的符号和引用是字节对齐的，因此牺牲了压缩比率，并且字符串匹配程序并不是最优化的（没有缓存、历史缓冲区或提高速度的小技巧），这意味着程序非常慢。</p>
+<pre><code class="language-java">module my.module {
+    requires transitive module.name;
+}
+</code></pre>
 
-<p>另一方面，解压缩程序非常简单。</p>
+<p>Now, when a developer <u>requires my.module</u>, they won’t also have also to say _requires module.name_ for our module to still work.</p>
 
-<p>一个提高 LZ77 速度的试验已经进行了，这个试验中使用数组索引来加速字符串匹配的过程。然而，它还是比通常的压缩程序慢。</p>
+<h3 id="toc_12"><strong>4.4. Exports</strong></h3>
+
+<p><strong>By default, a module doesn’t expose any of its API to other modules.</strong> This _strong encapsulation_ was one of the key motivators for creating the module system in the first place.</p>
+
+<p>Our code is significantly more secure, but now we need to explicitly open our API up to the world if we want it to be usable.</p>
+
+<p><strong>We use the _exports_ directive to expose all public members of the named package:</strong></p>
+
+<pre><code class="language-java">module my.module {
+    exports com.my.package.name;
+}
+</code></pre>
+
+<p>Now, when someone does _requires my.module_, they will have access to the public types in our _com.my.package.name_ package, but not any other package.</p>
+
+<h3 id="toc_13"><strong>4.5. Exports … To</strong></h3>
+
+<p><strong>We can use _exports…to_ to open up our public classes to the world.</strong></p>
+
+<p>But, what if we don’t want the entire world to access our API?</p>
+
+<p><strong>We can restrict which modules have access to our APIs using the _exports…to_ directive.</strong></p>
+
+<p>Similar to the _exports_ directive, we declare a package as exported. But, we also list which modules we are allowing to import this package as a <u>requires</u>. Let’s see what this looks like:</p>
+
+<pre><code class="language-java">module my.module {
+    export com.my.package.name to com.specific.package;
+}
+</code></pre>
+
+<h3 id="toc_14"><strong>4.6. Uses</strong></h3>
+
+<p>A _service_ is an implementation of a specific interface or abstract class that can be _consumed_ by other classes.</p>
+
+<p><strong>We designate the services our module consumes with the _uses_ directive.</strong></p>
+
+<p>Note that <strong>the class name we _use_ is either the interface or abstract class of the service, not the implementation class</strong>:</p>
+
+<pre><code class="language-java">module my.module {
+    uses class.name;
+}
+</code></pre>
+
+<p>We should note here that there’s a difference between a _requires_ directive and the _uses_ directive.</p>
+
+<p>We might <u>require</u> a module that provides a service we want to consume, but that service implements an interface from one of its transitive dependencies.</p>
+
+<p>Instead of forcing our module to require _all_ transitive dependencies just in case, we use the _uses_ directive to add the required interface to the module path.</p>
+
+<h3 id="toc_15"><strong>4.7. Provides … With</strong></h3>
+
+<p><strong>A module can also be a _service provider_ that other modules can consume.</strong></p>
+
+<p>The first part of the directive is the _provides_ keyword. Here is where we put the interface or abstract class name.</p>
+
+<p>Next, we have the _with_ directive where we provide the implementation class name that either <u>implements</u> the interface or _extends_ the abstract class.</p>
+
+<p>Here’s what it looks like put together:</p>
+
+<pre><code class="language-java">module my.module {
+    provides MyInterface with MyInterfaceImpl;
+}
+</code></pre>
+
+<h3 id="toc_16"><strong>4.8. Open</strong></h3>
+
+<p>We mentioned earlier that encapsulation was a driving motivator for the design of this module system.</p>
+
+<p>Before Java 9, it was possible to use reflection to examine every type and member in a package, even the _private_ ones. Nothing was truly encapsulated, which can open up all kinds of problems for developers of the libraries.</p>
+
+<p>Because Java 9 enforces _strong encapsulation_, <strong>we now have to explicitly grant permission for other modules to reflect on our classes.</strong></p>
+
+<p>If we want to continue to allow full reflection as older versions of Java did, we can simply _open_ the entire module up:</p>
+
+<pre><code class="language-java">open module my.module {
+}
+</code></pre>
+
+<h3 id="toc_17"><strong>4.9. Opens</strong></h3>
+
+<p>If we need to allow reflection of private types, but we don’t want all of our code exposed, <strong>we can use the _opens_ directive to expose specific packages.</strong></p>
+
+<p>But remember, this will open the package up to the entire world, so make sure that is what you want:</p>
+
+<pre><code class="language-java">module my.module {
+  opens com.my.package;
+}
+</code></pre>
+
+<h3 id="toc_18"><strong>4.10. Opens … To</strong></h3>
+
+<p>Okay, so reflection is great sometimes, but we still want as much security as we can get from _encapsulation_. <strong>We can selectively open our packages to a pre-approved list of modules, in this case, using the _opens…to_ directive</strong>:</p>
+
+<pre><code class="language-java">module my.module {
+    opens com.my.package to moduleOne, moduleTwo, etc.;
+}
+</code></pre>
+
+<h2 id="toc_19"><strong>5. Command Line Options</strong></h2>
+
+<p>By now, support for Java 9 modules has been added to Maven and Gradle, so you won’t need to do a lot of manual building of your projects. However, it’s still valuable to know _how_ to use the module system from the command line.</p>
+
+<p>We’ll be using the command line for our full example down below to help solidify how the entire system works in our minds.</p>
+
+<ul>
+<li>  <u><strong>module-path</strong></u> <strong>–</strong>We use the _–module-path_ option to specify the module path. This is a list of one or more directories that contain your modules.</li>
+<li>  <u><strong>add-reads</strong></u> – Instead of relying on the module declaration file, we can use the command line equivalent of the _requires_ directive; _–add-reads_.</li>
+<li>  <u><strong>add-exports</strong></u> <strong>–</strong>Command line replacement for the <u>exports</u> directive.</li>
+<li>  <u><strong>add-opens</strong></u> <u>–</u>Replace the _open_ clause in the module declaration file.</li>
+<li>  <u><strong>add-modules</strong></u> <u>–</u>Adds the list of modules into the default set of modules</li>
+<li>  <u><strong>list-modules</strong></u> <u>–</u>Prints a list of all modules and their version strings</li>
+<li>  <u><strong>patch-module</strong></u> – Add or override classes in a modules</li>
+<li>  <u><strong>illegal-access=permit|warn|deny</strong></u> – Either relax strong encapsulation by showing a single global warning, shows every warning, or fails with errors. The default is _permit_.</li>
+</ul>
+
+<h2 id="toc_20"><strong>6. Visibility</strong></h2>
+
+<p>We should spend a little time talking about the visibility of our code.</p>
+
+<p><strong>A lot of libraries depend on reflection to work their magic</strong> (JUnit and Spring come to mind).</p>
+
+<p>By default in Java 9, we will _only_ have access to public classes, methods, and fields in our exported packages. Even if we use reflection to get access to non-public members and call _setAccessible(true), _we won’t be able to access these members.</p>
+
+<p>We can use the _open_, _opens_, and _opens…to_ options to grant runtime-only access for reflection. Note, <strong>this is runtime-only!</strong></p>
+
+<p>We won’t be able to compile against private types, and we should never need to anyway.</p>
+
+<p>If we must have access to a module for reflection, and we’re not the owner of that module (i.e., we can’t use the _opens…to_ directive), then it’s possible to use the command line _–add-opens_ option to allow own modules reflection access to the locked down module at runtime.</p>
+
+<p>The only caveat here’s that you need to have access to the command line arguments that are used to run a module for this to work.</p>
+
+<h2 id="toc_21"><strong>7. Putting It All Together</strong></h2>
+
+<p>Now that we know what a module is and how to use them let’s go ahead and build a simple project to demonstrate all the concepts we just learned.</p>
+
+<p>To keep things simple, we won’t be using Maven or Gradle. Instead, we’ll rely on the command line tools to build our modules.</p>
+
+<h3 id="toc_22"><strong>7.1. Setting Up Our Project</strong></h3>
+
+<p>First, we need to set up our project structure. We’ll create several directories to organize our files.</p>
+
+<p>Start by creating the project folder:</p>
+
+<pre><code class="language-sh">mkdir module-project
+cd module-project
+</code></pre>
+
+<p>This is the base of our whole project, so add files in here such as Maven or Gradle build files, other source directories, and resources.</p>
+
+<p>We also put a directory to hold all our project specific modules.</p>
+
+<p>Next, we create a module directory:</p>
+
+<pre><code class="language-sh">mkdir simple-modules
+</code></pre>
+
+<p>Here’s what our project structure will look like:</p>
+
+<pre><code class="language-txt">module-project
+|- // src if we use the default package
+|- // build files also go at this level
+|- simple-modules
+  |- hello.modules
+    |- com
+      |- baeldung
+        |- modules
+          |- hello
+  |- main.app
+    |- com
+      |- baeldung
+        |- modules
+          |- main
+</code></pre>
+
+<h3 id="toc_23"><strong>7.2. Our First Module</strong></h3>
+
+<p>Now that we have the basic structure in place, let’s add our first module.</p>
+
+<p>Under the _simple-modules _directory, create a new directory called _hello.modules_.</p>
+
+<p><strong>We can name this anything we want but follow package naming rules</strong> (i.e., periods to separate words, etc.). We can even use the name of our main package as the module name if we want, but usually, we want to stick to the same name we would use to create a JAR of this module.</p>
+
+<p>Under our new module, we can create the packages we want. In our case, we are going to create one package structure:</p>
+
+<pre><code>com.baeldung.modules.hello
+</code></pre>
+
+<p>Next, create a new class called _HelloModules.java_ in this package. We will keep the code simple:</p>
+
+<pre><code class="language-java">package com.baeldung.modules.hello;
+ 
+public class HelloModules {
+    public static void doSomething() {
+        System.out.println(&quot;Hello, Modules!&quot;);
+    }
+}
+</code></pre>
+
+<p>And finally, in the _hello.modules_ root directory, add in our module descriptor; _module-info.java_:</p>
+
+<pre><code class="language-java">module hello.modules {
+    exports com.baeldung.modules.hello;
+}
+</code></pre>
+
+<p>To keep this example simple, all we are doing is exporting all public members of the _com.baeldung.modules.hello _package.</p>
+
+<h3 id="toc_24"><strong>7.3. Our Second Module</strong></h3>
+
+<p>Our first module is great, but it doesn’t do anything.</p>
+
+<p>We can create a second module that uses it now.</p>
+
+<p>Under our _simple-modules_ directory, create another module directory called _main.app_. We are going to start with the module descriptor this time:</p>
+
+<pre><code class="language-java">module main.app {
+    requires hello.modules;
+}
+</code></pre>
+
+<p>We don’t need to expose anything to the outside world. Instead, all we need to do is depend on our first module, so we have access to the public classes it exports.</p>
+
+<p>Now we can create an application that uses it.</p>
+
+<p>Create a new package structure: _com.baeldung.modules.main_.</p>
+
+<p>Now, create a new class file called _MainApp.java._</p>
+
+<pre><code class="language-java">package com.baeldung.modules.main;
+ 
+import com.baeldung.modules.hello.HelloModules;
+ 
+public class MainApp {
+    public static void main(String[] args) {
+        HelloModules.doSomething();
+    }
+}
+</code></pre>
+
+<p>And that is all the code we need to demonstrate modules. Our next step is to build and run this code from the command line.</p>
+
+<h3 id="toc_25"><strong>7.4. Building Our Modules</strong></h3>
+
+<p>To build our project, we can create a simple bash script and place it at the root of our project.</p>
+
+<p>Create a file called _compile-simple-modules.sh_:</p>
+
+<pre><code class="language-sh">#!/usr/bin/env bash
+javac -d outDir --module-source-path simple-modules $(find simple-modules -name &quot;*.java&quot;)
+</code></pre>
+
+<p>There are two parts to this command, the _javac_ and _find_ commands.</p>
+
+<p>The _find_ command is simply outputting a list of all ._java_ files under our simple-modules directory. We can then feed that list directly into the Java compiler.</p>
+
+<p>The only thing we have to do differently than the older versions of Java is to provide a _module-source-path_ parameter to inform the compiler that it’s building modules.</p>
+
+<p>Once we run this command, we will have an _outDir_ folder with two compiled modules inside.</p>
+
+<h3 id="toc_26"><strong>7.5. Running Our Code</strong></h3>
+
+<p>And now we can finally run our code to verify modules are working correctly.</p>
+
+<p>Create another file in the root of the project: _run-simple-module-app.sh_.</p>
+
+<pre><code class="language-sh">#!/usr/bin/env bash
+java --module-path outDir -m main.app/com.baeldung.modules.main.MainApp
+</code></pre>
+
+<p>To run a module, we must provide at least the _module-path_ and the main class. If all works, you should see:</p>
+
+<pre><code class="language-sh">$ ./run-simple-module-app.sh 
+Hello, Modules!
+</code></pre>
+
+<h3 id="toc_27"><strong>7.6. Adding a Service</strong></h3>
+
+<p>Now that we have a basic understanding of how to build a module, let’s make it a little more complicated.</p>
+
+<p>We’re going to see how to use the _provides…with_ and _uses_ directives.</p>
+
+<p>Start by defining a new file in the _hello.modules_ module named _HelloInterface__.java_:</p>
+
+<pre><code class="language-java">public interface HelloInterface {
+    void sayHello();
+}
+</code></pre>
+
+<p>To make things easy, we’re going to implement this interface with our existing _HelloModules.java_ class:</p>
+
+<pre><code class="language-java">public class HelloModules implements HelloInterface {
+    public static void doSomething() {
+        System.out.println(&quot;Hello, Modules!&quot;);
+    }
+ 
+    public void sayHello() {
+        System.out.println(&quot;Hello!&quot;);
+    }
+}
+</code></pre>
+
+<p>That is all we need to do to create a _service_.</p>
+
+<p>Now, we need to tell the world that our module provides this service.</p>
+
+<p>Add the following to our _module-info.java_:</p>
+
+<pre><code>provides com.baeldung.modules.hello.HelloInterface with com.baeldung.modules.hello.HelloModules;
+</code></pre>
+
+<p>As we can see, we declare the interface and which class implements it.</p>
+
+<p>Next, we need to consume this _service_. In our _main.app_ module, let’s add the following to our _module-info.java_:</p>
+
+<pre><code class="language-java">uses com.baeldung.modules.hello.HelloInterface;
+</code></pre>
+
+<p>Finally, in our main method we can use this service like this:</p>
+
+<pre><code class="language-java">HelloModules module = new HelloModules();
+module.sayHello();
+</code></pre>
+
+<p>Compile and run:</p>
+
+<pre><code class="language-sh">$ ./run-simple-module-app.sh 
+Hello, Modules!
+Hello!
+</code></pre>
+
+<p>We use these directives to be much more explicit about how our code is to be used.</p>
+
+<p>We could put the interface into a private package while exposing the implementation in a public package.</p>
+
+<p>This makes our code much more secure with very little extra overhead.</p>
+
+<p>Go ahead and try out some of the other directives to learn more about modules and how they work.</p>
+
+<h2 id="toc_28"><strong>8. Conclusion</strong></h2>
+
+<p>In this extensive guide, we focused on and covered the basics of the new Java 9 Module system.</p>
+
+<p>We started by talking about what a module is.</p>
+
+<p>Next, we talked about how to discover which modules are included in the JDK.</p>
+
+<p>We also covered the module declaration file in detail.</p>
+
+<p>We rounded out the theory by talking about the various command line arguments we’ll need to build our modules.</p>
+
+<p>Finally, we put all our previous knowledge into practice and created a simple application built on top of the module system.</p>
+
+<p>To see this code and more, be sure to <a href="https://github.com/eugenp/tutorials/tree/master/core-java-9">check it out over on Github</a>.</p>
 
                         
                       </div>
@@ -263,10 +632,10 @@
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/6/18</span>
+                    <span class="date">2018/7/28</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Middleware.html'>Middleware</a></span>
+          					    <span class="posted-in"><a href='Java.html'>Java</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -356,31 +725,31 @@
 	      
 		      
 			      <li class="post">
-			        <a href="15459058392039.html">Reliable Domain Events</a>
+			        <a href="15517999043443.html">The Art of Crafting Architectural Diagrams</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
+			        <a href="15517997955971.html">为什么说我们需要软件架构图？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
+			        <a href="15516128677869.html">DNS Servers That Offer Privacy and Filtering</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
+			        <a href="15516123108194.html">Airbnb's Migration from Monolith to Services</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
+			        <a href="15516097487470.html">Events As First-Class Citizens</a>
 			      </li>
 		     
 		  

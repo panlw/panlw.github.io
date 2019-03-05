@@ -105,490 +105,311 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15262258657164.html">
+                <a class="clearlink" href="15277856731195.html">
                 
-                  <h1>飞哥教你使用异步编程提升服务性能</h1>
+                  <h1>Functor and monad examples in plain Java</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://mp.weixin.qq.com/s/kchPiySDDu1FMF3tuEggiw">https://mp.weixin.qq.com/s/kchPiySDDu1FMF3tuEggiw</a></p>
+<p><a href="https://www.nurkiewicz.com/2016/06/functor-and-monad-examples-in-plain-java.html">https://www.nurkiewicz.com/2016/06/functor-and-monad-examples-in-plain-java.html</a><br/>
+June 23, 2016</p>
 </blockquote>
 
-<p>作者：肖飞，2011 年加入京东，目前在交易平台，主导交易平台核心系统的架构优化和技术攻关，以及公共技术组件和平台的建设。</p>
+<p>This article was initially an appendix in our <a href="http://amzn.to/28NV8eJ">Reactive Programming with RxJava</a> book. However introduction to monads, albeit very much related to reactive programming, didn&#39;t suit very well. So I decided to take it out and publish separately as a blog post. I am aware that &quot;_my very own, half correct and half complete explanation of monads_&quot; is the new &quot;_Hello, world_&quot; on programming blogs. Yet the article looks at functors and monads from a specific angle of Java data structures and libraries. Thus I thought it&#39;s worthwhile sharing.</p>
 
-<p>庞大复杂的系统通常会采用服务化组件来实现。系统越复杂，组件之间的依赖和调用关系也会越复杂。对于处于底层的基础服务，直接和间接的调用所带来的流量压力非常大。处于中间层的聚合型服务，面对的挑战则是依赖的服务太多，后端个别服务的性能延迟就会影响其吞吐量。性能优化是我们系统稳定性中的重要一环，这其中，调用所依赖的 RPC 服务或后端数据是重点之一。</p>
+<p>RxJava was designed and built on top of very fundamental concepts like <u>functors</u> , <u>monoids</u> and <u>monads</u> . Even though Rx was modeled initially for imperative C# language and we are learning about RxJava, working on top of similarly imperative language, the library has its roots in functional programming. You should not be surprised after you realize how compact RxJava API is. There are pretty much just a handful of core classes, typically immutable, and everything is composed using mostly pure functions.</p>
 
-<p>目前，除了传统 JDBC 这样从 API 到主流驱动实现就是阻塞式的类库之外，其他常用的 RPC/HTTP 服务、MQ、Redis、Mongodb、Kafka 等系统都提供了成熟的基于 NIO 的客户端库，也有相应的异步 API。</p>
+<p>With a recent rise of functional programming (or functional style), most commonly expressed in modern languages like Scala or Clojure, monads became a widely discussed topic. There is a lot of folklore around them:</p>
 
-<p>但是目前交易平台的大多数中台服务系统，还在习惯性使用着这些库的同步 API，并不能充分的利用 CPU，这也给我们带来了一定的优化空间。从 16 年开始我们在一些核心的但是服务逻辑相对简单的系统中使用异步方式来实现，虽然暂时还做不到完全的异步化，但是也取得了比较好的效果。这篇文章虽然更多是一个简介性质，但是也涵盖了我们在异步编程中需要关注的要点。希望大家能够习惯和拥抱异步编程。</p>
+<p>A monad is a monoid in the category of endofunctors, what&#39;s the problem?<br/>
+<a href="http://james-iry.blogspot.com/2009/05/brief-incomplete-and-mostly-wrong.html">_James Iry_</a></p>
 
-<h2 id="toc_0"><strong>一、相关概念介绍</strong></h2>
+<p>The curse of the monad is that once you get the epiphany, once you understand - &quot;oh that&#39;s what it is&quot; - you lose the ability to explain it to anybody.<br/>
+<a href="https://www.youtube.com/watch?v=dkZFtimgAcM">_Douglas Crockford_</a></p>
 
-<p>同步 (Synchronous)/ 异步 (Asynchronous)，通常是指函数调用中的消息通信的两种不同模式。</p>
+<p>The vast majority of programmers, especially those without functional programming background, tend to believe monads are some arcane computer science concept, so theoretical that it can not possibly help in their programming career. This negative perspective can be attributed to dozens of articles and blog posts being either too abstract or too narrow. But it turns out that monads are all around us, even is standard Java library, especially since Java Development Kit (JDK) 8 (more on that later). What is absolutely brilliant is that once you understand monads for the first time, suddenly several unrelated classes and abstractions, serving entirely different purposes, become familiar.</p>
 
-<h3 id="toc_1"><strong>1、异步和同步的区别</strong></h3>
+<p>Monads generalize various seemingly independent concepts so that learning yet another incarnation of monad takes very little time. For example you do not have to learn how <code>CompletableFuture</code> works in Java 8, once you realize it is a monad, you know precisely how it works and what can you expect from its semantics. And then you hear about RxJava which sounds so much different but because <code>Observable</code> is a monad, there is not much to add. There are numerous other examples of monads you already came across without knowing that. Therefore this section will be a useful refresher even if you fail to actually use RxJava.</p>
 
-<p>函数调用发生时，消息 (参数) 从 caller 传递到 callee，控制权 (指令执行) 从 caller 转移到 callee。调用返回时，控制权从 callee 转移到 caller。两者的区别在于，callee 是否需要等待执行完成才将控制权转移给 caller。</p>
+<h1 id="toc_0">Functors</h1>
 
-<p>在 RPC 这种更复杂的场景下，本质上并没有不同。</p>
+<p>Before we explain what a monad is, let&#39;s explore simpler construct called a <u>functor</u> . A functor is a typed data structure that encapsulates some value(s). From syntactic perspective a functor is a container with the following API:</p>
 
-<p>◆ 同步</p>
+<pre><code class="language-java">import java.util.function.Function;
+ 
+interface Functor&lt;T&gt; {
+     
+    &lt;R&gt; Functor&lt;R&gt; map(Function&lt;T, R&gt; f);
+     
+}
+</code></pre>
 
-<p><img src="https://mmbiz.qpic.cn/mmbiz_png/MrFJyDNenF8OUIRCOltzbKCk6yXqAJP3BYu3bYrc81Uak1E6HfspC1tnU2KGnthJwVLAOaqr2OzlfVQhO1LqEg/640?wx_fmt=png" alt=""/></p>
+<p>But mere syntax is not enough to understand what functor is. The only operation that functor provides is <code>map()</code> that takes a function <code>f</code>. This function receives whatever is inside a box, transforms it and wraps the result as-is into a second functor. Please read that carefully. <code>Functor&lt;T&gt;</code> is always an immutable container, thus <code>map</code> never mutates original object it was executed on. Instead it returns the result (or results - be patient) wrapped in a brand new functor, possibly of different type <code>R</code>. Additionally functors should not perform any actions when identity function is applied, that is <code>map(x -&gt; x)</code>. Such a pattern should always return either the same functor or an equal instance.</p>
 
-<p>1.callee 执行完成才返回<br/>
-2. 返回值即结果</p>
+<p>Often <code>Functor&lt;T&gt;</code> is compared to a box holding instance of <code>T</code> where the only way of interacting with this value is by transforming it. However there is no idiomatic way of unwrapping or escaping from the functor. The value(s) always stay within the context of functor. Why are functors useful? They generalize multiple common idioms like collections, promises, optionals, etc. with a single, uniform API that works across all of them. Let me introduce a couple of functors to make you more fluent with this API:</p>
 
-<p>◆ 异步</p>
+<pre><code class="language-java">interface Functor&lt;T,F extends Functor&lt;?,?&gt;&gt; {
+    &lt;R&gt; F map(Function&lt;T,R&gt; f);
+}
+ 
+class Identity&lt;T&gt; implements Functor&lt;T,Identity&lt;?&gt;&gt; {
+ 
+    private final T value;
+ 
+    Identity(T value) { this.value = value; }
+ 
+    public &lt;R&gt; Identity&lt;R&gt; map(Function&lt;T,R&gt; f) {
+        final R result = f.apply(value);
+        return new Identity&lt;&gt;(result);
+    }
+     
+}
+</code></pre>
 
-<p><img src="https://mmbiz.qpic.cn/mmbiz_png/MrFJyDNenF8OUIRCOltzbKCk6yXqAJP3ENZ7lSUyf8z1icwTJr6rwVLiaNGLWfrrFHOa8kSfLQNVd8ch5dZiaoRsw/640?wx_fmt=png" alt=""/></p>
+<p>An extra <code>F</code> type parameter was required to make <code>Identity</code> compile. What you saw in the preceding example was the simplest functor just holding a value. All you can do with that value is transforming it inside <code>map</code> method, but there is no way to extract it. This is considered beyond the scope of pure functor. The only way to interact with functor is by applying sequences of type-safe transformations:</p>
 
-<p>1.callee 不需要执行完成就可返回<br/>
-2.caller 要获取结果，需要通过轮询、回调等机制</p>
+<pre><code class="language-java">Identity&lt;String&gt; idString = new Identity&lt;&gt;(&quot;abc&quot;);
+Identity&lt;Integer&gt; idInt = idString.map(String::length);
+</code></pre>
 
-<h4 id="toc_2">◆ 同步 RPC</h4>
+<p>Or fluently, just like you compose functions:</p>
 
-<p><img src="https://mmbiz.qpic.cn/mmbiz_png/MrFJyDNenF8OUIRCOltzbKCk6yXqAJP3jPWsYVcxUuMPzdeJ6sichCQjFM9iceIqvic0yHHKg1Oibexuwn7USoA3oA/640?wx_fmt=png" alt=""/></p>
+<pre><code class="language-java">Identity&lt;byte[]&gt; idBytes = new Identity&lt;&gt;(customer)
+        .map(Customer::getAddress)
+        .map(Address::street)
+        .map((String s) -&gt; s.substring(0, 3))
+        .map(String::toLowerCase)
+        .map(String::getBytes);
+</code></pre>
 
-<h4 id="toc_3">◆ 异步 RPC</h4>
+<p>From this perspective mapping over a functor is not much different than just invoking chained functions:</p>
 
-<p><img src="https://mmbiz.qpic.cn/mmbiz_png/MrFJyDNenF8OUIRCOltzbKCk6yXqAJP33QaY0TSkO7pMFQwLRglBPiadzQBF2SpJxa8RDrGSKfRWCkuyUWXCGMg/640?wx_fmt=png" alt=""/></p>
+<pre><code class="language-java">byte[] bytes = customer
+        .getAddress()
+        .street()
+        .substring(0, 3)
+        .toLowerCase()
+        .getBytes();
+</code></pre>
 
-<p>可以看到，在异步 RPC 的场景下，客户端和服务端用于处理 IO 的 CPU 能得到充分利用，通常只需要远低于 caller 请求数量的线程就可以了，这就是多路复用。</p>
+<p>Why would you even bother with such verbose wrapping that not only does not provide any added value, but also is not capable of extracting the contents back? Well, it turns out you can model several other concepts using this raw functor abstraction. For example <code>java.util.Optional&lt;T&gt;</code> starting from Java 8 is a functor with <code>map()</code> method. Let us implement it from scratch:</p>
 
-<h3 id="toc_4"><strong>2、callee 执行机制</strong></h3>
+<pre><code class="language-java">class FOptional&lt;T&gt; implements Functor&lt;T,FOptional&lt;?&gt;&gt; {
+ 
+    private final T valueOrNull;
+ 
+    private FOptional(T valueOrNull) {
+        this.valueOrNull = valueOrNull;
+    }
+ 
+    public &lt;R&gt; FOptional&lt;R&gt; map(Function&lt;T,R&gt; f) {
+        if (valueOrNull == null)
+            return empty();
+        else
+            return of(f.apply(valueOrNull));
+    }
+ 
+    public static &lt;T&gt; FOptional&lt;T&gt; of(T a) {
+        return new FOptional&lt;T&gt;(a);
+    }
+ 
+    public static &lt;T&gt; FOptional&lt;T&gt; empty() {
+        return new FOptional&lt;T&gt;(null);
+    }
+ 
+}
+</code></pre>
 
-<p>上图中 callee 的 background execute 通常是采用池化线程来完成的，比如 ThreadPoolExecutor 或 EventLoop1。</p>
+<p>Now it becomes interesting. An <code>FOptional&lt;T&gt;</code> functor <u>may</u> hold a value, but just as well it might be empty. It&#39;s a type-safe way of encoding <code>null</code>. There are two ways of constructing <code>FOptional</code> - by supplying a value or creating <code>empty()</code> instance. In both cases, just like with <code>Identity</code>, <code>FOptional</code> is immutable and we can only interact with the value from inside. What differs <code>FOptional</code> is that the transformation function <code>f</code> may not be applied to any value if it is empty. This means functor may not necessarily encapsulate exactly one value of type <code>T</code>. It can just as well wrap arbitrary number of values, just like <code>List</code>... functor:</p>
 
-<h3 id="toc_5"><strong>3、caller 获取执行结果</strong></h3>
-
-<p>caller 调用 callee 时，如果需要获取执行结果（消息双向传递），或者获知执行是否完成（消息单向传递无返回值），在异步模式下，主要依靠下面两种机制。</p>
-
-<h4 id="toc_6">◆ 轮询 (Polling)</h4>
-
-<p>比如 Java 的 Future 就提供了 isDone() 这种询问机制。</p>
-
-<pre><code class="language-java">//Caller.java
-void call() {
-     Future&lt;Void&gt; f = callee.asyncCall(param);
-     // do some other things
-     while (true) {
-          if (f.isDone()) break;
-        //do some other things or sleep or timeout
+<pre><code class="language-java">import com.google.common.collect.ImmutableList;
+ 
+class FList&lt;T&gt; implements Functor&lt;T, FList&lt;?&gt;&gt; {
+ 
+    private final ImmutableList&lt;T&gt; list;
+ 
+    FList(Iterable&lt;T&gt; value) {
+        this.list = ImmutableList.copyOf(value);
+    }
+ 
+    @Override
+    public &lt;R&gt; FList&lt;?&gt; map(Function&lt;T, R&gt; f) {
+        ArrayList&lt;R&gt; result = new ArrayList&lt;R&gt;(list.size());
+        for (T t : list) {
+            result.add(f.apply(t));
+        }
+        return new FList&lt;&gt;(result);
     }
 }
 </code></pre>
 
-<p>或阻塞版本</p>
+<p>The API remains the same: you take a functor in a transformation <code>T -&gt; R</code> - but the behavior is much different. Now we apply a transformation on each and every item in the <code>FList</code>, declaratively transforming whole list. So if you have a list of <code>customers</code> and you want a list of their streets, it&#39;s as simple as:</p>
 
-<pre><code class="language-java">//Caller.java
-void call() {
-    Future&lt;Void&gt; f = callee.asyncCall(param);
-    // do some other things
-    f.get(timeout, TimeUnit.SECONDS);
+<pre><code class="language-java">import static java.util.Arrays.asList;
+ 
+FList&lt;Customer&gt; customers = new FList&lt;&gt;(asList(cust1, cust2));
+ 
+FList&lt;String&gt; streets = customers
+        .map(Customer::getAddress)
+        .map(Address::street);
+</code></pre>
+
+<p>It&#39;s no longer as simple as saying <code>customers.getAddress().street()</code>, you can&#39;t invoke <code>getAddress()</code> on a collection of customers, you must invoke <code>getAddress()</code> on each individual customer and then place it back in a collection. By the way Groovy found this pattern so common that it actually has a syntax sugar for that: <code>customer*.getAddress()*.street()</code>. This operator, known as spread-dot, is actually a <code>map</code> in disguise. Maybe you are wondering why I iterate over <code>list</code> manually inside <code>map</code> rather than using <code>Stream</code>s from Java 8: <code>list.stream().map(f).collect(toList())</code>? Does this ring a bell? What if I told you <code>java.util.stream.Stream&lt;T&gt;</code> in Java is a functor as well? And by the way, also a monad?</p>
+
+<p>Now you should see the first benefits of functors - they abstract away the internal representation and provide consistent, easy to use API over various data structures. As the last example let me introduce <u>promise</u> functor, similar to <code>Future</code>. <code>Promise</code> &quot;promises&quot; that a value will become available one day. It is not yet there, maybe because some background computation was spawned or we are waiting for external event. But it will appear some time in the future. The mechanics of completing a <code>Promise&lt;T&gt;</code> are not interesting, but the functor nature is:</p>
+
+<pre><code class="language-java">Promise&lt;Customer&gt; customer = //...
+Promise&lt;byte[]&gt; bytes = customer
+        .map(Customer::getAddress)
+        .map(Address::street)
+        .map((String s) -&gt; s.substring(0, 3))
+        .map(String::toLowerCase)
+        .map(String::getBytes);
+</code></pre>
+
+<p>Looks familiar? That is the point! The implementation of <code>Promise</code> functor is beyond the scope of this article and not even important. Enough to say that we are very close to implementing <code>CompletableFuture</code> from Java 8 and we almost discovered <code>Observable</code> from RxJava. But back to functors. <code>Promise&lt;Customer&gt;</code> does not hold a value of <code>Customer</code> just yet. It promises to have such value in the future. But we can still map over such functor, just like we did with <code>FOptional</code> and <code>FList</code> - the syntax and semantics are exactly the same. The behavior follows what the functor represents. Invoking <code>customer.map(Customer::getAddress)</code> yields <code>Promise&lt;Address&gt;</code> which means <code>map</code> is non-blocking. <code>customer.map()</code> will <u>not</u> wait for the underlying <code>customer</code> promise to complete. Instead it returns another promise, of different type. When upstream promise completes, downstream promise applies a function passed to <code>map()</code> and passes the result downstream. Suddenly our functor allows us to pipeline asynchronous computations in a non-blocking manner. But you do not have to understand or learn that - because <code>Promise</code> is a functor, it must follow syntax and laws.</p>
+
+<p>There are many other great examples of functors, for example representing value or error in a compositional manner. But it is high time to look at monads.</p>
+
+<h1 id="toc_1">From functors to monads</h1>
+
+<p>I assume you understand how functors work and why are they a useful abstraction. But functors are not that universal as one might expect. What happens if your transformation function (the one passed as an argument to <code>map()</code>) returns functor instance rather than simple value? Well, functor is just a value as well, so nothing bad happens. Whatever was returned is placed back in a functor so all behaves consistently. However imagine you have this handy method for parsing <code>String</code>s:</p>
+
+<pre><code class="language-java">FOptional&lt;Integer&gt; tryParse(String s) {
+    try {
+        final int i = Integer.parseInt(s);
+        return FOptional.of(i);
+    } catch (NumberFormatException e) {
+        return FOptional.empty();
+    }
 }
 </code></pre>
 
-<p>轮询的控制逻辑在 caller 端。</p>
+<p>Exceptions are side-effects that undermine type system and functional purity. In pure functional languages there is no place for exceptions, after all we never heard about throwing exceptions during math classes, right? Errors and illegal conditions are represented explicitly using values and wrappers. For example <code>tryParse()</code> takes a <code>String</code> but does not simply return an <code>int</code> or silently throw an exception at runtime. We explicitly tell, through the type system, that <code>tryParse()</code> can fail, there is nothing exceptional or erroneous in having a malformed string. This semi-failure is represented by optional result. Interestingly Java has checked exceptions, the ones that must be declared and handled, so in some sense Java is purer in that regard, it does not hide side-effects. But for better or worse checked exceptions are often discouraged in Java, so let&#39;s get back to <code>tryParse()</code>. It seems useful to compose <code>tryParse</code> with <code>String</code> already wrapped in <code>FOptional</code>:</p>
 
-<h4 id="toc_7">◆ 回调 (Callback)</h4>
+<pre><code class="language-java">FOptional&lt;String&gt; str = FOptional.of(&quot;42&quot;);
+FOptional&lt;FOptional&lt;Integer&gt;&gt; num = str.map(this::tryParse);
+</code></pre>
 
-<p>caller 设置一个回调函数，供 callee 执行完成后调用这个函数。回调的控制是反转的，通常由 callee 端控制。</p>
+<p>That should not come as a surprise. If <code>tryParse()</code> would return an <code>int</code> you would get <code>FOptional&lt;Integer&gt; num</code>, but because <code>map()</code> function returns <code>FOptional&lt;Integer&gt;</code> itself, it gets wrapped twice into awkward <code>FOptional&lt;FOptional&lt;Integer&gt;&gt;</code>. Please look carefully at the types, you must understand why we got this double wrapper here. Apart from looking horrible, having a functor in functor ruins composition and fluent chaining:</p>
 
-<pre><code class="language-java">//Caller.java
-void call() {
-    callee.asyncCall(param, new AsyncHandler&lt;Response&lt;Message&gt;&gt;() {
-        @Override public void handleResponse(Response&lt;Message&gt; response) {
-            msg = response.get();
-            // process the msg...
-        }
-    });
-    // do some other things
+<pre><code class="language-java">FOptional&lt;Integer&gt; num1 = //...
+FOptional&lt;FOptional&lt;Integer&gt;&gt; num2 = //...
+ 
+FOptional&lt;Date&gt; date1 = num1.map(t -&gt; new Date(t));
+ 
+//doesn&#39;t compile!
+FOptional&lt;Date&gt; date2 = num2.map(t -&gt; new Date(t));
+</code></pre>
+
+<p>Here we try to map over the contents of <code>FOptional</code> by turning <code>int</code> into +Date+. Having a function of <code>int -&gt; Date</code> we can easily transform from <code>Functor&lt;Integer&gt;</code> to <code>Functor&lt;Date&gt;</code>, we know how it works. But in case of <code>num2</code> situation becomes complicated. What <code>num2.map()</code> receives as input is no longer an <code>int</code> but an <code>FOoption&lt;Integer&gt;</code> and obviously <code>java.util.Date</code> does not have such a constructor. We broke our functor by double wrapping it. However having a function that returns a functor rather than simple value is so common (like <code>tryParse()</code>) that we can not simply ignore such requirement. One approach is to introduce a special parameterless <code>join()</code> method that &quot;flattens&quot; nested functors:</p>
+
+<pre><code class="language-java">FOptional&lt;Integer&gt; num3 = num2.join()
+</code></pre>
+
+<p>It works but because this pattern is so common, special method named <code>flatMap()</code> was introduced. <code>flatMap()</code> is very similar to <code>map</code> but expects the function received as an argument to return a functor - or <u>monad</u> to be precise:</p>
+
+<pre><code class="language-java">interface Monad&lt;T,M extends Monad&lt;?,?&gt;&gt; extends Functor&lt;T,M&gt; {
+    M flatMap(Function&lt;T,M&gt; f);
 }
 </code></pre>
 
-<h3 id="toc_8"><strong>4、异步模式的场景</strong></h3>
+<p>We simply concluded that <code>flatMap</code> is just a syntactic sugar to allow better composition. But <code>flatMap</code> method (often called <code>bind</code> or <code>&gt;&gt;=</code> from Haskell) makes all the difference since it allows complex transformations to be composed in a pure, functional style. If <code>FOptional</code> was an instance of monad, parsing suddenly works as expected:</p>
 
-<h4 id="toc_9">◆ 阻塞</h4>
+<pre><code class="language-java">FOptional&lt;String&gt; num = FOptional.of(&quot;42&quot;);
+FOptional&lt;Integer&gt; answer = num.flatMap(this::tryParse);
+</code></pre>
 
-<p>阻塞 (Blocking)/ 非阻塞(Non-Blocking) 是用来描述，在等待调用结果时 caller 线程的状态。阻塞，通常意味着 caller 线程不再使用 CPU 时间，处于可被 OS 调度的状态(注意与 Java 线程状态 2 的区别)。 磁盘 IO 和网络 IO 是常见的会引起线程阻塞的场景 3。受制于底层 OS 的同步阻塞式 IO 系统函数，调用 Java OIO(Old blocking IO) API 无疑是会阻塞的。对于 DiskIO，Java NIO2 提供了异步 API。对于 SocketIO，Java NIO2 以及 NIO 框架 Netty，都提供了异步 API。</p>
+<p>Monads do not need to implement <code>map</code>, it can be implemented on top of <code>flatMap()</code> easily. As a matter of fact <code>flatMap</code> is the essential operator that enables a whole new universe of transformations. Obviously just like with functors, syntactic compliance is not enough to call some class a monad, the <code>flatMap()</code> operator has to follow monad laws, but they are fairly intuitive like associativity of <code>flatMap()</code> and identity. The latter requires that <code>m(x).flatMap(f)</code> is the same as <code>f(x)</code> for any monad holding a value <code>x</code> and any function <code>f</code>. We are not going to dive too deep into monad theory, instead let&#39;s focus on practical implications. Monads shine when their internal structure is not trivial, for example <code>Promise</code> monad that will hold a value in the future. Can you guess from the type system how <code>Promise</code> will behave in the following program? First all methods that can potentially take some time to complete return a <code>Promise</code>:</p>
 
-<blockquote>
-<p>◆ Linux 提供了异步 IO 系统函数，只能用于 DiskIO，还有一些限制 4，Java NIO2 AsynchronousFileChannel 内部仍然使用线程池 + 阻塞式 API 的实现。</p>
-
-<p>◆ Linux 为 SocketIO 准备就绪阶段提供了非阻塞式 API(select/poll/epoll)，但是 IO 执行阶段仍然是同步阻塞的，因此主流的 Java NIO 框架的 Reactor 模式内部实现使用了线程池。</p>
-</blockquote>
-
-<h4 id="toc_10">◆ 并行</h4>
-
-<p>比如需要调用多个没有依赖关系的服务，或者访问分散在多个存储分片中的数据，如果服务接口或数据访问接口实现了异步 API，那么就很方便实现并行调用，减少总体调用耗时。</p>
-
-<h4 id="toc_11">◆ 速度不匹配</h4>
-
-<p>使用中间队列解偶 caller 和 callee 的速度不匹配问题，削峰填谷。</p>
-
-<h4 id="toc_12">◆ 批量</h4>
-
-<p>使用中间队列解偶 caller 和 callee 的速度不匹配问题，削峰填谷。</p>
-
-<h2 id="toc_13"><strong>二、异步 API 的几种风格</strong></h2>
-
-<h3 id="toc_14"><strong>1、Callback</strong></h3>
-
-<p>这个比较传统，比如 zookeeper 客户端提供的基于回调的异步 API:</p>
-
-<pre><code class="language-java">try {
-    zookeeper.create(path, data, acl, createMode, new StringCallback() {
-        public void processResult(int rc, String path, Object ctx, String name) {
-            if (rc != KeeperException.Code.OK.intValue()) {
-                // error handle
-            } else {
-                // success process
-                // 如果需要在成功后再发起基于回调的异步调用，会形成callback hell
-            }
-        }
-    }, ctx);
-} catch( Throwable e) {
-    // error handle
+<pre><code class="language-java">import java.time.DayOfWeek;
+ 
+ 
+Promise&lt;Customer&gt; loadCustomer(int id) {
+    //...
+}
+ 
+Promise&lt;Basket&gt; readBasket(Customer customer) {
+    //...
+}
+ 
+Promise&lt;BigDecimal&gt; calculateDiscount(Basket basket, DayOfWeek dow) {
+    //...
 }
 </code></pre>
 
-<blockquote>
-<p>◆ Callback 通常是无状态的 </p>
+<p>We can now compose these functions as if they were all blocking using monadic operators:</p>
 
-<p>◆ 要获取 Callback 的计算结果，通常需要 closure </p>
+<pre><code class="language-java">Promise&lt;BigDecimal&gt; discount = 
+    loadCustomer(42)
+        .flatMap(this::readBasket)
+        .flatMap(b -&gt; calculateDiscount(b, DayOfWeek.FRIDAY));
+</code></pre>
 
-<p>◆ 异常处理比较分散 </p>
+<p>This becomes interesting. <code>flatMap()</code> must preserve monadic type therefor all intermediate objects are <code>Promise</code>s. It is not just about keeping the types in order - preceding program is suddenly fully asynchronous! <code>loadCustomer()</code> returns a <code>Promise</code> so it does not block. <code>readBasket()</code> takes whatever the <code>Promise</code> has (will have) and applies a function returning another <code>Promise</code> and so on and so forth. Basically we built an asynchronous pipeline of computation where the completion of one step in background automatically triggers next step.</p>
 
-<p>◆ 在有多个异步调用链的时候，容易造成 Callback hell</p>
-</blockquote>
+<h1 id="toc_2">Exploring <code>flatMap()</code></h1>
 
-<h3 id="toc_15"><strong>2、Future/Promise</strong></h3>
+<p>It is very common to have two monads and combining the value they enclose together. However both functors and monads do not allow direct access to their internals, which would be impure. Instead we must carefully apply transformation without escaping the monad. Imagine you have two monads and you want to combine them:</p>
 
-<p>Promise 是 callee 给 caller 的凭证，代表未完成但承诺完成（成功或失败）的结果。Promise 本身是有状态的，通常由 callee 端维护。其状态转移如下（术语参考 Promise/A + 和 ES6）：</p>
+<pre><code class="language-java">import java.time.LocalDate;
+import java.time.Month;
+ 
+ 
+Monad&lt;Month&gt; month = //...
+Monad&lt;Integer&gt; dayOfMonth = //...
+ 
+Monad&lt;LocalDate&gt; date = month.flatMap((Month m) -&gt;
+        dayOfMonth
+                .map((int d) -&gt; LocalDate.of(2016, m, d)));
+</code></pre>
 
-<p><img src="https://mmbiz.qpic.cn/mmbiz_png/MrFJyDNenF8OUIRCOltzbKCk6yXqAJP3dnnIwboxWueXlrTo9wSvNYa6AfRIfwibZobCqckibNSvwyEzLd3GyO9Q/640?wx_fmt=png" alt=""/></p>
+<p>Please take your time to study the preceding pseudo-code. I don&#39;t use any real monad implementation like <code>Promise</code> or <code>List</code> to emphasize the core concept. We have two independent monads, one of type <code>Month</code> and the other of type <code>Integer</code>. In order to build <code>LocalDate</code> out of them we must build a nested transformation that has access to the internals of both monads. Work through the types, especially making sure you understand why we use <code>flatMap</code> in one place and <code>map()</code> in the other. Think how you would structure this code if you had a third <code>Monad&lt;Year&gt;</code> as well. This pattern of applying a function of two arguments (<code>m</code> and <code>d</code> in our case) is so common that in Haskell there is special helper function called <code>liftM2</code> that does exactly this transformation, implemented on top of <code>map</code> and <code>flatMap</code>. In Java pseudo-syntax it would look somewhat like this:</p>
 
-<blockquote>
-<p>Promise 的状态只能转移一次，因此如果有 callback，那么. then(callback) 或. catch(callback) 也只被执行一次。</p>
-</blockquote>
-
-<p>JDK5 的 Future 只能用轮询或者阻塞的方式获取结果，caller 端处理比较繁琐。Guava 的 ListenableFuture，特别是 JDK8 的 CompletableFuture，则是完整实现了 Promise 风格的异步 API。 个人认为 Promise 是更好的 Callback，ListenableFuture 接口只是比 Future 多了一个 void addListener(Runnable, Executor) 方法。 Promise 提供了比 Callback 更易用更清晰的编程模式，尤其是涉及多个异步 API 的串行调用（chaining 或 pipelining )、组合调用（并行、合并）、异常处理等方面有很大的优势。</p>
-
-<blockquote>
-<p><strong>引申阅读</strong> </p>
-
-<p>◆ 这篇文章谈到了 Future 和 Promise 的细微区别、相关历史和技术。 </p>
-
-<p>◆ 这里有一些讨论：Aren’t promises just callbacks?,Is there really a fundamental difference between callbacks and Promises?。 </p>
-
-<p>◆ Promise 借鉴了函数式中的一些概念: 从函数式编程到 Promise。 </p>
-
-<p>◆ 这篇文章简要对比了几种语言中的 Promise 框架。</p>
-</blockquote>
-
-<h3 id="toc_16"><strong>3、ReactiveX</strong></h3>
-
-<p>其官方网站的介绍</p>
-
-<blockquote>
-<p>An API for asynchronous programming with observable streams</p>
-</blockquote>
-
-<p>其关键的概念 Observable 比较 Promise 来说：</p>
-
-<p>◆ Promise 代表一个异步计算值，而 Observable 代表着一系列值 (stream)。 </p>
-
-<p>◆ Promise 的值只能产生一次，而 Observable 的事件可以不断产生。因此 Rx 首先流行在前端 UI 场景：事件来源多，数据变化影响多个 UI 组件的变更。</p>
-
-<p>Rx 的学习曲线比 Promise 要高得多，而且目前 Promise 风格的异步编程能够满足我们大部分的服务端开发场景，因此我们这里主要关注 Promise。</p>
-
-<h2 id="toc_17"><strong>三、Promise 在服务端的应用</strong></h2>
-
-<p>下面穿插着以 JDK8 的 CompletableFuture 和 Guava 的 ListenableFuture（适用 JDK6）为例介绍 Promise 的用法。</p>
-
-<h3 id="toc_18"><strong>1、符合 Promise 风格的方法签名</strong></h3>
-
-<p>Promise 风格的方法签名，有个不成文的规则是不抛出异常，因为异常是 Promise 对象本身就能携带的两种状态之一。比如我们想把一个 Callback 风格的异步 API 包装成 Promise 风格的（通常在使用一个较老的类库时需要这样的包装），可以这样：</p>
-
-<pre><code class="language-java">//caller.java
-CompletableFuture&lt;String&gt; asyncCall(final String msg) {
-    CompletableFuture&lt;String&gt; promise = new CompletableFuture&lt;&gt;();
-    try {
-        callee.asyncCall(msg, new Callback&lt;String&gt;() {
-            public void onSuccess(String r) { promise.complete(r); }
-            public void onFail(Throwable t) { promise.completeExceptionally(t); }
-        });
-    } catch (Throwable e) {
-        promise.completeExceptionally(t);
-    }
-    return promise;
+<pre><code class="language-java">Monad&lt;R&gt; liftM2(Monad&lt;T1&gt; t1, Monad&lt;T2&gt; t2, BiFunction&lt;T1, T2, R&gt; fun) {
+    return t1.flatMap((T1 tv1) -&gt;
+            t2.map((T2 tv2) -&gt; fun.apply(tv1, tv2))
+    );
 }
 </code></pre>
 
-<p>下面是使用 ListenableFuture 的实现异步发送消息的 API。</p>
+<p>You don&#39;t have to implement this method for every monad, <code>flatMap()</code> is enough, moreover it works consistently for all monads. <code>liftM2</code> is extremely useful when you consider how it can be used with various monads. For example <code>liftM2(list1, list2, function)</code> will apply <code>function</code> on every possible pair of items from <code>list1</code> and <code>list2</code> (Cartesian product). On the other hand for optionals it will apply a function only when both optionals are non-empty. Even better, for <code>Promise</code> monad a function will be executed asynchronously when both <code>Promise</code>s are completed. This means we just invented a simple synchronization mechanism (<code>join()</code> in fork-join algorithms) of two asynchronous steps.</p>
 
-<pre><code class="language-java">//LocalMessageEngine.java
-static class WriteTask {
-    // SettableFuture是Guava中一种可设置状态的Promise类型。
-    final SettableFuture&lt;Boolean&gt; promise = SettableFuture.create();
-    final byte[] message;
-    WriteTask(byte[] message) {
-        this.message = message;
-    }
-}
-public Producer createProducer() {
-    return new Producer() {
-        public ListenableFuture&lt;Boolean&gt; asyncProduce(byte[] message) {
-            if (!Engine.this.started) {
-                // 返回前已完成
-                return Futures.immediateFailedFuture(new IllegalStateException(&quot;Message engine was stopped or not started&quot;));
-            }
+<p>Another useful operator that we can easily build on top of <code>flatMap()</code> is <code>filter(Predicate&lt;T&gt;)</code> which takes whatever is inside a monad and discards it entirely if it does not meet certain predicate. In a way it is similar to <code>map</code> but rather than 1-to-1 mapping we have 1-to-0-or-1. Again <code>filter()</code> has the same semantics for every monad but quite amazing functionality depending on which monad we actually use. Obviously it allows filtering out certain elements from a list:</p>
 
-            WriteTask task = new WriteTask(message);
-            boolean queued = writeTaskQueue.offer(task);
-            if (!queued) {
-                task.promise.set(Boolean.FALSE);
-            }
-            return task.promise;
-        }
-    };
-}
+<pre><code class="language-java">FList&lt;Customer&gt; vips = 
+    customers.filter(c -&gt; c.totalOrders &gt; 1_000);
 </code></pre>
 
-<p>上面两个例子，描述了如何创建一个 Promise 对象返回给 caller，以及如何在 callee 端 fulfill 或 reject 这个 Promise。你可能会发现，返回给 caller 之前 Promise 是可以处于完成状态的。在继续下面的使用介绍前，先简单的看下 ListenableFuture 和 CompletableFuture 的几个主要 API。</p>
+<p>But it works just as well e.g. for optionals. In that case we can transform non-empty optional into an empty one if the contents of optional does not meet some criteria. Empty optionals are left intact.</p>
 
-<p><img src="https://mmbiz.qpic.cn/mmbiz_png/MrFJyDNenF8OUIRCOltzbKCk6yXqAJP3ibyDlfaV7ZWzC5wCKpCF3S5ia5bicPE3gnEUibA9xWOafp3uOnPiaxrLLhQ/640?wx_fmt=png" alt=""/></p>
+<h1 id="toc_3">From list of monads to monad of list</h1>
 
-<p><strong>2、串行调用</strong></p>
+<p>Another useful operator that originates from <code>flatMap()</code> is <code>sequence()</code>. You can easily guess what it does simply by looking at type signature:</p>
 
-<p>ListenableFuture 没有提供 then 方法，而是通过 Futures 的一系列静态方法来实现 Promise 风格的 API。由于两者有大部分的 API 是可以相互转化的，限于篇幅下面就不全部演示了。Promse 的 callback 就是其 then 或 catch 方法的函数型参数，当 Promise 被 resolve 时执行这个 callback 函数。这个 callback 函数的输入，就是 Promise 的 resolved 值。根据 callback 函数的输出的不同，需要采取不同的 then 方法。</p>
-
-<h4 id="toc_19">◆ callback 无输出</h4>
-
-<p>Futures.addCallback 和 CompletableFuture.thenAccept 接受无输出的 callback。</p>
-
-<pre><code class="language-java">// Guava
-ListenableFuture&lt;QueryResult&gt; promise1 = ...;
-Futures.addCallback(promise1, new FutureCallback&lt;QueryResult&gt;() {
-    public void onSuccess(QueryResult result) {
-        storeInLocalCache(result);
-    }
-    public void onFailure(Throwable t) {
-        reportError(t);
-    }
-});
+<pre><code class="language-java">Monad&lt;Iterable&lt;T&gt;&gt; sequence(Iterable&lt;Monad&lt;T&gt;&gt; monads)
 </code></pre>
 
-<pre><code class="language-java">// CompletableFuture
-CompletableFuture&lt;QueryResult&gt; promise1 = ...;
-CompletableFuture&lt;Void&gt; promise2 = promise1.thenAccept(result -&gt; storeInLocalCache(result));
-return promise2;
-//return promise1.thenAccept(result -&gt; storeInLocalCache(result));//thenAccept返回另一个Promise实例
+<p>Often we have a bunch of monads of the same type and we want to have a single monad of a list of that type. This might sounds abstract to you, but it is impressively useful. Imagine you wanted to load a few customers from the database concurrently by ID so you used <code>loadCustomer(id)</code> method several times for different IDs, each invocation returning <code>Promise&lt;Customer&gt;</code>. Now you have a list of <code>Promise</code>s but what you really want is a list of customers, e.g. to be displayed in the web browser. <code>sequence()</code> (in RxJava <code>sequence()</code> is called <code>concat()</code> or <code>merge()</code>, depending on use-case) operator is built just for that:</p>
+
+<pre><code class="language-java">FList&lt;Promise&lt;Customer&gt;&gt; custPromises = FList
+    .of(1, 2, 3)
+    .map(database::loadCustomer);
+ 
+Promise&lt;FList&lt;Customer&gt;&gt; customers = custPromises.sequence();
+ 
+customers.map((FList&lt;Customer&gt; c) -&gt; ...);
 </code></pre>
 
-<p>先忽略异常处理。对比下这种场景下的 ListenableFuture 和 CompletableFuture：前者采取了更传统的 callback 风格，后者则返回一个新的 Promise 实例，callback 计算完毕则 promise2 被 fulfilled，很容易通过 promise2 来获取 callback 执行完毕与否，不需要 closure。</p>
+<p>Having an <code>FList&lt;Integer&gt;</code> representing customer IDs we <code>map</code> over it (do you see how it helps that <code>FList</code> is a functor?) by calling <code>database.loadCustomer(id)</code> for each ID. This leads to rather inconvenient list of <code>Promise</code>s. <code>sequence()</code> saves the day, but once again this is not just a syntactic sugar. Preceding code is fully non-blocking. For different kinds of monads <code>sequence()</code> still makes sense, but in a different computational context. For example it can change a <code>FList&lt;FOptional&lt;T&gt;&gt;</code> into <code>FOptional&lt;FList&lt;T&gt;&gt;</code>. And by the way, you can implement <code>sequence()</code> (just like <code>map()</code>) on top of <code>flatMap()</code>.</p>
 
-<h4 id="toc_20">◆ callback 输出一个普通计算值</h4>
+<p>This is just the tip of the iceberg when it comes to usefulness of <code>flatMap()</code> and monads in general. Despite coming from rather obscure category theory, monads proved to be extremely useful abstraction even in object-oriented programming languages such as Java. Being able to compose functions returning monads is so universally helpful that dozens of unrelated classes follow monadic behavior.</p>
 
-<p>这种情况下 callback 就是一个转换函数，输入是前一个 Promise 的 fulfilled 值，输出则作为新 Promise 的 fulfilled 值。Futures.transform 和 CompletableFuture.thenApply 接收这样的 callback 函数。</p>
+<p>Moreover once you encapsulate data inside monad, it is often hard to get it out explicitly. Such operation is not part of the monad behavior and often leads to non-idiomatic code. For example <code>Promise.get()</code> on <code>Promise&lt;T&gt;</code> can technically return <code>T</code>, but only by blocking, whereas all operators based on <code>flatMap()</code> are non-blocking. Another example is <code>FOptional.get()</code> that can fail because <code>FOptional</code> may be empty. Even <code>FList.get(idx)</code> that peeks particular element from a list sounds awkward because you can replace <code>for</code> loops with <code>map()</code> quite often.</p>
 
-<pre><code class="language-java">// CompletableFuture
-CompletableFuture&lt;QueryResult&gt; queryFuture = ...;
-CompletableFuture&lt;List&lt;Row&gt;&gt; rowsFuture = queryFuture.thenApply(result -&gt; result.getRows());
-return rowsFuture;
-</code></pre>
-
-<h4 id="toc_21">◆ callback 输出一个异步计算值，即一个 Promise</h4>
-
-<p>乍一看，这种情况下的输出跟上一种好像没什么区别。但实际上，输出一个 Promise 值和输出一个普通的值有根本的区别。还记得吧，Promise 代表着一个未完成的并且承诺完成的值。通常这种情况下，意味着 callback 里调用了另外一个 Promise 风格的异步 API。比如下面的例子中 indexService.lookUp 和 dataService.read 方法，由于涉及到 IO，都设计为异步 API。</p>
-
-<pre><code class="language-java">//Guava
-ListenableFuture&lt;RowKey&gt; rowKeyFuture = indexService.lookUp(query);
-AsyncFunction&lt;RowKey, QueryResult&gt; queryFunction = new AsyncFunction&lt;RowKey, QueryResult&gt;() {
-    public ListenableFuture&lt;QueryResult&gt; apply(RowKey rowKey) {
-        return dataService.read(rowKey);
-    }
-};
-ListenableFuture&lt;QueryResult&gt; queryFuture = Futures.transformAsync(rowKeyFuture, queryFunction);
-return queryFuture;
-</code></pre>
-
-<p>Futures.transformAsync 和 CompletableFuture.thenCompose 接收这样的 callback 函数。</p>
-
-<p>设想一下，如果某个逻辑中需要调用的多个 Promise 风格的异步方法（比如多个 RPC 调用），并且有先后依赖关系，即上一个方法的执行结果作为下一个方法的输入。就可以用 thenCompose 把他们串起来。</p>
-
-<pre><code class="language-java">//CompletableFuture
-CompletableFuture&lt;RPC4Result&gt; promise4 = rpc1.call(input) //promise1
-    .thenCompose(rpc1Result -&gt; rpc2.call(rpc1Result)) //promise2
-    .thenCompose(rpc2Result -&gt; rpc3.call(rpc2Result)) //promise3
-    .thenCompose(rpc3Result -&gt; rpc4.call(rpc3Result)) //promise4
-return promise4;
-</code></pre>
-
-<p>不要被链式调用给忽悠了，你还是可以正常使用普通的风格。</p>
-
-<p>单纯看来，上述的串行调用场景下使用 Promise 风格的 API 好像只是消除了 Callback hell。那么采用同步 API 就既没有 Callback hell 的问题，又符合数据依赖关系。可是，你会发现，上面的举例中结尾都返回了 Promise，就是说，包含这段代码的方法被设计为异步 API。而使用同步 API，则会强制这个方法的调用者只能使用同步方式调用。</p>
-
-<h3 id="toc_22"><strong>3、并行调用</strong></h3>
-
-<p>异步 API 很适合并行调用。caller 在调用多个没有依赖关系的异步 API 时，可以先依次发起调用而不用等待每个调用真正执行完成，从 callee 的角度来讲，执行是并行的。caller 可以对调用结果进行合并处理，关键是，合并也是异步风格的。</p>
-
-<pre><code class="language-java">//Guava
-List&lt;ListenableFuture&lt;QueryResult&gt;&gt; partialPromises = new ArrayList&lt;ListenableFuture&lt;QueryResult&gt;&gt;(nodes.size());
-for (Node node : nodes) {
-    partialPromises.add(lookupHandler(node).query());
-}
-ListenableFuture&lt;List&lt;Row&gt;&gt; mergedPromise = Futures.transform(Futures.allAsList(partialPromises), new Function&lt;List&lt;List&lt;Row&gt;&gt;, List&lt;Row&gt;&gt;() {
-    @Override public Long apply(List&lt;List&lt;Row&gt;&gt; input) {
-        return merge(input);
-    }
-})
-return mergedPromise;
-</code></pre>
-
-<p>Futures.allAsList 是并行执行所有的 promises，若有一个 promise 异常完成则尝试 reject 尚未 resolved 的 promise。也可以使用 Futures.successfulAsList，区别在于后者并不会 reject 尚未 resolved 的 promise。CompletableFuture 的对应物是 allOf 和 anyOf。</p>
-
-<h3 id="toc_23"><strong>4、调用编排</strong></h3>
-
-<p>合并结果设计为异步风格的好处在于，很方便做合并、串行混合调用编排，比如某个逻辑中需要调用四个个 RPC 服务 A、B、C、D，其中：A 的输出作为 B、C 的输入，B、C 可并行，B、C 的输出合并后作为 D 的输入。</p>
-
-<pre><code class="language-java">//CompletableFuture
-CompletableFuture&lt;AResult&gt; promiseA = rpcA.call(input);
-CompletableFuture&lt;DResult&gt; promiseD = promiseA.thenCompose(aResult -&gt; {
-    CompletableFuture&lt;BResult&gt; promiseB = rpcB.call(aResult);
-    CompletableFuture&lt;CResult&gt; promiseC = rpcC.call(aResult);
-    CompletableFuture&lt;MergedResult&gt; mergedPromise = promiseB.thenCombine(promiseC, (bResult, cResult) -&gt; {
-        return merge(bResult, cResult)
-    });
-    return mergedPromise;
-}).thenCompose(mergedResult -&gt; rpcD.call(mergedResult));
-return promiseD;
-</code></pre>
-
-<h3 id="toc_24"><strong>5、异常处理</strong></h3>
-
-<p>上面提到过 Callback 风格的异步 API，异常处理比较分散。而 Promise 风格的异常处理则优雅得多。我们需要记住，异常是 Promise 携带的两种状态之一。那么异常可以作为 callback 函数的输入。</p>
-
-<h4 id="toc_25">◆ 通用异常处理</h4>
-
-<p>Futures.catching 和 CompletableFuture.exceptionally 接收异常值为参数的 callback 函数。</p>
-
-<pre><code class="language-java">//Guava
-ListenableFuture&lt;Integer&gt; fetchCounterPromise = ...;
-// Falling back to a zero counter in case an exception happens when
-// processing the RPC to fetch counters.
-ListenableFuture&lt;Integer&gt; faultTolerantPromise = Futures.catching(
-    fetchCounterPromise, FetchException.class,
-    new Function&lt;FetchException, Integer&gt;() {
-        public Integer apply(FetchException e) {
-            return 0;
-        }
-    });
-</code></pre>
-
-<p>我们再看一个更复杂的例子。</p>
-
-<pre><code class="language-java">//CompletableFuture
-CompletableFuture&lt;FaultTolerantResult&gt; faultTolerantPromise = rpc1.call(input) //promise1
-    .thenCompose(rpc1Result -&gt; rpc2.call(rpc1Result)) //promise2
-    .thenCompose(rpc2Result -&gt; rpc3.call(rpc2Result)) //promise3
-    .thenCompose(rpc3Result -&gt; rpc4.call(rpc3Result)) //promise4
-    .exceptionally(err -&gt; {
-        // process err
-        return faultTolerantValue;
-    });  //faultTolerantPromise
-return faultTolerantPromise;
-</code></pre>
-
-<p>再提醒一遍，不要被链式调用迷惑了。这个例子里面，rpc1/rpc2/rpc3/rpc4 都有可能发生异常，但我们只需要在最后统一处理（返回异常值或转换为一个默认正常值）。比如 rpc2 发生异常，那么 rpc3/rpc4 的逻辑（接收正常值的 callback 函数）都不会执行，但是 rpc2 的异常会传递给 promise3/promise4。</p>
-
-<h4 id="toc_26">◆ 恢复</h4>
-
-<p>假设在读取某个数据存储发生异常，我们需要某种恢复机制，比如读取另一个 backup 的数据存储（某种重试），那么可以使用 Futures.cachingAsync 和 CompletableFuture.handle。</p>
-
-<pre><code class="language-java">//CompletableFuture
-public &lt;V&gt; CompletableFuture&lt;V&gt; dispatch(final Command&lt;V&gt; command) {
-    final CompletableFuture&lt;V&gt; dispatched = loadbalance.selectHandler().dispatch(command);
-    if (maxTries &gt; 0) {
-        final AtomicInteger leftTries = new AtomicInteger(maxTries);
-        final BiFunction&lt;CompletableFuture&lt;V&gt;, Throwable, CompletableFuture&lt;V&gt;&gt; fallback = new BiFunction&lt;CompletableFuture&lt;V&gt;, Throwable, CompletableFuture&lt;V&gt;&gt;() {
-            @Override
-            public CompletableFuture&lt;V&gt; apply(CompletableFuture&lt;V&gt; input, Throwable cause) {
-                if (cause == null) return input;
-                if (cause instanceof RecoverableException &amp;&amp; leftTries.getAndDecrement() &gt; 0) {
-                    final CompletableFuture&lt;V&gt; next = loadbalance.selectHandler().dispatch(new Command&lt;V&gt;(command.type, command.args));
-                    return next.handle((v, err) -&gt; err).thenCompose(err -&gt; apply(next, err));
-                }
-                CompletableFuture&lt;V&gt; errFuture = new CompletableFuture&lt;&gt;();
-                errFuture.completeExceptionally(cause);
-                return errFuture;
-            }
-        };
-        return dispatched.handle((v, err) -&gt; err).thenCompose(err -&gt; fallback.apply(dispatched, err));
-    }
-    return dispatched;
-}
-</code></pre>
-
-<h4 id="toc_27">◆ 超时</h4>
-
-<p>Promise 是一个承诺完成（成功或失败）的结果，但是并不承诺完成时间。所以，通常需要一种超时机制，幸运的是 ListenableFuture 和 CompletableFuture 都实现了 Future 接口。</p>
-
-<pre><code class="language-java">CompletableFuture&lt;FaultTolerantResult&gt; faultTolerantPromise = ...;
-try {
-    FaultTolerantResult result = faultTolerantPromise.get(1000, TimeUnit.SECONDS);
-    // process result
-} catch (TimeoutException e) {
-    //尝试取消执行尚未开始的callback函数
-    faultTolerantPromise.cancel(false);` 
-
-}
-</code></pre>
-
-<h2 id="toc_28"><strong>四、Promise 异步编程的注意点</strong></h2>
-
-<p>异步编程比同步编程困难。异步编程通常主要解决一小部分问题，比如阻塞。Promise 借鉴了函数式编程的风格，大量的逻辑会分散在各种 callback 函数来实现。因此对于习惯了同步编程的 OO 式或命令式编程风格的开发人员，需要一定的习惯时间。</p>
-
-<p>上面谈到 callee 执行机制的时候，谈到了线程池，那么 callee 计算完成时，callback 函数的执行通常是池中 resolve Promise 的线程执行。但是，如果 caller 在设置 callback 的时候，Promise 已经完成，那么 callback 的执行线程则是 caller 线程。因此，请特别关注 callback 函数的执行线程的差别。请遵循：</p>
-
-<p>◆ callback 尽量轻量 </p>
-
-<p>◆ callback 避免阻塞 </p>
-
-<p>◆ 否则请指定执行线程</p>
-
-<p>如果 callback 执行了大量的计算，甚至执行了阻塞式操作，那么就很有可能阻塞住 Promise 的 resolve 线程，通常这类线程都是极少的，比如执行 IO 的 EventLoop 线程，有可能造成其他 Promise 得不到执行。</p>
-
-<blockquote>
-<p>摘自 ListenableFuture 的文档： </p>
-
-<p>Note: For fast, lightweight listeners that would be safe to execute in any thread, consider MoreExecutors.directExecutor. Otherwise, avoid it. Heavyweight directExecutor listeners can cause problems, and these problems can be difficult to reproduce because they depend on timing. For example: </p>
-
-<p>◆ The listener may be executed by the caller of addListener. That caller may be a UI thread or other latency-sensitive thread. This can harm UI responsiveness. </p>
-
-<p>◆ The listener may be executed by the thread that completes this Future. That thread may be an internal system thread such as an RPC network thread. Blocking that thread may stall progress of the whole system. It may even cause a deadlock. </p>
-
-<p>◆ The listener may delay other listeners, even listeners that are not themselves directExecutor listeners.</p>
-</blockquote>
-
-<p>我们也的确碰到过使用 MoreExecutors.directExecutor 时，由于编写了太过复杂的 callback 链，导致线程死锁的问题。</p>
-
-<p>CompletableFuture 和 ListenableFuture 都有指定 callback 执行线程的方法：</p>
-
-<pre><code class="language-java">//使用内置的通用ForkJoin线程池
-completableFuture.thenAcceptAsync(callback);
-//使用指定的线程执行器
-completableFuture.thenAcceptAsync(callback, executor);
-//使用指定的线程执行器
-Futures.transform(input, callback, executor);
-</code></pre>
-
-<p>正因为异步编程的复杂性，因此目前我们也尽量在业务逻辑相对简单的应用上进行异步化改造。后续，我们也会评估 Quasar 等协程框架。</p>
-
-<p>完~</p>
+<p>I hope you now understand why monads are so popular these days. Even in object-oriented(-ish) language like Java they are quite useful abstraction.</p>
 
                         
                       </div>
@@ -597,7 +418,7 @@ Futures.transform(input, callback, executor);
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/5/13</span>
+                    <span class="date">2018/6/1</span>
                     <span>posted in&nbsp;</span> 
           				  
           					    <span class="posted-in"><a href='Java.html'>Java</a></span>
@@ -690,31 +511,31 @@ Futures.transform(input, callback, executor);
 	      
 		      
 			      <li class="post">
-			        <a href="15459058392039.html">Reliable Domain Events</a>
+			        <a href="15517999043443.html">The Art of Crafting Architectural Diagrams</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
+			        <a href="15517997955971.html">为什么说我们需要软件架构图？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
+			        <a href="15516128677869.html">DNS Servers That Offer Privacy and Filtering</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
+			        <a href="15516123108194.html">Airbnb's Migration from Monolith to Services</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
+			        <a href="15516097487470.html">Events As First-Class Citizens</a>
 			      </li>
 		     
 		  

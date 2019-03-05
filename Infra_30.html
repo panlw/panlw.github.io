@@ -105,250 +105,365 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15287285970632.html">
+                <a class="clearlink" href="15301812452579.html">
                 
-                  <h1>Showdown: MySQL 8 vs PostgreSQL 10</h1>
+                  <h1>架构设计：负载均衡层设计方案（7）——LVS + Keepalived + Nginx安装及配置</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><strong>原文</strong>：<a href="https://hackernoon.com/showdown-mysql-8-vs-postgresql-10-3fe23be5c19e">https://hackernoon.com/showdown-mysql-8-vs-postgresql-10-3fe23be5c19e</a><br/>
-<strong>链接</strong>：<a href="https://www.oschina.net/translate/showdown-mysql-8-vs-postgresql-10">https://www.oschina.net/translate/showdown-mysql-8-vs-postgresql-10</a><br/>
-<strong>译者</strong>：雪落无痕xdj, 无若, LinuxTech, Tocy, kevinlinkai</p>
+<p><a href="https://blog.csdn.net/yinwenjie/article/details/47211551">https://blog.csdn.net/yinwenjie/article/details/47211551</a></p>
 </blockquote>
 
-<p>既然 <a href="https://mysqlserverteam.com/whats-new-in-mysql-8-0-generally-available/">MySQL 8</a> 和 <a href="https://www.postgresql.org/about/news/1786/">PostgreSQL 10</a> 已经发布了，现在是时候回顾一下这两大开源关系型数据库是如何彼此竞争的。</p>
+<h2 id="toc_0"><a></a>1、概述</h2>
 
-<p>在这些版本之前，人们普遍认为，Postgres 在功能集表现更出色，也因其 “学院派” 风格而备受称赞，MySQL 则更善长大规模并发读 / 写。</p>
+<p>上篇文章《架构设计：负载均衡层设计方案（6）——Nginx + Keepalived 构建高可用的负载层》(<a href="http://blog.csdn.net/yinwenjie/article/details/47130609">http://blog.csdn.net/yinwenjie/article/details/47130609</a>) 我们讲解了 Nginx 的故障切换，并且承诺各位读者会尽快讲解 LVS + Keepalived + Nginx 的安装和配置。在中间由于工作的原因，我又插写了三篇关于 zookeeper 的原理使用的文章。今天这边文章我们回归主题，为各位读者讲解 LVS + Keepalived + Nginx 的安装及配置。</p>
 
-<p>但是随着它们最新版本的发布，两者之间的差距明显变小了。</p>
+<h2 id="toc_1"><a></a>2、安装计划和准备工作</h2>
 
-<h2 id="toc_0">特性比较</h2>
+<p>下图，我们表示了本篇文章要搭建的整个集成架构的抽象结构：</p>
 
-<p>让我们来看看我们都喜欢谈论的 “时髦” 功能。</p>
+<p><img src="https://img-blog.csdn.net/20150822113121644" alt=""/></p>
 
-<table>
-<thead>
-<tr>
-<th style="text-align: center">特性</th>
-<th style="text-align: center">MySQL 8</th>
-<th style="text-align: center">PostgreSQL 10</th>
-</tr>
-</thead>
+<p>我们采用两个 LVS 节点（141 和 142），但是一个时间工作的只有一个 LVS 节点，另一个始终处于热备 standby 状态，由 keepalived 监控这两个节点的工作状态并完成切换。</p>
 
-<tbody>
-<tr>
-<td style="text-align: center">&lt; <em>查询 &amp; 分析</em> &gt;</td>
-<td style="text-align: center"></td>
-<td style="text-align: center"></td>
-</tr>
-<tr>
-<td style="text-align: center">公用表表达式 (CTEs)</td>
-<td style="text-align: center">✔ New</td>
-<td style="text-align: center">✔</td>
-</tr>
-<tr>
-<td style="text-align: center">窗口函数</td>
-<td style="text-align: center">✔ New</td>
-<td style="text-align: center">✔</td>
-</tr>
-<tr>
-<td style="text-align: center">&lt; <em>数据类型</em> &gt;</td>
-<td style="text-align: center"></td>
-<td style="text-align: center"></td>
-</tr>
-<tr>
-<td style="text-align: center">JSON 支持</td>
-<td style="text-align: center">✔ Improved</td>
-<td style="text-align: center">✔</td>
-</tr>
-<tr>
-<td style="text-align: center">GIS / SRS</td>
-<td style="text-align: center">✔ Improved</td>
-<td style="text-align: center">✔</td>
-</tr>
-<tr>
-<td style="text-align: center">全文检索</td>
-<td style="text-align: center">✔</td>
-<td style="text-align: center">✔</td>
-</tr>
-<tr>
-<td style="text-align: center">&lt; <em>可扩展性</em> &gt;</td>
-<td style="text-align: center"></td>
-<td style="text-align: center"></td>
-</tr>
-<tr>
-<td style="text-align: center">逻辑复制</td>
-<td style="text-align: center">✔</td>
-<td style="text-align: center">✔ New</td>
-</tr>
-<tr>
-<td style="text-align: center">半同步复制</td>
-<td style="text-align: center">✔</td>
-<td style="text-align: center">✔ New</td>
-</tr>
-<tr>
-<td style="text-align: center">声明式分区</td>
-<td style="text-align: center">✔</td>
-<td style="text-align: center">✔ New</td>
-</tr>
-</tbody>
-</table>
+<p>在 LVS 节点下，我们采用 LVS-DR 工作模式挂载了两个 Nginx 节点（131、132）。并最终将外网请求交由这两个节点进行处理。<strong>注意：在实际工作中，Nginx 下面一般就是访问静态资源、动态资源的配置了。</strong></p>
 
-<p>过去经常会说 MySQL 最适合在线事务，PostgreSQL 最适合分析流程。但现在不是了。</p>
+<h2 id="toc_2"><a></a>2-1、准备两个 keepalived 节点</h2>
 
-<p>公共表表达式 (CTEs) 和窗口函数是选择 PostgreSQL 的主要原因。但是现在，通过引用同一个表中的 boss_id 来递归地遍历一张雇员表，或者在一个排序的结果中找到一个中值（或 50%），这在 MySQL 上不再是问题。</p>
+<p>首先我们在将要安装 LVS 的两个节点上，先安装 keepalived，并保证这两个 keepalived 节点能够正常工作（监控批次的状态）。当然，您也可以先准备 LVS，在准备 keepalived。</p>
 
-<p>在 PostgreSQL 中进行复制缺乏配置灵活性，这就是 <a href="https://eng.uber.com/mysql-migration/">Uber 转向 MySQL</a> 的原因。但是现在，有了逻辑复制特性，就可以通过创建一个新版本的 Postgres 并切换到它来实现零停机升级。在一个巨大的时间序列事件表中截断一个陈旧的分区也要容易得多。</p>
+<p>我想准备 keepalived 节点，大家应该轻车熟路了吧，在<a href="http://blog.csdn.net/yinwenjie/article/details/47130609#t5%20%E6%9E%B6%E6%9E%84%E8%AE%BE%E8%AE%A1%EF%BC%9A%E8%B4%9F%E8%BD%BD%E5%9D%87%E8%A1%A1%E5%B1%82%E8%AE%BE%E8%AE%A1%E6%96%B9%E6%A1%88%EF%BC%886%EF%BC%89%E2%80%94%E2%80%94Nginx%20+%20Keepalived%E6%9E%84%E5%BB%BA%E9%AB%98%E5%8F%AF%E7%94%A8%E7%9A%84%E8%B4%9F%E8%BD%BD%E5%B1%82">《架构设计：负载均衡层设计方案（6）——Nginx + Keepalived 构建高可用的负载层》</a>这篇文章中详细介绍了 keepalived 的最简配置方式。为了大家阅读方便，我们在这里再进行依次简要说明。准备 keepalived 的整个过程包括：</p>
 
-<p>就特性而言，这两个数据库现在都是一致的。</p>
+<ol>
+<li> 安装必要的支撑组件，源码安装 keepalived</li>
+<li> 将 keepalived 注册成节点的服务，以便保证 keepalived 在节点启动时就开始工作</li>
+<li> 更改 keepalived 的配置文件，让其可以正常工作</li>
+<li> 验证准备工作</li>
+</ol>
 
-<h2 id="toc_1">有哪些不同之处呢？</h2>
+<p>============= 安装 keepalived</p>
 
-<p>现在，我们只剩下一个问题 —— 那么，选择一个而不选另一个的原因是什么呢？</p>
+<pre><code>[root@lvs1 ~]# yum install -y zlib zlib-devel gcc gcc-c++ openssl openssl-devel openssh
+[root@lvs1 ~]# tar -zxvf keepalived-1.2.17.tar.gz
+[root@lvs1 ~]# cd keepalived-1.2.17
+[root@lvs1 ~]# ./configure --perfix=/usr/keepalived-1.2.17
+[root@lvs1 ~]# make &amp; make install 
+</code></pre>
 
-<p><strong>生态系统</strong>是其中一个因素。MySQL 有一个充满活力的生态系统，包括 MariaDB、Percona、Galera 等等，以及除 InnoDB 以外的存储引擎，但这也可能是和令人困惑的。Postgres 的高端选择有限，但随着最新版本引入的新功能，这会有所改变。</p>
+<p>============= 将 keepalived 注册成服务（如果您使用的默认路径安装，就不需要 cp 命令了）</p>
 
-<p><strong>治理</strong>是另一个因素。当 Oracle（或最初的 SUN）收购 MySQL 时，每个人都担心他们会毁掉这个产品，但在过去的十年里，这并不是事实。事实上，在收购之后，发展反倒加速了。而 Postgres 在工作管理和协作社区方面有着丰富的经验。</p>
+<pre><code>[root@lvs1 ~]# cp /usr/keepalived-1.2.17/etc/sysconfig/keepalived  /etc/sysconfig/keepalived 
+[root@lvs1 ~]# cp /usr/keepalived-1.2.17/sbin/keepalived /usr/sbin/keepalived
+[root@lvs1 ~]# cp /usr/keepalived-1.2.17/etc/rc.d/init.d/keepalived  /etc/rc.d/init.d/keepalived
+[root@lvs1 ~]# mkdir /etc/keepalived
+[root@lvs1 ~]# cp /usr/keepalived-1.2.17/etc/keepalived/keepalived.conf /etc/keepalived/keepalived.conf
+[root@lvs1 ~]# 可以做成服务了（不要拷贝，没用的）
+[root@lvs1 ~]# chkconfig keepalived on
+</code></pre>
 
-<p><strong>基础架构</strong>不会经常改变，虽然近来没有对这方面的详细讨论，这也是值得再次考虑的。</p>
+<p>做成服务后，先不要急着启动，因为配置文件还没有改好。<br/>
+======== 配置 keepalived（配置文件在：/etc/keepalived/keepalived.conf）</p>
 
-<p>来复习下：</p>
+<pre><code>! Configuration File for keepalived
 
-<table>
-<thead>
-<tr>
-<th style="text-align: center">特性</th>
-<th style="text-align: center">MySQL 8</th>
-<th style="text-align: center">PostgreSQL 10</th>
-</tr>
-</thead>
+global_defs {
+   #notification_email {
+   #  acassen@firewall.loc
+   #  failover@firewall.loc
+   #  sysadmin@firewall.loc
+   #}
+   #notification_email_from Alexandre.Cassen@firewall.loc
+   #smtp_server 192.168.200.1
+   #smtp_connect_timeout 30
+   router_id LVS_DEVEL
+}
 
-<tbody>
-<tr>
-<td style="text-align: center">架构</td>
-<td style="text-align: center">单进程</td>
-<td style="text-align: center">多进程</td>
-</tr>
-<tr>
-<td style="text-align: center">并发</td>
-<td style="text-align: center">多线程</td>
-<td style="text-align: center">fork(2)</td>
-</tr>
-<tr>
-<td style="text-align: center">表结构</td>
-<td style="text-align: center"> 聚簇索引</td>
-<td style="text-align: center">堆</td>
-</tr>
-<tr>
-<td style="text-align: center">页压缩</td>
-<td style="text-align: center">Transparent</td>
-<td style="text-align: center">TOAST</td>
-</tr>
-<tr>
-<td style="text-align: center">更新</td>
-<td style="text-align: center">In-Place / Rollback Segments</td>
-<td style="text-align: center">Append Only / <a href="http://www.interdb.jp/pg/pgsql07.html">HOT</a></td>
-</tr>
-<tr>
-<td style="text-align: center">垃圾回收</td>
-<td style="text-align: center">清除线程</td>
-<td style="text-align: center">自动清空进程</td>
-</tr>
-<tr>
-<td style="text-align: center">事务日志</td>
-<td style="text-align: center">REDO Log (WAL)</td>
-<td style="text-align: center">WAL</td>
-</tr>
-<tr>
-<td style="text-align: center">复制日志</td>
-<td style="text-align: center">Separate (Binlog)</td>
-<td style="text-align: center">WAL</td>
-</tr>
-</tbody>
-</table>
+vrrp_instance VI_1 {
+    #141节点设置为MASTER，142或者还有其他的节点设置为BACKUP
+    #还记得我们前面文章讲到的无抢占设置吗？这里也可以用哦。
+    state MASTER
+    #网络适配器名称
+    interface eth0
+    virtual_router_id 51
+    #所有的SLAVE节点的优先级都要比这个设置值低
+    priority 120
+    advert_int 1
+    #真实ip，142要改成相应的lvs节点真实ip
+    mcast_src_ip=192.168.220.141
+    authentication {
+        auth_type PASS
+        auth_pass 1111
+    }
+    #虚拟/浮动IP
+    virtual_ipaddress {
+        192.168.220.140
+    }
+}
+</code></pre>
 
-<h3 id="toc_2">进程 vs 线程</h3>
+<p>以上配置还是最简单的 keepalived 配置，因为我们还没有加上配合 LVS 使用的虚拟 ip 监测设置和下层真实 ip 监测的设置。最简配置主要是为了保证 keepalived 节点是工作正常的。</p>
 
-<p>当 <a href="https://www.postgresql.org/docs/10/static/tutorial-arch.html">Postgres 派生出一个子进程</a>来建立连接时，<a href="https://www.citusdata.com/blog/2017/05/10/scaling-connections-in-postgres/">每个连接最多可以占用 10MB</a>。与 MySQL 的线程连接模型相比，它的内存压力更大，在 64 位平台上，线程的默认堆栈大小为 256KB。（当然，线程本地排序缓冲区等使这种开销变得不那么重要，即使在不可以忽略的情况下，仍然如此。）</p>
+<p><strong>将以上的配置分别对应到 LVS 的两个节点（注意要改动的地方哦）</strong></p>
 
-<p>尽管 “<a href="https://en.wikipedia.org/wiki/Copy-on-write">写时复制</a>” 保存了一些与父进程共享的、不可变的内存状态，但是当您有 1000 多个并发连接时，基于流程的架构的基本开销是很繁重的，而且它可能是容量规划的最重要的因素之一。</p>
+<p>========== 进行 keepalived 工作状态的检查：</p>
 
-<p>也就是说，如果你在 30 台服务器上运行一个 Rails 应用，每个服务器都有 16 个 CPU 核心 32 线程，那么你有 960 个连接。可能只有不到 0.1% 的应用会超出这个范围，但这是需要记住的。</p>
+<pre><code>[root@lvs1 ~]# /etc/init.d/keepalived start
+</code></pre>
 
-<h3 id="toc_3">聚簇索引 vs 堆表</h3>
+<p>现在设置为 MASTER 的 keepalived 节点（或者在非抢占模式下，优先级最高的那个节点），已经绑定了 140 这个虚拟 ip 了：</p>
 
-<p><a href="https://docs.microsoft.com/en-us/sql/relational-databases/indexes/clustered-and-nonclustered-indexes-described?view=sql-server-2017">聚簇索引</a>是一种表结构，其中的行直接嵌入其主键的 b 树结构中。一个（非聚集）堆是一个常规的表结构，它与索引分别填充数据行。</p>
+<pre><code>[root@lvs2 ~]# ip addr
+1: lo: &lt;LOOPBACK,UP,LOWER_UP&gt; mtu 16436 qdisc noqueue state UNKNOWN 
+    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00
+    inet 127.0.0.1/8 scope host lo
+    inet6 ::1/128 scope host 
+       valid_lft forever preferred_lft forever
+2: eth0: &lt;BROADCAST,MULTICAST,UP,LOWER_UP&gt; mtu 1500 qdisc pfifo_fast state UP qlen 1000
+    link/ether 00:0c:29:39:75:9f brd ff:ff:ff:ff:ff:ff
+    inet 192.168.220.141/24 brd 192.168.220.255 scope global eth0
+    inet 192.168.220.140/32 scope global eth0
+    inet6 fe80::20c:29ff:fe39:759f/64 scope link 
+       valid_lft forever preferred_lft forever
+</code></pre>
 
-<p>有了聚簇索引，当您通过主键查找记录时，单次 I/O 就可以检索到整行，而非集群则总是需要查找引用，至少需要两次 I/O。由于外键引用和 JOIN 将触发主键查找，所以影响可能非常大，这将导致大量查询。</p>
+<p>当然您也可以通过 /var/log/message 的日志进行 keepalived 是否正常工作的验证。</p>
 
-<p>聚簇索引的一个理论上的缺点是，当您使用二级索引进行查询时，它需要遍历两倍的树节点，第一次扫描二级索引，然后遍历聚集索引，这也是一棵树。</p>
+<h2 id="toc_3"><a></a>2-2、继续两个 keepalived 节点上准备 LVS</h2>
 
-<p>但是，如果按照现代<a href="https://en.wikipedia.org/wiki/Convention_over_configuration">表设计的约定</a>，将一个自动增量整数作为主键 <a href="https://blog.dumper.io/showdown-mysql-8-vs-postgresql-10/#fn1">[1]</a>——它被称为<a href="https://en.wikipedia.org/wiki/Surrogate_key">代理键</a>——那么拥有一个<a href="https://www.mssqltips.com/sqlservertutorial/3209/make-sure-all-tables-have-a-clustered-index-defined/">聚集索引几乎总是可取的</a>。更重要的是，如果您做了大量的 ORDER BY id 来检索最近的（或最老的）N 个记录的操作，我认为这是很适用的。</p>
+<p>准备 lvs 的工作就太简单了，因为 centos6.4、6.5、6.6 都已经集成了 LVS 的核心，我们只需要安装 LVS 的管理工具就行了：</p>
 
-<p>Postgres 不支持聚集索引，而 MySQL(InnoDB) 不支持堆。但不管怎样，如果你有大量的内存，差别应该是很小的。</p>
+<p>两个 LVS 节点都执行：</p>
 
-<h3 id="toc_4">页结构和压缩</h3>
+<pre><code>yum -y install ipvsadm
+</code></pre>
 
-<p>Postgres 和 MySQL 都有基于页面的物理存储。(8KB vs 16KB)</p>
+<p>还记得 lvs 管理工具怎么使用吗？请参见我介绍 LVS 单节点安装的博文：<a href="http://blog.csdn.net/yinwenjie/article/details/47010569%20%E6%9E%B6%E6%9E%84%E8%AE%BE%E8%AE%A1%EF%BC%9A%E8%B4%9F%E8%BD%BD%E5%9D%87%E8%A1%A1%E5%B1%82%E8%AE%BE%E8%AE%A1%E6%96%B9%E6%A1%88%EF%BC%885%EF%BC%89%E2%80%94%E2%80%94LVS%E5%8D%95%E8%8A%82%E7%82%B9%E5%AE%89%E8%A3%85">《架构设计：负载均衡层设计方案（5）——LVS 单节点安装》</a>。这里为了方便阅读，给出主要参数的含义列表：</p>
 
-<p><img src="https://static.oschina.net/uploads/space/2018/0528/115001_ZvRa_2720166.png" alt=""/><br/>
-<a href="http://rachbelaid.com/introduction-to-postgres-physical-storage/">PostgreSQL 物理存储的介绍</a></p>
+<pre><code>-A –add-service 在内核的虚拟服务器表中添加一条新的虚拟服务器记录。也就是增加一台新的虚拟服务器。
+-E –edit-service 编辑内核虚拟服务器表中的一条虚拟服务器记录。
+-D –delete-service 删除内核虚拟服务器表中的一条虚拟服务器记录。
+-C –clear 清除内核虚拟服务器表中的所有记录。
+-R –restore 恢复虚拟服务器规则
+-S –save 保存虚拟服务器规则，输出为-R 选项可读的格式
+-a –add-server 在内核虚拟服务器表的一条记录里添加一条新的真实服务器记录。也就是在一个虚拟服务器中增加一台新的真实服务器
+-e –edit-server 编辑一条虚拟服务器记录中的某条真实服务器记录
+-d –delete-server 删除一条虚拟服务器记录中的某条真实服务器记录
+-L –list 显示内核虚拟服务器表
+-Z –zero 虚拟服务表计数器清零（清空当前的连接数量等）
+–set tcp tcpfin udp 设置连接超时值
+–start-daemon 启动同步守护进程。他后面可以是master 或backup，用来说明LVS Router 是master 或是backup。在这个功能上也可以采用keepalived 的VRRP 功能。
+–stop-daemon 停止同步守护进程
+-t –tcp-service service-address 说明虚拟服务器提供的是tcp 的服务[vip:port] or [real-server-ip:port]
+-u –udp-service service-address 说明虚拟服务器提供的是udp 的服务[vip:port] or [real-server-ip:port]
+-f –fwmark-service fwmark 说明是经过iptables 标记过的服务类型。
+-s –scheduler scheduler 使用的调度算法，选项：rr|wrr|lc|wlc|lblc|lblcr|dh|sh|sed|nq, 默认的调度算法是： wlc.
+-p –persistent [timeout] 持久稳固的服务。这个选项的意思是来自同一个客户的多次请求，将被同一台真实的服务器处理。timeout 的默认值为300 秒。
+-M –netmask netmask persistent granularity mask
+-r –real-server server-address 真实的服务器[Real-Server:port]
+-g –gatewaying 指定LVS 的工作模式为直接路由模式DR模式（也是LVS默认的模式）
+-i –ipip 指定LVS 的工作模式为隧道模式
+-m –masquerading 指定LVS 的工作模式为NAT 模式
+-w –weight weight 真实服务器的权值
+–mcast-interface interface 指定组播的同步接口
+–connection 显示LVS 目前的连接 如：ipvsadm -L -c
+–timeout 显示tcp tcpfin udp 的timeout 值 如：ipvsadm -L –timeout
+–daemon 显示同步守护进程状态
+–stats 显示统计信息
+–rate 显示速率信息
+–sort 对虚拟服务器和真实服务器排序输出
+–numeric -n 输出IP 地址和端口的数字形式
+</code></pre>
 
-<p>页结构看起来就像右边的图。它包含一些我们不打算在这里讨论的条目，但是它们包含关于页的元数据。条目后面的项是一个数组标识符，由指向元组或数据行的（偏移、长度）对组成。在 Postgres 中，相同记录的多个版本可以以这种方式存储在同一页面中。</p>
+<p>到后面正式启动 LVS 的时候，就不要问我参数含义咯。<sup>_^</sup></p>
 
-<p><img src="https://static.oschina.net/uploads/space/2018/0528/115017_2Ujt_2720166.jpg" alt=""/><br/>
-MySQL 的表空间结构与 Oracle 相似，它有多个层次，包括层、区段、页面和行层。</p>
+<h2 id="toc_4"><a></a>2-3、准备两个 Nginx 节点并保证可用</h2>
 
-<p>此外，它还有一个用于撤销的单独段，称为 “回滚段”。与 Postgres 不同的是，MySQL 将在一个单独的区域中保存同一记录的多个版本。</p>
+<p>在《架构设计：负载均衡层设计方案（5）——LVS 单节点安装》(<a href="http://blog.csdn.net/yinwenjie/article/details/47010569">http://blog.csdn.net/yinwenjie/article/details/47010569</a>) 这篇文章中，我们详细讲解了 Nginx 节点的准备工作，但是为了方便各位读者阅读，这里我们大致再讲一下。</p>
 
-<p>如果存在一行必须适合两个数据库的单个页面，，这意味着一行必须小于 8KB。（至少有 2 行必须适合 MySQL 的页面，恰巧是 16KB/2 = 8KB）</p>
+<p>Nginx 节点的准备工作主要由以下步骤构成（这个不是本文的重点，点到即可）：</p>
 
-<p><img src="https://static.oschina.net/uploads/space/2018/0528/115033_Akyb_2720166.png" alt=""/><br/>
-那么当你在一个列中有一个大型 JSON 对象时会发生什么呢？</p>
+<ol>
+<li> 安装 Nginx（当然，正式系统中，还涉及到 Nginx 的参数调优，可以参见<a href="http://blog.csdn.net/yinwenjie/article/details/46620711#t7%20%E6%9E%B6%E6%9E%84%E8%AE%BE%E8%AE%A1%EF%BC%9A%E8%B4%9F%E8%BD%BD%E5%9D%87%E8%A1%A1%E5%B1%82%E8%AE%BE%E8%AE%A1%E6%96%B9%E6%A1%88%EF%BC%882%EF%BC%89%E2%80%94%E2%80%94Nginx%E5%AE%89%E8%A3%85">《架构设计：负载均衡层设计方案（2）——Nginx 安装》这篇文章</a>）</li>
+<li> 打开 Nginx 所在服务器的 “路由” 功能、关闭 “ARP 查询” 功能</li>
+<li> 将 VIP：192.168.220.140 设置成 Nginx 所在节点的回环 IP</li>
+</ol>
 
-<p>Postgres 使用 <a href="https://wiki.postgresql.org/wiki/TOAST">TOAST</a>，这是一个专用的影子表 (shadow table) 存储。当行和列被选中时，大型对象就会被拉出。换句话说，大量的黑盒不会污染你宝贵的缓存。它还支持对 TOAST 对象的压缩。</p>
+<p>============= 安装 Nginx</p>
 
-<p>MySQL 有一个更复杂的特性，叫做<a href="https://dev.mysql.com/doc/refman/8.0/en/innodb-page-compression.html">透明页压缩</a>，这要归功于高端 SSD 存储供应商 <a href="https://en.wikipedia.org/wiki/Fusion-io">Fusio-io</a> 的贡献。它设计目的是为了更好地使用 SSD，在 SSD 中，写入量与设备的寿命直接相关。</p>
+<pre><code>[root@vm1 ~]# yum -y install make zlib zlib-devel gcc gcc-c++ ssh libtool
+[root@vm1 ~]# 下载nginx（别拷贝，不能执行的）
+[root@vm1 ~]# 解压nginx（别拷贝，不能执行的）
+[root@vm1 ~]# ./configure –prefix=/usr/nginx-1.8.0 
+[root@vm1 ~]# make &amp;&amp; make install 
+[root@vm1 ~]# 设置环境变量（别拷贝，不能执行的）
+[root@vm1 ~]# 启动nginx
+</code></pre>
 
-<p>对 MySQL 的压缩不仅适用于页面外的大型对象，而且适用于所有页面。它通过在<a href="https://en.wikipedia.org/wiki/Sparse_file">稀疏文件</a>中使用打孔来实现这一点，这是被 <a href="https://en.wikipedia.org/wiki/Ext4">ext4</a> 或 <a href="https://en.wikipedia.org/wiki/Btrfs">btrfs</a> 等现代文件系统支持的。</p>
+<p>============= 打开 Nginx 所在服务器的 “路由” 功能、关闭 “ARP 查询” 功能</p>
 
-<p>有关更多细节，请参见：<a href="https://mariadb.org/significant-performance-boost-with-new-mariadb-page-compression-on-fusionio/">在 FusionIO 上使用新 MariaDB 页压缩获得显著的性能提升</a>。</p>
+<pre><code>[root@vm1 ~]# echo &quot;1&quot; &gt;/proc/sys/net/ipv4/conf/lo/arp_ignore
+[root@vm1 ~]# echo &quot;2&quot; &gt;/proc/sys/net/ipv4/conf/lo/arp_announce
+[root@vm1 ~]# echo &quot;1&quot; &gt;/proc/sys/net/ipv4/conf/all/arp_ignore
+[root@vm1 ~]# echo &quot;2&quot; &gt;/proc/sys/net/ipv4/conf/all/arp_announce
+</code></pre>
 
-<h3 id="toc_5">更新的开销</h3>
+<p>============= 设置回环 IP</p>
 
-<p>另一个经常被忽略的特性，但是对性能有很大的影响，并且可能是最具争议的话题，是更新。</p>
+<pre><code>[root@vm1 ~]# ifconfig lo:0 192.168.220.140 broadcast 192.168.220.140 netmask 255.255.255.255 up
+[root@vm1 ~]# route add -host 192.168.220.140 dev lo:0
+</code></pre>
 
-<p>这也是 Uber 放弃 Postgres 的另一个原因，这激起了许多 Postgres 的支持者来反驳它。</p>
+<p>两台 Nginx 的节点都按照这样的方法去设置。然后使用浏览器，看看这两个节点的 Nginx 是否工作正常：</p>
 
-<ul>
-<li><p><a href="https://dzone.com/articles/on-ubers-choice-of-databases">MySQL 对 Uber</a> <pangu></pangu> <a href="https://dzone.com/articles/on-ubers-choice-of-databases">可能</a>是合适的, 但是未必对你合适</p></li>
-<li><p><a href="http://thebuild.com/presentations/uber-perconalive-2017.pdf">一篇 PostgreSQL 对 Uber 的回应 (PDF)</a></p></li>
-</ul>
+<p><img src="https://img-blog.csdn.net/20150822115708460" alt=""/></p>
 
-<p>两者都是 MVCC 数据库，它们可以隔离多个版本的数据。</p>
+<h1 id="toc_5"></h1>
 
-<p>为了做到这一点，Postgres 将旧数据保存在堆中，直到被清空，而 MySQL 将旧数据移动到一个名为回滚段的单独区域。</p>
+<p><img src="https://img-blog.csdn.net/20150822115814724" alt=""/></p>
 
-<p>在 Postgres 中，当您尝试更新时，整个行必须被复制，以及指向它的索引条目也被复制。这在一定程度上是因为 Postgres 不支持聚集索引，所以从索引中引用的一行的物理位置不是由逻辑键抽象出来的。</p>
+<h2 id="toc_6"><a></a>2-4、其他说明</h2>
 
-<p>为了解决这个问题，Postgres 使用了<a href="http://www.interdb.jp/pg/pgsql07.html">堆上元组</a>（HOT），在可能的情况下不更新索引。但是，如果更新足够频繁（或者如果一个元组比较大），元组的历史可以很容易地超过 8 KB 的页面大小，跨越多个页面并限制该特性的有效性。修剪和 / 或碎片整理的时间取决于启发式解决方案。另外，设置不超过 100 的<a href="https://www.postgresql.org/docs/10/static/sql-createtable.html#SQL-CREATETABLE-STORAGE-PARAMETERS">填充参数</a>会降低空间效率——这是一种很难在创建表时考虑的折衷方案。</p>
+<p>keepalived 和 LVS 是天生配合完美的一对，<strong>LVS 负责进行请求转发不负责任何节点的健康监测；keepalived 负责监控整个环境中，包括虚拟 ip，真实 ip 对应的下层节点的健康状态监测</strong>。</p>
 
-<p>这种限制更深入; 因为索引元组没有关于事务的任何信息，所以直到 9.2 之前一直不能支持<a href="https://use-the-index-luke.com/sql/clustering/index-only-scan-covering-index">仅索引扫描</a>。 它是所有主要数据库（包括 MySQL，Oracle，IBM DB2 和 Microsoft SQL Server）支持的最古老，最重要的优化方法之一。 但即使使用最新版本，当有许多 UPDATE 在<a href="http://www.interdb.jp/pg/pgsql06.html#_6.2.">可见性映射</a>中设置脏位时，Postgres 也不能完全支持仅索引扫描，并且在我们不需要时经常选择 Seq 扫描。</p>
+<h2 id="toc_7"><a></a>3、开始配置：LVS-DR 工作模式</h2>
 
-<p>在 MySQL 上，更新发生在原地，旧的行数据被封存在一个称为回滚段的独立区域中。 结果是你不需要 VACUUM，并且提交非常快，而回滚相对较慢，这对于大多数用例来说是一个可取的折衷。</p>
+<h2 id="toc_8"><a></a>3-1、keepalived 的更改——健康监测</h2>
 
-<p>它也<a href="https://www.percona.com/blog/2011/01/12/innodb-undo-segment-siz-and-transaction-isolation/">足够聪明</a>，尽快清除历史。 如果事务的隔离级别设置为 <strong>READ-COMMITTED</strong> 或更低，则在语句完成时清除历史记录。</p>
+<p>首先我们要更改之前配置的 “最简 keepalived” 配置，让 keepalived 能够对结构中所有节点和虚拟 ip 的健康状态进行监测。更改配置和含义如下：</p>
 
-<p>事务记录的大小不会影响主页面。 碎片化是一个伪命题。 因此，在 MySQL 上能更好，更可预测整体性能。</p>
+<pre><code>! Configuration File for keepalived
 
-<h3 id="toc_6">Garbage Collection 垃圾回收</h3>
+global_defs {
+   #notification_email {
+   #  acassen@firewall.loc
+   #  failover@firewall.loc
+   #  sysadmin@firewall.loc
+   #}
+   #notification_email_from Alexandre.Cassen@firewall.loc
+   #smtp_server 192.168.200.1
+   #smtp_connect_timeout 30
+   router_id LVS_DEVEL
+}
 
-<p>在 Postgres 中 VACUUM 上开销很高，因为它在主要工作在堆区，造成了直接的资源竞争。它感觉就像是编程语言中的垃圾回收 - 它会挡在路上，并随时让你停下来。<br/>
-为具有数十亿记录的表配置 <a href="https://www.citusdata.com/blog/2016/11/04/autovacuum-not-the-enemy/">autovacuum</a> 仍然是一项挑战。<br/>
-在 MySQL 上清除（Purge）也可能相当繁重，但由于它是在单独的回滚段中使用专用线程运行的，因此它不会以任何方式影响读取的并发性。即使使用<a href="https://dev.mysql.com/doc/refman/8.0/en/innodb-improved-purge-scheduling.html">默认配置</a>，变膨胀的回滚段使你执行速度减慢的可能性也是很低的。<br/>
-拥有数十亿记录的繁忙表不会导致 MySQL 上的历史数据膨胀，诸如存储上的文件大小和查询性能等事情上几乎是可以预测的并且很稳定。</p>
+vrrp_instance VI_1 {
+    #141节点设置为MASTER，142或者还有其他的节点设置为BACKUP
+    #还记得我们前面文章讲到的无抢占设置吗？这里也可以用哦。
+    state MASTER
+    #网络适配器名称
+    interface eth0
+    virtual_router_id 51
+    #所有的SLAVE节点的优先级都要比这个设置值低
+    priority 120
+    advert_int 1
+    #真实ip，142要改成相应的lvs节点真实ip
+    mcast_src_ip=192.168.220.141
+    authentication {
+        auth_type PASS
+        auth_pass 1111
+    }
+    #虚拟/浮动IP
+    virtual_ipaddress {
+        192.168.220.140
+    }
+}
+
+virtual_server 192.168.220.140 80 {
+    #健康时间检查，单位秒
+    delay_loop 6
+    #负载均衡调度算法wlc|rr，和您将使用的LVS的调度算法保持原则一致
+    lb_algo rr
+    #负载均衡转发规则 DR NAT TUN。和您将启动的LVS的工作模式设置一致
+    lb_kind DR
+    #虚拟地址的子网掩码
+    nat_mask 255.255.255.0
+    #会话保持时间，因为我们经常使用的是无状态的集群架构，所以这个设置可有可无
+    #persistence_timeout 50
+    #转发协议，当然是TCP
+    protocol TCP
+
+    #真实的下层Nginx节点的健康监测
+    real_server 192.168.220.131 80 {
+        #节点权重，
+        weight 10
+        #设置检查方式，可以设置HTTP_GET | SSL_GET
+        HTTP_GET {
+            url {
+              path /
+              digest ff20ad2481f97b1754ef3e12ecd3a9cc
+            }
+            #超时时间，秒。如果在这个时间内没有返回，则说明一次监测失败
+            connect_timeout 3
+            #设置多少次监测失败，就认为这个真实节点死掉了
+            nb_get_retry 3
+            #重试间隔
+            delay_before_retry 3
+        }
+    }
+
+    real_server 192.168.220.132 80 {
+        weight 10
+        HTTP_GET {
+            url {
+              path /
+              digest 640205b7b0fc66c1ea91c463fac6334d
+            }
+            connect_timeout 3
+            nb_get_retry 3
+            delay_before_retry 3
+        }
+    }
+}
+</code></pre>
+
+<p>这样一来，keepalived 就可以检查整个架构中的所有节点状态了。<strong>另外要说明的是，这个检查过程并不是必须的，您使用 keepalived 的最简配置也是可以的，不过您就需要自己写监测脚本了（道理是一样的）</strong>。</p>
+
+<h2 id="toc_9"><a></a>3-2、启动两个 LVS 节点</h2>
+
+<p>启动 LVS 的过程就太简单了（两个节点都是一样的启动方式）：</p>
+
+<pre><code>[root@lvs2 ~]# ipvsadm -C
+[root@lvs2 ~]# ipvsadm -At 192.168.220.140:80 -s rr 
+[root@lvs2 ~]# ipvsadm -at 192.168.220.140:80 -r 192.168.220.131 -g
+[root@lvs2 ~]# ipvsadm -at 192.168.220.140:80 -r 192.168.220.132 -g
+[root@lvs2 ~]# 然后我们可以使用ipvsadm 监控目前LVS的状态
+[root@lvs2 ~]# ipvsadm
+</code></pre>
+
+<p><strong>注意：处于 standby 的 lvs1 节点也要这样进行设置。</strong><br/>
+<strong>还有，以上的 LVS 的设置，和 real server 上的设置，在重启后都会消失，所以一定要做成脚本哦。</strong></p>
+
+<h2 id="toc_10"><a></a>4、验证工作</h2>
+
+<p>这样 LVS + Keepalived + Nginx 方式的配置就做完了。现在我们进行搭建效果的监测：</p>
+
+<h2 id="toc_11"><a></a>4-1、验证 Master-LVS 节点的工作</h2>
+
+<p>我们使用两个不同的浏览器，验证 Master-LVS 节点的工作：</p>
+
+<p>========= 浏览器 1：<br/>
+<img src="https://img-blog.csdn.net/20150822160827352" alt=""/></p>
+
+<p>========= 浏览器 2：<br/>
+<img src="https://img-blog.csdn.net/20150822160919601" alt=""/></p>
+
+<p>看来 140 这个 VIP 下的 LVS 工作是正常的。</p>
+
+<h2 id="toc_12"><a></a>4-2、验证 Master-LVS 节点停止后的效果</h2>
+
+<p>下面我们停止 Master-LVS1：</p>
+
+<pre><code>[root@lvs2 ~]# service keepalived stop
+</code></pre>
+
+<p>在经历了一些访问停顿后，浏览器 1 显示的效果如下（这就是为什么 keepalived 最好设置为非抢占模式）：</p>
+
+<p><img src="https://img-blog.csdn.net/20150822161511700" alt=""/></p>
+
+<h2 id="toc_13"><a></a>5、后文介绍</h2>
+
+<p>好了，到这里负载均衡层所使用的几个标准工具就介绍完了。下一篇文章我们将进行总结，然后进入架构设计：业务层设计方案 的系列文章。在下一个系列文章中，我们将介绍至少两套 SOA 的实现、至少两套系统间通信使用的消息队列。哦，应我朋友的要求，我会专门写几篇文章，介绍 java 中线程的基础知识和进阶知识。</p>
 
                         
                       </div>
@@ -357,10 +472,10 @@ MySQL 的表空间结构与 Oracle 相似，它有多个层次，包括层、区
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/6/11</span>
+                    <span class="date">2018/6/28</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Database.html'>Database</a></span>
+          					    <span class="posted-in"><a href='Network.html'>Network</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -450,31 +565,31 @@ MySQL 的表空间结构与 Oracle 相似，它有多个层次，包括层、区
 	      
 		      
 			      <li class="post">
-			        <a href="15459058392039.html">Reliable Domain Events</a>
+			        <a href="15517999043443.html">The Art of Crafting Architectural Diagrams</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
+			        <a href="15517997955971.html">为什么说我们需要软件架构图？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
+			        <a href="15516128677869.html">DNS Servers That Offer Privacy and Filtering</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
+			        <a href="15516123108194.html">Airbnb's Migration from Monolith to Services</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
+			        <a href="15516097487470.html">Events As First-Class Citizens</a>
 			      </li>
 		     
 		  

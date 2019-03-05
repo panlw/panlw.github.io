@@ -105,190 +105,273 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15281296238206.html">
+                <a class="clearlink" href="15318162308023.html">
                 
-                  <h1>SOFABoot 类隔离原理剖析</h1>
+                  <h1>运维权限系统</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p>林小树 <a href="https://zhuanlan.zhihu.com/p/37665305">https://zhuanlan.zhihu.com/p/37665305</a></p>
+<p><a href="http://blog.niean.name/2016/01/31/rbac1">http://blog.niean.name/2016/01/31/rbac1</a></p>
 </blockquote>
 
-<p><strong>原创声明</strong>：本文系作者原创，谢绝个人、媒体、公众号或网站未经授权转载，违者追究其法律责任。</p>
+<p>年关将近，终于有了一点时间。研究了下小米的运维权限体系，结合自己过往的经验，整理了下运维权限系统相关的设计思路。欢迎各位行家拍砖。</p>
 
-<blockquote>
-<p>SOFABoot 是蚂蚁金服中间件团队开源的基于 Spring Boot 的一个开发框架，其在 Spring Boot 基础能力之上，增加了类隔离能力，以更好地解决随着工程应用变得臃肿庞大后带来的包冲突问题。类隔离能力天生带来模块化能力，同样给协作开发带来便利。<br/>
-SOFABoot 的类隔离能力借助单独的组件 SOFAArk 实现，遵循 Spring Boot 依赖即服务的思想，只要工程中引入了 SOFAArk 组件依赖，类隔离能力即生效。<br/>
-在上一篇文章 <a href="https://zhuanlan.zhihu.com/p/36909393">《在 Spring Boot 中集成 SOFABoot 类隔离能力》</a>中，我们详细介绍了 SOFABoot 类隔离能力的使用背景及其使用方式。本文将介绍 SOFABoot 类隔离组件 SOFAArk 的实现原理。</p>
-</blockquote>
+<h2 id="toc_0">概述</h2>
 
-<h2 id="toc_0"><strong>理解 SOFAArk 三要素</strong></h2>
+<p>访问控制，是针对越权使用资源的防御措施。企业环境中的访问控制策略一般有三种：自主型访问控制方法、强制型访问控制方法和基于角色的访问控制方法（Role-Based Access Control, RBAC）。其中，自主式太弱，强制式太强，RBAC 是目前公认的、解决企业统一资源访问控制的有效方法。</p>
 
-<p>SOFAArk 类隔离框架定义了三个概念，Ark Container，Ark Plugin，Ark Biz。</p>
+<p>RBAC 以角色为中心，进行访问策略的控制。例如，在一个医院系统中，医生角色可以诊断、开据处方、指示实验室化验等；研究员角色只能收集用于研究的匿名临床信息。NIST(The National Institute of Standards and Technology，美国国家标准与技术研究院) 标准 RBAC 有 4 个模型，分别是基本模型 RBAC0(Core RBAC)、角色分级模型 RBAC1(Hierarchal RBAC)、角色限制模型 RBAC2(Constraint RBAC) 和统一模型 RBAC3(Combines RBAC)<a href="http://blog.csdn.net/chjttony/article/details/6229078">[1]</a>。</p>
 
-<p>在介绍这三个主角之前，我们先来介绍另一个管家：<strong>Ark 包</strong>。我们都知道一个标准的 Spring Boot 应用可以借助 Spring 官方提供的打包插件：</p>
+<h3 id="toc_1">RBAC0</h3>
 
-<pre><code>&lt;plugin&gt;
-    &lt;groupId&gt;org.springframework.boot&lt;/groupId&gt;
-    &lt;artifactId&gt;spring-boot-maven-plugin&lt;/artifactId&gt;
-&lt;/plugin&gt;
+<p>RBAC0 定义了 RBAC 控制系统的最小元素集合，包括用户 (user)、角色 (role)、权限 (permission)、资源 (resouce)、操作 (operation)，模型如下，</p>
+
+<p><img src="https://raw.githubusercontent.com/niean/niean.common.store/master/images/devops/rbac/rbac0.png" alt=""/></p>
+
+<p>在 RBAC0 模型中，主要关系有两种，为角色分配权限 PA(Permission Assignment)、分配角色给用户 UA(Users Assignment)。PA 实现权限和角色之间的关联关系，UA 实现用户和角色之间的关联关系。</p>
+
+<p>在 RBAC0 模型中，资源的定义，需要注意以下两个问题 <a href="http://www.cnblogs.com/ttcre2/archive/2008/07/24/1250591.html">[2]</a>：</p>
+
+<ol>
+<li> RBAC0 中的资源，指的是资源类别 (resouce class)、而不是某个特定资源的实例 (resouce instance)，<strong>权限管理系统负责 资源类别之权限 的管理，而应用系统负责 特定资源实例之权限 的管理</strong>。因为，对资源实例的访问控制，通常带有较多个性化的业务逻辑、不适合放在高度抽象的权限管理系统中。</li>
+<li> RBAC0 中的资源，是一级扁平化的。在生产环境下，资源可能具有层次关系和包含关系，需要将这种层级关系 降为 一级扁平结构。</li>
+</ol>
+
+<p>RBAC 的其他模型，都是在 RBAC0 的基础上，演化而来的。</p>
+
+<h3 id="toc_2">RBAC1</h3>
+
+<p>RBAC1 引入了，角色间的继承关系，被继承的是 一个个的权限点。角色间的继承关系，可分为一般继承关系和受限继承关系。一般继承关系仅要求角色继承关系是一个绝对偏序关系、允许角色间的多继承 (类似有向无环图)。而受限继承关系则进一步要求角色继承关系是一个树结构。</p>
+
+<p><img src="https://raw.githubusercontent.com/niean/niean.common.store/master/images/devops/rbac/rbac1.png" alt=""/></p>
+
+<p>在 RBAC1 模型中，角色继承常常借助外部已有系统来实现。</p>
+
+<h3 id="toc_3">RBAC2</h3>
+
+<p>RBAC2 模型中添加了责任分离关系。RBAC2 的约束规定了权限被赋予角色时, 或角色被赋予用户时, 以及当用户在某一时刻激活一个角色时所应遵循的强制性规则。约束与<code>用户-角色-权限</code>关系一起，决定了 RBAC2 模型中用户的访问权限。</p>
+
+<p><img src="https://raw.githubusercontent.com/niean/niean.common.store/master/images/devops/rbac/rbac2.png" alt=""/></p>
+
+<h3 id="toc_4">RBAC3</h3>
+
+<p>RBAC3 包含了 RBAC1 和 RBAC2，既提供了角色继承，又提供了责任分离关系。 <img src="https://raw.githubusercontent.com/niean/niean.common.store/master/images/devops/rbac/rbac3.png" alt=""/></p>
+
+<p>以<strong>业务树</strong>为核心的运维体系，其权限系统一般会采用 <strong>RBAC3</strong> 模型，且角色继承借助业务树来完成、约束也借助服务树来实现。</p>
+
+<h2 id="toc_5">运维权限系统</h2>
+
+<p>本文适合，<strong>以业务树为核心的</strong>，运维体系。对于不以业务树为核心的运维体系，本文不一定可用。</p>
+
+<h3 id="toc_6">业务树</h3>
+
+<p>业务树，以树状的上下层级模式，展示公司内部的各个业务。业务树是公司业务的高度抽象，是各运维子系统与公司业务发生耦合的纽带，是各运维子系统彼此交互的统一协议平台。一个典型的业务树，结构如下图所示， <img src="https://raw.githubusercontent.com/niean/niean.common.store/master/images/devops/rbac/tree.png" alt=""/></p>
+
+<h3 id="toc_7">模型设计</h3>
+
+<p>权限系统的设计，取决于其滋生的业务环境。根据运维系统的业务特性，运维权限系统特点如下：</p>
+
+<ol>
+<li> 资源类型少，操作少，因此，可以穷举所有的权限点。甚至，增加角色时，可以从所有权限点中进行勾选</li>
+<li> 权限点较少，运维业务场景相对固定且较少，因此，可以预定义绝大部分角色。甚至可以，不允许增删角色、只允许通过继承和覆盖来定制角色权限</li>
+<li> 借助业务树的层级关系，实现角色的向上继承、向上覆盖</li>
+<li> 权限系统的约束关系，大部分与业务规范、安全控制有关， 更适合在代码中实现</li>
+</ol>
+
+<p>结合上述特点，采用 RBAC3 模型，设计出运维权限系统的核心表结构，如下图，</p>
+
+<p><img src="https://raw.githubusercontent.com/niean/niean.common.store/master/images/devops/rbac/mysql.schema.png" alt=""/></p>
+
+<p>上述表结构设计，有如下关键点，</p>
+
+<ul>
+<li>  用户 user、角色 role、权限点 permission 是权限模型中的元素，用户角色关系表<code>r_user_role</code>记录了 UA 的结果，角色权限表<code>r_role_permission</code>记录了 PA 的结果</li>
+<li>  资源 resource 和操作 operation，合并到权限点表 permission 中。因为，资源和操作组成的权限点相对较少、相对固定，没有必要将资源和操作拆出来、独立成表</li>
+<li>  角色表 role 中有一个 tag 字段。tag 是业务树节点的有序字符串描述，易于存储、同时又保留了业务树的层级信息，可以辅助实现角色的继承、覆盖等逻辑，可以适配不同公司的业务树结构</li>
+</ul>
+
+<h3 id="toc_8">角色</h3>
+
+<p>运维系统，主要面向不同层次的开发和运维人员。因此，常用角色包括，</p>
+
+<table>
+<thead>
+<tr>
+<th>-</th>
+<th>开发人员</th>
+<th>运维人员</th>
+</tr>
+</thead>
+
+<tbody>
+<tr>
+<td>普通成员</td>
+<td>dev.member</td>
+<td>sre.member</td>
+</tr>
+<tr>
+<td>管理员</td>
+<td>dev.admin</td>
+<td>sre.admin</td>
+</tr>
+<tr>
+<td>…</td>
+<td>…</td>
+<td>…</td>
+</tr>
+</tbody>
+</table>
+
+<p>其中，dev.member、dev.admin、sre.member、sre.admin 可以是 权限系统预定义的 角色。</p>
+
+<h3 id="toc_9">权限点</h3>
+
+<p>运维系统的权限点，以不同的运维子系统为核心，包括但不限于，</p>
+
+<table>
+<thead>
+<tr>
+<th>资源</th>
+<th>操作</th>
+</tr>
+</thead>
+
+<tbody>
+<tr>
+<td>监控系统. 策略</td>
+<td>C,R,U,D</td>
+</tr>
+<tr>
+<td>监控系统. 策略. 报警历史</td>
+<td>R,D</td>
+</tr>
+<tr>
+<td>监控系统. 绘图</td>
+<td>C,R,U,D</td>
+</tr>
+<tr>
+<td>部署系统. 任务</td>
+<td>C,R,U,D,X</td>
+</tr>
+<tr>
+<td>预算系统. 申请</td>
+<td>C,R,U,D,X,A</td>
+</tr>
+<tr>
+<td>…</td>
+<td>…</td>
+</tr>
+</tbody>
+</table>
+
+<p>同一运维子系统，可以抽象出多个资源；每个资源，对应了不同的操作。资源和操作结合起来，就是权限点，如 “监控系统. 策略: C” 就是一个权限点，表示 “创建 监控策略” 的权限。</p>
+
+<p>权限点是有限的、基本稳定的，不会发生大面积的更新。</p>
+
+<h3 id="toc_10">给角色分配权限</h3>
+
+<p>PA。一般的，我们会说，把 权限” 监控系统. 策略: C”，授予 普通开发人员 “dev.member”。考虑到角色的继承、覆盖关系，我们会说，把 权限” 监控系统. 策略: C”，授予，业务节点<code>cop.xiaomi_owt.inf</code>上的 普通开发人员”dev.member”，接口定义如下，</p>
+
+<pre><code class="language-py">@app.route(&quot;/tag/&lt;string:tag&gt;/role/&lt;string:role&gt;/permission/&lt;string:permission&gt;/pa&quot;, methods=[&#39;POST&#39;])
+def pa_tag_role_permission(tag, role, permission):
+    rid = get_or_create_role(tag, role)
+    permissionId = get_or_create_permission(permission)
+    assign_permission_to_role(rid, permissionId)
 
 </code></pre>
 
-<p>将应用打包成一个可执行 FatJar。相对应的，Ark 包则是 SOFABoot 官方提供的打包插件：</p>
+<p>对应的数据库操作，如下:</p>
 
-<pre><code>&lt;plugin&gt;
-    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
-    &lt;artifactId&gt;sofa-ark-maven-plugin&lt;/artifactId&gt;
-&lt;/plugin&gt;
+<pre><code class="language-py">insert into `role` values (null, &#39;cop.xiaomi_owt.inf&#39;, &#39;dev.member&#39;) on duplicate key update id=last_insert_id(id); 
+# rid=`role`.lastInsertId()
+
+insert into `permission` values (null, &#39;监控系统.策略&#39;, &#39;C&#39;) on duplicate key update id=last_insert_id(id);
+# permissionId=`permission`. lastInsertId()
+
+insert into `r_role_permission` values (null, rid, permissionId);
+</code></pre>
+
+<h3 id="toc_11">为用户分配角色</h3>
+
+<p>UA。考虑到角色继承，我们会说，将 业务节点<code>cop.xiaomi_owt.inf</code>上的 普通开发人员 “dev.member” 角色，授予，用户 “niean”，接口定义如下，</p>
+
+<pre><code class="language-py">@app.route(&quot;/tag/&lt;string:tag&gt;/role/&lt;string:role&gt;/user/&lt;string:user&gt;/ua&quot;, methods=[&#39;POST&#39;])
+def ua_tag_role_user(tag, role, user):
+    rid = get_role(tag, role)
+    uid = get_user(user)
+    assign_user_to_role(rid, uid)
 
 </code></pre>
 
-<p>将应用打包成一个具有类隔离能力的可执行 FatJar，称之为 Ark 包。下图是粗略地对比两者的目录结构差别：</p>
+<p>对应的数据库操作，为，</p>
 
-<p><img src="https://pic3.zhimg.com/v2-096b7865cea9b432d6dee8990d2b2dc1_b.jpg" alt=""/><img src="https://pic3.zhimg.com/v2-096b7865cea9b432d6dee8990d2b2dc1_r.jpg" alt=""/></p>
-
-<p>可以看到 Ark 包作为应用部署包的分发格式，它包含有 Ark Container，Ark Plugin 和 Ark Biz 三种格式模块。这里我们不对 Ark 包或者其他格式模块的目录结构作分析，感兴趣的同学可以点开文末附上的相关链接。我们重点介绍这三个角色的功能。</p>
-
-<ul>
-<li>  Ark Container: Ark 容器，是组件 SOFAArk 的核心，运行 Ark 包时，Ark 容器会最先启动，负责应用运行时的管理，主要包括构建 Ark Plugin 和 Ark Biz 的类导入导出关系表、启动并初始化 Ark Plugin 和 Ark Biz、管理 Ark Plugin 服务的发布和引用等等。</li>
-<li>  Ark Plugin: SOFAArk 定义的一种模块格式，由若干个 Jar 包组成的一个 FatJar，开发人员可以借助官方提供的 maven 打包插件将若干 Jar 包打包成一个 Ark Plugin 供应用依赖。运行时，由独立的类加载器加载，因此有隔离需求的 Jar 包建议打包成 Ark Plugin 供应用依赖。</li>
-<li>  Ark Biz: SOFAArk 定义的一种模块格式，是应用及其依赖的所有三方包组成的一个 FatJar，需要注意的是，Ark Biz 不会包含应用依赖的 Ark Plugin。运行时，Ark Biz 由独立的类加载器加载，借助类导入导出关系表，Ark Biz 可以使用 Ark Plugin 的导出类和资源。</li>
-</ul>
-
-<h2 id="toc_1"><strong>SOFAArk 运行时隔离</strong></h2>
-
-<p>根据上一节的描述可以知道 SOFABoot 类隔离关键是理解 SOFAArk 定义的三个概念，Ark Container，Ark Plugin 和 Ark Biz。下图表示的是应用启动后，运行时 Ark Container，Ark Plugin，Ark Biz 的逻辑分层图：</p>
-
-<p><img src="https://pic3.zhimg.com/v2-27569011d5bddb7723b45797dc66758e_b.jpg" alt=""/><img src="https://pic3.zhimg.com/v2-27569011d5bddb7723b45797dc66758e_r.jpg" alt=""/></p>
-
-<p>我们将先以 Ark Plugin 入手来介绍 SOFABoot 类隔离的实现原理。</p>
-
-<h2 id="toc_2"><strong>Ark Plugin 隔离</strong></h2>
-
-<p>开发者借助 SOFABoot 官方提供的插件：</p>
-
-<pre><code>&lt;plugin&gt;
-    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
-    &lt;artifactId&gt;sofa-ark-plugin-maven-plugin&lt;/artifactId&gt;
-&lt;/plugin&gt;
+<pre><code class="language-py"># rid=`role`.getIdOfRole(&#39;cop.xiaomi_owt.inf&#39;, &#39;dev.member&#39;)
+# uid=`user`.getIdOfUser(&#39;niean&#39;)
+insert into `r_user_role` values (null, rid, uid);
 
 </code></pre>
 
-<p>可以将 Java 模块打包成一个 Ark Plugin，这里我们不讨论该打包插件的配置参数和使用方式，感兴趣的同学可以点开文末附上的相关链接以及学习 SOFABoot 类隔离能力使用篇。只需要知道，Ark Plugin 主要包含元信息有：插件启动器、导出类、导入类、导出资源、导入资源、优先级等，这些元信息保存在 Ark Plugin 中的 META-INF/MANIFEST.MF 中，一份典型的 MANIFEST.MF 文件样式如下：</p>
+<h3 id="toc_12">角色继承</h3>
 
-<pre><code>Manifest-Version: 1.0
-groupId: com.alipay.sofa
-artifactId: sample-ark-plugin
-version: 0.3.0-SNAPSHOT
-priority: 1000
-pluginName: sample-ark-plugin
-activator: com.alipay.sofa.ark.sample.activator.SamplePluginActivator
-import-packages: 
-import-classes: 
-import-resources: 
-export-packages: com.alipay.sofa.ark.sample.common.*,com.alipay.sofa.ark.sample
-export-classes: com.alipay.sofa.ark.sample.facade.SamplePluginService
-export-resources: Sample_Resource_Exported
+<p>角色继承，依赖业务树的层级结构，<strong>向上继承</strong>。继承来的角色，其权限点维持不变。</p>
 
-</code></pre>
+<p>例如，用户”niean” 在业务树节点<code>cop.xiaomi_owt.inf</code>上 具有 普通开发人员”dev.member” 的角色。那么用户”niean” 在业务树节点<code>cop.xiaomi_owt.inf_pdl.falcon</code>上 也具有普通开发人员”dev.member” 的角色，且具有相同的权限点。</p>
 
-<p>在上面我们提到，运行 Ark 包时，类隔离容器 Ark Container 会最先启动，然后 Ark Container 会接管整个应用的启动过程。针对 Ark Plugin 处理逻辑如下：</p>
+<p>我们的数据表”role” 中，保存的是扁平的业务树节点信息，那，如何判断业务节点的上下级关系呢？字符串包含! 如，字符串<code>cop.xiaomi_owt.inf_pdl.falcon</code>包含<code>cop.xiaomi_owt.inf</code>，所以前者是后者的子节点。又如，<code>cop.xiaomi_owt.miui</code>不包含<code>cop.xiaomi_owt.inf</code>，所以前者不是后者的子节点。业务树的层级关系，蜕化为字符串的包含操作，是不是很爽，哈哈。</p>
 
-<ul>
-<li>  首先解析 Ark 包中引入的所有 Ark Plugin，读取插件元信息，构建类 / 资源导入导出关系索引表。</li>
-<li>  提前生成所有插件类加载器，每个 Ark Plugin 都使用独立的类加载器，管理插件类加载逻辑，借助第一步生成的类导入导出关系表，突破 Java 原生的双亲委派模型，可以委托其他插件加载所需类，构建一个类 OSGi 的网状类加载模型。</li>
-<li>  根据插件优先级，依次调用插件启动器。在插件启动器中，插件开发者可以向容器注册服务以方便其他插件引用，也可以引用其他插件发布的服务，及插件启动所需的初始化操作。</li>
-</ul>
+<h3 id="toc_13">角色覆盖</h3>
 
-<p>需要明确一点，为了让类加载模型足够简单，Ark 容器在启动任何插件前，会把所有的插件类加载器提前构建完毕。Ark Plugin 可以相互委托加载，插件优先级只是影响插件的启动顺序，而且也不强制要求每个 Ark Plugin 都要有启动器。</p>
+<p>角色覆盖，依赖业务树的层级结构，<strong>向上覆盖</strong>。考虑到安全性，角色覆盖时，对应的权限点只减少、不增加。这是运维规范的一部分，有利于提高安全性。</p>
 
-<p>启动完所有插件后，Ark Container 则开始负责启动 Ark Biz 模块。</p>
+<p>例如，业务树节点<code>cop.xiaomi_owt.inf</code>上 绑定了一个 普通开发人员”dev.member” 的角色。根据业务需要，业务树节点<code>cop.xiaomi_owt.inf_pdl.falcon</code>上的 普通开发人员”dev.member” 角色，不允许发起部署任务 (“部署系统. 任务: X”)，于是，我们需要在业务树节点<code>cop.xiaomi_owt.inf_pdl.falcon</code>上 重新定义 普通开发人员”dev.member” 的 权限点、减少权限点” 部署系统. 任务: X”。</p>
 
-<h2 id="toc_3"><strong>Ark Biz 隔离</strong></h2>
+<table>
+<thead>
+<tr>
+<th>角色覆盖</th>
+<th>dev.member 角色的权限点</th>
+</tr>
+</thead>
 
-<p>Ark Container 在完成 Ark Plugin 的隔离和启动后，则开始准备 Ark Biz 的隔离和启动。</p>
+<tbody>
+<tr>
+<td><code>cop.xiaomi_owt.inf</code></td>
+<td>监控系统. 绘图: R, 部署系统. 任务: R, 部署系统. 任务: X, …</td>
+</tr>
+<tr>
+<td><code>cop.xiaomi_owt.inf_pdl.falcon</code></td>
+<td>监控系统. 绘图: R, 部署系统. 任务: R, …</td>
+</tr>
+</tbody>
+</table>
 
-<p>在上文中提到，应用打成 Ark 包后，Ark 包会包含 Ark Plugin 模块和 Ark Biz 模块。实际上 Ark Biz 其实就是应用及其所有的三方依赖打成的 FatJar 包，Ark Biz 不会包含应用引入的 Ark Plugin。开发者借助 SOFABoot 官方提供的插件：</p>
+<p>通常，我们在业务树的根节点<code>cop.xiaomi</code>，授予，各角色以最大权限；同时，在业务树子节点，根据业务需要，删除一些角色特定的权限点。这样，既可以 让用户方便地 在各业务树子节点 <strong>通过继承获取权限</strong>，又可以 让管理者方便地 在各业务树节点 <strong>通过覆盖回收特定权限</strong>。</p>
 
-<pre><code>&lt;plugin&gt;
-    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
-    &lt;artifactId&gt;sofa-ark-maven-plugin&lt;/artifactId&gt;
-&lt;/plugin&gt;
+<h3 id="toc_14">验权</h3>
 
-</code></pre>
+<p>典型的验权场景，如下。</p>
 
-<p>可以将 Java（Spring Boot） 应用打包成一个 Ark Biz，这里我们不讨论该打包插件的配置参数和使用方式，感兴趣的同学可以点开文末附上的相关链接以及学习 SOFABoot 类隔离能力使用篇。只需要知道，Ark Biz 主要包含元信息有：应用启动入口、禁止导入类、禁止导入资源等。这些元信息保存在 Ark Biz 中的 META-INF/MANIFEST.MF 中，一份典型的 MANIFEST.MF 文件样式如下：</p>
-
-<pre><code>Manifest-Version: 1.0
-Archiver-Version: Plexus Archiver
-Created-By: Apache Maven 3.2.5
-Build-Jdk: 1.8.0_101
-Built-By: qilong.zql
-Ark-Biz-Name: sofa-ark-sample-springboot-ark
-deny-import-resources:
-deny-import-packages:
-deny-import-classes:
-Main-Class: com.alipay.sofa.ark.sample.springbootdemo.SpringbootDemoApplication
+<pre><code class="language-py">@app.route(&quot;/permission/user/&lt;string:user&gt;/tag/&lt;string:tag&gt;/permission/&lt;string:permission&gt;/check&quot;, methods=[&#39;GET&#39;])
+def check_user_tag_permission(user, tag, permission):
+    if user&#39;s roles on tag have permisson:
+        return True
+    if user&#39;s roles on tag&#39;s parents have permisson:
+        return True
+    return False
 
 </code></pre>
 
-<p>Ark Biz 和 Ark Plugin 有很大的不同，最明显的则是 Ark Biz 单向依赖 Ark Plugin，即 Ark Biz 只能单向委托 Ark Plugin 加载类和资源，反之则不可以。实际上在运行时，Ark Biz 是运行在 Ark Plugin 之上，Ark Container 也是先启动所有 Ark Plugin 然后启动 Ark Biz。默认情况下，Ark Plugin 导出的所有类和资源都能被 Ark Biz 委托加载到，为了方便应用开发者能够自主控制类加载逻辑，允许在打包插件中配置禁止导入类和禁止导入资源，如此，对于配置的类和资源， Ark Biz 能够优先加载内部包含的类，而不会委托给 Ark Plugin 加载。Ark Container 针对 Ark Biz 处理逻辑如下：</p>
+<p>如果 用户 在 业务树节点及其父节点 上的 角色 拥有 权限点，则验权成功；否则，验权失败。</p>
 
-<ul>
-<li>  首先解析 Ark 包中 Ark Biz 模块，读取元信息，构建类 / 资源导入导出关系索引表。</li>
-<li>  生成 Ark Biz 类加载器，管理 Ark Biz 类加载逻辑，借助第一步生成的类导入导出关系表，突破 Java 原生的双亲委派模型，可以委托 Ark Plugin 加载所需类和资源。</li>
-<li>  调用应用启动入口，启动应用。</li>
-</ul>
+<h2 id="toc_15">总结</h2>
 
-<p>如此，Ark 包即完成整个启动过程。</p>
+<p>运维权限系统，业务场景相对简单，模型也较固定。更多的工作，需要在使用过程中逐步积累一些运维规范、安全策略、工程优化等等——从这个角度来说，权限系统是一种最佳实践的沉淀。</p>
 
-<h2 id="toc_4"><strong>和 OSGi 对比</strong></h2>
+<h2 id="toc_16">鸣谢</h2>
 
-<p>作为开源界早负盛名的动态模块系统，基于 OSGi 规范的 Equinox、Felix 等同样具备类隔离能力，然而他们更多强调的是一种编程模型，面向模块化开发，有一整套模块生命周期的管理，定义模块通信机制以及复杂的类加载模型。作为专注于解决依赖冲突的隔离框架，SOFAArk 专注于类隔离，简化了类加载模型，因此显得更加轻量。</p>
-
-<p>其次在 OSGi 规范中，所有的模块定义成 Bundle 形式，作为应用开发者，他需要了解 OSGi 背后的工作原理，对开发者要求比较高。在 SOFAArk 中，定义了两层模块类型，Ark Plugin 和 Ark Biz，应用开发者只需要添加隔离的 Ark Plugin 依赖，对本身的开发没有任何影响，基本没有开发门槛。</p>
-
-<h2 id="toc_5"><strong>正在做的事</strong></h2>
-
-<p>全文读下来，你可能会产生这样的一个疑惑：如果在应用中引入其他应用打包的 Ark Biz 会如何呢？</p>
-
-<p>目前 SOFAArk 是可以启动多个 Ark Biz 的，比较遗憾的是，现在 Ark Biz 之间没法做到服务通信。如果你之前读完过上一篇 SOFABoot 类隔离使用篇及这篇原理篇，你也许会发现，虽然 SOFAArk 是一个纯粹的类隔离框架，但是基于 SOFAArk 之上，可以开发各具功能特色的 Ark Plugin，补充框架能力，供应用开发者按需依赖使用，比如已经推出的 SOFARPC Ark Plugin。回到上面的问题，为了解决多个 Ark Biz 合并部署的问题，我们正在开发一个新的 Ark Plugin，Jarslink2.0。</p>
-
-<p>在蚂蚁内部，多个应用合并部署在同一个 JVM 之上，是一件常见的事情。这样带来的主要优势如下：</p>
-
-<ul>
-<li>  无关应用合并部署：有些应用在独立部署时，相互之间没有服务依赖，而且这些应用承担业务体量都偏小，单独占有一台物理机部署比较浪费资源。这些应用合并部署，能够节省成本。</li>
-<li>  相关应用合并部署：多个应用之间存在服务依赖，独立部署时，各应用之间使用 RPC 调用，虽然使用了分布式架构，稳定性高，但依然存在网络抖动导致的延时性问题。这些应用合并部署，RPC 调用转为 JVM 内部调用，缩减调用开销。</li>
-</ul>
-
-<p>当然，作为蚂蚁内部非常重要的一项技术创新，合并部署在特定的业务背景下有着更为重要的意义，也远不止上面提到的两点优势，比如故障的隔离等等。</p>
-
-<p>说回到 Jarslink2.0，这个 SOFABoot 官方开发的 Ark Plugin，主要是为了解决多个 Ark Biz 运行时管理问题。我们知道，每个 Java(Spring Boot) 应用，都可以通过我们的 maven 插件打包成 Ark Biz 供其他应用依赖。目前 SOFAArk 框架只能做到隔离 Ark Biz，作为框架能力的补充，Jarslink2.0 插件专门管理多个 Ark Biz 的运行时。这里默认每个 Ark Biz 都是一个 SOAFBoot/Spring Boot 工程，Jarslink2.0 提供的能力如下：</p>
-
-<ul>
-<li>  动态安装、卸载 Ark Biz。</li>
-<li>  Ark Biz 之间使用注解和 xml 两种形式发布和引用 jvm 服务，解决多 Ark Biz 服务依赖问题。</li>
-<li>  Ark Biz 如果使用了 SOFARPC 能力，可以自动完成 RPC 转 JVM 内部调用。</li>
-</ul>
-
-<p>在这里特别感谢方腾飞， 蚂蚁内部花名 @清英 ，也是我们熟知的并发编程网 (<a href="https://link.zhihu.com/?target=http%3A//ifeve.com/">http://ifeve.com/</a>)创始人。清英在蚂蚁内部开发的 Jarslink1.0 在网商银行已经落地使用很长一段时间，Jarslink2.0 是在 Jarslink1.0 基础之上，结合 SOFABoot 类隔离框架，提供了更加通用的应用 (模块) 隔离和通信的实现方案，敬请期待！</p>
-
-<h2 id="toc_6">欢迎微博关注 @SOFAStack 与我们互动，相关传送门：</h2>
-
-<ul>
-<li>  Ark 包目录结构及其打包插件的使用
-<a href="https://link.zhihu.com/?target=https%3A//alipay.github.io/sofastack.github.io/docs/ark-jar.html">https://alipay.github.io/sofastack.github.io/docs/ark-jar.html</a></li>
-<li>  Ark Plugin 目录结构及其打包插件的使用
-<a href="https://link.zhihu.com/?target=https%3A//alipay.github.io/sofastack.github.io/docs/ark-plugin.html">https://alipay.github.io/sofastack.github.io/docs/ark-plugin.html</a></li>
-<li>  Ark Biz 目录结构及其打包插件的使用
-<a href="https://link.zhihu.com/?target=https%3A//alipay.github.io/sofastack.github.io/docs/ark-biz.html">https://alipay.github.io/sofastack.github.io/docs/ark-biz.html</a></li>
-<li>  Ark Plugin 的工程示例
-<a href="https://link.zhihu.com/?target=https%3A//github.com/alipay/sofa-ark/tree/master/sofa-ark-samples/sample-ark-plugin">https://github.com/alipay/sofa-ark/tree/master/sofa-ark-samples/sample-ark-plugin</a></li>
-<li>  Spring Boot <a href="https://link.zhihu.com/?target=https%3A//github.com/alipay/sofa-ark/tree/master/sofa-ark-samples/sample-springboot-ark">https://github.com/alipay/sofa-ark/tree/master/sofa-ark-samples/sample-springboot-ark</a></li>
-</ul>
+<p>感谢小米权限系统的<a href="https://github.com/GaoJiasheng">小胖</a>、<a href="https://github.com/zbqyexingkong">保清</a>帮忙讲解 Tyr 的运维规范:-)</p>
 
                         
                       </div>
@@ -297,10 +380,10 @@ Main-Class: com.alipay.sofa.ark.sample.springbootdemo.SpringbootDemoApplication
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/6/5</span>
+                    <span class="date">2018/7/17</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Microservice.html'>Microservice</a></span>
+          					    <span class="posted-in"><a href='Security.html'>Security</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -390,31 +473,31 @@ Main-Class: com.alipay.sofa.ark.sample.springbootdemo.SpringbootDemoApplication
 	      
 		      
 			      <li class="post">
-			        <a href="15459058392039.html">Reliable Domain Events</a>
+			        <a href="15517999043443.html">The Art of Crafting Architectural Diagrams</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
+			        <a href="15517997955971.html">为什么说我们需要软件架构图？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
+			        <a href="15516128677869.html">DNS Servers That Offer Privacy and Filtering</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
+			        <a href="15516123108194.html">Airbnb's Migration from Monolith to Services</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
+			        <a href="15516097487470.html">Events As First-Class Citizens</a>
 			      </li>
 		     
 		  

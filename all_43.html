@@ -105,93 +105,301 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15376981994343.html">
+                <a class="clearlink" href="15459049161482.html">
                 
-                  <h1>Kafka实践：到底该不该把不同类型的消息放在同一个主题中？</h1>
+                  <h1>Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
-                        	<pre><code>作者 Martin Kleppmann，译者 无明  发布于 2018年8月22日
-</code></pre>
-
-<blockquote>
-<p><a href="http://www.infoq.com/cn/articles/event-types-in-kafka-topic">http://www.infoq.com/cn/articles/event-types-in-kafka-topic</a></p>
-
-<p>英文原文：<a href="http://martin.kleppmann.com/2018/01/18/event-types-in-kafka-topic.html">http://martin.kleppmann.com/2018/01/18/event-types-in-kafka-topic.html</a></p>
+                        	<blockquote>
+<p>原文地址 <a href="https://dzone.com/articles/transaction-synchronization-and-spring-application">https://dzone.com/articles/transaction-synchronization-and-spring-application</a></p>
 </blockquote>
 
-<p>如果你使用了像 <a href="http://kafka.apache.org/">Kafka</a> 这样的流式处理平台，就要搞清楚一件事情：你需要用到哪些主题？特别是如果你要将一堆不同的事件作为消息发布到 Kafka，是将它们放在同一个主题中，还是将它们拆分到不同的主题中？</p>
+<p>The aim of this article is to explain how  <code>@TransactionalEventListener</code>  works, how it differs from a simple  <code>@EventListener</code>, and finally - what are the threats that we should take into account before using it. Giving a real-life example, I will mainly focus on transaction synchronization issues, not paying too much attention neither to consistency nor application event reliability. A complete SpringBoot project with described examples can be found <a href="https://github.com/bslota/transactional-event-listener">here</a>.</p>
 
-<p>Kafka 主题最重要的一个功能是可以让消费者指定它们想要消费的消息子集。在极端情况下，将所有数据放在同一个主题中可能不是一个好主意，因为这样消费者就无法选择它们感兴趣的事件——它们需要消费所有的消息。另一种极端情况，拥有数百万个不同的主题也不是一个好主意，因为 Kafka 的每个主题都是有成本的，拥有大量主题会损害性能。</p>
+<h2 id="toc_0">Example overview</h2>
 
-<p>实际上，从性能的角度来看，分区数量才是关键因素。在 Kafka 中，每个主题至少对应一个分区，如果你有 n 个主题，至少会有 n 个分区。不久之前，Jun Rao 写了一篇<a href="https://www.confluent.io/blog/how-to-choose-the-number-of-topicspartitions-in-a-kafka-cluster/">博文</a>，解释了拥有多个分区的成本（端到端延迟、文件描述符、内存开销、发生故障后的恢复时间）。根据经验，如果你关心延迟，那么每个节点分配几百个分区就可以了。如果每个节点的分区数量超过成千上万个，就会造成较大的延迟。</p>
+<p>Imagine we have a microservice which manages customers&#39;basic information and triggers activation token generation after a customer is created. From the business perspective, token generation is not an integral part of user creation and should be a separate process (this is a very important assumption, which I will refer to later). To keep things simple, let&#39;s assume that a customer looks like this:</p>
 
-<p>关于性能的讨论为设计主题结构提供了一些指导：如果你发现自己有数千个主题，那么将一些细粒度、低吞吐量的主题合并到粗粒度主题中可能是个明智之举，这样可以避免分区数量蔓延。</p>
+<pre><code class="language-java">@Entity
+public class Customer {
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+    private String name;
+    private String email;
+    private String token;
+    public Customer() {}
+    public Customer(String name, String email) {
+        this.name = name;
+        this.email = email;
+    }
+    public void activatedWith(String token) {
+        this.token = token;
+    }
+    public boolean hasToken() {
+        return !StringUtils.isEmpty(token);
+    }
+    ...
+    //getters
+    //equals and hashcode
+}
+</code></pre>
 
-<p>然而，性能并不是我们唯一关心的问题。在我看来，更重要的是主题结构的数据完整性和数据模型。我们将在本文的其余部分讨论这些内容。</p>
+<p>We have a simple <u>spring-data-jpa</u> repository:</p>
 
-<h2 id="toc_0">主题等于相同类型事件的集合？</h2>
+<pre><code class="language-java">public interface CustomerRepository extends JpaRepository&lt;Customer, Long&gt; {}
+</code></pre>
 
-<p>人们普遍认为应该将相同类型的事件放在同一主题中，不同的事件类型应该使用不同的主题。这种思路让我们联想到关系型数据库，其中表是相同类型记录的集合，于是我们就有了数据库表和 Kafka 主题之间的类比。</p>
+<p>And below you can see an essence of the business problem - creating a new customer (persisting it in DB) and returning it.</p>
 
-<p><a href="https://docs.confluent.io/current/schema-registry/docs/index.html">Confluent Avro Schema Registry</a> 进一步强化了这种概念，因为它鼓励你对主题的所有消息使用相同的 Avro 模式（schema）。模式可以在保持兼容性的同时进行演化（例如通过添加可选字段），但所有消息都必须符合某种记录类型。稍后我会再回过头来讨论这个问题。</p>
+<pre><code class="language-java">@Service
+public class CustomerService {
+    private final CustomerRepository customerRepository;
+    private final ApplicationEventPublisher applicationEventPublisher;
+    public CustomerService(CustomerRepository customerRepository, ApplicationEventPublisher applicationEventPublisher) {
+        this.customerRepository = customerRepository;
+        this.applicationEventPublisher = applicationEventPublisher;
+    }
+    @Transactional
+    public Customer createCustomer(String name, String email) {
+        final Customer newCustomer = customerRepository.save(new Customer(name, email));
+        final CustomerCreatedEvent event = new CustomerCreatedEvent(newCustomer);
+        applicationEventPublisher.publishEvent(event);
+        return newCustomer;
+    }
+}
+</code></pre>
 
-<p>对于某些类型的流式数据，例如活动事件，要求同一主题中所有消息都符合相同的模式，这是合理的。但是，有些人把 Kafka 当成了数据库来用，例如<a href="https://docs.microsoft.com/en-us/azure/architecture/patterns/event-sourcing">事件溯源</a>，或者<a href="https://www.confluent.io/blog/build-services-backbone-events/">在微服务之间交换数据</a>。对于这种情况，我认为是否将主题定义为具有相同模式的消息集合就不那么重要了。这个时候，更重要的是主题分区中的消息必须是有序的。</p>
-
-<p>想象一下这样的场景：你有一个实体（比如客户），这个实体可能会发生许多不同的事情，比如创建客户、客户更改地址、客户向帐户中添加新的信用卡、客户发起客服请求，客户支付账单、客户关闭帐户。</p>
-
-<p>这些事件之间的顺序很重要。例如，我们希望其他事件必须在创建客户之后才能发生，并且在客户关闭帐户之后不能再发生其他事件。在使用 Kafka 时，你可以将它们全部放在同一个主题分区中来保持它们的顺序。在这个示例中，你可以使用客户 ID 作为分区的键，然后将所有事件放在同一个主题中。它们必须位于同一主题中，因为不同的主题对应不同的分区，而 Kafka 是不保证分区之间的顺序的。</p>
-
-<h2 id="toc_1">顺序问题</h2>
-
-<p>如果你为 customerCreated、customerAddressChanged 和 customerInvoicePaid 事件使用了不同的主题，那么这些主题的消费者可能就看不到这些事件之间的顺序。例如，消费者可能会看到一个不存在的客户做出的地址变更（这个客户尚未创建，因为相应的 customerCreated 事件可能发生了延迟）。</p>
-
-<p>如果消费者暂停一段时间（比如进行维护或部署新版本），那么事件出现乱序的可能性就更高了。在消费者停止期间，事件继续发布，并且这些事件被存储在特定定的主题分区中。当消费者再次启动时，它会消费所有积压在分区中的事件。如果消费者只消费一个分区，那就没问题：积压的事件会按照它们存储的顺序依次被处理。但是，如果消费者同时消费几个主题，就会按任意顺序读取主题中数据。它可以先读取积压在一个主题上的所有数据，然后再读取另一个主题上积压的数据，或者交错地读取多个主题的数据。</p>
-
-<p>因此，如果你将 customerCreated、customerAddressChanged 和 customerInvoicePaid 事件放在三个单独的主题中，那么消费者可能会在看到 customerCreated 事件之前先看到 customerAddressChanged 事件。因此，消费者很可能会看到一个客户的 customerAddressChanged 事件，但这个客户却未被创建。</p>
-
-<p>你可能会想到为每条消息附加时间戳，并用它来对事件进行排序。如果你将事件导入数据仓库，再对事件进行排序，或许是没有问题的。但在流数据中只使用时间戳是不够的：在你收到一个具有特定时间戳的事件时，你不知道是否需要等待具有较早时间戳的事件，或者所有之前的事件是否已经在当前事情之前到达。依靠时钟进行同步通常会导致噩梦，有关时钟问题的更多详细信息，请参阅 “Designing Data-Intensive Applications” 的第 8 章。</p>
-
-<h2 id="toc_2">何时拆分主题，何时合并主题？</h2>
-
-<p>基于这个背景，我将给出一些经验之谈，帮你确定哪些数据应该放在同一主题中，以及哪些数据应该放在不同的主题中。</p>
+<p>As you can see,  <code>CustomerService</code>  depends on two beans:</p>
 
 <ol>
-<li><p>首先，需要保持固定顺序的事件必须放在同一主题中（并且需要使用相同的分区键）。如果事件属于同一实体，那么事件的顺序就很重要。因此，我们可以说，同一实体的所有事件都应该保存在同一主题中。</p>
-
-<p>如果你使用事件溯源进行数据建模，事件的排序尤为重要。聚合对象的状态是通过以特定的顺序重放事件日志而得出的。因此，即使可能存在不同的事件类型，聚合所需要的所有事件也必须在同一主题中。</p></li>
-<li><p>对于不同实体的事件，它们应该保存在相同的主题中还是不同的主题中？我想说，如果一个实体依赖于另一个实体（例如一个地址属于一个客户），或者经常需要同时用到它们，那么它们也应该保存在同一主题中。另一方面，如果它们不相关，并且属于不同的团队，那么最好将它们放在不同的主题中。</p>
-
-<p>另外，这也取决于事件的吞吐量：如果一个实体类型的事件吞吐量比其他实体要高很多，那么最好将它分成几个主题，以免让只想消费低吞吐量实体的消费者不堪重负（参见第 4 点）。不过，可以将多个具有低吞吐量的实体合并起来。</p></li>
-<li><p>如果一个事件涉及多个实体该怎么办？例如，订单涉及到产品和客户，转账至少涉及到两个账户。</p>
-
-<p>我建议在一开始将这些事件记录为单个原子消息，而不是将其分成几个属于不同主题的消息。在记录事件时，最好可以保持原封不动，即尽可能保持数据的原始形式。你可以随后使用流式处理器来拆分复合事件，但如果过早进行拆分，想要重建原始事件会难得多。如果能够为初始事件分配一个唯一 ID（例如 UUID）就更好了，之后如果你要拆分原始事件，可以带上这个 ID，从而可以追溯到每个事件的起源。</p></li>
-<li><p>看看消费者需要订阅的主题数量。如果几个消费者都订阅了一组特定的主题，这表明可能需要将这些主题合并在一起。</p>
-
-<p>如果将细粒度的主题合并成粗粒度的主题，一些消费者可能会收到他们不需要的事件，需要将其忽略。这不是什么大问题：消费消息的成本非常低，即使最终忽略了一大半的事件，总的成本可能也不会很大。只有当消费者需要忽略绝大多数消息（例如 99.9％是不需要的）时，我才建议将大容量事件流拆分成小容量事件流。</p></li>
-<li><p>用作 Kafka Streams 状态存储（KTable）的变更日志主题应该与其他主题分开。在这种情况下，这些主题由 Kafka Streams 流程来管理，所以不应该包含其他类型的事件。</p>
-
-<p>最后，如果基于上述的规则依然无法做出正确的判断，该怎么办？那么就按照类型对事件进行分组，把相同类型的事件放在同一个主题中。不过，我认为这条规则是最不重要的。</p></li>
+<li> <code>CustomerRepository</code>  - interface for the purpose of saving customer</li>
+<li> <code>ApplicationEventPublisher</code>  - Spring&#39;s super-interface for  <code>ApplicationContext</code> , which declares the way of event publishing inside Spring application</li>
 </ol>
 
-<h2 id="toc_3">模式管理</h2>
+<p><u>Please note the constructor injection. If you are not familiar with this technique or not aware of its benefits relative to field injection, please read <a href="http://pillopl.github.io/constructor-injection/">this article</a>.</u></p>
 
-<p>如果你的数据是普通文本（如 JSON），而且没有使用静态的模式，那么就可以轻松地将不同类型的事件放在同一个主题中。但是，如果你使用了模式编码（如 Avro），那么在单个主题中保存多种类型的事件则需要考虑更多的事情。</p>
+<p>Remember to give -1 during the code review if there is no test included! But wait, take it easy, mine is here:</p>
 
-<p>如上所述，基于 Avro 的 Kafka Confluent Schema Registry 假设了一个前提，即每个主题都有一个模式（更确切地说，一个模式用于消息的键，一个模式用于消息的值）。你可以注册新版本的模式，注册表会检查模式是否向前和向后兼容。这样设计的一个好处是，你可以让不同的生产者和消费者同时使用不同版本的模式，并且仍然保持彼此的兼容性。</p>
+<pre><code class="language-java">@SpringBootTest
+@RunWith(SpringRunner.class)
+public class CustomerServiceTest {
+  @Autowired
+  private CustomerService customerService;
+  @Autowired
+  private CustomerRepository customerRepository;
+  @Test
+  public void shouldPersistCustomer() throws Exception {
+    //when
+    final Customer returnedCustomer = customerService.createCustomer(&quot;Matt&quot;, &quot;matt@gmail.com&quot;);
+    //then
+    final Customer persistedCustomer = customerRepository.findOne(returnedCustomer.getId());
+    assertEquals(&quot;matt@gmail.com&quot;, returnedCustomer.getEmail());
+    assertEquals(&quot;Matt&quot;, returnedCustomer.getName());
+    assertEquals(returnedCustomer, persistedCustomer);
+}
+</code></pre>
 
-<p>Confluent 的 Avro 序列化器通过 subject 名称在注册表中注册模式。默认情况下，消息键的 subject 为 <topic>-key，消息值的 subject 为 &lt; topic&gt;-value。模式注册表会检查在特定 subject 下注册的所有模式的相互兼容性。</p>
+<p>The test does one simple thing - it checks whether  <code>createCustomer</code>  method creates a proper customer. One could say that in these kinds of tests I shouldn&#39;t pay attention to implementation details (persisting entity through the repository, etc.) and rather put it in some unit test, and I would agree, but let&#39;s just leave it to keep the example clearer.</p>
 
-<p>最近，我为 Avro 序列化器提供了一个补丁（<a href="https://github.com/confluentinc/schema-registry/pull/680">https://github.com/confluentinc/schema-registry/pull/680</a>），让兼容性检查变得更加灵活。这个补丁添加了两个新的配置选项：key.subject.name.strategy（用于定义如何构造消息键的 subject 名称）和 value.subject.name.strategy（用于定义如何构造消息值的 subject 名称）。它们的值可以是如下几个：</p>
+<p>You may ask now, where is the token generation. Well, due to the business case that we are discussing,  <code>createCustomer</code>  method does not seem to be a good place to put any logic apart from simple creation of user (method name should always reflect its responsibility). In that kind of cases it might be a good idea to use the observer pattern to inform interested parties that a particular event took place. Following this considerations, you can see that we are calling  <code>publishEvent</code>  method on  <code>applicationEventPublisher</code> . We are propagating an event of the following type:</p>
+
+<pre><code class="language-java">public class CustomerCreatedEvent {
+  private final Customer customer;
+  public CustomerCreatedEvent(Customer customer) {
+    this.customer = customer;
+  }
+  public Customer getCustomer() {
+    return customer;
+  }
+  ...
+  //equals and hashCode
+}
+</code></pre>
+
+<p>Note that it is just a POJO. Since Spring 4.2, we are no longer obliged to extend  <code>ApplicationEvent</code>  and can publish any object we like instead. Spring wraps it in  <code>PayloadApplicationEvent</code>  itself.</p>
+
+<p>We do also have an event listener component, like this:</p>
+
+<pre><code class="language-java">@Component
+public class CustomerCreatedEventListener {
+    private static final Logger LOGGER = LoggerFactory.getLogger(CustomerCreatedEventListener.class);
+    private final TokenGenerator tokenGenerator;
+    public CustomerCreatedEventListener(TokenGenerator tokenGenerator) {
+        this.tokenGenerator = tokenGenerator;
+    }
+    @EventListener
+    public void processCustomerCreatedEvent(CustomerCreatedEvent event) {
+        LOGGER.info(&quot;Event received: &quot; + event);
+        tokenGenerator.generateToken(event.getCustomer());
+    }
+}
+</code></pre>
+
+<p>Before we discuss this listener, let&#39;s briefly look at the  TokenGenerator  interface:</p>
+
+<pre><code class="language-java">public interface TokenGenerator {
+    void generateToken(Customer customer);
+}
+</code></pre>
+
+<p>and its implementation:</p>
+
+<pre><code class="language-java">@Service
+public class DefaultTokenGenerator implements TokenGenerator {
+    private final CustomerRepository customerRepository;
+    public DefaultTokenGenerator(CustomerRepository customerRepository) {
+        this.customerRepository = customerRepository;
+    }
+    @Override
+    public void generateToken(Customer customer) {
+        final String token = String.valueOf(customer.hashCode());
+        customer.activatedWith(token);
+        customerRepository.save(customer);
+    }
+}
+</code></pre>
+
+<p>We are simply generating a token, setting it as a customer&#39;s property and updating the entity in the database. Good, let&#39;s update our test class now, so that it checks not only the customer creation, but also token generation.</p>
+
+<pre><code class="language-java">@SpringBootTest
+@RunWith(SpringRunner.class)
+public class CustomerServiceTest {
+    @Autowired
+    private CustomerService customerService;
+    @Autowired
+    private CustomerRepository customerRepository;
+    @Test
+    public void shouldPersistCustomerWithToken() throws Exception {
+        //when
+        final Customer returnedCustomer = customerService.createCustomer(&quot;Matt&quot;, &quot;matt@gmail.com&quot;);
+        //then
+        final Customer persistedCustomer = customerRepository.findOne(returnedCustomer.getId());
+        assertEquals(&quot;matt@gmail.com&quot;, returnedCustomer.getEmail());
+        assertEquals(&quot;Matt&quot;, returnedCustomer.getName());
+        assertTrue(returnedCustomer.hasToken());
+        assertEquals(returnedCustomer, persistedCustomer);
+    }
+}
+</code></pre>
+
+<h2 id="toc_1">@EventListener</h2>
+
+<p>As you can see, we have moved token generation logic into a separate component which is good (note the assumption at the beginning of the previous chapter), but do we have a real separation of concerns? Nope.  <code>@EventListener</code>  registers the  <code>processCustomerCreatedEvent</code>  as the listener of  <code>CustomerCreatedEvent</code> , but it is called synchronously within the bounds of the same transaction as  <code>CustomerService</code> . It means, that if something goes wrong with token generation - customer won&#39;t be created. Is this the way it should really work? Surely not. Before we generate and set token, we would rather have a customer already created and saved in database (committed). Now this is the time to introduce  <code>@TransactionalEventListener</code>annotation.</p>
+
+<h2 id="toc_2">@TransactionalEventListener - transaction synchronization</h2>
+
+<p><code>@TransactionalEventListener</code>  is an  <code>@EventListener</code>  enhanced with the ability to collaborate with the surrounding transaction&#39;s phase. We call this a transaction synchronization - in other words, it is a way of registering callback methods to be invoked when the transaction is being completed. Synchronization is possible within the following transaction phases (phase attribute):</p>
 
 <ul>
-<li>  io.confluent.kafka.serializers.subject.TopicNameStrategy（默认）：消息键的 subject 名称为 <topic>-key，消息值为 &lt; topic&gt;-value。这意味着主题中所有消息的模式必须相互兼容。</li>
-<li>  io.confluent.kafka.serializers.subject.RecordNameStrategy：subject 名称是 Avro 记录类型的完全限定名。因此，模式注册表会检查特定记录类型的兼容性，而不管是哪个主题。这个设置允许同一主题包含不同类型的事件。</li>
-<li>  io.confluent.kafka.serializers.subject.TopicRecordNameStrategy：subject 名称是 <topic>-<type>，其中 &lt; topic &gt; 是 Kafka 主题名，<type > 是 Avro 记录类型的完全限定名。这个设置允许同一主题包含不同类型的事件，并进一步对当前主题进行兼容性检查。</li>
+<li>  AFTER_COMMIT (default setting) - specialization of AFTER_COMPLETION, used when transaction has successfully committed</li>
+<li>  AFTER_ROLLBACK - specialization of AFTER_COMPLETION, used when transaction has rolled back</li>
+<li>  AFTER_COMPLETION - used when transaction has completed (regardless the success)</li>
+<li>  BEFORE_COMMIT - used before transaction commit</li>
 </ul>
 
-<p>有了这个新特性，你就可以轻松地将属于特定实体的所有不同类型的事件放在同一个主题中。现在，你可以自由选择主题的粒度，而不仅限于一个类型对应一个主题。</p>
+<p>When there is no transaction running then the method annotated with  <code>@TransactionalEventListener</code>  won&#39;t be executed unless there is a parameter fallbackExecution set to true.</p>
+
+<p>Good, looks like this is something that we are looking for! Let&#39;s change  <code>@EventListener</code>  annotation with  <code>@TransactionalEventListener</code>  in  <code>CustomerCreatedEventListener</code> , then:</p>
+
+<pre><code class="language-java">@TransactionalEventListener
+public void processCustomerCreatedEvent(CustomerCreatedEvent event) {
+    LOGGER.info(&quot;Event received: &quot; + event);
+    tokenGenerator.generateToken(event.getCustomer());
+}
+</code></pre>
+
+<p>We need to check now if everything works as we expect - let&#39;s run our test:</p>
+
+<pre><code class="language-log">java.lang.AssertionError: 
+Expected :Customer{id=1, name=&#39;Matt&#39;, email=&#39;matt@gmail.com&#39;, token=&#39;1575323438&#39;}
+Actual   :Customer{id=1, name=&#39;Matt&#39;, email=&#39;matt@gmail.com&#39;, token=&#39;null&#39;}
+</code></pre>
+
+<p>Why is that? What have we missed? I tell you what, we spent too little time on analyzing how the transaction synchronization works. Now the crucial thing is that we have synchronized token generation with the transaction after it has been committed - so we shouldn&#39;t even expect that anything will be committed again! Javadoc for  <code>afterCommit</code>  method of  <code>TransactionSynchronization</code>  interface says it clearly:</p>
+
+<blockquote>
+<p><u>The transaction will have been committed already, but the transactional resources might still be active and accessible. As a consequence, any data access code triggered at this point will still &quot;participate&quot; in the original transaction, allowing to perform some cleanup (with no commit following anymore!), unless it explicitly declares that it needs to run in a separate transaction. Hence: Use {@code PROPAGATION</u>REQUIRES_NEW} for any transactional operation that is called from here._</p>
+</blockquote>
+
+<p>As we have already stated, we need to have a strong separation of concerns between a service call and an event listener logic. This means that we can use the advice given by Spring authors. Let&#39;s try annotating a method inside  <code>DefaultTokenGenerator</code> :</p>
+
+<pre><code class="language-java">@Transactional(propagation = Propagation.REQUIRES_NEW)
+public void generateToken(Customer customer) {
+    final String token = String.valueOf(customer.hashCode());
+    customer.activatedWith(token);
+    customerRepository.save(customer);
+}
+</code></pre>
+
+<p>If we run our test now, it passes!</p>
+
+<p><u>Caveat: We are discussing interacting with AFTER</u>COMMIT phase only, but all these considerations apply to all AFTER_COMPLETION phases. In the case of BEFORE_COMMIT phase, none of the above problems should worry you, although you need to make a conscious decision whether your listener&#39;s code should <u>really</u> be executed in the same transaction._</p>
+
+<h2 id="toc_3">Asynchronous execution</h2>
+
+<p>What if a token generation is a long lasting process? If it is not an essential part of creating a customer, then we could make one step forward and make our  <code>@TransactionalEventListener</code>-annotated method asynchronous one (via annotating it with  <code>@Async</code>). Asynchronous call means that we will execute listeners  <code>processCustomerCreatedEvent</code> in a separate thread. Bearing in mind that a single transaction in Spring framework is by default thread-bounded, we won&#39;t need autonomous transaction in  <code>DefaultTokenGenerator</code> anymore.</p>
+
+<p>Good, let&#39;s write a test for this case:</p>
+
+<pre><code class="language-java">@SpringBootTest
+@RunWith(SpringRunner.class)
+@ActiveProfiles(&quot;async&quot;)
+public class CustomerServiceAsyncTest {
+  @Autowired
+  private CustomerService customerService;
+  @Autowired
+  private CustomerRepository customerRepository;
+  @Test
+  public void shouldPersistCustomerWithToken() throws Exception {
+      //when
+      final Customer returnedCustomer = customerService.createCustomer(&quot;Matt&quot;, &quot;matt@gmail.com&quot;);
+      //then
+      assertEquals(&quot;matt@gmail.com&quot;, returnedCustomer.getEmail());
+      assertEquals(&quot;Matt&quot;, returnedCustomer.getName());
+      //and
+      await().atMost(5, SECONDS)
+          .until(() -&gt; customerTokenIsPersisted(returnedCustomer.getId()));
+  }
+  private boolean customerTokenIsPersisted(Long id) {
+      final Customer persistedCustomer = customerRepository.findOne(id);
+      return persistedCustomer.hasToken();
+  }
+}
+</code></pre>
+
+<p>The only thing that differentiates this test from the previous one is that we are using the _Awaitility_ library (a great and powerful tool) in order to await for the async task to complete. We also wrote a simple  <code>customerTokenIsPersisted</code> helper method to check if the token was properly set. And surely test passes brilliantly!</p>
+
+<p><u>Caveat: I don&#39;t recommend performing any async tasks in BEFORE</u>COMMIT phase as you won&#39;t have any guarantee that they will complete before producer&#39;s transaction is committed._</p>
+
+<h2 id="toc_4">Conclusions</h2>
+
+<p><code>@TransactionalEventListener</code>  is a great alternative to  <code>@EventListener</code>  in situations where you need to synchronize with one of the transaction phases. You can declare listeners as synchronous or asynchronous. You need to keep in mind that with the synchronous call you are by default working within the same transaction as the event producer. In case you synchronize to the  AFTER_COMPLETION phase (or one of its specializations), you won&#39;t be able to persist anything in the database as there won&#39;t be a commit procedure executed anymore. If you need to commit some changes anyway, you can declare an autonomous transaction on the event listener code. BEFORE_COMMIT phase is much simpler because commit will be performed after calling event listeners. With asynchronous calls, you don&#39;t have to worry about declaring autonomous transactions, as Spring&#39;s transactions are by default thread-bounded (you will get a new transaction anyway). It is a good idea if you have some long running task to be performed. I suggest using asynchronous tasks only when synchronizing to AFTER_COMPLETION phase or one of its specializations. As long as you don&#39;t need to have your event listener&#39;s method transactional - described problems shouldn&#39;t bother you at all.</p>
+
+<h2 id="toc_5">Further considerations</h2>
+
+<p>In a real-life scenario, numerous other requirements might occur. For example, you might need to both persist the customer and send an invitation email like it is depicted below:</p>
+
+<pre><code class="language-java">@Component
+public class CustomerCreatedEventListener {
+    private final MailingFacade mailingFacade;
+    private final CustomerRepository customerRepository;
+    public CustomerCreatedEventListener(MailingFacade mailingFacade, CustomerRepository customerRepository) {
+        this.mailingFacade = mailingFacade;
+        this.customerRepository = customerRepository;
+    }
+    @EventListener
+    public void processCustomerCreatedEvent(CustomerCreatedEvent event) {
+        final Customer customer = event.getCustomer();
+        // sending invitation email
+        mailingFacade.sendInvitation(customer.getEmail());
+    }
+}
+</code></pre>
+
+<p>Imagine a situation when an email is sent successfully, but right after it, our database goes down and it is impossible to commit the transaction (persist customer) - thus, we lose consistency! If such a situation is acceptable within your business use case, then it is completely fine to leave it as it is, but if not then you have a much more complex problem to solve. I intentionally haven&#39;t covered consistency and event reliability issues here. If you want to have a broader picture of how you could possibly deal with such situations, I recommend reading <a href="http://pillopl.github.io/reliable-domain-events/">this article</a>.</p>
 
                         
                       </div>
@@ -200,10 +408,10 @@
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/9/23</span>
+                    <span class="date">2018/12/27</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='MQ.html'>MQ</a></span>
+          					    <span class="posted-in"><a href='Spring.html'>Spring</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -293,31 +501,31 @@
 	      
 		      
 			      <li class="post">
-			        <a href="15459058392039.html">Reliable Domain Events</a>
+			        <a href="15517999043443.html">The Art of Crafting Architectural Diagrams</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
+			        <a href="15517997955971.html">为什么说我们需要软件架构图？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
+			        <a href="15516128677869.html">DNS Servers That Offer Privacy and Filtering</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
+			        <a href="15516123108194.html">Airbnb's Migration from Monolith to Services</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
+			        <a href="15516097487470.html">Events As First-Class Citizens</a>
 			      </li>
 		     
 		  

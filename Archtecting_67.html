@@ -105,244 +105,133 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15274395979385.html">
+                <a class="clearlink" href="15295434052821.html">
                 
-                  <h1>不理解Zookeeper一致性原理，谈何异地多活改造</h1>
+                  <h1>Open Sourcing Zuul 2</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
-                        	<p>原创： 陈东明 DBAplus社群 <em>1周前</em></p>
+                        	<blockquote>
+<p><a href="https://medium.com/netflix-techblog/open-sourcing-zuul-2-82ea476cb2b3">https://medium.com/netflix-techblog/open-sourcing-zuul-2-82ea476cb2b3</a></p>
+</blockquote>
 
-<p><strong>作者介绍</strong><br/>
-*<strong><em>陈东明</em></strong>*，饿了么北京技术中心架构组负责人，负责饿了么的产品线架构设计及基础架构研发工作。曾任百度架构师，负责百度即时通讯产品的架构设计。具有丰富的大规模系统构建和基础架构的研发经验，善于复杂业务需求下的大并发、分布式系统设计和持续优化。<br/>
-在2017年饿了么做异地多活建设之时，我的团队承担了Zookeeper的异地多活改造。在此期间，我听到了关于Zookeeper一致性的两种不同说法：</p>
+<p>We are excited to announce the open sourcing of <a href="https://github.com/netflix/zuul/">Zuul 2</a>, Netflix’s cloud gateway. We use Zuul 2 at Netflix as the front door for all requests coming into Netflix’s cloud infrastructure. Zuul 2 significantly improves the architecture and features that allow our gateway to handle, route, and protect Netflix’s cloud systems, and helps provide our 125 million members the best experience possible. The Cloud Gateway team at Netflix runs and operates more than 80 clusters of Zuul 2, sending traffic to about 100 (and growing) backend service clusters which amounts to more than 1 million requests per second. Nearly all of this traffic is from customer devices and browsers that enable the discovery and playback experience you are likely familiar with.</p>
+
+<p>This post will overview Zuul 2, provide details on some of the interesting features we are releasing today, and discuss some of the other projects that we’re building with Zuul 2.</p>
+
+<h3 id="toc_0">How Zuul 2 Works</h3>
+
+<p>For context, here’s a high-level diagram of Zuul 2’s architecture:</p>
+
+<p><img src="https://cdn-images-1.medium.com/max/1600/0*ycjEWsSKCaPemEg3." alt=""/></p>
+
+<p>The Netty handlers on the front and back of the filters are mainly responsible for handling the network protocol, web server, connection management and proxying work. With those inner workings abstracted away, the filters do all of the heavy lifting. The inbound filters run before proxying the request and can be used for authentication, routing, or decorating the request. The endpoint filters can either be used to return a static response or proxy the request to the backend service (or origin as we call it). The outbound filters run after a response has been returned and can be used for things like gzipping, metrics, or adding/removing custom headers.</p>
+
+<p>Zuul’s functionality depends almost entirely on the logic that you add in each filter. That means you can deploy it in multiple contexts and have it solve different problems based on the configurations and filters it is running.</p>
+
+<p>We use Zuul at the entrypoint of all external traffic into Netflix’s cloud services and we’ve started using it for routing internal traffic, as well. We deploy the same core but with a substantially reduced amount of functionality (i.e. fewer filters). This allows us to leverage load balancing, self service routing, and resiliency features for internal traffic.</p>
+
+<h3 id="toc_1">Open Source</h3>
+
+<p>The Zuul code that’s running today is the most stable and resilient version of Zuul yet. The various phases of evolving and refactoring the codebase have paid dividends and we couldn’t be happier to share it with you.</p>
+
+<p>Today we are releasing many <a href="https://github.com/Netflix/zuul/wiki/Core-Features">core features</a>. Here are the ones we’re most excited about:</p>
+
+<h4 id="toc_2">Server Protocols</h4>
 
 <ul>
-<li>一种说法是Zookeeper是最终一致性，由于多副本，以及保证大多数成功的Zab协议，当一个客户端进程写入一个新值，另一个客户端进程不能保证马上就会读到，但能保证最终会读到这个值；</li>
-<li>另一种说法是Zookeeper的Zab协议类似于Paxos协议，并且提供了强一致性。</li>
+<li>  <strong>HTTP/2</strong> — full server support for inbound HTTP/2 connections</li>
+<li>  <strong>Mutual TLS</strong> — allow for running Zuul in more secure scenarios</li>
 </ul>
 
-<p>每当听到这两种说法，我都想纠正一下——不对，Zookeeper是顺序一致性（sequential consistency）。但解释起来比较复杂，需要一篇长文来说明，于是就有了本文，下面就和大家一起讨论下我的看法。</p>
+<h4 id="toc_3">Resiliency Features</h4>
 
-<p>*<strong><em>什么是sequetial consistency</em></strong>*</p>
+<ul>
+<li>  <strong>Adaptive Retries</strong> — the core retry logic that we use at Netflix to increase our resiliency and availability</li>
+<li>  <strong>Origin Concurrency Protection </strong>— configurable concurrency limits to protect your origins from getting overloaded and protect other origins behind Zuul from each other</li>
+</ul>
 
-<p>*<strong><em>从Zookeeper的文档中我们可以看到，里面明确写出它的一致性是sequential consistency。</em></strong>*（详细参见Zookeeper官方文档[1]）</p>
+<h4 id="toc_4">Operational Features</h4>
 
-<p>那么，什么是sequential consistency呢？</p>
+<ul>
+<li>  <strong>Request Passport </strong>— track all the lifecycle events for each request, which is invaluable for debugging async requests</li>
+<li>  <strong>Status Categories</strong> — an enumeration of possible success and failure states for requests that are more granular than HTTP status codes</li>
+<li>  <strong>Request Attempts</strong> — track proxy attempts and status of each, particularly useful for debugging retries and routing</li>
+</ul>
 
-<p>sequential consistency是Lamport在1979年首次提出的。（详细参见他的这篇论文：<em>How to make a multiprocessor computer that correctly executes multiprocess programs</em>）</p>
+<p>We are also working on some features that will be <a href="https://github.com/Netflix/zuul/wiki/Coming-Soon">coming soon</a>, including:</p>
 
-<p>论文中定义，当满足下面这个条件时就是sequential consistency：</p>
+<ul>
+<li>  <strong>Websocket/SSE </strong>— support for side-channel push notifications</li>
+<li>  <strong>Throttling and rate-limiting</strong> — protection from malicious client connections and requests, helping defend against volumetric attacks</li>
+<li>  <strong>Brownout filters</strong> — for disabling certain CPU-intensive features when Zuul is overloaded</li>
+<li>  <strong>Configurable routing</strong> — file-based routing configuration, instead of having to create routing filters in Zuul</li>
+</ul>
 
-<p>“<br/>
-<em>the result of any execution is the same as if the operations of all the processors were executed in some sequential order, and the operations of each individual processor appear in this sequence in the order specified by its program.</em></p>
+<p>We would love to hear from you and see all the new and interesting applications of Zuul. For instructions on getting started, please visit our <a href="https://github.com/Netflix/zuul/wiki/Getting-Started-2.0">wiki page</a>.</p>
 
-<p>这段英文定义很晦涩（这是Lamport大神的一贯风格，严谨但晦涩，Paxos协议也是如此），我第一次看到时的感觉是：“这是什么鬼？”为啥每个英文单词我都认识，但就是不知道他在说什么？第一次看到这句话和我有同感的小伙伴留个言吧~</p>
+<h3 id="toc_5">Leveraging Zuul 2 at Netflix</h3>
 
-<p>后文我再把这段英文定义翻译成中文，现在我们先看看这篇论文的标题和定义中出现的一个关键词，来说明一下sequential consistency的应用范围。</p>
+<p>Internally, there are several major features that we’ve been working on but have not open sourced yet. Each one deserves its own blog post, but let’s go over them briefly.</p>
 
-<p>论文的标题和定义中包含<strong>“multiprocessor</strong>”****这个词，multiprocessor是多核处理器的意思。从这个关键字来看，sequential consistency是用来定义多核处理器和跑在多核处理器上的程序的一个特性。Lamport这篇论文的标题可以翻译成：“如何让具有多核处理器的计算机正确执行多进程程序”，也就是说如果一个多核处理器具有sequential consistency的特性，这个多核处理器就可以正确运行，后面我会解释这个正确运行是什么意思（也就是本文后面讲到的sequential consistency的作用）。</p>
+<h3 id="toc_6">Self Service Routing</h3>
 
-<p>从这个标题我们还可以看出，sequential consistency<strong>应该是个并发编程（concurrent programming）领域的概念</strong>。但我们现在常常在分布式系统领域讨论sequential consistency，比如本文主要讨论的Zookeeper（Zookeeper很明显是一个分布式系统）的一致性。实际上，多核处理器上运行的多个程序，其实也是一种分布式系统（Lamport在他的这篇 <em>Time, Clocks, and the Ordering of Events in a Distributed System</em> 分布式系统的开山之作中也阐述了这个观点）。所以虽然sequential consistency最早在并发编程中提出，但是它可以<strong>应用在分布式系统中</strong>，比如本文讨论的Zookeeper这种分布式存储系统。另外一个比较重要的Linearizability（线性一致性），也是在并发编程中最早提出的，目前也被广泛应用在分布式系统领域中。</p>
+<p>The most widely-used feature by our partners is self service routing. We provide an application and API for users to create routing rules based on any criteria in the request URL, path, query params, or headers. We then publish these routing rules to all the Zuul instances.</p>
 
-<p>接下来我们尝试翻译一下上文那段晦涩的定义。做这段翻译让我找到了上学时做阅读理解的感觉，我先不直接翻译，因为就算我把它翻译成中文，估计很多人还是会有“为啥每个中文字我都懂，还是不知道在说什么”的感觉。</p>
+<p>The main use case is for routing traffic to a specific test or staging cluster. However, there are many use cases for real production traffic. For example:</p>
 
-<p>首先，我来解释一下个别的词。首先，<strong>“any execution”</strong>是什么意思？你有多个程序（program）在多核处理器上运行，例如你有两个程序，第一个程序叫P1，它的代码如下： <br/>
-P1_write(x);<br/>
-P1_read(y);</p>
+<ul>
+<li>  Services needing to shard their traffic create routing rules that map certain paths or prefixes to separate origins</li>
+<li>  Developers onboard new services by creating a route that maps a new hostname to their new origin</li>
+<li>  Developers run load tests by routing a percentage of existing traffic to a small cluster and ensuring applications will degrade gracefully under load</li>
+<li>  Teams refactoring applications migrate to a new origin slowly by creating rules mapping traffic gradually, one path at a time</li>
+<li>  Teams test changes (canary testing) by sending a small percentage of traffic to an instrumented cluster running the new build</li>
+<li>  If teams need to test changes requiring multiple consecutive requests on their new build, they run sticky canary tests that route the same users to their new build for brief periods of time</li>
+<li>  Security teams create rules that reject “bad” requests based on path or header rules across all Zuul clusters</li>
+</ul>
 
-<p>第二个程序叫P2，代码如下：<br/>
-P2_write(u);<br/>
-P2_read(v);</p>
+<p>As you can see we use self service routing extensively and are increasing the customizability and scope of routes to allow for even more use cases.</p>
 
-<p>从理论上来讲，两个程序运行在两个独立处理器的核上，有多少种执行的可能？我列举其中几种来举例说明。</p>
+<h3 id="toc_7">Load Balancing for Resiliency</h3>
 
-<p>第一种：<br/>
-P1---write(x)--------read(y)--------<br/>
-P2-----------write(u)-------read(v)-</p>
+<p>Another major feature we’ve worked on is making load balancing to origins more intelligent. We are able to route around failures, slowness, GC issues, and various other things that crop up often when running large amounts of nodes. The goal of this work is to increase resiliency, availability, and quality of service for all Netflix services.</p>
 
-<p>第二种：</p>
+<p>We have several cases that we handle:</p>
 
-<p>P1----------write(x)-read(y)--------<br/>
-P2--write(u)----------------read(v)-</p>
+<h4 id="toc_8">Cold Instances</h4>
 
-<p>第三种：<br/>
-P1---read(y)----------write(x)------<br/>
-P2-----------write(u)---------read(v)-</p>
+<p>When new origin instances start up, we send them a reduced amount of traffic for some time, until they’re warmed up. This was an issue we observed for applications with large codebases and huge metaspace usage. It takes a significant amount of time for these apps to JIT their code and be ready to handle a large amount of traffic.</p>
 
-<p>我们有24种可能的执行顺序，也就是这四个操作任意的排列组合，也就是4!=24。类似第一种和第二种这样的可能性很好理解。为什么会出现像第三种这样的可能的执行呢？那是因为就算在同一个程序中，由于处理会有多级的缓存，以及处理器中coherence的存在，虽然你的程序中是先write后read，在内存中真正生效的顺序，也有可能是先read后write。</p>
+<p>We also generally bias the traffic to older instances and if we happen to hit a cold instance that throttles, we can always retry on a warm one. This gives us an order of magnitude improvement in availability.</p>
 
-<p>其实还会出现类似下面这样的执行，两个操作在两个处理器上同时执行。<br/>
-P1--write(x)-read(y)--------<br/>
-P2--write(u)--------read(v)-</p>
+<h4 id="toc_9">High Error Rates</h4>
 
-<p>如果加上同时运行的这种情况，那就有更多种可能性。我的算数不太好，这里就不继续算下去了，因为到底有多少个不重要，重要的是要知道有很多种可能性。那么定义中的“any execution”，就是指任意一种可能的执行，在定义中也可以理解为所有的这些可能的执行。</p>
+<p>Errors happen all the time and for varying reasons, whether it’s because of a bug in the code, a bad instance, or an invalid configuration property being set. Fortunately, as a proxy, we can detect errors reliably — either we get a 5xx error or there are connectivity problems to the service.</p>
 
-<p>接着我们再来解释一个词——<strong>“sequential order”</strong>。什么叫sequential order？我们来翻一下英语词典（感觉更像在做阅读理解了）。<br/>
-“<br/>
-<em>sequential：连续的；相继的；有顺序的</em><br/>
-<em>order：命令；顺序；规则；[贸易] 定单</em></p>
+<p>We track error rates for each origin and if the error rate is high enough, it implies the entire service is in trouble. We throttle retries from devices and disable internal retries to allow the service to recover. Moreover, we also track successive failures per instance and blacklist the bad ones for a period of time.</p>
 
-<p>sequential order——有顺序的顺序，这又是什么鬼？</p>
+<h4 id="toc_10">Overloaded Instances</h4>
 
-<p>其实sequential是有一个接一个的意思，在处理器的这种上下文中，sequential就是指操作（operartion）一个接一个地执行，也就是顺序执行，并且没有重叠。order是指经过一定的调整，让某样东西按照一定的规则变得有序。比如，在算法中的排序算法就是ordering，就是让数组这个东西按照从大到小或从小到大的规则变得有序。<strong>那么sequential order就是指让操作（operation）按照一个接一个这样的规则排列，并且没有重叠。</strong></p>
+<p>With the above approaches we send less traffic to servers in a cluster that are throttling or refusing connections, and lessened the impact by retrying those failed requests on other servers.</p>
 
-<p>再说回上文的例子，如果把四个操作，按一个接一个的规则排列，这时就可以得到4！的排列组合个可能的排列（order），同样的，有多少个不重要。</p>
+<p>We’re now rolling out an additional approach where we aim to avoid overloading servers in the first place. This is achieved by allowing origins to signal to Zuul their current utilization, which Zuul then uses as a factor in its load-balancing choices — leading to reduced error rates, retries, and latency.</p>
 
-<p>比如：<br/>
-P1_write(x);P1_read(y);P2_write(u);P2_read(v);<br/>
-P1_read(y);P1_write(x);P2_write(u);P2:read(v);<br/>
-P2_write(u);P2_read(v);P1_read(y);P1:write(x);</p>
+<p>The origins add a header to all responses stating their utilization as a percentage, along with a target utilization they would like to have across the cluster. Calculating the percentage is completely up to each application and engineers can use whatever metric suits them best. This allows for a general solution as opposed to us trying to come up with a one-size-fits-all approach.</p>
 
-<p>我这里只列举其中三个，其他的大家可以自己排一下。</p>
+<p>With this functionality in place, we assign a score (combination of instance utilization and other factors like the ones above) to each instance and do a choice-of-two load balancing selection.</p>
 
-<p>重点来了，其实sequential order就是让这四个操作按照一个接一个的顺序执行，并且没有重叠。注意这个排列不是真实的执行，真实的执行是any execution，这里说的是逻辑上的假设，也就是为什么定义有一个as if。</p>
+<h3 id="toc_11">Anomaly Detection and Contextual Alerting</h3>
 
-<p>做了这么多的铺垫，下面我们开始翻译定义中的第一句话：</p>
+<p>As we grew from just a handful of origins to a new world where anyone can quickly spin up a container cluster and put it behind Zuul, we found there was a need to automatically detect and pinpoint origin failures.</p>
 
-<p>“<br/>
-*任意一种可能的执行效果，与所有的处理器上的某一种操作按照顺序排列执行的效果是一样的。 *</p>
+<p>With the help of <a href="https://medium.com/netflix-techblog/stream-processing-with-mantis-78af913f51a6">Mantis real time event streaming</a>, we built an anomaly detector that aggregates error rates per service and notifies us in real time when services are in trouble. It takes all of the anomalies in a given time window and creates a timeline of all the origins in trouble. We then create a contextual alert email with the timeline of events and services affected. This allows an operator to quickly correlate these events and orient themselves to debug a specific app or feature, and ultimately find the root cause.</p>
 
-<p>注意，some在这里是指“某一种”的意思，不是一些，因为order是单数（真的是在做阅读理解）。</p>
+<p>In fact, it was so useful that we expanded it to send notifications to the origin teams themselves. We’ve also added more internal applications, other than Zuul, and can build a much more extensive timeline of events. This has been a huge help during production incidents and helps operators quickly detect and fix problems before they cascade into massive outages.</p>
 
-<p>*<strong><em>这句话的意思就是说，一个处理器要满足这个条件，就只能允许满足这个条件的那些可能的执行存在，其他不满足的可能的执行都不会出现。</em></strong>*</p>
+<p>We hope to open source as many of the above features as we can. Keep watching the tech blog for more depth on them in the future. If you want to help us solve these kinds of problem, please check out our <a href="https://jobs.netflix.com/teams/engineering?team=Product%20Engineering&amp;organization=Engineering">jobs site</a>.</p>
 
-<p>从第一句话中我们可以看出，一种多核处理器要想满足sequential consistency，那么多个程序在多个核运行效果“等同”于在一个核上顺序执行所有操作的效果是差不多的。如果这样的话，其实多核的威力基本就消失了。所以无论是从Lamport写这篇论文的1979年，还是现在，没有任何一个现实的多核处理器实现了sequential consistency。</p>
-
-<p>那么，为什么Lamport大神提出这样一个不现实的概念呢？（要注意Lamport写这篇论文时，并没有把它引申到分布式系统领域，就是针对多核处理器、并发编程领域提出的）我们稍后再论述。</p>
-
-<p>这里还要注意的一点是，在我的翻译里用了“效果”一词，但实际上英文原文中用的是“result（结果）”一词。那效果和结果有什么区别吗？我们解释一下什么叫执行结果。</p>
-
-<p>不管是任何真实的执行，还是某种经过顺序排序后的假设执行，程序会产生一定的结果，比如print出来的结果（result）。实际上定义中说的是结果一样。如果定义中用“效果”的话，那这个定义就只是一个定性的定义，如果用“结果”的话，那这个定义就是一个定量的定义。定量的，也就是说可以通过数学证明的。从这点我们可以看出，大神就是不一样，任何理论都是可以通过数学证明为正确的。本文后面还会提到证明的事情，我们这里再卖个关子。</p>
-
-<p>到这里，关于定义的第一句，更准确的翻译就是： </p>
-
-<p>“<br/>
-*任意一种可能的执行的结果，与某一种所有的处理器上的操作按照顺序排列执行的结果是一样的。 *</p>
-
-<p>这里我们还要注意一点，结果一样就意味着，如果有人真的要实现一种sequential consistency的多核处理器的话，因为要保证结果一样，所以他是有一定的空间来优化，而不会完全是一个核顺序执行的效果。但是估计这种优化也是非常有限的。</p>
-
-<p>好了，终于把最难的第一句话解释完了，大家可以松口气，第二句就非常简单了。我们还是先解释第二句种出现的一个词——<strong>“sequence”</strong>。刚刚解释过的sequential order是顺序排序（就是按一个接一个排序），其实这是一个动作，动作会产生结果，它的结果产生了一个操作（operation）的队列。第二句中出现的sequence就是指这个操作（operation）的队列。</p>
-
-<p>好，那第二句的翻译就是：</p>
-
-<p>“<br/>
-*并且每个独立的处理器的操作，都会按照程序指定的顺序出现在操作队列中。 *</p>
-
-<p>也就是说如果程序里是先write(x);后read(y);，那么只有满足这个顺序的操作队列是符合条件的。这样，我们刚刚说的很多可能的执行就少了很多，这里我也就不计算少了多少，还是那句话，数量不重要，反正是有，而且变少了。</p>
-
-<p>那么第二句话意味着什么？意味着如果一个多核处理器实现了sequential consistency，那这种多核处理器基本上就告别自（缓）行（存）车了。这里我还要继续卖关子，连缓存这种最有效提高处理器性能的优化都没了，大神为什么要提出这个概念？</p>
-
-<p>好了，到这里我们可以把两句翻译合起来，完整看一下：</p>
-
-<p>“<br/>
-*任意一种可能的执行的结果，与某一种所有的处理器上的操作按照顺序排列执行的结果是一样的，并且每个独立的处理器的操作，都会按照程序指定的顺序出现在操作队列中。 *</p>
-
-<p>从这个定义中，我们可以看出，此概念的核心就是sequential order，这也就是为什么Lamport老爷子把这种一致性模型称之为sequential consistency。可以说这个命名是非常贴切的，不知道这种贴切对于以英语为母语的人来说是不是更好理解一些，应该不会出现“顺序的顺序是什么鬼”这种情况。如果你看完本文，也觉得sequential很贴切的话，那就说明我讲清楚了。</p>
-
-<p>接下来我们举个具体的例子，再来说明一下： <br/>
-execution A<br/>
-P0 writex=1-------------------------------<br/>
-P1 -------write x=2----------------------<br/>
-P2 -----------------read x<mark>1--read x</mark>2<br/>
-P3 -----------------read x<mark>1--read x</mark>2</p>
-
-<p>sequetial order: P0_write x=1,P3_read x<mark>1,P4_read x</mark>1,P1_write x=2,P3_read x<mark>2,P4_read x</mark>2</p>
-
-<p>execution B<br/>
-P0 write=1-------------------------------<br/>
-P1 -------write x=2----------------------<br/>
-P2 -----------------read x<mark>2--read x</mark>1<br/>
-P3 -----------------read x<mark>2--read x</mark>1</p>
-
-<p>sequetial order: P1_write x=2,P3_read x<mark>2,P4_read x</mark>2,P0_write x=1,P3_read x<mark>1,P4_read x</mark>1</p>
-
-<p>execution C<br/>
-P0 write=1-------------------------------<br/>
-P1 -------write x=2----------------------<br/>
-P2 -----------------read x<mark>1--read x</mark>2<br/>
-P3 -----------------read x<mark>2--read x</mark>1</p>
-
-<p>sequetial order: 你找不出一个符合定义中2个条件的一种order。</p>
-
-<p>所以说如果一个多核处理器只允许execution A和B出现，不允许C出现，那么这个多核处理器就是sequetial consistency的。如果它允许C出现，那它就不是sequetial consistency。</p>
-
-<p>到这里，我们已经完整地解释完什么是sequetial consistency。但是，细心的朋友可能会问，如果你的program是多线程的程序怎么办？那我们再把定义中最后的一个细节解释一下：program这个词。</p>
-
-<p>*<strong><em>program</em></strong>*是指可以直接运行在处理器上的指令序列。这个并不是program的严格定义，但是我要指出的是这个program是在操作系统都没有的远古时代就存在的概念，在上文的定义中prgram就是指那个时代的program。</p>
-
-<p>这个program里没有进程、线程的概念，这些概念都是在有了操作系统之后才出现的。因为没有操作系统，也没有内存空间的概念。不像我们现在所说的程序（program），不同的程序有自己独立的内存地址空间。我们这里，内存（memory）对于不同的program来说是shared。另外，需要注意的是program可以用来说明各种程序，不管你是操作系统内核，还是应用程序，都适用。</p>
-
-<p>*<strong><em>sequential consistency</em></strong>*<br/>
-*<strong><em>是分布式领域的概念</em></strong>*</p>
-
-<p>刚刚我们说了，sequential consistency虽然是针对并发编程领域提出的，但实际上它是分布式领域的概念，特别是分布式存储系统。在 <em>Distributed system: Principles and Paradigms</em> （作者Andrew S.Tanenbaum, Maarten Van Steen），作者稍微修改了一下Lamport的定义，让这个定义更贴近分布式领域中的概念，我们来看一下作者是怎么改的： </p>
-
-<p>“<br/>
-*The result of any execution is the same as if the (read and write) operations by all processes on the data store were executed in some sequential order and the operations of-each individual process appear in this sequence in the order specified by its program. *</p>
-
-<p>作者把processor换成了process，并且加了on the data store这个限定，在Lamport的定义里没有这个限定，其实默认指的是memory（内存）。process就是指进程，以Zookeeper为例，就是指访问Zookeeper的应用进程。program也不是那么底层概念，也是基于操作系统的应用程序了。</p>
-
-<p>*<strong><em>sequential consistency的作用</em></strong>*</p>
-
-<p>好了，下面该揭晓我上面卖的两个关子了。在Lamport的论文中，给出了一个小例子，如下： <br/>
-process 1<br/>
- a := 1;<br/>
- if b = 0 then critical section:<br/>
- a := 0<br/>
- else ... fi</p>
-
-<p>process 2<br/>
- b := 1;<br/>
- if a = 0 then critical section:<br/>
- b := 0<br/>
- else ... fi</p>
-
-<p>Lamport在论文中说，如果一种多核处理满足sequential consistency的条件，<strong>那么最多只有一个程序能够进入critical section</strong>。在论文中，Lamport老爷子并没有解释为什么最多只有一个程序能够进入critical section。而是把这个证明留给了论文的读者，就像我们常见的教科书中的课后习题一样。</p>
-
-<p>Lamport老爷子应该是认为这个证明太简单了，不需要花费笔墨来证明它。sequential consistency这篇论文只有不到两页A4纸，是我见过的最短的论文。这是Lamport一贯的做事风格，他的Paxos论文中，有很多细节都是一笔带过的，给读者留下无尽的遐想（瞎想）。</p>
-
-<p>假设现在我们已经证明这个是正确的（虽然我也没去证明，论文给出了两个参考文献用于证明），那这个例子说明了什么呢？</p>
-
-<p>大家也许注意到了，这个例子没有用到任何锁，但它实现了critical section，critical section是一种多线程synchronization 机制。如果多核处理器是sequential consistency的，那么你写的并发程序“天然就是正确的”。</p>
-
-<p>但是处理器的设计者为了追求性能，将保证程序正确的任务丢给程序开发者。只在硬件级别提供了一些fence、cas等指令，基于这些指令操作内核和语言基础库实现了各种synchronization机制，用来保证操作系统的正确性和应用程序的正确性。程序员必须小心谨慎地使用线程和这些synchronization机制，否则就会出各种意想不到的问题。如果你没有debug一个多线程bug连续加班两天，那说明你是大神。</p>
-
-<p>这些指令都是具有更高一致性级别，也就是linearizability，（关于linearizability可以参见我的另外一篇文章《线性一致性（Linearizability）是并发控制的基础》[2]），虽然一致性级别高，但只是个别指令的，处理器整体只是实现了比sequential consistency低很多的一致性级别。所以实现难度大大降低了。</p>
-
-<p>虽然Lamport老爷子的sequential consistency概念在concurrent programming领域中还没有实际意义，但却给我们指出了程序员的天堂在哪里。在程序员的天堂里，没有多（车）线（来）程（车）编（往）程，只要写程序就行。你面试的时候不会再有人问你多线程编程，不会再问你各种锁。</p>
-
-<p>在分布式领域中，sequential consistency更实际一些。Zookeeper就实现了sequential consistency。同理，这应该也是可以证明的，但目前还没发现有Zookeeper社区有任何论文来证明这个。如果你已经明白上面解释的定义，就可以想清楚Zookeeper是sequential consistency。欢迎大家一起来探讨。</p>
-
-<p>*<strong><em>为何Zookeeper要实现</em></strong>*<br/>
-*<strong><em>sequential consistency</em></strong>*</p>
-
-<p>实际上，Zookeeper的一致性更复杂一些，Zookeeper的读操作是sequential consistency的，Zookeeper的写操作是linearizability的。关于这个说法，Zookeeper的官方文档中没有写出来，但在社区的邮件组有详细的讨论（邮件组的讨论参见[3]）。</p>
-
-<p>另外，在 <em>Modular Composition of Coordination Services</em> 这篇关于Zookeeper的论文中也有提到这个观点（这篇论文不是Zookeeper的主流论文，但全面分析了Zookeeper的特性，以及Zookeeper跨机房方案，饿了么的Zookeeper异地多活改造也参考了这篇论文中的一些观点），我们可以这么理解Zookeeper，从整体（read操作+write操作）上来说是sequential consistency，写操作实现了linearizability。</p>
-
-<p>通过简单的推理，我们可以得出Lamport论文中的小例子，在Zookeeper中也是成立的。我们可以这样实现分布式锁。但Zookeeper官方推荐的分布式实现方法并没有采用这个方式，而是利用了Zookeeper的linearizability特性实现了分布式锁（关于Zookeeper官方是如何实现分布式锁的，请参见我这篇文章《Zookeeper实现分布式锁和选主》[4]）。</p>
-
-<p>为什么Zookeeper要实现sequential consistency？Zookeeper最核心的功能是用来做coordination service，也就是用来做分布式锁服务，在分布式的环境下，Zookeeper本身怎么做到“天然正确”？没有其他的synchronization机制保证Zookeeper是正确的，所以只要Zookeeper实现了sequential consistency，那它自身就可以保证正确性，从而对外提供锁服务。 </p>
-
-<p>*<strong><em>参考文章：</em></strong>*<br/>
-[1]<a href="http://zookeeper.apache.org/doc/r3.4.9/zookeeperProgrammers.html#ch_zkGuarantees">http://zookeeper.apache.org/doc/r3.4.9/zookeeperProgrammers.html#ch_zkGuarantees</a><br/>
-[2]<a href="https://blog.csdn.net/cadem/article/details/79932574">https://blog.csdn.net/cadem/article/details/79932574</a><br/>
-[3]<a href="http://comments.gmane.org/gmane.comp.java.hadoop.zookeeper.user/5221">http://comments.gmane.org/gmane.comp.java.hadoop.zookeeper.user/5221</a><br/>
-[4]<a href="https://blog.csdn.net/cadem/article/details/56289825">https://blog.csdn.net/cadem/article/details/56289825</a></p>
-
-<p><strong>近期热文</strong><br/>
-<a href="http://mp.weixin.qq.com/s?__biz=MzI4NTA1MDEwNg==&amp;mid=2650767616&amp;idx=1&amp;sn=5ef24be557292923c5ce8c0daa24f2cf&amp;chksm=f3f93495c48ebd83f9a0a70c67abcb5785362606ccdde8751fccd2ba1cf62b43913f2d5026df&amp;scene=21#wechat_redirect">_深入浅出分布式缓存的通用方法_</a><br/>
-<a href="http://mp.weixin.qq.com/s?__biz=MzI4NTA1MDEwNg==&amp;mid=2650767604&amp;idx=1&amp;sn=c3e41c1f9f645b1db91e90d87cbd6953&amp;chksm=f3f93561c48ebc77bf04cf44c22710d487f16a3e43bb75e4c2d0fe380a80606a3e97f5948b79&amp;scene=21#wechat_redirect">_一文详解消息队列的常见功能场景与使用精髓_</a><br/>
-<a href="http://mp.weixin.qq.com/s?__biz=MzI4NTA1MDEwNg==&amp;mid=2650767596&amp;idx=1&amp;sn=4c438f4bd2e65d0b9cd92150380d8b18&amp;chksm=f3f93579c48ebc6f7a306c84bdaa9e2b038ed82ccb37440eafb2f5ff99aa1db06bf97f4e71a5&amp;scene=21#wechat_redirect">_MySQL上云后引发的雪崩_</a><br/>
-<a href="http://mp.weixin.qq.com/s?__biz=MzI4NTA1MDEwNg==&amp;mid=2650767592&amp;idx=1&amp;sn=d2c79676981c63d70d7275486c88abdf&amp;chksm=f3f9357dc48ebc6b50f01ee6c4329df0ea1c4b0d416969911f52805dc3b44ec408f75d250b37&amp;scene=21#wechat_redirect">_方法论与技术栈双管齐下的运维可用性能力建设_</a><br/>
-<a href="http://mp.weixin.qq.com/s?__biz=MzI4NTA1MDEwNg==&amp;mid=2650767557&amp;idx=1&amp;sn=9a1935096cbe2fbd658dc28c8f52a402&amp;chksm=f3f93550c48ebc462c16e23d3e6941b28fd71ce50c790d8e39188e20f57f4a34b3e01ef22409&amp;scene=21#wechat_redirect">_中小型企业大数据体系建设的核心技术选型_</a></p>
-
-<p><strong>近期活动</strong><br/>
-<a href="http://mp.weixin.qq.com/s?__biz=MzI4NTA1MDEwNg==&amp;mid=2650767615&amp;idx=1&amp;sn=243dd45953cad2716f389bf25f99a01d&amp;chksm=f3f9356ac48ebc7c4ed927bfa23def9a14f927d08e4e255c026c9587de83a69062cfc4b057ad&amp;scene=21#wechat_redirect">_2018 DAMS中国数据资产管理峰会_</a><br/>
-微信扫一扫<br/>
-关注该公众号</p>
+<p>— Arthur Gonigberg (@agonigberg), Mikey Cohen (@moldfarm ), Michael Smith (@kerumai ), Gaya Varadarajan ( @gaya3varadhu ), Sudheer Vinukonda ( @apachesudheerv ), Susheel Aroskar (@susheelaroskar )</p>
 
                         
                       </div>
@@ -351,7 +240,7 @@ process 1<br/>
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/5/28</span>
+                    <span class="date">2018/6/21</span>
                     <span>posted in&nbsp;</span> 
           				  
           					    <span class="posted-in"><a href='Microservice.html'>Microservice</a></span>
@@ -444,31 +333,31 @@ process 1<br/>
 	      
 		      
 			      <li class="post">
-			        <a href="15459058392039.html">Reliable Domain Events</a>
+			        <a href="15517999043443.html">The Art of Crafting Architectural Diagrams</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
+			        <a href="15517997955971.html">为什么说我们需要软件架构图？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
+			        <a href="15516128677869.html">DNS Servers That Offer Privacy and Filtering</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
+			        <a href="15516123108194.html">Airbnb's Migration from Monolith to Services</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
+			        <a href="15516097487470.html">Events As First-Class Citizens</a>
 			      </li>
 		     
 		  

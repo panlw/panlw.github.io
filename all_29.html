@@ -105,90 +105,153 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15390119272775.html">
+                <a class="clearlink" href="15473953096527.html">
                 
-                  <h1>透彻理解Spring事务设计思想之手写实现</h1>
+                  <h1>分布式 Snapshot 和 Flink Checkpointing 简介</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p>本文由 <a href="http://ksria.com/simpread/">简悦 SimpRead</a> 转码， 原文地址 <a href="https://www.jianshu.com/p/1becdc376f5d">https://www.jianshu.com/p/1becdc376f5d</a></p>
+<p>原文地址 <a href="https://san-yun.iteye.com/blog/2372451">https://san-yun.iteye.com/blog/2372451</a></p>
 </blockquote>
 
-<h2 id="toc_0">前言</h2>
+<p>最近在学习 Flink 的 <a href="https://ci.apache.org/projects/flink/flink-docs-master/internals/stream_checkpointing.html">Fault Tolerance</a>，了解到 Flink 在 <a href="http://research.microsoft.com/en-us/um/people/lamport/pubs/chandy.pdf">Chandy Lamport Algorithm</a> 的基础上扩展实现了一套分布式 Checkpointing 机制，这个机制在论文 &quot;<a href="http://arxiv.org/abs/1506.08603">Lightweight Asynchronous Snapshots for Distributed Dataflows</a>&quot; 中进行了详尽的描述。怀着对 <a href="https://en.wikipedia.org/wiki/Leslie_Lamport">Lamport</a> 大神的敬仰，我分别下载研读了两篇论文，在这里把一些阅读的收获记录下来，希望能对学习 Flink/Blink 的同学能有些帮助。</p>
 
-<p>事务，是描述一组操作的抽象，比如对数据库的一组操作，要么全部成功，要么全部失败。事务具有 4 个特性：Atomicity（原子性），Consistency（一致性），Isolation（隔离性），Durability（持久性）。在实际开发中，我们对事务应用最多就是在数据库操作这一环，特别是 Spring 对数据库事务进行了封装管理。Spring 对事务的支持，确实很强大，但是从本质上来讲：<strong>事务是否生效取决数据库底层是否支持（比如 MySQL 的 MyISAM 引擎就不支持事务，Spring 能奈何！），同时一个事务的多个操作需要在同一个 Connection 上。事务也往往是在业务逻辑层来控制。</strong>本篇博客将通过手写一个 Demo 来分析 Spring 事务底层到底是如何帮助我们轻松完成事务管理的！</p>
+<h1 id="toc_0">Chandy Lamport Algorithm</h1>
 
-<h2 id="toc_1">透彻理解 Spring 事务设计思想之手写实现</h2>
-
-<p>先来看一眼工程结构：</p>
-
-<p><img src="https://upload-images.jianshu.io/upload_images/4943997-c1c738d59fe7485a.png" alt=""/></p>
-
-<p><strong>ConnectionHolder</strong></p>
-
-<p><img src="https://upload-images.jianshu.io/upload_images/4943997-e2342d24e2e84736.png" alt=""/></p>
+<p>我们先来看看 Chandy Lamport Algorithm，“Distributed Snapshots: Determining Global States of a Distributed System”，此文应该是分布式 SnapShot 的开山之作，发布于 1985 年（很多同学还没有出生 -_-），按照 Lamport 自己的说法，这篇文章是这么来的：</p>
 
 <blockquote>
-<p><strong>在 Spring 中，有时候我们是不是要配置多个数据源 DataSource？很显然，Spring 需要通过 DataSource 来得到操作数据库的管道 Connection，这有点类似于 JNDI 查找。</strong></p>
-
-<p><strong>这里通过 ConnectionHolder 类来完成这个过程，需要思考的是在多线程下，这显然是存在问题的。为避免多线程问题，难道我们采用线程安全的 Map，比如 ConcurrentHashMap，其实我们真正的目的是什么？是保证一个线程下，一个事务的多个操作拿到的是一个 Connection，显然使用 ConcurrentHashMap 根本无法保证！</strong></p>
-
-<p><strong>Spring 很聪明，她提供了一种思路，来解决，看下面的代码！</strong></p>
+<p>“The distributed snapshot algorithm described here came about when I visited Chandy, who was then at the University of Texas in Austin. He posed the problem to me over dinner, but we had both had too much wine to think about it right then. The next morning, in the shower, I came up with the solution. When I arrived at Chandy&#39;s office, he was waiting for me with the same solution.”</p>
 </blockquote>
 
-<p><strong>SingleThreadConnectionHolder</strong></p>
+<p>所以说，大神的世界我们不懂，一言不合就写一篇论文。我们言归正传，开始介绍论文中描述的算法。</p>
 
-<p><img src="https://upload-images.jianshu.io/upload_images/4943997-fdec898f986f367d.png" alt=""/></p>
+<h2 id="toc_1">分布式系统模型和状态定义</h2>
+
+<h3 id="toc_2">分布式系统模型</h3>
+
+<p>分布式系统是一个包含有限进程和有限消息通道的系统，这些进程和通道可以用一个有向图描述，其中节点表示进程，边表示通道。如下图所示：p、q 分别是进程，c, c&#39;则是消息通道。</p>
+
+<p><a href="http://img4.tbcdn.cn/L1/461/1/f0c17a7bff49de1280df4390616fb7df5bbd6512"><img src="http://img4.tbcdn.cn/L1/461/1/f0c17a7bff49de1280df4390616fb7df5bbd6512" alt=""/></a></p>
+
+<p>另外为了问题描述的简洁，对上述模型还做了假设：消息通道只包含有限的 buffer、消息保序、通道可靠等</p>
+
+<h3 id="toc_3">分布式系统状态（State）</h3>
+
+<p>所谓的 Distributed Snapshot，就是为了保存分布式系统的 State，那么首先我们需要定义清楚什么是分布式系统的 State。考虑到上述分布式模型的定义，分布式系统 State 同样是由 “进程状态” 和“通道状态”组成的。</p>
+
+<ol>
+<li> Event：分布式系统中发生的一个事件，在类似于 Flink 这样的分布式计算系统中从 Source 输入的新消息相当于一个事件。在论文中作者给出了数学化的定义，具体参考论文。</li>
+<li> 进程状态：包含一个初始状态（initial state)，和持续发生的若干 Events。初始状态可以理解为 Flink 中刚启动的计算节点，计算节点每处理一条 Event，就转换到一个新的状态。</li>
+<li> 通道状态：我们用在通道上传输的消息（Event）来描述一个通道的状态。</li>
+</ol>
+
+<p>在某一个时刻的某分布式系统的所有进程和所有通道状态的组合，就是这个分布式系统的全局状态。基于上述的双进程双通道的最简分布式系统，为了描述算法，作者设计了一个 “单令牌状态” 转换系统，两个进程通过接收和发出令牌，会在 S0、S1 两个 State 之间转换，整个分布式系统则会在如下所示的 4 种全局状态（Global State）之间转换。</p>
+
+<p><a href="http://img4.tbcdn.cn/L1/461/1/3ba0c10310548303f3fcf8a32ed24e66a03c0665"><img src="http://img4.tbcdn.cn/L1/461/1/3ba0c10310548303f3fcf8a32ed24e66a03c0665" alt=""/></a></p>
+
+<p><a href="http://img4.tbcdn.cn/L1/461/1/11b322e4bd0871faacc1ff8075f02cde0328e00c"><img src="http://img4.tbcdn.cn/L1/461/1/11b322e4bd0871faacc1ff8075f02cde0328e00c" alt=""/></a></p>
+
+<h2 id="toc_4">Distributed Snapshots</h2>
+
+<p>有了系统状态和模型的定义，终于可以开始介绍分布式快照的算法了。对于一个分布式快照算法，我们有如下的两点要求：</p>
+
+<ol>
+<li> 正确性：能够准确的记录每一个进程、通道的状态，同时通过这些局部状态，能够准确表达一个分布式系统的全局状态。这里碰到的挑战是，每个进程、通道没法同时记录自身的状态，因为我们没有一个全局的时钟来保持状态记录的同步。</li>
+<li> 并行性：快照操作与分布式系统计算同时运行，但不能影响所有系统的正常功能，对性能、正确性等无影响。</li>
+</ol>
+
+<p>按照上一小节的描述，全局状态是进程和通道状态的组合，在论文中，作者证明了通道状态可以通过记录进程状态来记录和恢复，并提出了下述的分布式 snapshot 算法：</p>
+
+<p>对于进程 p、q，p-&gt;q 通过通道 c 连接，通过以下步骤记录 global state</p>
+
+<pre><code>// 进程p行为，通过向q发出Marker，发起snapshot
+begin
+       p record its state；
+then
+       send one Marker along c after p records its state and before p sends further messages along c
+end
+
+//进程q接受Marker后的行为，q记录自身状态，并记录通道c的状态
+if q has not recorded its state then
+        begin
+              q records its state;
+              q records the state c as the empty sequence
+        end
+else q records the state of c as the sequence of messages received along c after q’s state was recorded and before q received the marker along c. 
+
+</code></pre>
+
+<p>进程 p 启动这个算法，记录自身状态，并发出 Marker。随着 Marker 不断的沿着分布式系统的相连通道逐渐传输到所有的进程，所有的进程都会执行算法以记录自身状态和入射通道的状态，待到所有进程执行完该算法，一个分布式 Snapshot 就完成了记录。Marker 相当于是一个信使，它随着消息流流经所有的进程，通知每个进程记录自身状态。且 Marker 对整个分布式系统的计算过程没有任何影响。只要保证 Marker 能在有限时间内通过通道传输到进程，每个进程能够在有限时间内完成自身状态的记录，这个算法就能在有限的时间内执行完成。</p>
+
+<p>以上就是这个算法的最主要内容，算法本身不是很复杂，但是 Chandy 和 Lamport 两位大神在论文中展现的对问题分析和思考的过程真的很值得玩味，定义问题 -&gt; 定义分布式模型 -&gt; 推导算法 -&gt; 分析特例 -&gt; 证明算法的完备性，层层推进，环环相扣，缺一不可，算法的数学之美展露无遗！</p>
+
+<p>关于 Chandy-Lamport Algorithm 的主要介绍就到这里，论文中还有一些关于某些特殊情况的证明，大家有兴趣可以参考论文。</p>
+
+<h1 id="toc_5">Flink Checkpointing 的实现原理</h1>
+
+<p>Flink 分布式 Checkpointing 是通过 Asynchronous Barrier Snapshots 的算法实现的，该算法借鉴了 Chandy-Lamport 算法的主要思想，同时做了一些改进，这些改进在论文 &quot;<a href="http://arxiv.org/abs/1506.08603">Lightweight Asynchronous Snapshots for Distributed Dataflows</a>&quot; 中进行了详尽的描述，结合这篇论文，我们来看看具体的实现。</p>
+
+<h2 id="toc_6">Flink 流式计算模型</h2>
+
+<p>Flink 流式计算模型中包含 Source Operator、Transformation Operators、Sink Operator 等三种不同类型的节点如下图所示，分别负责数据的输入、处理、和输出，对应计算拓扑的起点、中间节点和终点。计算模型的介绍不是我们的重点，细节请参考<a href="https://ci.apache.org/projects/flink/flink-docs-master/concepts/concepts.html">官方文档 - Concepts</a><br/>
+<a href="http://img3.tbcdn.cn/L1/461/1/1cfc1d29c4579ef53d8da6311c076e09f42481f6"><img src="http://img3.tbcdn.cn/L1/461/1/1cfc1d29c4579ef53d8da6311c076e09f42481f6" alt=""/></a></p>
+
+<h2 id="toc_7">Asynchronous Barrier Snapshots</h2>
+
+<p>这个算法基本上是 Chandy-Lamport 算法的变体，只在执行上有一些差别。论文中分别针对有向无环和有向有环的两种计算拓扑图，提出了两种不同的算法，其中后者是在前者的基础上进行了修改，在实际的使用中，绝大部分的系统都是有向无环图，因此我们只会针对前者进行介绍。</p>
+
+<p>在 ABS 算法中用 Barrier 代替了 C-L 算法中的 Marker，针对 DAG 的 ABS 算法执行流程如下所示：</p>
+
+<ol>
+<li><p>Barrier 周期性的被注入到所有的 Source 中，Source 节点看到 Barrier 后，会立即记录自己的状态，然后将 Barrier 发送到 Transformation Operator。</p></li>
+<li><p>当 Transformation Operator 从某个 input channel 收到 Barrier 后，它会立刻 Block 住这条通道，直到所有的 input channel 都收到 Barrier，此时该 Operator 就会记录自身状态，并向自己的所有 output channel 广播 Barrier。</p></li>
+<li><p>Sink 接受 Barrier 的操作流程与 Transformation Oper 一样。当所有的 Barrier 都到达 Sink 之后，并且所有的 Sink 也完成了 Checkpoint，这一轮 Snapshot 就完成了。</p></li>
+</ol>
+
+<p>下面这个图展示了一个 ABS 算法的执行过程：<br/>
+<a href="http://img4.tbcdn.cn/L1/461/1/4575b05e326645e9eb62bab20addeecfe19f5e4c"><img src="http://img4.tbcdn.cn/L1/461/1/4575b05e326645e9eb62bab20addeecfe19f5e4c" alt=""/></a></p>
+
+<p>下面是针对 DAG 拓扑图的算法伪代码：</p>
+
+<pre><code>// 初始化Operator
+upon event (Init | input channels, output
+channels, fun, init state) 
+do
+    state := init_state; 
+    blocked_inputs := {};
+    inputs := input_channels;
+    out_puts := out_put channels; 
+    udf := fun;
+
+// 收到Barrier的行为
+upon event (receive | input, (barrier)) 
+do
+//将当前input通道加入blocked 集合，并block该通道，此通道的消息处理暂停
+    if input != Nil then 
+        blocked inputs := blocked inputs ∪ {input};
+        trigger (block | input);
+//如果所有的通道都已经被block，说明所有的barrier都已经收到
+    if blocked inputs = inputs then 
+        blocked inputs := {}; 
+        broadcast (send | outputs, (barrier)); //向所有的outputs发出Barrier
+        trigger (snapshot | state); //记录本节点当前状态
+        for each inputs as input //解除所有通道的block，继续处理消息
+            trigger (unblock | input);
+
+</code></pre>
+
+<p>在这个算法中 Block Input 实际上是有负面效果的，一旦某个 input channel 发生延迟，Barrier 迟迟未到，这会导致 Transformation Operator 上的其它通道全部堵塞，系统吞吐大幅下降。但是这么做的一个最大的好处就是能够实现 Exactly Once。我们来看看 Flink 文档中的描述：</p>
 
 <blockquote>
-<p><strong>本来线程不安全的，通过 ThreadLocal 这么封装一下，立刻就变成了线程的局部变量，不仅仅安全了，还保证了一个线程下面的操作拿到的 Connection 是同一个对象！这种思想，确实非常巧妙，这也是无锁编程思想的一种方式！</strong></p>
+<p>When the alignment is skipped, an operator keeps processing all inputs, even after some checkpoint barriers for checkpoint n arrived. That way, the operator also processes elements that belong to checkpoint n+1 before the state snapshot for checkpoint n was taken. On a restore, these records will occur as duplicates, because they are both included in the state snapshot of checkpoint n, and will be replayed as part of the data after checkpoint n.</p>
 </blockquote>
 
-<p><strong>TransactionManager</strong></p>
+<p>不过 Flink 还是提供了选项，可以关闭 Exactly once 并仅保留 at least once，以提供最大限度的吞吐能力。</p>
 
-<p><img src="https://upload-images.jianshu.io/upload_images/4943997-6b1d06cb6e4c36f4.png" alt=""/></p>
-
-<blockquote>
-<p><strong>TransactionManager，这个我们经常在 Spring 里面进行配置吧，事务大管家！</strong></p>
-</blockquote>
-
-<p><strong>UserAccountDao、UserOrderDao</strong></p>
-
-<p><img src="https://upload-images.jianshu.io/upload_images/4943997-7a4c3d78b64b1b41.png" alt=""/><img src="https://upload-images.jianshu.io/upload_images/4943997-51bd4645e182465f.png" alt=""/></p>
-
-<blockquote>
-<p><strong>这里通过这 2 个 DAO，想模拟一个事务中账户购买、下单 2 个操作。</strong></p>
-</blockquote>
-
-<p><strong>UserService</strong></p>
-
-<p><img src="https://upload-images.jianshu.io/upload_images/4943997-cb641f0ea8e402fa.png" alt=""/></p>
-
-<blockquote>
-<p><strong>到这里，可以清晰的看到 Spring 事务管理的一个缩影了吧！</strong></p>
-</blockquote>
-
-<p><strong>Test</strong></p>
-
-<p><img src="https://upload-images.jianshu.io/upload_images/4943997-b701b107dc2c24db.png" alt=""/></p>
-
-<blockquote>
-<p><strong>这里，主要是模拟 Spring 的注入以及多用户并发请求。</strong></p>
-</blockquote>
-
-<p><strong>运行结果</strong></p>
-
-<p><img src="https://upload-images.jianshu.io/upload_images/4943997-e11ff5aea23d1ffb.png" alt=""/></p>
-
-<blockquote>
-<p><strong>你可以发现，一个线程中的一个事务的多个操作，使用的是同一个 Connection！</strong></p>
-</blockquote>
-
-<p><strong>好了，到这里，你是否能对 Spring 实现事务的思想有所了解呢？</strong></p>
-
-<p><strong>晚安，早点睡觉，明天继续，O(∩_∩)O 哈哈~</strong></p>
+<p>本文仅从原理角度介绍了分布式 Snapshot 的基本原理以及 Flink 中的实现，从这篇文章出发，我们还需要阅读相关的源代码以及在实际的开发中去学习和理解。另外本文是基于我自己的理解写就，难免有疏漏和错误，如果大家发现问题，可以留言或者直接联系我，我们一起讨论。</p>
 
                         
                       </div>
@@ -197,10 +260,10 @@
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/10/8</span>
+                    <span class="date">2019/1/14</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Spring.html'>Spring</a></span>
+          					    <span class="posted-in"><a href='BigData-1.html'>BigData</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -290,31 +353,31 @@
 	      
 		      
 			      <li class="post">
-			        <a href="15459058392039.html">Reliable Domain Events</a>
+			        <a href="15517999043443.html">The Art of Crafting Architectural Diagrams</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
+			        <a href="15517997955971.html">为什么说我们需要软件架构图？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
+			        <a href="15516128677869.html">DNS Servers That Offer Privacy and Filtering</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
+			        <a href="15516123108194.html">Airbnb's Migration from Monolith to Services</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
+			        <a href="15516097487470.html">Events As First-Class Citizens</a>
 			      </li>
 		     
 		  

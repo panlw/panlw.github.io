@@ -105,473 +105,441 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15290739723353.html">
+                <a class="clearlink" href="15327406535943.html">
                 
-                  <h1>Eggjs-和-SOFA-的跨语言互调</h1>
+                  <h1>理解OAuth 2.0</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
-                        	<blockquote>
-<p><a href="https://github.com/eggjs/egg-sofa-rpc/wiki/Eggjs-%E5%92%8C-SOFA-%E7%9A%84%E8%B7%A8%E8%AF%AD%E8%A8%80%E4%BA%92%E8%B0%83">https://github.com/eggjs/egg-sofa-rpc/wiki/Eggjs-%E5%92%8C-SOFA-%E7%9A%84%E8%B7%A8%E8%AF%AD%E8%A8%80%E4%BA%92%E8%B0%83</a></p>
+                        	<p><a href="http://en.wikipedia.org/wiki/OAuth">OAuth</a> 是一个关于授权（authorization）的开放网络标准，在全世界得到广泛应用，目前的版本是 2.0 版。</p>
+
+<p>本文对 OAuth 2.0 的设计思路和运行流程，做一个简明通俗的解释，主要参考材料为 <a href="http://www.rfcreader.com/#rfc6749">RFC 6749</a>。</p>
+
+<p><img src="http://www.ruanyifeng.com/blogimg/asset/2014/bg2014051201.png" alt=""/></p>
+
+<h2 id="toc_0">一、应用场景</h2>
+
+<p>为了理解 OAuth 的适用场合，让我举一个假设的例子。</p>
+
+<p>有一个 &quot;云冲印&quot; 的网站，可以将用户储存在 Google 的照片，冲印出来。用户为了使用该服务，必须让 &quot;云冲印&quot; 读取自己储存在 Google 上的照片。</p>
+
+<p><img src="http://www.ruanyifeng.com/blogimg/asset/2014/bg2014051202.png" alt=""/></p>
+
+<p>问题是只有得到用户的授权，Google 才会同意 &quot;云冲印&quot; 读取这些照片。那么，&quot;云冲印&quot; 怎样获得用户的授权呢？</p>
+
+<p>传统方法是，用户将自己的 Google 用户名和密码，告诉 &quot;云冲印&quot;，后者就可以读取用户的照片了。这样的做法有以下几个严重的缺点。</p>
+
+<blockquote>
+<p>（1）&quot;云冲印&quot; 为了后续的服务，会保存用户的密码，这样很不安全。</p>
+
+<p>（2）Google 不得不部署密码登录，而我们知道，单纯的密码登录并不安全。</p>
+
+<p>（3）&quot;云冲印&quot; 拥有了获取用户储存在 Google 所有资料的权力，用户没法限制 &quot;云冲印&quot; 获得授权的范围和有效期。</p>
+
+<p>（4）用户只有修改密码，才能收回赋予 &quot;云冲印&quot; 的权力。但是这样做，会使得其他所有获得用户授权的第三方应用程序全部失效。</p>
+
+<p>（5）只要有一个第三方应用程序被破解，就会导致用户密码泄漏，以及所有被密码保护的数据泄漏。</p>
 </blockquote>
 
-<p>伴随 <a href="https://github.com/alipay/sofa-rpc">SOFARPC</a> 的开源，我们也开源了 <a href="https://github.com/alipay/sofa-bolt-node">sofa-bolt-node</a> 和 <a href="https://github.com/alipay/sofa-rpc-node">sofa-rpc-node</a> 两个 Nodejs RPC 基础模块。但细心的用户可能注意了我们在文档里面写到并不希望大家直接使用它们，并预告会在 Eggjs 里提供 RPC 最佳实践。现在这个最佳实践来了，它就是：</p>
+<p>OAuth 就是为了解决上面这些问题而诞生的。</p>
+
+<h2 id="toc_1">二、名词定义</h2>
+
+<p>在详细讲解 OAuth 2.0 之前，需要了解几个专用名词。它们对读懂后面的讲解，尤其是几张图，至关重要。</p>
+
+<blockquote>
+<p>（1） <strong>Third-party application</strong>：第三方应用程序，本文中又称 &quot;客户端&quot;（client），即上一节例子中的 &quot;云冲印&quot;。</p>
+
+<p>（2）<strong>HTTP service</strong>：HTTP 服务提供商，本文中简称 &quot;服务提供商&quot;，即上一节例子中的 Google。</p>
+
+<p>（3）<strong>Resource Owner</strong>：资源所有者，本文中又称 &quot;用户&quot;（user）。</p>
+
+<p>（4）<strong>User Agent</strong>：用户代理，本文中就是指浏览器。</p>
+
+<p>（5）<strong>Authorization server</strong>：认证服务器，即服务提供商专门用来处理认证的服务器。</p>
+
+<p>（6）<strong>Resource server</strong>：资源服务器，即服务提供商存放用户生成的资源的服务器。它与认证服务器，可以是同一台服务器，也可以是不同的服务器。</p>
+</blockquote>
+
+<p>知道了上面这些名词，就不难理解，OAuth 的作用就是让 &quot;客户端&quot; 安全可控地获取 &quot;用户&quot; 的授权，与 &quot;服务商提供商&quot; 进行互动。</p>
+
+<h2 id="toc_2">三、OAuth 的思路</h2>
+
+<p>OAuth 在 &quot;客户端&quot; 与 &quot;服务提供商&quot; 之间，设置了一个授权层（authorization layer）。&quot;客户端&quot; 不能直接登录 &quot;服务提供商&quot;，只能登录授权层，以此将用户与客户端区分开来。&quot;客户端&quot; 登录授权层所用的令牌（token），与用户的密码不同。用户可以在登录的时候，指定授权层令牌的权限范围和有效期。</p>
+
+<p>&quot;客户端&quot; 登录授权层以后，&quot;服务提供商&quot; 根据令牌的权限范围和有效期，向 &quot;客户端&quot; 开放用户储存的资料。</p>
+
+<h2 id="toc_3">四、运行流程</h2>
+
+<p>OAuth 2.0 的运行流程如下图，摘自 RFC 6749。</p>
+
+<p><img src="http://www.ruanyifeng.com/blogimg/asset/2014/bg2014051203.png" alt=""/></p>
+
+<blockquote>
+<p>（A）用户打开客户端以后，客户端要求用户给予授权。</p>
+
+<p>（B）用户同意给予客户端授权。</p>
+
+<p>（C）客户端使用上一步获得的授权，向认证服务器申请令牌。</p>
+
+<p>（D）认证服务器对客户端进行认证以后，确认无误，同意发放令牌。</p>
+
+<p>（E）客户端使用令牌，向资源服务器申请获取资源。</p>
+
+<p>（F）资源服务器确认令牌无误，同意向客户端开放资源。</p>
+</blockquote>
+
+<p>不难看出来，上面六个步骤之中，B 是关键，即用户怎样才能给于客户端授权。有了这个授权以后，客户端就可以获取令牌，进而凭令牌获取资源。</p>
+
+<p>下面一一讲解客户端获取授权的四种模式。</p>
+
+<h2 id="toc_4">五、客户端的授权模式</h2>
+
+<p>客户端必须得到用户的授权（authorization grant），才能获得令牌（access token）。OAuth 2.0 定义了四种授权方式。</p>
 
 <ul>
-<li><a href="https://github.com/eggjs/egg-sofa-rpc">egg-sofa-rpc</a> 插件</li>
-<li><a href="https://github.com/eggjs/egg-rpc-generator">egg-rpc-generator</a> 工具</li>
+<li>  授权码模式（authorization code）</li>
+<li>  简化模式（implicit）</li>
+<li>  密码模式（resource owner password credentials）</li>
+<li>  客户端模式（client credentials）</li>
 </ul>
 
-<p>本文通过 Step by Step 的形式介绍了 Eggjs 和 SOFA（Java）是如何进行互联互通的，涵盖了 RPC 的服务发现、接口定义、本地代理生成、服务端实现等各方面，期望展现给你一个相对完整的 Nodejs RPC 解决方案。考虑到社区的接受度、多语言友好性等因素，接下来的示例采用 <a href="https://developers.google.com/protocol-buffers/">protobuf</a> 作为 RPC 的序列化方式。</p>
+<h2 id="toc_5">六、授权码模式</h2>
 
-<h2 id="toc_0">一、准备工作</h2>
+<p>授权码模式（authorization code）是功能最完整、流程最严密的授权模式。它的特点就是通过客户端的后台服务器，与 &quot;服务提供商&quot; 的认证服务器进行互动。</p>
 
-<p><strong>注意：</strong> 本文以 macOS 为例，其他操作系统的安装、使用方法请自行 google。</p>
+<p><img src="http://www.ruanyifeng.com/blogimg/asset/2014/bg2014051204.png" alt=""/></p>
+
+<p>它的步骤如下：</p>
+
+<blockquote>
+<p>（A）用户访问客户端，后者将前者导向认证服务器。</p>
+
+<p>（B）用户选择是否给予客户端授权。</p>
+
+<p>（C）假设用户给予授权，认证服务器将用户导向客户端事先指定的 &quot;重定向 URI&quot;（redirection URI），同时附上一个授权码。</p>
+
+<p>（D）客户端收到授权码，附上早先的 &quot;重定向 URI&quot;，向认证服务器申请令牌。这一步是在客户端的后台的服务器上完成的，对用户不可见。</p>
+
+<p>（E）认证服务器核对了授权码和重定向 URI，确认无误后，向客户端发送访问令牌（access token）和更新令牌（refresh token）。</p>
+</blockquote>
+
+<p>下面是上面这些步骤所需要的参数。</p>
+
+<p>A 步骤中，客户端申请认证的 URI，包含以下参数：</p>
 
 <ul>
-<li><p>安装 <code>nodejs &gt;= 8.0.0</code></p>
-
-<ul>
-<li>下载安装包：<a href="https://nodejs.org/en/download/">https://nodejs.org/en/download/</a></li>
-<li>执行安装</li>
-</ul></li>
-<li><p>安装 <code>zookeeper</code></p></li>
+<li>  response_type：表示授权类型，必选项，此处的值固定为 &quot;code&quot;</li>
+<li>  client_id：表示客户端的 ID，必选项</li>
+<li>  redirect_uri：表示重定向 URI，可选项</li>
+<li>  scope：表示申请的权限范围，可选项</li>
+<li>  state：表示客户端的当前状态，可以指定任意值，认证服务器会原封不动地返回这个值。</li>
 </ul>
 
-<pre><code class="language-bash">$ brew install zookeeper
+<p>下面是一个例子。</p>
+
+<blockquote>
+<pre><code>
+GET /authorize?response_type=code&amp;client_id=s6BhdRkqt3&amp;state=xyz
+        &amp;redirect_uri=https%3A%2F%2Fclient%2Eexample%2Ecom%2Fcb HTTP/1.1
+Host: server.example.com
+
 </code></pre>
+</blockquote>
+
+<p>C 步骤中，服务器回应客户端的 URI，包含以下参数：</p>
 
 <ul>
-<li>启动 <code>zookeeper</code> 服务</li>
+<li>  code：表示授权码，必选项。该码的有效期应该很短，通常设为 10 分钟，客户端只能使用该码一次，否则会被授权服务器拒绝。该码与客户端 ID 和重定向 URI，是一一对应关系。</li>
+<li>  state：如果客户端的请求中包含这个参数，认证服务器的回应也必须一模一样包含这个参数。</li>
 </ul>
 
-<pre><code class="language-bash">$ zkServer start
-ZooKeeper JMX enabled by default
-Using config: /usr/local/etc/zookeeper/zoo.cfg
-Starting zookeeper ... STARTED
+<p>下面是一个例子。</p>
+
+<blockquote>
+<pre><code>
+HTTP/1.1 302 Found
+Location: https://client.example.com/cb?code=SplxlOBeZQQYbYS6WxSbIA
+          &amp;state=xyz
+
 </code></pre>
+</blockquote>
+
+<p>D 步骤中，客户端向认证服务器申请令牌的 HTTP 请求，包含以下参数：</p>
 
 <ul>
-<li>克隆 SOFARPC Java 的<a href="https://github.com/gxcsoccer/sofa-rpc-java-demo">示例仓库</a></li>
+<li>  grant_type：表示使用的授权模式，必选项，此处的值固定为 &quot;authorization_code&quot;。</li>
+<li>  code：表示上一步获得的授权码，必选项。</li>
+<li>  redirect_uri：表示重定向 URI，必选项，且必须与 A 步骤中的该参数值保持一致。</li>
+<li>  client_id：表示客户端 ID，必选项。</li>
 </ul>
 
-<p>SOFARPC 的更多信息可以参考<a href="https://github.com/alipay/sofa-rpc">官方文档</a></p>
+<p>下面是一个例子。</p>
 
-<pre><code class="language-bash">git clone git@github.com:gxcsoccer/sofa-rpc-java-demo.git
+<blockquote>
+<pre><code>
+POST /token HTTP/1.1
+Host: server.example.com
+Authorization: Basic czZCaGRSa3F0MzpnWDFmQmF0M2JW
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=authorization_code&amp;code=SplxlOBeZQQYbYS6WxSbIA
+&amp;redirect_uri=https%3A%2F%2Fclient%2Eexample%2Ecom%2Fcb
+
 </code></pre>
+</blockquote>
+
+<p>E 步骤中，认证服务器发送的 HTTP 回复，包含以下参数：</p>
 
 <ul>
-<li>安装 <code>egg-init</code></li>
+<li>  access_token：表示访问令牌，必选项。</li>
+<li>  token_type：表示令牌类型，该值大小写不敏感，必选项，可以是 bearer 类型或 mac 类型。</li>
+<li>  expires_in：表示过期时间，单位为秒。如果省略该参数，必须其他方式设置过期时间。</li>
+<li>  refresh_token：表示更新令牌，用来获取下一次的访问令牌，可选项。</li>
+<li>  scope：表示权限范围，如果与客户端申请的范围一致，此项可省略。</li>
 </ul>
 
-<pre><code class="language-bash">$ npm i egg-init -g
-</code></pre>
+<p>下面是一个例子。</p>
 
-<h2 id="toc_1">二、创建工程</h2>
+<blockquote>
+<pre><code>
+     HTTP/1.1 200 OK
+     Content-Type: application/json;charset=UTF-8
+     Cache-Control: no-store
+     Pragma: no-cache
+
+     {
+       &quot;access_token&quot;:&quot;2YotnFZFEjr1zCsicMWpAA&quot;,
+       &quot;token_type&quot;:&quot;example&quot;,
+       &quot;expires_in&quot;:3600,
+       &quot;refresh_token&quot;:&quot;tGzv3JOkF0XG5Qx2TlKWIA&quot;,
+       &quot;example_parameter&quot;:&quot;example_value&quot;
+     }
+
+</code></pre>
+</blockquote>
+
+<p>从上面代码可以看到，相关参数使用 JSON 格式发送（Content-Type: application/json）。此外，HTTP 头信息中明确指定不得缓存。</p>
+
+<h2 id="toc_6">七、简化模式</h2>
+
+<p>简化模式（implicit grant type）不通过第三方应用程序的服务器，直接在浏览器中向认证服务器申请令牌，跳过了 &quot;授权码&quot; 这个步骤，因此得名。所有步骤在浏览器中完成，令牌对访问者是可见的，且客户端不需要认证。</p>
+
+<p><img src="http://www.ruanyifeng.com/blogimg/asset/2014/bg2014051205.png" alt=""/></p>
+
+<p>它的步骤如下：</p>
+
+<blockquote>
+<p>（A）客户端将用户导向认证服务器。</p>
+
+<p>（B）用户决定是否给于客户端授权。</p>
+
+<p>（C）假设用户给予授权，认证服务器将用户导向客户端指定的 &quot;重定向 URI&quot;，并在 URI 的 Hash 部分包含了访问令牌。</p>
+
+<p>（D）浏览器向资源服务器发出请求，其中不包括上一步收到的 Hash 值。</p>
+
+<p>（E）资源服务器返回一个网页，其中包含的代码可以获取 Hash 值中的令牌。</p>
+
+<p>（F）浏览器执行上一步获得的脚本，提取出令牌。</p>
+
+<p>（G）浏览器将令牌发给客户端。</p>
+</blockquote>
+
+<p>下面是上面这些步骤所需要的参数。</p>
+
+<p>A 步骤中，客户端发出的 HTTP 请求，包含以下参数：</p>
 
 <ul>
-<li>通过 <code>egg-init</code> 初始化项目脚手架，选择 simple 模板，接下来根据实际情况填写必要信息</li>
+<li>  response_type：表示授权类型，此处的值固定为 &quot;token&quot;，必选项。</li>
+<li>  client_id：表示客户端的 ID，必选项。</li>
+<li>  redirect_uri：表示重定向的 URI，可选项。</li>
+<li>  scope：表示权限范围，可选项。</li>
+<li>  state：表示客户端的当前状态，可以指定任意值，认证服务器会原封不动地返回这个值。</li>
 </ul>
 
-<pre><code class="language-bash">$ egg-init
+<p>下面是一个例子。</p>
 
-? Please select a boilerplate type (Use arrow keys)
-  ──────────────
-❯ simple - Simple egg app boilerplate
-  ts - Simple egg &amp;&amp; typescript app boilerplate
-  empty - Empty egg app boilerplate
-  plugin - egg plugin boilerplate
-  framework - egg framework boilerplate
+<blockquote>
+<pre><code>
+    GET /authorize?response_type=token&amp;client_id=s6BhdRkqt3&amp;state=xyz
+        &amp;redirect_uri=https%3A%2F%2Fclient%2Eexample%2Ecom%2Fcb HTTP/1.1
+    Host: server.example.com
+
 </code></pre>
+</blockquote>
+
+<p>C 步骤中，认证服务器回应客户端的 URI，包含以下参数：</p>
 
 <ul>
-<li>进入生成好的项目目录，并安装依赖</li>
+<li>  access_token：表示访问令牌，必选项。</li>
+<li>  token_type：表示令牌类型，该值大小写不敏感，必选项。</li>
+<li>  expires_in：表示过期时间，单位为秒。如果省略该参数，必须其他方式设置过期时间。</li>
+<li>  scope：表示权限范围，如果与客户端申请的范围一致，此项可省略。</li>
+<li>  state：如果客户端的请求中包含这个参数，认证服务器的回应也必须一模一样包含这个参数。</li>
 </ul>
 
-<pre><code class="language-bash">$ cd /rpc-demo
-$ npm i
+<p>下面是一个例子。</p>
+
+<blockquote>
+<pre><code>
+     HTTP/1.1 302 Found
+     Location: http://example.com/cb#access_token=2YotnFZFEjr1zCsicMWpAA
+               &amp;state=xyz&amp;token_type=example&amp;expires_in=3600
+
 </code></pre>
+</blockquote>
+
+<p>在上面的例子中，认证服务器用 HTTP 头信息的 Location 栏，指定浏览器重定向的网址。注意，在这个网址的 Hash 部分包含了令牌。</p>
+
+<p>根据上面的 D 步骤，下一步浏览器会访问 Location 指定的网址，但是 Hash 部分不会发送。接下来的 E 步骤，服务提供商的资源服务器发送过来的代码，会提取出 Hash 中的令牌。</p>
+
+<h2 id="toc_7">八、密码模式</h2>
+
+<p>密码模式（Resource Owner Password Credentials Grant）中，用户向客户端提供自己的用户名和密码。客户端使用这些信息，向 &quot;服务商提供商&quot; 索要授权。</p>
+
+<p>在这种模式中，用户必须把自己的密码给客户端，但是客户端不得储存密码。这通常用在用户对客户端高度信任的情况下，比如客户端是操作系统的一部分，或者由一个著名公司出品。而认证服务器只有在其他授权模式无法执行的情况下，才能考虑使用这种模式。</p>
+
+<p><img src="http://www.ruanyifeng.com/blogimg/asset/2014/bg2014051206.png" alt=""/></p>
+
+<p>它的步骤如下：</p>
+
+<blockquote>
+<p>（A）用户向客户端提供用户名和密码。</p>
+
+<p>（B）客户端将用户名和密码发给认证服务器，向后者请求令牌。</p>
+
+<p>（C）认证服务器确认无误后，向客户端提供访问令牌。</p>
+</blockquote>
+
+<p>B 步骤中，客户端发出的 HTTP 请求，包含以下参数：</p>
 
 <ul>
-<li>安装 <code>egg-sofa-rpc</code> 插件和 <code>egg-rpc-generator</code> 工具</li>
+<li>  grant_type：表示授权类型，此处的值固定为 &quot;password&quot;，必选项。</li>
+<li>  username：表示用户名，必选项。</li>
+<li>  password：表示用户的密码，必选项。</li>
+<li>  scope：表示权限范围，可选项。</li>
 </ul>
 
-<pre><code class="language-bash">$ npm i egg-sofa-rpc --save
-$ npm i egg-rpc-generator --save-dev
+<p>下面是一个例子。</p>
+
+<blockquote>
+<pre><code>
+     POST /token HTTP/1.1
+     Host: server.example.com
+     Authorization: Basic czZCaGRSa3F0MzpnWDFmQmF0M2JW
+     Content-Type: application/x-www-form-urlencoded
+
+     grant_type=password&amp;username=johndoe&amp;password=A3ddj3w
+
 </code></pre>
+</blockquote>
+
+<p>C 步骤中，认证服务器向客户端发送访问令牌，下面是一个例子。</p>
+
+<blockquote>
+<pre><code>
+     HTTP/1.1 200 OK
+     Content-Type: application/json;charset=UTF-8
+     Cache-Control: no-store
+     Pragma: no-cache
+
+     {
+       &quot;access_token&quot;:&quot;2YotnFZFEjr1zCsicMWpAA&quot;,
+       &quot;token_type&quot;:&quot;example&quot;,
+       &quot;expires_in&quot;:3600,
+       &quot;refresh_token&quot;:&quot;tGzv3JOkF0XG5Qx2TlKWIA&quot;,
+       &quot;example_parameter&quot;:&quot;example_value&quot;
+     }
+
+</code></pre>
+</blockquote>
+
+<p>上面代码中，各个参数的含义参见《授权码模式》一节。</p>
+
+<p>整个过程中，客户端不得保存用户的密码。</p>
+
+<h2 id="toc_8">九、客户端模式</h2>
+
+<p>客户端模式（Client Credentials Grant）指客户端以自己的名义，而不是以用户的名义，向 &quot;服务提供商&quot; 进行认证。严格地说，客户端模式并不属于 OAuth 框架所要解决的问题。在这种模式中，用户直接向客户端注册，客户端以自己的名义要求 &quot;服务提供商&quot; 提供服务，其实不存在授权问题。</p>
+
+<p><img src="http://www.ruanyifeng.com/blogimg/asset/2014/bg2014051207.png" alt=""/></p>
+
+<p>它的步骤如下：</p>
+
+<blockquote>
+<p>（A）客户端向认证服务器进行身份认证，并要求一个访问令牌。</p>
+
+<p>（B）认证服务器确认无误后，向客户端提供访问令牌。</p>
+</blockquote>
+
+<p>A 步骤中，客户端发出的 HTTP 请求，包含以下参数：</p>
 
 <ul>
-<li>配置 <code>package.json</code> 的 scripts 节点，增加一个命令 rpc 如下</li>
+<li>  grant_type：表示授权类型，此处的值固定为 &quot;client_credentials&quot;，必选项。</li>
+<li>  scope：表示权限范围，可选项。</li>
 </ul>
 
-<pre><code class="language-json">{
-  &quot;scripts&quot;: {
-    &quot;start&quot;: &quot;egg-scripts start --daemon --title=egg-server-rpc-demo&quot;,
-    &quot;stop&quot;: &quot;egg-scripts stop --title=egg-server-rpc-demo&quot;,
-    &quot;dev&quot;: &quot;egg-bin dev&quot;,
-    &quot;debug&quot;: &quot;egg-bin debug&quot;,
-    &quot;test&quot;: &quot;npm run lint -- --fix &amp;&amp; npm run test-local&quot;,
-    &quot;test-local&quot;: &quot;egg-bin test&quot;,
-    &quot;cov&quot;: &quot;egg-bin cov&quot;,
-    &quot;lint&quot;: &quot;eslint .&quot;,
-    &quot;ci&quot;: &quot;npm run lint &amp;&amp; npm run cov&quot;,
-    &quot;autod&quot;: &quot;autod&quot;,
-    &quot;rpc&quot;: &quot;egg-rpc-generator&quot;
-  }
-}
+<blockquote>
+<pre><code>
+     POST /token HTTP/1.1
+     Host: server.example.com
+     Authorization: Basic czZCaGRSa3F0MzpnWDFmQmF0M2JW
+     Content-Type: application/x-www-form-urlencoded
+
+     grant_type=client_credentials
+
 </code></pre>
+</blockquote>
+
+<p>认证服务器必须以某种方式，验证客户端身份。</p>
+
+<p>B 步骤中，认证服务器向客户端发送访问令牌，下面是一个例子。</p>
+
+<blockquote>
+<pre><code>
+     HTTP/1.1 200 OK
+     Content-Type: application/json;charset=UTF-8
+     Cache-Control: no-store
+     Pragma: no-cache
+
+     {
+       &quot;access_token&quot;:&quot;2YotnFZFEjr1zCsicMWpAA&quot;,
+       &quot;token_type&quot;:&quot;example&quot;,
+       &quot;expires_in&quot;:3600,
+       &quot;example_parameter&quot;:&quot;example_value&quot;
+     }
+
+</code></pre>
+</blockquote>
+
+<p>上面代码中，各个参数的含义参见《授权码模式》一节。</p>
+
+<h2 id="toc_9">十、更新令牌</h2>
+
+<p>如果用户访问的时候，客户端的 &quot;访问令牌&quot; 已经过期，则需要使用 &quot;更新令牌&quot; 申请一个新的访问令牌。</p>
+
+<p>客户端发出更新令牌的 HTTP 请求，包含以下参数：</p>
 
 <ul>
-<li>配置 <code>config/plugin.js</code> 开启 <code>egg-sofa-rpc</code> 插件</li>
+<li>  grant_type：表示使用的授权模式，此处的值固定为 &quot;refresh_token&quot;，必选项。</li>
+<li>  refresh_token：表示早前收到的更新令牌，必选项。</li>
+<li>  scope：表示申请的授权范围，不可以超出上一次申请的范围，如果省略该参数，则表示与上一次一致。</li>
 </ul>
 
-<pre><code class="language-js">// config/plugin.js
+<p>下面是一个例子。</p>
 
-exports.sofaRpc = {
-  enable: true,
-  package: &#39;egg-sofa-rpc&#39;,
-};
+<blockquote>
+<pre><code>
+     POST /token HTTP/1.1
+     Host: server.example.com
+     Authorization: Basic czZCaGRSa3F0MzpnWDFmQmF0M2JW
+     Content-Type: application/x-www-form-urlencoded
+
+     grant_type=refresh_token&amp;refresh_token=tGzv3JOkF0XG5Qx2TlKWIA
+
 </code></pre>
-
-<h2 id="toc_2">三、定义接口</h2>
-
-<p>protobuf 有自己的接口定义语言，详细可以参考<a href="https://developers.google.com/protocol-buffers/docs/proto3">官方文档</a>。</p>
-
-<pre><code># ProtoService.proto 
-syntax = &quot;proto3&quot;;
-
-package com.alipay.sofa.rpc.protobuf;
-option java_multiple_files = true; // 可选
-option java_outer_classname = &quot;ProtoServiceModels&quot;; // 可选
-
-service ProtoService {
-    rpc echoObj (EchoRequest) returns (EchoResponse) {}
-}
-
-message EchoRequest {
-    string name = 1;
-    Group group = 2;
-}
-
-message EchoResponse {
-    int32 code = 1;
-    string message = 2;
-}
-
-enum Group {
-    A = 0;
-    B = 1;
-}
-</code></pre>
-
-<p>上面这个 ProtoService.proto 文件定义了一个服务：<code>com.alipay.sofa.rpc.protobuf.ProtoService</code>，它有一个叫 <code>echoObj</code> 的方法，入口参数类型是 <code>EchoRequest</code>，返回值类型是 <code>EchoResponse</code>。</p>
-
-<h2 id="toc_3">四、调用 Java 暴露的 RPC 服务</h2>
-
-<h3 id="toc_4">1、启动 Java 服务端</h3>
-
-<p>进入上面克隆的 Java 示例仓库，运行 ProtobufServiceServerMain</p>
-
-<h3 id="toc_5">2、配置服务发现参数</h3>
-
-<p>我们默认的服务发现依赖于 zookeeper，所以需要配置一个 zk 的地址。在 <code>config/config.{env}.js</code> 中配置如下：</p>
-
-<pre><code class="language-js">// config/config.default.js
-&#39;use strict&#39;;
-
-exports.sofaRpc = {
-  registry: {
-    address: &#39;127.0.0.1:2181&#39;, // zk 地址指向本地 2181 端口
-  },
-};
-</code></pre>
-
-<h3 id="toc_6">3、获取接口定义</h3>
-
-<p>在 egg 项目根目录下创建 proto 目录，然后将上面定义的 ProtoService.proto 文件放到里</p>
-
-<pre><code>.
-├── app
-│   ├── controller
-│   │   └── home.js
-│   └── router.js
-├── config
-│   ├── config.default.js
-│   └── plugin.js
-├── package.json
-└── proto
-    └── ProtoService.proto
-</code></pre>
-
-<h3 id="toc_7">4、配置要调用的接口</h3>
-
-<p>在 <code>config/proxy.js</code> 中配置要调用的服务信息</p>
-
-<pre><code class="language-js">&#39;use strict&#39;;
-
-module.exports = {
-  services: [{
-    appName: &#39;sofarpc&#39;,
-    api: {
-      ProtoService: &#39;com.alipay.sofa.rpc.protobuf.ProtoService&#39;,
-    },
-  }],
-};
-</code></pre>
-
-<ul>
-<li><code>appName</code>(必选): 服务提供方的应用名，如果没有可以任意起一个</li>
-<li><code>api</code>(必选): 接口列表，是一个 key-value 键值对，key 是生成的 proxy 文件名，value 是接口名（如果要跟精细的配置也可以是一个对象）</li>
-</ul>
-
-<p><code>config/proxy.js</code> 详细的配置说明可以参考<a href="https://github.com/eggjs/egg-sofa-rpc/wiki/RPC-%E4%BB%A3%E7%90%86%EF%BC%88Proxy%EF%BC%89%E9%85%8D%E7%BD%AE">文档</a></p>
-
-<h3 id="toc_8">5、生成调用代理</h3>
-
-<p>在根目录下运行 <code>npm run rpc</code>，生成调用的 proxy 文件</p>
-
-<pre><code class="language-bash">$ npm run rpc
-
-&gt; rpc-demo@1.0.0 rpc /egg-rpc-demo
-&gt; egg-rpc-generator
-
-[EggRpcGenerator] framework: /egg-rpc-demo/node_modules/egg, baseDir: /egg-rpc-demo
-[ProtoRPCPlugin] found &quot;com.alipay.sofa.rpc.protobuf.ProtoService&quot; in proto file
-[ProtoRPCPlugin] save all proto info into &quot;/egg-rpc-demo/run/proto.json&quot;
-</code></pre>
-
-<p>运行成功以后，会发现生成了两个文件</p>
-
-<ul>
-<li><code>app/proxy/ProtoService.js</code> - 调用服务的代理文件</li>
-<li><code>run/proto.json</code> - 从 .proto 文件中导出的接口信息，是一个 json 格式文件</li>
-</ul>
-
-<pre><code class="language-bash">.
-├── app
-│   ├── controller
-│   │   └── home.js
-│   ├── proxy
-│   │   └── ProtoService.js
-│   └── router.js
-├── config
-│   ├── config.default.js
-│   ├── plugin.js
-│   └── proxy.js
-├── package.json
-├── proto
-│   └── ProtoService.proto
-└── run
-    └── proto.json
-</code></pre>
-
-<p>生成的 <code>app/proxy/ProtoService.js</code> 文件内容如下（注意：不要手动去改这个文件）：</p>
-
-<pre><code class="language-js">// Don&#39;t modified this file, it&#39;s auto created by egg-rpc-generator
-
-&#39;use strict&#39;;
-
-const path = require(&#39;path&#39;);
-
-/* eslint-disable */
-/* istanbul ignore next */
-module.exports = app =&gt; {
-  const consumer = app.sofaRpcClient.createConsumer({
-    interfaceName: &#39;com.alipay.sofa.rpc.protobuf.ProtoService&#39;,
-    targetAppName: &#39;sofarpc&#39;,
-    version: &#39;1.0&#39;,
-    group: &#39;SOFA&#39;,
-    proxyName: &#39;ProtoService&#39;,
-    responseTimeout: 3000,
-  });
-
-  if (!consumer) {
-    // `app.config[&#39;sofarpc.rpc.service.enable&#39;] = false` will disable this consumer
-    return;
-  }
-
-  app.beforeStart(async() =&gt; {
-    await consumer.ready();
-  });
-
-  class ProtoService extends app.Proxy {
-    constructor(ctx) {
-      super(ctx, consumer);
-    }
-
-    async echoObj(req) {
-      return await consumer.invoke(&#39;echoObj&#39;, [ req ], { 
-        ctx: this.ctx,
-        codecType: &#39;protobuf&#39;,                                              
-      });
-    }
-  }
-
-  return ProtoService;
-};
-/* eslint-enable */
-</code></pre>
-
-<h3 id="toc_9">6、调用代理类，实现业务逻辑</h3>
-
-<p>上面定义的这个 ProtoService 这个类，会挂载在 app.proxyClasses 上。通过 ctx.proxy.protoService（注意这里是小驼峰）可以访问它的实例，这样我们就可以在业务中调用 RPC 的服务了，例如：下面我们在 home controller 调用 ProtoService 的 echoObj 方法</p>
-
-<pre><code class="language-js">// app/controller/home.js
-&#39;use strict&#39;;
-
-const Controller = require(&#39;egg&#39;).Controller;
-
-class HomeController extends Controller {
-  async index() {
-    const { ctx } = this;
-    const res = await ctx.proxy.protoService.echoObj({
-      name: &#39;gxcsoccer&#39;,
-      group: &#39;A&#39;,
-    });
-    ctx.body = res;
-  }
-}
-
-module.exports = HomeController;
-</code></pre>
-
-<h3 id="toc_10">7、启动应用，调试</h3>
-
-<pre><code class="language-bash">$ npm run dev
-</code></pre>
-
-<p>在浏览器中访问 <code>http://127.0.0.1:7001/</code>，得到下面的结果，说明成功了</p>
-
-<p><img src="https://cdn.yuque.com/yuque/0/2018/png/88025/1528795506314-d3a55667-ac30-443c-906f-642657abf289.png" alt="image"/></p>
-
-<h2 id="toc_11">五、暴露 RPC 服务给 Java 调用</h2>
-
-<p>这回换做 Nodejs 来暴露同样的服务，Java 端作为消费者</p>
-
-<h3 id="toc_12">1、配置服务发现参数</h3>
-
-<p>和上面作为调用者的配置一样</p>
-
-<pre><code class="language-js">// config/config.default.js
-&#39;use strict&#39;;
-
-exports.sofaRpc = {
-  registry: {
-    address: &#39;127.0.0.1:2181&#39;, // zk 地址指向本地 2181 端口
-  },
-};
-</code></pre>
-
-<h3 id="toc_13">2、定义接口</h3>
-
-<p>同样需要先定义接口，然后将 .proto 文件放到 <code>proto</code> 目录下，然后运行 <code>npm run rpc</code>，这些和上面作为调用者时都一样</p>
-
-<h3 id="toc_14">3、配置 RPC 服务端的参数</h3>
-
-<p>通过 <code>config/config.{env}.js</code> 配置 RPC 服务端的参数</p>
-
-<pre><code class="language-js">// config/config.default.js
-&#39;use strict&#39;;
-
-exports.sofaRpc = {
-  server: {
-    namespace: &#39;com.alipay.sofa.rpc.protobuf&#39;,
-  },
-};
-</code></pre>
-
-<p>其中最主要的配置就是 namespace，其他配置都可以缺省：</p>
-
-<ul>
-<li><code>namespace</code>(必选): 接口的命名空间，所有的暴露的接口默认都在该命名空间下</li>
-<li><code>selfPublish</code>(可选): 是否每个 worker 进程独立暴露服务。nodejs 多进程模式下，如果多个进程共享一个端口，在 RPC 这种场景可能造成负载不均，所以 selfPublish 默认为 true，代表每个进程独立监听端口和发布服务</li>
-<li><code>port</code>(可选): 服务监听的端口（注意：在 selfPublish=true 时，监听的端口是基于这个配置生成的）</li>
-<li><code>maxIdleTime</code>(可选): 客户端连接如果在该配置时长内没有任何流量，则主动断开连接</li>
-<li><code>responseTimeout</code>(可选): 服务端建议的超时时长，具体的超时还是以客户端配置为准</li>
-<li><code>codecType</code>(可选): 推荐的序列化方式，默认为 protobuf</li>
-</ul>
-
-<h3 id="toc_15">4、实现接口逻辑</h3>
-
-<p>在 <code>app/rpc</code> 目录下创建 ProtoService.js 文件，用于实现接口逻辑</p>
-
-<pre><code class="language-js">&#39;use strict&#39;;
-
-exports.echoObj = async function(req) {
-  return {
-    code: 200,
-    message: &#39;hello &#39; + req.name + &#39;, you are in &#39; + req.group,
-  };
-};
-</code></pre>
-
-<h3 id="toc_16">5、启动应用，发布服务</h3>
-
-<pre><code class="language-bash">$ npm run dev
-</code></pre>
-
-<h3 id="toc_17">6、Java 作为客户端调用服务</h3>
-
-<p>进入上面克隆的 Java 示例仓库，运行 ProtobufServiceClientMain</p>
-
-<p>执行的结果如下：</p>
-
-<pre><code class="language-bash">Sofa-Middleware-Log SLF4J : Actual binding is of type [ com.alipay.sofa.rpc Log4j2 ]
-2018-06-11 18:07:59,977 INFO  [main] com.alipay.sofa.common.log:report:30 - Sofa-Middleware-Log SLF4J : Actual binding is of type [ com.alipay.sofa.rpc Log4j2 ]
-2018-06-11 18:08:00,419 INFO  [main] org.apache.curator.framework.imps.CuratorFrameworkImpl:start:234 - Starting
-2018-06-11 18:08:00,432 INFO  [main] org.apache.zookeeper.ZooKeeper:logEnv:100 - Client environment:zookeeper.version=3.4.6-1569965, built on 02/20/2014 09:09 GMT
-2018-06-11 18:08:00,432 INFO  [main] org.apache.zookeeper.ZooKeeper:logEnv:100 - Client environment:host.name=30.23.232.6
-2018-06-11 18:08:00,432 INFO  [main] org.apache.zookeeper.ZooKeeper:logEnv:100 - Client environment:java.version=1.8.0_171
-2018-06-11 18:08:00,432 INFO  [main] org.apache.zookeeper.ZooKeeper:logEnv:100 - Client environment:java.vendor=Oracle Corporation
-2018-06-11 18:08:00,432 INFO  [main] org.apache.zookeeper.ZooKeeper:logEnv:100 - Client environment:java.home=/Library/Java/JavaVirtualMachines/jdk1.8.0_171.jdk/Contents/Home/jre
-2018-06-11 18:08:00,432 INFO  [main] org.apache.zookeeper.ZooKeeper:logEnv:100 - Client environment:java.class.path=/Library/Java/JavaVirtualMachines/jdk1.8.0_171.jdk/Contents/Home/jre/lib/charsets.jar:/Library/Java/JavaVirtualMachines/jdk1.8.0_171.jdk/Contents/Home/jre/lib/deploy.jar:/Library/Java/JavaVirtualMachines/jdk1.8.0_171.jdk/Contents/Home/jre/lib/ext/cldrdata.jar:/Library/Java/JavaVirtualMachines/jdk1.8.0_171.jdk/Contents/Home/jre/lib/ext/dnsns.jar:/Library/Java/JavaVirtualMachines/jdk1.8.0_171.jdk/Contents/Home/jre/lib/ext/jaccess.jar:/Library/Java/JavaVirtualMachines/jdk1.8.0_171.jdk/Contents/Home/jre/lib/ext/jfxrt.jar:/Library/Java/JavaVirtualMachines/jdk1.8.0_171.jdk/Contents/Home/jre/lib/ext/localedata.jar:/Library/Java/JavaVirtualMachines/jdk1.8.0_171.jdk/Contents/Home/jre/lib/ext/nashorn.jar:/Library/Java/JavaVirtualMachines/jdk1.8.0_171.jdk/Contents/Home/jre/lib/ext/sunec.jar:/Library/Java/JavaVirtualMachines/jdk1.8.0_171.jdk/Contents/Home/jre/lib/ext/sunjce_provider.jar:/Library/Java/JavaVirtualMachines/jdk1.8.0_171.jdk/Contents/Home/jre/lib/ext/sunpkcs11.jar:/Library/Java/JavaVirtualMachines/jdk1.8.0_171.jdk/Contents/Home/jre/lib/ext/zipfs.jar:/Library/Java/JavaVirtualMachines/jdk1.8.0_171.jdk/Contents/Home/jre/lib/javaws.jar:/Library/Java/JavaVirtualMachines/jdk1.8.0_171.jdk/Contents/Home/jre/lib/jce.jar:/Library/Java/JavaVirtualMachines/jdk1.8.0_171.jdk/Contents/Home/jre/lib/jfr.jar:/Library/Java/JavaVirtualMachines/jdk1.8.0_171.jdk/Contents/Home/jre/lib/jfxswt.jar:/Library/Java/JavaVirtualMachines/jdk1.8.0_171.jdk/Contents/Home/jre/lib/jsse.jar:/Library/Java/JavaVirtualMachines/jdk1.8.0_171.jdk/Contents/Home/jre/lib/management-agent.jar:/Library/Java/JavaVirtualMachines/jdk1.8.0_171.jdk/Contents/Home/jre/lib/plugin.jar:/Library/Java/JavaVirtualMachines/jdk1.8.0_171.jdk/Contents/Home/jre/lib/resources.jar:/Library/Java/JavaVirtualMachines/jdk1.8.0_171.jdk/Contents/Home/jre/lib/rt.jar:/Library/Java/JavaVirtualMachines/jdk1.8.0_171.jdk/Contents/Home/lib/ant-javafx.jar:/Library/Java/JavaVirtualMachines/jdk1.8.0_171.jdk/Contents/Home/lib/dt.jar:/Library/Java/JavaVirtualMachines/jdk1.8.0_171.jdk/Contents/Home/lib/javafx-mx.jar:/Library/Java/JavaVirtualMachines/jdk1.8.0_171.jdk/Contents/Home/lib/jconsole.jar:/Library/Java/JavaVirtualMachines/jdk1.8.0_171.jdk/Contents/Home/lib/packager.jar:/Library/Java/JavaVirtualMachines/jdk1.8.0_171.jdk/Contents/Home/lib/sa-jdi.jar:/Library/Java/JavaVirtualMachines/jdk1.8.0_171.jdk/Contents/Home/lib/tools.jar:/Users/gaoxiaochen/projj/github.com/gxcsoccer/sofa-rpc-java-demo/target/classes:/Users/gaoxiaochen/.m2/repository/com/alipay/sofa/sofa-rpc-all/5.4.0/sofa-rpc-all-5.4.0.jar:/Users/gaoxiaochen/.m2/repository/com/alipay/sofa/bolt/1.4.1/bolt-1.4.1.jar:/Users/gaoxiaochen/.m2/repository/com/alipay/sofa/common/sofa-common-tools/1.0.12/sofa-common-tools-1.0.12.jar:/Users/gaoxiaochen/.m2/repository/org/slf4j/slf4j-api/1.7.21/slf4j-api-1.7.21.jar:/Users/gaoxiaochen/.m2/repository/org/javassist/javassist/3.20.0-GA/javassist-3.20.0-GA.jar:/Users/gaoxiaochen/.m2/repository/io/netty/netty-all/4.1.25.Final/netty-all-4.1.25.Final.jar:/Users/gaoxiaochen/.m2/repository/com/alipay/sofa/hessian/3.3.0/hessian-3.3.0.jar:/Users/gaoxiaochen/.m2/repository/com/alipay/sofa/tracer-core/2.1.1/tracer-core-2.1.1.jar:/Users/gaoxiaochen/.m2/repository/io/opentracing/opentracing-api/0.22.0/opentracing-api-0.22.0.jar:/Users/gaoxiaochen/.m2/repository/io/opentracing/opentracing-noop/0.22.0/opentracing-noop-0.22.0.jar:/Users/gaoxiaochen/.m2/repository/io/opentracing/opentracing-mock/0.22.0/opentracing-mock-0.22.0.jar:/Users/gaoxiaochen/.m2/repository/io/opentracing/opentracing-util/0.22.0/opentracing-util-0.22.0.jar:/Users/gaoxiaochen/.m2/repository/org/jboss/resteasy/resteasy-netty4/3.0.12.Final/resteasy-netty4-3.0.12.Final.jar:/Users/gaoxiaochen/.m2/repository/org/jboss/resteasy/resteasy-jaxrs/3.0.12.Final/resteasy-jaxrs-3.0.12.Final.jar:/Users/gaoxiaochen/.m2/repository/org/jboss/resteasy/jaxrs-api/3.0.12.Final/jaxrs-api-3.0.12.Final.jar:/Users/gaoxiaochen/.m2/repository/org/jboss/spec/javax/annotation/jboss-annotations-api_1.1_spec/1.0.1.Final/jboss-annotations-api_1.1_spec-1.0.1.Final.jar:/Users/gaoxiaochen/.m2/repository/javax/activation/activation/1.1.1/activation-1.1.1.jar:/Users/gaoxiaochen/.m2/repository/org/apache/httpcomponents/httpclient/4.3.6/httpclient-4.3.6.jar:/Users/gaoxiaochen/.m2/repository/org/apache/httpcomponents/httpcore/4.3.3/httpcore-4.3.3.jar:/Users/gaoxiaochen/.m2/repository/commons-logging/commons-logging/1.1.3/commons-logging-1.1.3.jar:/Users/gaoxiaochen/.m2/repository/commons-codec/commons-codec/1.6/commons-codec-1.6.jar:/Users/gaoxiaochen/.m2/repository/commons-io/commons-io/2.1/commons-io-2.1.jar:/Users/gaoxiaochen/.m2/repository/net/jcip/jcip-annotations/1.0/jcip-annotations-1.0.jar:/Users/gaoxiaochen/.m2/repository/org/jboss/resteasy/resteasy-client/3.0.12.Final/resteasy-client-3.0.12.Final.jar:/Users/gaoxiaochen/.m2/repository/org/jboss/resteasy/resteasy-jackson-provider/3.0.12.Final/resteasy-jackson-provider-3.0.12.Final.jar:/Users/gaoxiaochen/.m2/repository/org/codehaus/jackson/jackson-core-asl/1.9.12/jackson-core-asl-1.9.12.jar:/Users/gaoxiaochen/.m2/repository/org/codehaus/jackson/jackson-mapper-asl/1.9.12/jackson-mapper-asl-1.9.12.jar:/Users/gaoxiaochen/.m2/repository/org/codehaus/jackson/jackson-jaxrs/1.9.12/jackson-jaxrs-1.9.12.jar:/Users/gaoxiaochen/.m2/repository/org/codehaus/jackson/jackson-xc/1.9.12/jackson-xc-1.9.12.jar:/Users/gaoxiaochen/.m2/repository/com/alipay/sofa/lookout/lookout-api/1.4.0/lookout-api-1.4.0.jar:/Users/gaoxiaochen/.m2/repository/org/apache/curator/curator-recipes/2.9.1/curator-recipes-2.9.1.jar:/Users/gaoxiaochen/.m2/repository/org/apache/curator/curator-framework/2.9.1/curator-framework-2.9.1.jar:/Users/gaoxiaochen/.m2/repository/org/apache/curator/curator-client/2.9.1/curator-client-2.9.1.jar:/Users/gaoxiaochen/.m2/repository/org/apache/zookeeper/zookeeper/3.4.6/zookeeper-3.4.6.jar:/Users/gaoxiaochen/.m2/repository/log4j/log4j/1.2.16/log4j-1.2.16.jar:/Users/gaoxiaochen/.m2/repository/jline/jline/0.9.94/jline-0.9.94.jar:/Users/gaoxiaochen/.m2/repository/io/netty/netty/3.7.0.Final/netty-3.7.0.Final.jar:/Users/gaoxiaochen/.m2/repository/com/google/guava/guava/16.0.1/guava-16.0.1.jar:/Users/gaoxiaochen/.m2/repository/com/google/protobuf/protobuf-java/3.1.0/protobuf-java-3.1.0.jar:/Users/gaoxiaochen/.m2/repository/org/apache/logging/log4j/log4j-core/2.3/log4j-core-2.3.jar:/Users/gaoxiaochen/.m2/repository/org/apache/logging/log4j/log4j-api/2.3/log4j-api-2.3.jar:/Users/gaoxiaochen/.m2/repository/com/lmax/disruptor/3.3.7/disruptor-3.3.7.jar:/Users/gaoxiaochen/.m2/repository/org/apache/logging/log4j/log4j-slf4j-impl/2.3/log4j-slf4j-impl-2.3.jar:/Applications/IntelliJ IDEA.app/Contents/lib/idea_rt.jar
-2018-06-11 18:08:00,432 INFO  [main] org.apache.zookeeper.ZooKeeper:logEnv:100 - Client environment:java.library.path=/Users/gaoxiaochen/Library/Java/Extensions:/Library/Java/Extensions:/Network/Library/Java/Extensions:/System/Library/Java/Extensions:/usr/lib/java:.
-2018-06-11 18:08:00,433 INFO  [main] org.apache.zookeeper.ZooKeeper:logEnv:100 - Client environment:java.io.tmpdir=/var/folders/q4/4nwl16wn32ndm69rzh1zyvhh0000gn/T/
-2018-06-11 18:08:00,433 INFO  [main] org.apache.zookeeper.ZooKeeper:logEnv:100 - Client environment:java.compiler=&lt;NA&gt;
-2018-06-11 18:08:00,433 INFO  [main] org.apache.zookeeper.ZooKeeper:logEnv:100 - Client environment:os.name=Mac OS X
-2018-06-11 18:08:00,433 INFO  [main] org.apache.zookeeper.ZooKeeper:logEnv:100 - Client environment:os.arch=x86_64
-2018-06-11 18:08:00,433 INFO  [main] org.apache.zookeeper.ZooKeeper:logEnv:100 - Client environment:os.version=10.13.4
-2018-06-11 18:08:00,433 INFO  [main] org.apache.zookeeper.ZooKeeper:logEnv:100 - Client environment:user.name=gaoxiaochen
-2018-06-11 18:08:00,433 INFO  [main] org.apache.zookeeper.ZooKeeper:logEnv:100 - Client environment:user.home=/Users/gaoxiaochen
-2018-06-11 18:08:00,433 INFO  [main] org.apache.zookeeper.ZooKeeper:logEnv:100 - Client environment:user.dir=/Users/gaoxiaochen/projj/github.com/gxcsoccer/sofa-rpc-java-demo
-2018-06-11 18:08:00,434 INFO  [main] org.apache.zookeeper.ZooKeeper:&lt;init&gt;:438 - Initiating client connection, connectString=127.0.0.1:2181 sessionTimeout=60000 watcher=org.apache.curator.ConnectionState@2e005c4b
-2018-06-11 18:08:00,459 INFO  [main-SendThread(127.0.0.1:2181)] org.apache.zookeeper.ClientCnxn:logStartConnect:975 - Opening socket connection to server 127.0.0.1/127.0.0.1:2181. Will not attempt to authenticate using SASL (unknown error)
-2018-06-11 18:08:00,547 INFO  [main-SendThread(127.0.0.1:2181)] org.apache.zookeeper.ClientCnxn:primeConnection:852 - Socket connection established to 127.0.0.1/127.0.0.1:2181, initiating session
-2018-06-11 18:08:00,555 INFO  [main-SendThread(127.0.0.1:2181)] org.apache.zookeeper.ClientCnxn:onConnected:1235 - Session establishment complete on server 127.0.0.1/127.0.0.1:2181, sessionid = 0x1000894bb75004f, negotiated timeout = 40000
-2018-06-11 18:08:00,558 INFO  [main-EventThread] org.apache.curator.framework.state.ConnectionStateManager:postState:228 - State change: CONNECTED
-2018-06-11 18:08:00,594 WARN  [main] org.apache.curator.utils.ZKPaths:&lt;clinit&gt;:76 - The version of ZooKeeper being used doesn&#39;t support Container nodes. CreateMode.PERSISTENT will be used instead.
-Sofa-Middleware-Log SLF4J : Actual binding is of type [ com.alipay.remoting Log4j2 ]
-2018-06-11 18:08:00,645 INFO  [SOFA-CLI-CONN-com.alipay.sofa.rpc.protobuf.ProtoService-3-T1] com.alipay.sofa.common.log:report:30 - Sofa-Middleware-Log SLF4J : Actual binding is of type [ com.alipay.remoting Log4j2 ]
-2018-06-11 18:08:00,703 WARN No Root logger was configured, creating default ERROR-level Root logger with Console appender
-/Users/gaoxiaochen/logs/tracelog/rpc-client-digest.log -&gt; /Users/gaoxiaochen/logs/tracelog/rpc-client-digest.log.2018-06-09
-200: hello zhang, you are in 0
-200: hello zhang, you are in 0
-200: hello zhang, you are in 0
-200: hello zhang, you are in 0
-200: hello zhang, you are in 0
-200: hello zhang, you are in 0
-200: hello zhang, you are in 0
-200: hello zhang, you are in 0
-</code></pre>
-
-<h2 id="toc_18">示例仓库</h2>
-
-<ul>
-<li><a href="https://github.com/gxcsoccer/sofa-rpc-java-demo">SOFA Java Demo</a></li>
-<li><a href="https://github.com/eggjs/examples/tree/master/sofa-rpc">Eggjs RPC Example</a></li>
-</ul>
-
-<h2 id="toc_19">相关资源链接：</h2>
-
-<ul>
-<li><a href="https://github.com/gxcsoccer/sofa-rpc-java-demo">SOFA Java Demo</a></li>
-<li><a href="https://github.com/eggjs/examples/tree/master/sofa-rpc">Eggjs RPC Example</a></li>
-<li><a href="https://github.com/alipay/sofa-rpc-node">SOFA-RPC Node</a></li>
-<li><a href="https://github.com/alipay/sofa-bolt-node">SOFA-Bolt Node</a></li>
-<li><a href="https://eggjs.org">Eggjs</a></li>
-<li><a href="https://github.com/alipay/sofa-rpc">SOFA-RPC</a></li>
-</ul>
+</blockquote>
 
                         
                       </div>
@@ -580,10 +548,10 @@ Sofa-Middleware-Log SLF4J : Actual binding is of type [ com.alipay.remoting Log4
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/6/15</span>
+                    <span class="date">2018/7/28</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Microservice.html'>Microservice</a></span>
+          					    <span class="posted-in"><a href='Authn&Authz.html'>Authn&Authz</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -673,31 +641,31 @@ Sofa-Middleware-Log SLF4J : Actual binding is of type [ com.alipay.remoting Log4
 	      
 		      
 			      <li class="post">
-			        <a href="15459058392039.html">Reliable Domain Events</a>
+			        <a href="15517999043443.html">The Art of Crafting Architectural Diagrams</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
+			        <a href="15517997955971.html">为什么说我们需要软件架构图？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
+			        <a href="15516128677869.html">DNS Servers That Offer Privacy and Filtering</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
+			        <a href="15516123108194.html">Airbnb's Migration from Monolith to Services</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
+			        <a href="15516097487470.html">Events As First-Class Citizens</a>
 			      </li>
 		     
 		  

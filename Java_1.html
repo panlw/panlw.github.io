@@ -105,614 +105,309 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15456691642791.html">
+                <a class="clearlink" href="15475691484503.html">
                 
-                  <h1>Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</h1>
+                  <h1>Coroutines in pure Java</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
-                        	<pre><code>2017-02-04
+                        	<pre><code>esoco GmbH Oct 31, 2018
 </code></pre>
 
 <blockquote>
-<p>原文地址 <a href="https://kazuhira-r.hatenablog.com/entry/20170204/1486194922">https://kazuhira-r.hatenablog.com/entry/20170204/1486194922</a></p>
+<p>原文地址 <a href="https://medium.com/@esocogmbh/coroutines-in-pure-java-65661a379c85">https://medium.com/@esocogmbh/coroutines-in-pure-java-65661a379c85</a><br/>
+GitHub: <a href="https://github.com/esoco/coroutines">https://github.com/esoco/coroutines</a></p>
 </blockquote>
 
-<p>Spring の Cache Abstraction では、バックエンドのキャッシュに対する Cache Provider があり、それぞれ CacheManager の<br/>
-実装を提供していますが、複数の CacheManager を組み合わせる CompositeCacheManager というものがあります。</p>
+<p><img src="media/15475691484503/15475692393293.jpg" alt=""/></p>
 
-<p><a href="https://docs.spring.io/spring/docs/4.3.6.RELEASE/spring-framework-reference/html/cache.html#cache-annotations">Cache / Dealing with caches without a backing store</a></p>
+<p>After some experimenting with goroutines and Kotlin coroutines I was looking for a Java coroutine implementation. But the solutions I could find are not pure Java because they either use non-Java libraries via JNI or rely on special tools, like bytecode manipulation by special Java Agents that need to be run in parallel with an application.</p>
 
-<p>※CompositeCacheManager の説明というより、適切なキャッシュが存在しなかった時のフォールバックケースとして書いてありますが…</p>
+<p>So the question is: Is it possible to implement coroutines in pure Java? For an answer it helps to look at the two core properties of coroutines:</p>
 
-<p><a href="http://docs.spring.io/spring-framework/docs/4.3.6.RELEASE/javadoc-api/org/springframework/cache/support/CompositeCacheManager.html">CompositeCacheManager (Spring Framework 4.3.6.RELEASE API)</a></p>
+<ol>
+<li> Coroutines are often called “light-weight” threads, meaning they don’t run on their own dedicated system thread but instead share existing threads cooperatively —hence <u>co</u>-routines. <u>Cooperatively</u> means that it is the responsibility of the coroutine developer to ensure that it doesn’t occupy a shared thread more than necessary. Explicit support for shared thread execution had been added to Java 7 with <u>ForkJoinTask</u> and enhanced in Java 8 with <u>CompletableFuture</u>.</li>
+<li> Coroutines may be suspended for indeterminate time, e.g. when waiting for I/O or to await other coroutines. During suspension coroutines don’t occupy any computational resources at all and resume execution only when the resource waited upon becomes available. Suspension is the part for which languages with coroutine features have special keywords and compiler support and where some of the existing libraries modify the bytecode of the executing program. But is it possible in pure Java without such tricks?</li>
+</ol>
 
-<p>こちらを使って、今回は Caffeine と Redis の 2 つのキャッシュを同時に使ってみたいと思います。ひとつ前のエントリで、<br/>
-キャッシュの<a href="http://d.hatena.ne.jp/keyword/%A5%A2%A5%CE%A5%C6%A1%BC%A5%B7%A5%E7%A5%F3">アノテーション</a>の cacheNames に複数のキャッシュを指定しましたが、今回はキャッシュごとにバックエンドの<br/>
-キャッシュを分けてみます。</p>
+<p>The short answer to this question is: Yes. This article presents a pure Java implementation of coroutines, available as <a href="https://github.com/esoco/coroutines">Open Source on GitHub</a> under the Apache 2.0 license. It uses features available since Java 8 to make the declaration and execution of coroutines as simple as possible.</p>
 
-<p><a href="http://d.hatena.ne.jp/Kazuhira/20170204/1486188414">Spring の Cache Abstraction で、 アノテーションに複数のキャッシュを指定した場合の動きを確認する - CLOVER</a></p>
+<p>The current version is 0.9.0 to indicate that the code is still considered experimental and hasn’t been used in production yet. It should be expected to still have some bugs. Any feedback on the API and functionality are welcome and would help to have a 1.0 release soon. The library has only a single dependency to another of our projects which provides generic base functionality.</p>
 
-<p>サンプルコードは、この時使ったものと近いものを使用しています。</p>
+<p>The coroutine execution part of this framework follows the pattern of <u>structured concurrency</u> and has been much inspired by the noteworthy essay <a href="https://vorpus.org/blog/notes-on-structured-concurrency-or-go-statement-considered-harmful/">_Notes on structured concurrency, or: Go statement considered harmful_</a> by Nathaniel J. Smith.I highly recommend this to anyone who is involved in the programming of concurrent code and/or wants to use this framework. It has also <a href="https://medium.com/@elizarov/structured-concurrency-722d765aa952">influenced the latest iteration of Kotlin coroutines</a>. As a quick summary, it states that concurrent code that runs on it’s own without any supervision by the application code is problematic and must be avoided.</p>
 
-<p>では、試してみましょう。</p>
+<h3 id="toc_0">Declaring Coroutines</h3>
 
-<h4 id="toc_0">準備</h4>
+<p>As Java obviously lacks native mechanisms to declare suspensions the only way to implement suspending coroutines is with an API. Fortunately, the functional programming features introduced with Java 8, most notably lambda expressions and method references, provide a concise syntax for the declaration of executable code fragments. Together with the option of static imports the presented framework allows a simple declaration of coroutines.</p>
 
-<p>まずは <a href="http://d.hatena.ne.jp/keyword/Maven">Maven</a> 依存関係から。</p>
+<p>Coroutines are defined as instances of the class <code>Coroutine</code>. A new coroutine is created either by invoking the constructor or by calling the static factory method <code>Coroutine.first()</code>. The latter is recommended because it is part of the <a href="https://en.wikipedia.org/wiki/Fluent_interface">fluent interface</a> for the declaration of coroutines. It’s complement is the instance method <code>Coroutine.then()</code> which extends a coroutine with additional functionality.</p>
 
-<pre data-lang="xml" data-unlink="">    <properties>
-        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <java.version>1.8</java.version>
-        <maven.compiler.source>1.8</maven.compiler.source>
-        <maven.compiler.target>1.8</maven.compiler.target>
-        <spring.boot.version>1.5.1.RELEASE</spring.boot.version>
-    </properties>
+<p>These methods expect an instance of the abstract class <code>CoroutineStep</code> as their argument. The framework already contains several step implementations that cover the most common uses. The most generic step is <code>CodeExecution</code>. As all framework steps it provides static factory methods that supplement the fluent coroutine API. By invoking these methods with lambda expressions or method references a coroutine can be extended with arbitrary code. Here’s a simple example of such a declaration:</p>
 
-    <dependencyManagement>
-        <dependencies>
-            <dependency>
-                <groupId>org.springframework.boot</groupId>
-                <artifactId>spring-boot-dependencies</artifactId>
-                <version>${spring.boot.version}</version>
-                <type>pom</type>
-                <scope>import</scope>
-            </dependency>
-        </dependencies>
-    </dependencyManagement>
+<pre><code class="language-java">import static de.esoco.coroutine.Coroutine.*;
+import static de.esoco.coroutine.step.CodeExecution.*;
 
-    <dependencies>
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-cache</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>com.github.ben-manes.caffeine</groupId>
-            <artifactId>caffeine</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-data-redis</artifactId>
-        </dependency>
+Coroutine&lt;String, Integer&gt; parseInteger =
+    Coroutine.first(apply(String::trim))
+             .then(apply(s -&gt; Integer.valueOf(s)));
+</code></pre>
 
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-test</artifactId>
-            <scope>test</scope>
-        </dependency>
-    </dependencies>
-</pre>
+<blockquote>
+<p>A simple coroutine</p>
+</blockquote>
 
-<p>Spring の Cache の依存関係と、Caffeine、Spring Data Redis を追加。</p>
+<p>This reveals that coroutines are generically typed with an input and and output type, similar to the Java <code>Function</code> interface. Hence coroutines can be invoked with a specific input value to process and may return the result of a computation.</p>
 
-<p>Redis は、3.2.7 を<a href="http://d.hatena.ne.jp/keyword/%A5%EA%A5%E2%A1%BC%A5%C8%A5%DB%A5%B9%A5%C8">リモートホスト</a>で起動させています。</p>
+<p>An important trait of coroutines is that they are immutable. Once defined their sequence of steps cannot be modified anymore. The instance method <u>then</u> always returns a new coroutine instance that contains the additional step. This allows to create coroutine templates that can be used as building blocks for new coroutines, either as a starting point for added functionality or by using them as subroutines. Because of their immutability they can also be used in constant declarations.</p>
 
-<h4 id="toc_1">サンプルコードの準備</h4>
+<p>A coroutine can have an arbitrary number of steps. The more steps there are, the more suspension points a coroutine has. Each of these points shortly interrupts the execution, giving other concurrent code a chance to run. On the other hand each suspension has some management overhead. It needs to be determined which granularity is the right one for a particular solution.</p>
 
-<p>では、確認用のサンプルアプリケーションを作成します。</p>
+<p>The framework includes several other coroutine steps that provide additional functionality, especially steps that implement coroutine suspension. But before we look into this let’s first see how coroutines are executed.</p>
 
-<p>キャッシュに格納する用のクラス。</p>
+<h3 id="toc_1">Executing Coroutines</h3>
 
-<pre data-lang="java" data-unlink="">src/main/java/org/littlewings/spring/cache/Message.java 
-package org.littlewings.spring.cache;
+<p>In the first iteration of the framework, coroutines where simply started to run in some pooled background thread. But after reading the <a href="https://vorpus.org/blog/notes-on-structured-concurrency-or-go-statement-considered-harmful/">_Notes on structured concurrency_</a> the code was changed to follow that pattern and always execute coroutines in a well-defined environment.</p>
 
-import java.io.Serializable;
-import java.time.LocalDateTime;
+<h4 id="toc_2">CoroutineScope</h4>
 
-public class Message implements Serializable {
-    private static final long serialVersionUID = 1L;
+<p>This environment in which all coroutines need to be run is <code>CoroutineScope</code>. The main property of a scope is that it will block the invoking thread unless all coroutines that have been started in it have terminated, either successfully, by cancellation, or with an error. And if an error occurred in any coroutine the scope will also throw an exception instead of just continuing the current thread. This prevents losing track of coroutine executions and their error conditions.</p>
 
-    private String value;
-    private LocalDateTime now;
+<p>Furthermore, the scope gives it’s coroutines access to configuration data and provides them with a common place to share state through. Though the latter is an advanced topic because it may require synchronized access as different coroutines will normally run on different threads.</p>
 
-    public Message() {
+<p>A coroutine scope cannot be instantiated directly. Instead, it provides static methods which create a new scope and execute some application-provided code that in turn starts coroutines in the scope. The scope then blocks the invoking thread until the code and all coroutines that have been started by it have finished. If an error occurs during the executions the scope will throw an exception.</p>
+
+<p>The following example shows a scope execution that launches a million coroutines in parallel. Of course, how many coroutines will actually run in parallel depends very much on the runtime environment and especially on the number of processor cores available.</p>
+
+<pre><code class="language-java">Coroutine&lt;?, ?&gt; crunchNumbers =
+    first(run(() -&gt; Range.from(1).to(10).forEach(Math::sqrt)));
+
+CoroutineScope.launch(scope -&gt; {
+    for (int i = 0; i &lt; 1_000_000; i++) {
+        crunchNumbers.runAsync(scope);
     }
+});
+</code></pre>
 
-    public Message(String value) {
-        this.value = value;
-        now = LocalDateTime.now();
+<blockquote>
+<p>Launching a million coroutines</p>
+</blockquote>
+
+<p>If there were any code after the call to <u>launch</u> (i.e. after the closing <code>});</code>) it would not run before all coroutines have finished because as explained, the scope will await the termination of all it’s children.</p>
+
+<p>The example runs one million instances of a coroutine in parallel. By default they are executed in the common thread pool of the Java runtime. If you would try to start that number of distinct threads instead there’s a good chance that it will cause an out of memory error. With lower counts threads will work but probably much slower than the coroutine solution (on my machine by a factor of around 20).</p>
+
+<p>The single-step coroutine in this example has no deeper purpose than to occupy a few processing cycles by calculating the square roots of the values 1 to 10 (the <u>Range</u> class is a member of the base library the <u>coroutines</u> project depends on). The coroutine variable is declared with wildcard generic types because the in- and outputs are not needed in this example. It could also be declared as <u><Void,Void></u> because that is the actual type of the above declaration.</p>
+
+<p>The <u>launch</u> method performs the scope-execution. It’s argument is a functional interface with a method that expects a coroutine scope as it’s argument and returns nothing. Other than the typical Java functional interfaces, this one is allowed to throw arbitrary exceptions. This allows the application’s scope code to leave error handling to the code outside the scope because the scope will re-throw any exceptions that may occur.</p>
+
+<p>In most cases the code for the scope will probably be provided as a lambda expression, like in the examples. Coroutines can then be run from within by invoking their <u>runAsync</u> method with the scope as the argument and optionally an input value (which is not used in the example above). As the method name says, the coroutine is executed asynchronously in a different thread than the launching scope code is running on.</p>
+
+<h4 id="toc_3">Scope Futures</h4>
+
+<p>Sometimes it may be desirable to have a scope that produces a result when all it’s coroutines have finished. This can be achieved by starting the scope with the <u>produce</u> method instead of <u>launch</u>. While the latter has a void result and blocks, <u>produce</u> returns directly with an instance of Java’s <u>Future</u> interface. This instance can then be used to await the scope’s termination and query it’s result.</p>
+
+<p>To retrieve the result from the scope a corresponding function must be provided as the first argument to the <u>produce</u> factory method. In the following example this function is called <code>_TEXT_</code> which is actually a relation type from the <a href="/sdack/%7E/edit/drafts/-LQ3Vw--BLM5BVo2y76x/frameworks/objectrelations">ObjectRelations framework</a>. The usage of relations in coroutines is described at the end of this article.</p>
+
+<pre><code class="language-java">Future&lt;String&gt; futureResult = 
+  CoroutineScope.produce(TEXT, scope -&gt; someCoroutine.runAsync(scope, &quot;input&quot;));
+
+String result = futureResult.get();
+</code></pre>
+
+<blockquote>
+<p>A producing scope</p>
+</blockquote>
+
+<h4 id="toc_4">Continuation</h4>
+
+<p>When a coroutine is started, an instance of <code>Continuation</code> is returned as shown in the example code below. The continuation has the same generic type as the output type of the associated coroutine and serves two purposes:</p>
+
+<ol>
+<li> Provide a shared state for all steps that are executed in a coroutine.</li>
+<li> Allow the starting code to control the coroutine execution and to access it’s result after finishing.</li>
+</ol>
+
+<pre><code class="language-java">Coroutine&lt;String, Integer&gt; parseInteger =
+    Coroutine.first(String::trim)).then(apply(s -&gt; Integer.valueOf(s)));
+
+launch(scope -&gt; {
+    Continuation&lt;Integer&gt; parsing = parseInteger.runAsync(scope, &quot;12345&quot;);
+    int parsedValue = parsing.getResult(); // blocks current thread until coroutine finishes
+});
+</code></pre>
+
+<blockquote>
+<p>Getting the coroutine result from a continuation</p>
+</blockquote>
+
+<p>All steps that are executed in a coroutine receive the current continuation as their argument. For example, the <code>CodeExecution</code> class mentioned before has alternative factory methods that accept functions with an additional continuation argument. The step can then use the continuation to get or set state values, query configuration data, or access the scope it is running in.</p>
+
+<p>Continuations are always local to a single coroutine execution. Therefore it can be accessed by steps without synchronization because the steps of a coroutine are always executed sequentially and therefore cannot access the continuation concurrently.</p>
+
+<p>The application code can use the returned continuation object to query the execution state of the coroutine, await it’s termination, or cancel it. The continuation also provides access to the result after a successful termination or to errors that may have occurred. The starting code should not modify any state of the continuation while the coroutine is still running because that could cause concurrent modification issues.</p>
+
+<p>The easiest way to access the result of a coroutine is to query the <u>getResult</u> method of the continuation as shown in the example above. This method will block the calling thread until the result is available or throw an exception if the coroutine failed or has been cancelled.</p>
+
+<p>To wait for the coroutine to finish the method <u>await</u> can be used instead. This will neither return a result nor throw an exception on errors. Any error handling must then be performed by the invoking code. If such explicit error handling is done the application must notify the continuation by calling it’s method <u>errorHandled</u>. That will clear the error in the scope, which would otherwise throw an exception on termination.</p>
+
+<p>The continuation can also be used to cancel the execution if it hasn’t finished yet by invoking it’s <u>cancel</u> method. Cancellation will be automatically checked between step executions but it can also be queried from within a step implementation by querying <u>isCancelled</u> on the current continuation.</p>
+
+<h4 id="toc_5">CoroutineContext</h4>
+
+<p>As mentioned before, by default coroutines are executed in the common thread pool of the Java runtime (<code>ForkJoinPool.commonPool()</code>). But the thread pool and other parameters of the execution are actually provided by the <code>CoroutineContext</code>. The purpose of the context is to provide coroutines in one or more scopes with an execution environment. It can also be used to share configuration and synchronized resources between scopes.</p>
+
+<p>The framework has a default context which can be queried and changed through static methods of the global <code>Coroutines</code> class. But it is also possible to instantiate and configure contexts only for certain executions if necessary. A non-default context can be provided when launching a new scope which will then use the context for all coroutines it launches. But for many use cases the default context should be sufficient.</p>
+
+<h3 id="toc_6">Suspension and Channels</h3>
+
+<p>The examples shown so far have only executed some simple code concurrently which could also be achieved with regular threads. But an important feature of coroutines is the ability to suspend their execution completely while waiting for some condition. In suspended state a coroutine won’t consume or block any processing resources (like threads) and simply lie dormant until the condition is met.</p>
+
+<p>A typical case of suspension is the communication between coroutines through so-called <u>Channels</u> (not to be confused with the <code>java.nio.Channel</code> Interface). Channels are queue-like data structures with a fixed capacity that data can be written to or read from. A coroutine that tries to read from an empty channel or write to a full channel will be suspended until data or capacity becomes availability.</p>
+
+<p>The coroutines framework contains support for suspending steps in general and also for channels in particular. Channels are identified by a <code>ChannelId</code> which has the main purpose of defining the channel data type with it’s generic type parameter. The following code shows an example of channel communication. It again uses static imports for all key elements for a concise notation.</p>
+
+<pre><code class="language-java">...
+import static de.esoco.coroutine.step.ChannelReceive.receive;
+import static de.esoco.coroutine.step.ChannelSend.send;
+...
+
+ChannelId&lt;String&gt; testChannel = stringChannel(&quot;TestChannel&quot;);
+
+Coroutine&lt;String, ?&gt; sendHello = first(apply((String s) -&gt; &quot;Hello &quot; + s))
+                                 .then(send(testChannel));
+
+Coroutine&lt;?, String&gt; receiveToUpperCase = first(receive(testChannel))
+                                          .then(apply(s -&gt; s.toUpperCase()));
+
+launch(scope -&gt; {
+    Continuation&lt;String&gt; receiving = receive.runAsync(scope);
+    Threads.sleep(1000); // wait a second to demonstrate suspension
+    Continuation&lt;?&gt;  = send.runAsync(scope, &quot;World&quot;);
+    
+    System.out.println(receiving.getResult());
+});
+</code></pre>
+
+<blockquote>
+<p>Suspending coroutine communication through a channel</p>
+</blockquote>
+
+<p>This code first defines a channel ID and two coroutines, one for sending a string into the channel and one to receive data from it. It achieves that by adding the coroutine steps <code>ChannelSend</code> and <code>ChannelReceive</code> (through their static factory methods) with the channel ID as their configuration parameter.</p>
+
+<p>If a channel doesn’t exist when it is accessed for the first time it will be created automatically with a capacity of 1. If a higher capacity is needed the channel needs to be created in advance with <u>createChannel</u>, either in the scope or the context.</p>
+
+<p>The coroutines are then executed in a launched scope. The call to <code>Threads.sleep(1000)</code> in this example only serves to demonstrate the suspension of the receiving coroutine (_Threads_ is a class from the dependency that also performs exception handling). When the <u>receive</u> coroutine is started the channel with the ID <u>testChannel</u> will be created automatically with a capacity of 1 and is initially empty. Therefore the coroutine is suspended until data becomes available in the channel.</p>
+
+<p>The code then sleeps 1000 milliseconds before starting the <u>send</u> coroutine. Since capacity is available in the channel the send will succeed immediately (otherwise <u>send</u> would be suspended). And now data has become available in the channel, so the <u>receive</u> coroutine will be resumed and process that data. Finally the result of the processing can be retrieved from the continuation.</p>
+
+<p>By default channels are created in the coroutine scope. Alternatively channels can be created in the context, thereby allowing coroutines in different scopes to communicate through channels. In that case the channel must be created in advance by calling <u>createChannel</u> on the context with the desired channel ID and capacity.</p>
+
+<p>Channels are a very powerful mechanism for communication between coroutines. For example, simple Boolean channels with the default capacity of 1 can be used as semaphore to exchange signals between coroutines. And larger channels with a complex datatype may be used to transfer data between different processing stages that run concurrently. In neither case is it necessary to perform complex synchronization like in traditional concurrent code. Sending to or receiving from a channel within a coroutine is sufficient to achieve synchronization.</p>
+
+<h3 id="toc_7">Selection</h3>
+
+<p>Selection is a coroutine concept that is often associated with (and sometimes constrained to) receiving from channels. Languages with coroutine support typically have a <u>select</u> statement for this purpose. The statement suspends on multiple channels to receive from and resumes as soon as data becomes available in one of the channels.</p>
+
+<p>In this framework selection is implemented as a suspending coroutine step. It extends the concept by allowing to select from an arbitrary number of coroutines, not only from channels. The example below shows a (contrived) example where the select consists of one channel receive and two hypothetical coroutines that also suspend until data is available. If executed, the <u>selectFirst</u> coroutine would resume execution as soon as one of the coroutines selected from resumes. The other coroutines will then be cancelled.</p>
+
+<pre><code class="language-java">import static de.esoco.coroutine.step.Select.select;
+
+Coroutine&lt;Void, String&gt; selectFirst =
+    first(select(receive(testChannel))
+             .or(getNetworkData())
+             .or(queryUserInput()));
+</code></pre>
+
+<blockquote>
+<p>Selection from multiple coroutines</p>
+</blockquote>
+
+<p>Normally, selection will be performed on a set of suspending coroutines. If the set would contain a non-suspending coroutine the select would never suspend because that coroutine would be selected immediately. But this trait can also be used to add default behavior to a selecting coroutine: select a suspending value or, if not available, use the default. In such a case it would typically be necessary to have some surrounding control structure, e.g. a loop to repeat the selection until a suspension resumes. Another option would be to precede the default path with a suspending delay, thereby converting it to a suspending coroutine itself.</p>
+
+<h4 id="toc_8">Collection</h4>
+
+<p>The framework also extends the selection concept to collection. If you replace <u>select</u> with <u>collect</u> and <u>or</u> with <u>and</u> in the example above, you get the equivalent code for the collection of multiple coroutines. While selection continues if the first suspension becomes available, collection will only resume when all suspensions have resumed. Consequentially, whereas selection continues with a single value, collection produces a collection of all values for further processing by subsequent steps.</p>
+
+<h3 id="toc_9">NIO</h3>
+
+<p>An obvious use case for suspension is waiting for I/O. The <u>coroutines</u> library contains a couple of suspending steps that are built upon the asynchronous APIs of the Java New IO package. They allow to send and receive to and from sockets, to read or write files, and to listen on server sockets. Their usage is analog to the channel steps. These steps can also serve as examples for how to create new suspending steps based on existing asynchronous APIs.</p>
+
+<h3 id="toc_10">Subroutines, Conditions, Loops, and more</h3>
+
+<p>Because coroutines need to be declared through the coroutine API, existing Java constructs like conditional and loop expressions cannot be used in a suspending way. The framework provides special coroutine steps for these and some other common purposes. Besides, it is always easily possible to subclass <code>CoroutineStep</code> to create new steps if the existing implementations don’t suffice.</p>
+
+<h4 id="toc_11">Subroutines</h4>
+
+<p>Any existing coroutine can be invoked as a subroutine of another coroutine, by using the step <code>CallSubroutine</code>. This allows to compose new coroutines from existing ones and therefore to build libraries of coroutine functionalities as a base for such compositions.</p>
+
+<h4 id="toc_12">Conditional Execution</h4>
+
+<p>Sometimes it may be necessary to execute different steps (including subroutines) based on the result of a certain condition. This can be achieved with the step <code>Condition</code> which provides multiple variants to execute different steps, depending on the evaluation of a predicate:</p>
+
+<pre><code class="language-java">import static de.esoco.coroutine.step.Condition.doIf;
+import static de.esoco.coroutine.step.Condition.doIfElse;
+
+Coroutine&lt;String, String&gt; ifElse = first(doIfElse(s -&gt; s.equals(&quot;true&quot;),
+                                                  supply(() -&gt; &quot;Hello&quot;),
+                                                  supply(() -&gt; &quot;World&quot;)));
+
+Coroutine&lt;String, String&gt; ifOrElse = first(doIf((String s) -&gt; s.equals(&quot;true&quot;),
+                                                supply(() -&gt; &quot;Hello&quot;))
+                                           .orElse(supply(() -&gt; &quot;World&quot;)));
+</code></pre>
+
+<blockquote>
+<p>Conditional coroutine execution</p>
+</blockquote>
+
+<h4 id="toc_13">Loops</h4>
+
+<p>Instead of looping in the code that is executed by a step it may be a better choice to repeat the execution of a certain step or subroutine based on a Boolean condition, because this allows the framework to suspend on each loop cycle:</p>
+
+<pre><code class="language-java">mport static de.esoco.coroutine.step.Loop.loopWhile;
+
+Coroutine&lt;Integer, Integer&gt; countUp = first(loopWhile(i -&gt; i &lt; 10, apply(i -&gt; i + 1)));
+</code></pre>
+
+<blockquote>
+<p>Looping in a coroutine</p>
+</blockquote>
+
+<h4 id="toc_14">Iteration</h4>
+
+<p>For the common case of looping over a collection or another object that implements the <code>java.lang.Iterable</code> interface the <code>Iteration</code> step can be used. It applies another coroutine step to each element of a collection and can optionally collect the results into a new collection. As with loops the coroutine is suspended between each iteration round. The following example revisits the first coroutine execution example and uses the iteration step to process each element in a range:</p>
+
+<pre><code class="language-java">Coroutine&lt;?, ?&gt; crunchNumbers =
+    first(supply(() -&gt; from(1).to(10)))
+    .then(forEach(consume(i -&gt; Math.sqrt(i))));
+
+CoroutineScope.launch(scope -&gt; {
+    for (int i = 0; i &lt; 1_000_000; i++) {
+        crunchNumbers.runAsync(scope);
     }
+});
+</code></pre>
 
-    public String getValue() {
-        return value;
-    }
+<blockquote>
+<p>Iteration in a coroutine</p>
+</blockquote>
 
-    public LocalDateTime getNow() {
-        return now;
-    }
-}
-</pre>
+<h4 id="toc_15">Delayed Execution</h4>
 
-<p>キャッシュ関連の<a href="http://d.hatena.ne.jp/keyword/%A5%A2%A5%CE%A5%C6%A1%BC%A5%B7%A5%E7%A5%F3">アノテーション</a>を付与したクラス。@Cacheable、@CachePut を使い、それぞれ「caffeineCache」と<br/>
-「redisCache」を指定しています。@Cacheable を付与したメソッドは、キャッシュが存在しない場合は 3 秒間スリープします。<br/>
-src/main/<a href="http://d.hatena.ne.jp/keyword/java">java</a>/org/littlewings/spring/cache/MessageService.<a href="http://d.hatena.ne.jp/keyword/java">java</a></p>
+<p>When using dedicated threads an application can wait for a certain amount of time by calling <code>Thread.sleep</code>. But that method must be avoided when working with thread pools because letting a pooled thread sleep will block it for any other use. Furthermore, with coroutines it is desirable to suspend the execution while a coroutine is not processing anything.</p>
 
-<pre data-lang="java" data-unlink="">package org.littlewings.spring.cache;
+<p>Therefore the framework provides the special step <code>Delay</code> which has several factory methods that suspend a coroutine for a certain time. This can be used as any other step and the implementation behind it should be sufficient for most use cases. If not it may be replaced by setting a different scheduler for such delayed executions in the context.</p>
 
-import java.util.concurrent.TimeUnit;
+<h3 id="toc_16">ObjectRelations</h3>
 
-import org.springframework.cache.annotation.CachePut;
-import org.springframework.cache.annotation.Cacheable;
-import org.springframework.stereotype.Service;
+<p>As mentioned, the coroutines project has one dependency, and that is to the <u>ObjectRelations</u> project. Apart from some base functionality (like the <u>Range</u> and <u>Threads</u> classes used in the previous examples) this library implements a new development concept. This concept allows the generic modeling of the relations between objects in object-oriented programming. Very shortly, you can think of relations as typed and intelligent object references that can be set on arbitrary objects. And they can have relations themselves, providing an easy and generic way to apply meta-data. A detailed introduction can be found <a href="https://esoco.gitbook.io/sdack/frameworks/objectrelations">on the documentation site</a>.</p>
 
-@Service
-public class MessageService {
-    @Cacheable(cacheNames = {"caffeineCache", "redisCache"}, key = "#value")
-    public Message build(String value) {
-        try {
-            TimeUnit.SECONDS.sleep(3L);
-        } catch (InterruptedException e) {
-            // ignore
-        }
+<p>The <u>coroutines</u> library can be used without further knowledge of the <u>ObjectRelations</u> framework. But applying relations can make the concept even more versatile. For example, relations can be used for arbitrary shared state and configuration data in continuations, scopes, and contexts. They are also used by the coroutines themselves for these purposes and more, like the registration of coroutine event listeners or automatic closing of resources.</p>
 
-        return new Message(value);
-    }
+<h3 id="toc_17">Conclusion</h3>
 
-    @CachePut(cacheNames = {"caffeineCache", "redisCache"}, key = "#message.value")
-    public Message update(Message message) {
-        return message;
-    }
-}
-</pre>
-
-<p>CacheManager の設定。@EnableCaching <a href="http://d.hatena.ne.jp/keyword/%A5%A2%A5%CE%A5%C6%A1%BC%A5%B7%A5%E7%A5%F3">アノテーション</a>を設定してキャッシュ機能を有効化するとともに、Caffeine と Redis<br/>
-それぞれの CacheManager を作成し、CompositeCacheManager で組み合わせています。<br/>
-src/main/<a href="http://d.hatena.ne.jp/keyword/java">java</a>/org/littlewings/spring/cache/CacheConfig.<a href="http://d.hatena.ne.jp/keyword/java">java</a></p>
-
-<pre data-lang="java" data-unlink="">package org.littlewings.spring.cache;
-
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.Map;
-
-import org.springframework.cache.CacheManager;
-import org.springframework.cache.annotation.EnableCaching;
-import org.springframework.cache.caffeine.CaffeineCacheManager;
-import org.springframework.cache.support.CompositeCacheManager;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
-import org.springframework.data.redis.cache.RedisCacheManager;
-import org.springframework.data.redis.core.RedisTemplate;
-
-@Configuration
-@EnableCaching
-public class CacheConfig {
-    CacheManager caffeineCacheManager() {
-        CaffeineCacheManager cacheManager = new CaffeineCacheManager();
-
-        cacheManager.setCacheSpecification("expireAfterWrite=3s");
-        cacheManager.setCacheNames(Arrays.asList("caffeineCache"));
-
-        return cacheManager;
-    }
-
-    CacheManager redisCacheManager(RedisTemplate<Object, Object> redisTemplate) {
-        RedisCacheManager cacheManager = new RedisCacheManager(redisTemplate);
-
-        cacheManager.setUsePrefix(true);
-
-        Map<String, Long> expires = new HashMap<>();
-        expires.put("redisCache", 6L);
-
-        cacheManager.setExpires(expires);
-
-        cacheManager.afterPropertiesSet();
-        return cacheManager;
-    }
-
-    @Bean
-    public CacheManager compositeCacheManager(RedisTemplate<Object, Object> redisTemplate) {
-        CompositeCacheManager cacheManager = new CompositeCacheManager(caffeineCacheManager(), redisCacheManager(redisTemplate));
-        cacheManager.setFallbackToNoOpCache(false);  // キャッシュの定義が見つからない場合は、getCacheがnullを返すようにする
-        cacheManager.afterPropertiesSet();
-        return cacheManager;
-    }
-}
-</pre>
-
-<p>キャッシュの有効期限は、Caffeine は 3 秒、Redis は 6 秒にしています。</p>
-
-<p>CompositeCacheManager を作成する時に、CompositeCacheManager#setFallbackToNoOpCache を true に設定すると<br/>
-CompositeCacheManager が内部的に保持する CacheManager に NoOpCacheManager というものが追加されます。<br/>
-NoOpCacheManager が追加されると、CacheManager#getCache でキャッシュ定義が見つからない時に<br/>
-なにもしないキャッシュが返されるようになり、宣言的キャッシュを使ってキャッシュが見つからない時にエラーに<br/>
-ならなくなります。</p>
-
-<p>デフォルトは false（キャッシュが見つからないと null を返す）です。</p>
-
-<p>@SpringBootApplication を付与したクラスを作成。テスト用です。<br/>
-src/main/<a href="http://d.hatena.ne.jp/keyword/java">java</a>/org/littlewings/spring/cache/App.<a href="http://d.hatena.ne.jp/keyword/java">java</a></p>
-
-<pre data-lang="java" data-unlink="">package org.littlewings.spring.cache;
-
-import org.springframework.boot.autoconfigure.SpringBootApplication;
-
-@SpringBootApplication
-public class App {
-}
-</pre>
-
-<p>最後に、Redis への接続設定。<br/>
-src/main/resources/application.properties</p>
-
-<pre data-lang="" data-unlink="">spring.redis.host=172.17.0.2
-spring.redis.password=redispass</pre>
-
-<p>ここまでで、準備は完了です。</p>
-
-<h4 id="toc_2">動作確認</h4>
-
-<p>それでは、テストコードを書いて動作確認をしてみます。テストコードの雛形は、こちら。<br/>
-src/test/<a href="http://d.hatena.ne.jp/keyword/java">java</a>/org/littlewings/spring/cache/CompositeCacheTest.<a href="http://d.hatena.ne.jp/keyword/java">java</a></p>
-
-<pre data-lang="java" data-unlink="">package org.littlewings.spring.cache;
-
-import java.util.concurrent.TimeUnit;
-
-import org.junit.Test;
-import org.junit.runner.RunWith;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.cache.CacheManager;
-import org.springframework.test.context.junit4.SpringRunner;
-import org.springframework.util.StopWatch;
-
-import static org.assertj.core.api.Assertions.assertThat;
-
-@RunWith(SpringRunner.class)
-@SpringBootTest
-public class CompositeCacheTest {
-    @Autowired
-    CacheManager cacheManager;
-
-    @Autowired
-    MessageService messageService;
-
-    // ここに、テストを書く！
-}
-</pre>
-
-<p>まずは @Cacheable での確認から。テストコードは、こちら。</p>
-
-<pre data-lang="java" data-unlink="">    @Test
-    public void cacheable() throws InterruptedException {
-        StopWatch stopWatch = new StopWatch();
-
-        // 1回目
-        stopWatch.start();
-        Message m1 = messageService.build("Hello World");
-        stopWatch.stop();
-
-        // 低速
-        assertThat((long)stopWatch.getLastTaskInfo().getTimeSeconds())
-                .isGreaterThanOrEqualTo(3L);
-
-        // キャッシュに登録
-        assertThat(cacheManager.getCache("caffeineCache").get("Hello World"))
-                .isNotNull();
-        assertThat(((Message)cacheManager.getCache("caffeineCache").get("Hello World").get()).getNow())
-                .isEqualTo(m1.getNow());
-        assertThat(cacheManager.getCache("redisCache").get("Hello World"))
-                .isNotNull();
-        assertThat(((Message)cacheManager.getCache("redisCache").get("Hello World").get()).getNow())
-                .isEqualTo(m1.getNow());
-
-        // 2回目
-        stopWatch.start();
-        Message m2 = messageService.build("Hello World");
-        stopWatch.stop();
-
-        // 高速
-        assertThat((long)stopWatch.getLastTaskInfo().getTimeSeconds())
-                .isEqualTo(0L);
-
-        // キャッシュにはまだ存在
-        assertThat(cacheManager.getCache("caffeineCache").get("Hello World"))
-                .isNotNull();
-        assertThat(((Message)cacheManager.getCache("caffeineCache").get("Hello World").get()).getNow())
-                .isEqualTo(m2.getNow())
-                .isEqualTo(m1.getNow());
-        assertThat(cacheManager.getCache("redisCache").get("Hello World"))
-                .isNotNull();
-        assertThat(((Message)cacheManager.getCache("redisCache").get("Hello World").get()).getNow())
-                .isEqualTo(m2.getNow())
-                .isEqualTo(m1.getNow());
-
-        // 3秒スリープ
-        TimeUnit.SECONDS.sleep(3L);
-
-        // caffeineCacheのみ有効期限切れ
-        assertThat(cacheManager.getCache("caffeineCache").get("Hello World"))
-                .isNull();
-        assertThat(cacheManager.getCache("redisCache").get("Hello World"))
-                .isNotNull();
-        assertThat(((Message)cacheManager.getCache("redisCache").get("Hello World").get()).getNow())
-                .isEqualTo(m2.getNow())
-                .isEqualTo(m1.getNow());
-
-        // 3回目
-        stopWatch.start();
-        Message m3 = messageService.build("Hello World");
-        stopWatch.stop();
-
-        // 高速
-        assertThat((long)stopWatch.getLastTaskInfo().getTimeSeconds())
-                .isEqualTo(0L);
-
-        // caffeineCacheのみ有効期限切れ
-        assertThat(cacheManager.getCache("caffeineCache").get("Hello World"))
-                .isNull();
-        assertThat(cacheManager.getCache("redisCache").get("Hello World"))
-                .isNotNull();
-        assertThat(((Message)cacheManager.getCache("redisCache").get("Hello World").get()).getNow())
-                .isEqualTo(m3.getNow())
-                .isEqualTo(m1.getNow());
-
-        // 3秒スリープ
-        TimeUnit.SECONDS.sleep(3L);
-
-        // どちらのキャッシュも有効期限切れ
-        assertThat(cacheManager.getCache("caffeineCache").get("Hello World"))
-                .isNull();
-        assertThat(cacheManager.getCache("redisCache").get("Hello World"))
-                .isNull();
-
-        // 再度アクセス
-        messageService.build("Hello World");
-
-        // キャッシュに再登録
-        assertThat(cacheManager.getCache("caffeineCache").get("Hello World"))
-                .isNotNull();
-        assertThat(cacheManager.getCache("redisCache").get("Hello World"))
-                .isNotNull();
-
-        // 後始末
-        cacheManager.getCache("caffeineCache").evict("Hello World");
-        cacheManager.getCache("redisCache").evict("Hello World");
-    }
-</pre>
-
-<p>@Cacheable なメソッドにアクセスすると、キャッシュにエントリが保存されます。この時、Caffeine と Redis の両方に保存されます。</p>
-
-<pre data-lang="java" data-unlink="">        // 1回目
-        stopWatch.start();
-        Message m1 = messageService.build("Hello World");
-        stopWatch.stop();
-
-        // 低速
-        assertThat((long)stopWatch.getLastTaskInfo().getTimeSeconds())
-                .isGreaterThanOrEqualTo(3L);
-
-        // キャッシュに登録
-        assertThat(cacheManager.getCache("caffeineCache").get("Hello World"))
-                .isNotNull();
-        assertThat(((Message)cacheManager.getCache("caffeineCache").get("Hello World").get()).getNow())
-                .isEqualTo(m1.getNow());
-        assertThat(cacheManager.getCache("redisCache").get("Hello World"))
-                .isNotNull();
-        assertThat(((Message)cacheManager.getCache("redisCache").get("Hello World").get()).getNow())
-                .isEqualTo(m1.getNow());
-</pre>
-
-<p>2 回目のアクセスでは、高速になります。</p>
-
-<pre data-lang="java" data-unlink="">        // 2回目
-        stopWatch.start();
-        Message m2 = messageService.build("Hello World");
-        stopWatch.stop();
-
-        // 高速
-        assertThat((long)stopWatch.getLastTaskInfo().getTimeSeconds())
-                .isEqualTo(0L);
-
-        // キャッシュにはまだ存在
-        assertThat(cacheManager.getCache("caffeineCache").get("Hello World"))
-                .isNotNull();
-        assertThat(((Message)cacheManager.getCache("caffeineCache").get("Hello World").get()).getNow())
-                .isEqualTo(m2.getNow())
-                .isEqualTo(m1.getNow());
-        assertThat(cacheManager.getCache("redisCache").get("Hello World"))
-                .isNotNull();
-        assertThat(((Message)cacheManager.getCache("redisCache").get("Hello World").get()).getNow())
-                .isEqualTo(m2.getNow())
-                .isEqualTo(m1.getNow());
-</pre>
-
-<p>ここで、3 秒間スリープすると有効期限の短い Caffeine のキャッシュのみ有効期限切れします。</p>
-
-<pre data-lang="java" data-unlink="">        // 3秒スリープ
-        TimeUnit.SECONDS.sleep(3L);
-
-        // caffeineCacheのみ有効期限切れ
-        assertThat(cacheManager.getCache("caffeineCache").get("Hello World"))
-                .isNull();
-        assertThat(cacheManager.getCache("redisCache").get("Hello World"))
-                .isNotNull();
-        assertThat(((Message)cacheManager.getCache("redisCache").get("Hello World").get()).getNow())
-                .isEqualTo(m2.getNow())
-                .isEqualTo(m1.getNow());
-</pre>
-
-<p>3 回目のアクセス。Caffeine からはキャッシュエントリが消えましたが、Redis には残ったままなので高速です。</p>
-
-<pre data-lang="java" data-unlink="">        // 3回目
-        stopWatch.start();
-        Message m3 = messageService.build("Hello World");
-        stopWatch.stop();
-
-        // 高速
-        assertThat((long)stopWatch.getLastTaskInfo().getTimeSeconds())
-                .isEqualTo(0L);
-
-        // caffeineCacheのみ有効期限切れ
-        assertThat(cacheManager.getCache("caffeineCache").get("Hello World"))
-                .isNull();
-        assertThat(cacheManager.getCache("redisCache").get("Hello World"))
-                .isNotNull();
-        assertThat(((Message)cacheManager.getCache("redisCache").get("Hello World").get()).getNow())
-                .isEqualTo(m3.getNow())
-                .isEqualTo(m1.getNow());
-</pre>
-
-<p>さらに 3 秒間スリープさせると、Redis からもエントリがなくなります。</p>
-
-<pre data-lang="java" data-unlink="">        // 3秒スリープ
-        TimeUnit.SECONDS.sleep(3L);
-
-        // どちらのキャッシュも有効期限切れ
-        assertThat(cacheManager.getCache("caffeineCache").get("Hello World"))
-                .isNull();
-        assertThat(cacheManager.getCache("redisCache").get("Hello World"))
-                .isNull();
-</pre>
-
-<p>もちろん、この状態で再度 @Cachable なメソッドにアクセスすると両方のキャッシュにエントリが入ります。</p>
-
-<pre data-lang="java" data-unlink="">        // 再度アクセス
-        messageService.build("Hello World");
-
-        // キャッシュに再登録
-        assertThat(cacheManager.getCache("caffeineCache").get("Hello World"))
-                .isNotNull();
-        assertThat(cacheManager.getCache("redisCache").get("Hello World"))
-                .isNotNull();
-</pre>
-
-<p>両方のそれぞれのキャッシュを使えてそうですね。</p>
-
-<p>あと、@CachePut も確認しておきましょう。テストコードは、こちら。</p>
-
-<pre data-lang="java" data-unlink="">    @Test
-    public void cachePut() throws InterruptedException {
-        StopWatch stopWatch = new StopWatch();
-
-        // 1回目
-        stopWatch.start();
-        Message m1 = messageService.build("Hello World");
-        stopWatch.stop();
-
-        // 低速
-        assertThat((long)stopWatch.getLastTaskInfo().getTimeSeconds())
-                .isGreaterThanOrEqualTo(3L);
-
-        // キャッシュに登録されている
-        assertThat(cacheManager.getCache("caffeineCache").get("Hello World"))
-                .isNotNull();
-        assertThat(((Message)cacheManager.getCache("caffeineCache").get("Hello World").get()).getNow())
-                .isEqualTo(m1.getNow());
-        assertThat(cacheManager.getCache("redisCache").get("Hello World"))
-                .isNotNull();
-        assertThat(((Message)cacheManager.getCache("redisCache").get("Hello World").get()).getNow())
-                .isEqualTo(m1.getNow());
-
-        // 3秒スリープ
-        TimeUnit.SECONDS.sleep(3L);
-
-        // caffeineCacheのみ有効期限切れ
-        assertThat(cacheManager.getCache("caffeineCache").get("Hello World"))
-                .isNull();
-        assertThat(cacheManager.getCache("redisCache").get("Hello World"))
-                .isNotNull();
-        assertThat(((Message)cacheManager.getCache("redisCache").get("Hello World").get()).getNow())
-                .isEqualTo(m1.getNow());
-
-        // キャッシュを更新
-        Message newMessage = new Message("Hello World");
-        messageService.update(newMessage);
-
-        // キャッシュが更新されたことを確認
-        assertThat(cacheManager.getCache("caffeineCache").get("Hello World"))
-                .isNotNull();
-        assertThat(((Message)cacheManager.getCache("caffeineCache").get("Hello World").get()).getNow())
-                .isEqualTo(newMessage.getNow())
-                .isNotEqualTo(m1.getNow());
-        assertThat(cacheManager.getCache("redisCache").get("Hello World"))
-                .isNotNull();
-        assertThat(((Message)cacheManager.getCache("redisCache").get("Hello World").get()).getNow())
-                .isEqualTo(newMessage.getNow())
-                .isNotEqualTo(m1.getNow());
-    }
-</pre>
-
-<p>とりあえず、キャッシュにエントリを入れます。</p>
-
-<pre data-lang="java" data-unlink="">        // 1回目
-        stopWatch.start();
-        Message m1 = messageService.build("Hello World");
-        stopWatch.stop();
-
-        // 低速
-        assertThat((long)stopWatch.getLastTaskInfo().getTimeSeconds())
-                .isGreaterThanOrEqualTo(3L);
-
-        // キャッシュに登録されている
-        assertThat(cacheManager.getCache("caffeineCache").get("Hello World"))
-                .isNotNull();
-        assertThat(((Message)cacheManager.getCache("caffeineCache").get("Hello World").get()).getNow())
-                .isEqualTo(m1.getNow());
-        assertThat(cacheManager.getCache("redisCache").get("Hello World"))
-                .isNotNull();
-        assertThat(((Message)cacheManager.getCache("redisCache").get("Hello World").get()).getNow())
-                .isEqualTo(m1.getNow());
-</pre>
-
-<p>3 秒間スリープさせ、Caffeine のみ有効期限が切れたところで</p>
-
-<pre data-lang="java" data-unlink="">        // 3秒スリープ
-        TimeUnit.SECONDS.sleep(3L);
-
-        // caffeineCacheのみ有効期限切れ
-        assertThat(cacheManager.getCache("caffeineCache").get("Hello World"))
-                .isNull();
-        assertThat(cacheManager.getCache("redisCache").get("Hello World"))
-                .isNotNull();
-        assertThat(((Message)cacheManager.getCache("redisCache").get("Hello World").get()).getNow())
-                .isEqualTo(m1.getNow());
-</pre>
-
-<p>@CachePut なメソッドを呼び出しキャッシュを更新して、両方のキャッシュに反映されたことを確認。</p>
-
-<pre data-lang="java" data-unlink="">        // キャッシュを更新
-        Message newMessage = new Message("Hello World");
-        messageService.update(newMessage);
-
-        // キャッシュが更新されたことを確認
-        assertThat(cacheManager.getCache("caffeineCache").get("Hello World"))
-                .isNotNull();
-        assertThat(((Message)cacheManager.getCache("caffeineCache").get("Hello World").get()).getNow())
-                .isEqualTo(newMessage.getNow())
-                .isNotEqualTo(m1.getNow());
-        assertThat(cacheManager.getCache("redisCache").get("Hello World"))
-                .isNotNull();
-        assertThat(((Message)cacheManager.getCache("redisCache").get("Hello World").get()).getNow())
-                .isEqualTo(newMessage.getNow())
-                .isNotEqualTo(m1.getNow());
-</pre>
-
-<p>こちらも OK そうです。</p>
-
-<h4 id="toc_3">まとめ</h4>
-
-<p>CompositeCacheManager を使って、複数の CacheManager を組み合わせて使ってみました。</p>
-
-<p>CompositeCacheManager のトリックですが、単に CacheManager#getCache した時に内部で持っている CacheManager から順次 Cache を<br/>
-持っているか確認していき、最初に見つかったものを返すという単純な実装です。<br/>
-<a href="https://github.com/spring-projects/spring-framework/blob/v4.3.6.RELEASE/spring-context/src/main/java/org/springframework/cache/support/CompositeCacheManager.java#L101">https://github.com/spring-projects/spring-framework/blob/v4.3.6.RELEASE/spring-context/src/main/java/org/springframework/cache/support/CompositeCacheManager.java#L101</a></p>
-
-<pre data-lang="java" data-unlink="">   @Override
-    public Cache getCache(String name) {
-        for (CacheManager cacheManager : this.cacheManagers) {
-            Cache cache = cacheManager.getCache(name);
-            if (cache != null) {
-                return cache;
-            }
-        }
-        return null;
-    }
-</pre>
-
-<p>とはいえ、こういうのがあることを知っていると便利さアップですね、と。</p>
+<p>This article hopefully provides an appropriate introduction to the coroutines framework and it’s basic use. Please be reminded that it’s a first release, so it may still contain some bugs and inconsistencies. Any feedback as well as questions are welcome, as are contributions to the project.</p>
 
                         
                       </div>
@@ -721,10 +416,10 @@ public class CompositeCacheTest {
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/12/25</span>
+                    <span class="date">2019/1/16</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Spring.html'>Spring</a></span>
+          					    <span class="posted-in"><a href='Java.html'>Java</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -814,31 +509,31 @@ public class CompositeCacheTest {
 	      
 		      
 			      <li class="post">
-			        <a href="15459058392039.html">Reliable Domain Events</a>
+			        <a href="15517999043443.html">The Art of Crafting Architectural Diagrams</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
+			        <a href="15517997955971.html">为什么说我们需要软件架构图？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
+			        <a href="15516128677869.html">DNS Servers That Offer Privacy and Filtering</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
+			        <a href="15516123108194.html">Airbnb's Migration from Monolith to Services</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
+			        <a href="15516097487470.html">Events As First-Class Citizens</a>
 			      </li>
 		     
 		  

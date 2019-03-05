@@ -105,43 +105,301 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15404508492344.html">
+                <a class="clearlink" href="15459049161482.html">
                 
-                  <h1>JDBC 连接报错</h1>
+                  <h1>Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
-                        	<h2 id="toc_0">报错信息</h2>
-
-<pre><code class="language-log">com.mysql.jdbc.exceptions.jdbc4.CommunicationsException: Communications link failure
-
-The last packet sent successfully to the server was 0 milliseconds ago. The driver has not received any packets from the server.
-...
-</code></pre>
-
-<h2 id="toc_1">解决办法</h2>
-
-<blockquote>
-<p><a href="https://segmentfault.com/q/1010000008813924">https://segmentfault.com/q/1010000008813924</a></p>
+                        	<blockquote>
+<p>原文地址 <a href="https://dzone.com/articles/transaction-synchronization-and-spring-application">https://dzone.com/articles/transaction-synchronization-and-spring-application</a></p>
 </blockquote>
 
-<pre><code>; eclipse.ini
--Djava.net.preferIPv4Stack=true
+<p>The aim of this article is to explain how  <code>@TransactionalEventListener</code>  works, how it differs from a simple  <code>@EventListener</code>, and finally - what are the threats that we should take into account before using it. Giving a real-life example, I will mainly focus on transaction synchronization issues, not paying too much attention neither to consistency nor application event reliability. A complete SpringBoot project with described examples can be found <a href="https://github.com/bslota/transactional-event-listener">here</a>.</p>
+
+<h2 id="toc_0">Example overview</h2>
+
+<p>Imagine we have a microservice which manages customers&#39;basic information and triggers activation token generation after a customer is created. From the business perspective, token generation is not an integral part of user creation and should be a separate process (this is a very important assumption, which I will refer to later). To keep things simple, let&#39;s assume that a customer looks like this:</p>
+
+<pre><code class="language-java">@Entity
+public class Customer {
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+    private String name;
+    private String email;
+    private String token;
+    public Customer() {}
+    public Customer(String name, String email) {
+        this.name = name;
+        this.email = email;
+    }
+    public void activatedWith(String token) {
+        this.token = token;
+    }
+    public boolean hasToken() {
+        return !StringUtils.isEmpty(token);
+    }
+    ...
+    //getters
+    //equals and hashcode
+}
 </code></pre>
+
+<p>We have a simple <u>spring-data-jpa</u> repository:</p>
+
+<pre><code class="language-java">public interface CustomerRepository extends JpaRepository&lt;Customer, Long&gt; {}
+</code></pre>
+
+<p>And below you can see an essence of the business problem - creating a new customer (persisting it in DB) and returning it.</p>
+
+<pre><code class="language-java">@Service
+public class CustomerService {
+    private final CustomerRepository customerRepository;
+    private final ApplicationEventPublisher applicationEventPublisher;
+    public CustomerService(CustomerRepository customerRepository, ApplicationEventPublisher applicationEventPublisher) {
+        this.customerRepository = customerRepository;
+        this.applicationEventPublisher = applicationEventPublisher;
+    }
+    @Transactional
+    public Customer createCustomer(String name, String email) {
+        final Customer newCustomer = customerRepository.save(new Customer(name, email));
+        final CustomerCreatedEvent event = new CustomerCreatedEvent(newCustomer);
+        applicationEventPublisher.publishEvent(event);
+        return newCustomer;
+    }
+}
+</code></pre>
+
+<p>As you can see,  <code>CustomerService</code>  depends on two beans:</p>
+
+<ol>
+<li> <code>CustomerRepository</code>  - interface for the purpose of saving customer</li>
+<li> <code>ApplicationEventPublisher</code>  - Spring&#39;s super-interface for  <code>ApplicationContext</code> , which declares the way of event publishing inside Spring application</li>
+</ol>
+
+<p><u>Please note the constructor injection. If you are not familiar with this technique or not aware of its benefits relative to field injection, please read <a href="http://pillopl.github.io/constructor-injection/">this article</a>.</u></p>
+
+<p>Remember to give -1 during the code review if there is no test included! But wait, take it easy, mine is here:</p>
+
+<pre><code class="language-java">@SpringBootTest
+@RunWith(SpringRunner.class)
+public class CustomerServiceTest {
+  @Autowired
+  private CustomerService customerService;
+  @Autowired
+  private CustomerRepository customerRepository;
+  @Test
+  public void shouldPersistCustomer() throws Exception {
+    //when
+    final Customer returnedCustomer = customerService.createCustomer(&quot;Matt&quot;, &quot;matt@gmail.com&quot;);
+    //then
+    final Customer persistedCustomer = customerRepository.findOne(returnedCustomer.getId());
+    assertEquals(&quot;matt@gmail.com&quot;, returnedCustomer.getEmail());
+    assertEquals(&quot;Matt&quot;, returnedCustomer.getName());
+    assertEquals(returnedCustomer, persistedCustomer);
+}
+</code></pre>
+
+<p>The test does one simple thing - it checks whether  <code>createCustomer</code>  method creates a proper customer. One could say that in these kinds of tests I shouldn&#39;t pay attention to implementation details (persisting entity through the repository, etc.) and rather put it in some unit test, and I would agree, but let&#39;s just leave it to keep the example clearer.</p>
+
+<p>You may ask now, where is the token generation. Well, due to the business case that we are discussing,  <code>createCustomer</code>  method does not seem to be a good place to put any logic apart from simple creation of user (method name should always reflect its responsibility). In that kind of cases it might be a good idea to use the observer pattern to inform interested parties that a particular event took place. Following this considerations, you can see that we are calling  <code>publishEvent</code>  method on  <code>applicationEventPublisher</code> . We are propagating an event of the following type:</p>
+
+<pre><code class="language-java">public class CustomerCreatedEvent {
+  private final Customer customer;
+  public CustomerCreatedEvent(Customer customer) {
+    this.customer = customer;
+  }
+  public Customer getCustomer() {
+    return customer;
+  }
+  ...
+  //equals and hashCode
+}
+</code></pre>
+
+<p>Note that it is just a POJO. Since Spring 4.2, we are no longer obliged to extend  <code>ApplicationEvent</code>  and can publish any object we like instead. Spring wraps it in  <code>PayloadApplicationEvent</code>  itself.</p>
+
+<p>We do also have an event listener component, like this:</p>
+
+<pre><code class="language-java">@Component
+public class CustomerCreatedEventListener {
+    private static final Logger LOGGER = LoggerFactory.getLogger(CustomerCreatedEventListener.class);
+    private final TokenGenerator tokenGenerator;
+    public CustomerCreatedEventListener(TokenGenerator tokenGenerator) {
+        this.tokenGenerator = tokenGenerator;
+    }
+    @EventListener
+    public void processCustomerCreatedEvent(CustomerCreatedEvent event) {
+        LOGGER.info(&quot;Event received: &quot; + event);
+        tokenGenerator.generateToken(event.getCustomer());
+    }
+}
+</code></pre>
+
+<p>Before we discuss this listener, let&#39;s briefly look at the  TokenGenerator  interface:</p>
+
+<pre><code class="language-java">public interface TokenGenerator {
+    void generateToken(Customer customer);
+}
+</code></pre>
+
+<p>and its implementation:</p>
+
+<pre><code class="language-java">@Service
+public class DefaultTokenGenerator implements TokenGenerator {
+    private final CustomerRepository customerRepository;
+    public DefaultTokenGenerator(CustomerRepository customerRepository) {
+        this.customerRepository = customerRepository;
+    }
+    @Override
+    public void generateToken(Customer customer) {
+        final String token = String.valueOf(customer.hashCode());
+        customer.activatedWith(token);
+        customerRepository.save(customer);
+    }
+}
+</code></pre>
+
+<p>We are simply generating a token, setting it as a customer&#39;s property and updating the entity in the database. Good, let&#39;s update our test class now, so that it checks not only the customer creation, but also token generation.</p>
+
+<pre><code class="language-java">@SpringBootTest
+@RunWith(SpringRunner.class)
+public class CustomerServiceTest {
+    @Autowired
+    private CustomerService customerService;
+    @Autowired
+    private CustomerRepository customerRepository;
+    @Test
+    public void shouldPersistCustomerWithToken() throws Exception {
+        //when
+        final Customer returnedCustomer = customerService.createCustomer(&quot;Matt&quot;, &quot;matt@gmail.com&quot;);
+        //then
+        final Customer persistedCustomer = customerRepository.findOne(returnedCustomer.getId());
+        assertEquals(&quot;matt@gmail.com&quot;, returnedCustomer.getEmail());
+        assertEquals(&quot;Matt&quot;, returnedCustomer.getName());
+        assertTrue(returnedCustomer.hasToken());
+        assertEquals(returnedCustomer, persistedCustomer);
+    }
+}
+</code></pre>
+
+<h2 id="toc_1">@EventListener</h2>
+
+<p>As you can see, we have moved token generation logic into a separate component which is good (note the assumption at the beginning of the previous chapter), but do we have a real separation of concerns? Nope.  <code>@EventListener</code>  registers the  <code>processCustomerCreatedEvent</code>  as the listener of  <code>CustomerCreatedEvent</code> , but it is called synchronously within the bounds of the same transaction as  <code>CustomerService</code> . It means, that if something goes wrong with token generation - customer won&#39;t be created. Is this the way it should really work? Surely not. Before we generate and set token, we would rather have a customer already created and saved in database (committed). Now this is the time to introduce  <code>@TransactionalEventListener</code>annotation.</p>
+
+<h2 id="toc_2">@TransactionalEventListener - transaction synchronization</h2>
+
+<p><code>@TransactionalEventListener</code>  is an  <code>@EventListener</code>  enhanced with the ability to collaborate with the surrounding transaction&#39;s phase. We call this a transaction synchronization - in other words, it is a way of registering callback methods to be invoked when the transaction is being completed. Synchronization is possible within the following transaction phases (phase attribute):</p>
+
+<ul>
+<li>  AFTER_COMMIT (default setting) - specialization of AFTER_COMPLETION, used when transaction has successfully committed</li>
+<li>  AFTER_ROLLBACK - specialization of AFTER_COMPLETION, used when transaction has rolled back</li>
+<li>  AFTER_COMPLETION - used when transaction has completed (regardless the success)</li>
+<li>  BEFORE_COMMIT - used before transaction commit</li>
+</ul>
+
+<p>When there is no transaction running then the method annotated with  <code>@TransactionalEventListener</code>  won&#39;t be executed unless there is a parameter fallbackExecution set to true.</p>
+
+<p>Good, looks like this is something that we are looking for! Let&#39;s change  <code>@EventListener</code>  annotation with  <code>@TransactionalEventListener</code>  in  <code>CustomerCreatedEventListener</code> , then:</p>
+
+<pre><code class="language-java">@TransactionalEventListener
+public void processCustomerCreatedEvent(CustomerCreatedEvent event) {
+    LOGGER.info(&quot;Event received: &quot; + event);
+    tokenGenerator.generateToken(event.getCustomer());
+}
+</code></pre>
+
+<p>We need to check now if everything works as we expect - let&#39;s run our test:</p>
+
+<pre><code class="language-log">java.lang.AssertionError: 
+Expected :Customer{id=1, name=&#39;Matt&#39;, email=&#39;matt@gmail.com&#39;, token=&#39;1575323438&#39;}
+Actual   :Customer{id=1, name=&#39;Matt&#39;, email=&#39;matt@gmail.com&#39;, token=&#39;null&#39;}
+</code></pre>
+
+<p>Why is that? What have we missed? I tell you what, we spent too little time on analyzing how the transaction synchronization works. Now the crucial thing is that we have synchronized token generation with the transaction after it has been committed - so we shouldn&#39;t even expect that anything will be committed again! Javadoc for  <code>afterCommit</code>  method of  <code>TransactionSynchronization</code>  interface says it clearly:</p>
 
 <blockquote>
-<p>具体错误原因嘛，好像是由于jvm中的配置改变，导致jvm无法通过网络获取部分信息</p>
+<p><u>The transaction will have been committed already, but the transactional resources might still be active and accessible. As a consequence, any data access code triggered at this point will still &quot;participate&quot; in the original transaction, allowing to perform some cleanup (with no commit following anymore!), unless it explicitly declares that it needs to run in a separate transaction. Hence: Use {@code PROPAGATION</u>REQUIRES_NEW} for any transactional operation that is called from here._</p>
 </blockquote>
 
-<p>自述）确实，刚刚升级 JDK 到 Java 11，然后由切换回 Java 8。</p>
+<p>As we have already stated, we need to have a strong separation of concerns between a service call and an event listener logic. This means that we can use the advice given by Spring authors. Let&#39;s try annotating a method inside  <code>DefaultTokenGenerator</code> :</p>
 
-<pre><code class="language-sh"># ~/src/bash/bash_profile.d/lang.sh
-...
-export JAVA_HOME=$(/usr/libexec/java_home -v 1.8)
-#export JAVA_HOME=$(/usr/libexec/java_home -v 11)
-...
+<pre><code class="language-java">@Transactional(propagation = Propagation.REQUIRES_NEW)
+public void generateToken(Customer customer) {
+    final String token = String.valueOf(customer.hashCode());
+    customer.activatedWith(token);
+    customerRepository.save(customer);
+}
 </code></pre>
+
+<p>If we run our test now, it passes!</p>
+
+<p><u>Caveat: We are discussing interacting with AFTER</u>COMMIT phase only, but all these considerations apply to all AFTER_COMPLETION phases. In the case of BEFORE_COMMIT phase, none of the above problems should worry you, although you need to make a conscious decision whether your listener&#39;s code should <u>really</u> be executed in the same transaction._</p>
+
+<h2 id="toc_3">Asynchronous execution</h2>
+
+<p>What if a token generation is a long lasting process? If it is not an essential part of creating a customer, then we could make one step forward and make our  <code>@TransactionalEventListener</code>-annotated method asynchronous one (via annotating it with  <code>@Async</code>). Asynchronous call means that we will execute listeners  <code>processCustomerCreatedEvent</code> in a separate thread. Bearing in mind that a single transaction in Spring framework is by default thread-bounded, we won&#39;t need autonomous transaction in  <code>DefaultTokenGenerator</code> anymore.</p>
+
+<p>Good, let&#39;s write a test for this case:</p>
+
+<pre><code class="language-java">@SpringBootTest
+@RunWith(SpringRunner.class)
+@ActiveProfiles(&quot;async&quot;)
+public class CustomerServiceAsyncTest {
+  @Autowired
+  private CustomerService customerService;
+  @Autowired
+  private CustomerRepository customerRepository;
+  @Test
+  public void shouldPersistCustomerWithToken() throws Exception {
+      //when
+      final Customer returnedCustomer = customerService.createCustomer(&quot;Matt&quot;, &quot;matt@gmail.com&quot;);
+      //then
+      assertEquals(&quot;matt@gmail.com&quot;, returnedCustomer.getEmail());
+      assertEquals(&quot;Matt&quot;, returnedCustomer.getName());
+      //and
+      await().atMost(5, SECONDS)
+          .until(() -&gt; customerTokenIsPersisted(returnedCustomer.getId()));
+  }
+  private boolean customerTokenIsPersisted(Long id) {
+      final Customer persistedCustomer = customerRepository.findOne(id);
+      return persistedCustomer.hasToken();
+  }
+}
+</code></pre>
+
+<p>The only thing that differentiates this test from the previous one is that we are using the _Awaitility_ library (a great and powerful tool) in order to await for the async task to complete. We also wrote a simple  <code>customerTokenIsPersisted</code> helper method to check if the token was properly set. And surely test passes brilliantly!</p>
+
+<p><u>Caveat: I don&#39;t recommend performing any async tasks in BEFORE</u>COMMIT phase as you won&#39;t have any guarantee that they will complete before producer&#39;s transaction is committed._</p>
+
+<h2 id="toc_4">Conclusions</h2>
+
+<p><code>@TransactionalEventListener</code>  is a great alternative to  <code>@EventListener</code>  in situations where you need to synchronize with one of the transaction phases. You can declare listeners as synchronous or asynchronous. You need to keep in mind that with the synchronous call you are by default working within the same transaction as the event producer. In case you synchronize to the  AFTER_COMPLETION phase (or one of its specializations), you won&#39;t be able to persist anything in the database as there won&#39;t be a commit procedure executed anymore. If you need to commit some changes anyway, you can declare an autonomous transaction on the event listener code. BEFORE_COMMIT phase is much simpler because commit will be performed after calling event listeners. With asynchronous calls, you don&#39;t have to worry about declaring autonomous transactions, as Spring&#39;s transactions are by default thread-bounded (you will get a new transaction anyway). It is a good idea if you have some long running task to be performed. I suggest using asynchronous tasks only when synchronizing to AFTER_COMPLETION phase or one of its specializations. As long as you don&#39;t need to have your event listener&#39;s method transactional - described problems shouldn&#39;t bother you at all.</p>
+
+<h2 id="toc_5">Further considerations</h2>
+
+<p>In a real-life scenario, numerous other requirements might occur. For example, you might need to both persist the customer and send an invitation email like it is depicted below:</p>
+
+<pre><code class="language-java">@Component
+public class CustomerCreatedEventListener {
+    private final MailingFacade mailingFacade;
+    private final CustomerRepository customerRepository;
+    public CustomerCreatedEventListener(MailingFacade mailingFacade, CustomerRepository customerRepository) {
+        this.mailingFacade = mailingFacade;
+        this.customerRepository = customerRepository;
+    }
+    @EventListener
+    public void processCustomerCreatedEvent(CustomerCreatedEvent event) {
+        final Customer customer = event.getCustomer();
+        // sending invitation email
+        mailingFacade.sendInvitation(customer.getEmail());
+    }
+}
+</code></pre>
+
+<p>Imagine a situation when an email is sent successfully, but right after it, our database goes down and it is impossible to commit the transaction (persist customer) - thus, we lose consistency! If such a situation is acceptable within your business use case, then it is completely fine to leave it as it is, but if not then you have a much more complex problem to solve. I intentionally haven&#39;t covered consistency and event reliability issues here. If you want to have a broader picture of how you could possibly deal with such situations, I recommend reading <a href="http://pillopl.github.io/reliable-domain-events/">this article</a>.</p>
 
                         
                       </div>
@@ -150,10 +408,10 @@ export JAVA_HOME=$(/usr/libexec/java_home -v 1.8)
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/10/25</span>
+                    <span class="date">2018/12/27</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Java.html'>Java</a></span>
+          					    <span class="posted-in"><a href='Spring.html'>Spring</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -243,31 +501,31 @@ export JAVA_HOME=$(/usr/libexec/java_home -v 1.8)
 	      
 		      
 			      <li class="post">
-			        <a href="15459058392039.html">Reliable Domain Events</a>
+			        <a href="15517999043443.html">The Art of Crafting Architectural Diagrams</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
+			        <a href="15517997955971.html">为什么说我们需要软件架构图？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
+			        <a href="15516128677869.html">DNS Servers That Offer Privacy and Filtering</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
+			        <a href="15516123108194.html">Airbnb's Migration from Monolith to Services</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
+			        <a href="15516097487470.html">Events As First-Class Citizens</a>
 			      </li>
 		     
 		  

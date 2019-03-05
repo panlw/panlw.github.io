@@ -105,284 +105,89 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15290802805331.html">
+                <a class="clearlink" href="15327601601753.html">
                 
-                  <h1>MySQL Innodb 如何找出阻塞事务源头 SQL</h1>
+                  <h1>以Dapper、Zipkin和LightStep [x]PM为例阐述分布式跟踪的过去、现在和未来</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p>来源：潇湘隐者<br/>
-<a href="http://www.cnblogs.com/kerrycode/p/8948335.html">www.cnblogs.com/kerrycode/p/8948335.html</a></p>
+<p>原文地址 <a href="http://www.infoq.com/cn/articles/distributed-tracing-microservices">http://www.infoq.com/cn/articles/distributed-tracing-microservices</a></p>
+
+<h2 id="toc_0">核心要点</h2>
+
+<ul>
+<li>  在观测分布式系统和微服务时，分布式跟踪已经成为一个越来越重要的组件。现在有一些流行的开源标准和框架，比如 OpenTracing API 和 OpenZipkin；</li>
+<li>  分布式跟踪的基本理念是非常简单直接的：在系统中，特定请求的转折点必须要识别出来并且要检测。所有的跟踪数据需要协调和整理，为请求提供一个有意义的流视图；</li>
+<li>  请求跟踪在理念上类似于应用性能管理（Application Performance Management，APM），这两个生态系统都面临一个挑战，那就是不断增长的大规模系统所生成的大量数据；</li>
+<li>  Google 在实现其分布式监控系统 Dapper 时解决了这个问题，他们采取的方式是采样跟踪，一般是 1000 个请求中采样 1 个请求，但是现代的商业跟踪产品都宣称能够分析 100% 的请求。</li>
+</ul>
 </blockquote>
 
-<p><strong>在MySQL数据库中出现了阻塞问题，如何快速查找定位问题根源？</strong>在实验开始前，我们先梳理一下有什么工具或命令查看MySQL的阻塞，另外，我们也要一一对比其优劣，因为有些命令可能在实际环境下可能并不适用。</p>
+<p>在观测分布式系统和微服务时，分布式跟踪成为一个越来越重要的组件。本文将会介绍该技术，让读者对其有一个整体的了解，首先我们会探讨一下 <a href="https://research.google.com/pubs/pub36356.html">Google 的 Dapper</a> 请求跟踪论文，该论文反过来促成了 Zipkin 和 OpenTracing 项目的创建，随后我们会与 Ben Sigelman 讨论一下请求跟踪的未来，他是新的 <a href="https://lightstep.com/product">LightStep [x]PM</a> 跟踪系统的创建者。</p>
 
-<ol>
-<li>show engine innodb status</li>
-<li>Innotop工具 </li>
-<li>INNODB_TRX 等系统表</li>
-</ol>
+<p>正如最初的 Dapper 论文所述，现代互联网服务通常实现为复杂的大规模系统，比如采用流行的微服务架构模式。应用是由一组服务组合起来的，这些服务可能是由不同的团队开发的，而且可能采用不同的编程语言。在 Google 这种级别，应用会跨越多个基础设施的上千台机器，即便是相对较小的云计算用例，推荐的做法也是使用跨地域的 “availability zone” 和“region”运行服务的多个版本。在这种复杂的系统和环境中，能够辅助我们理解系统的行为、帮助调试和排查性能问题的工具是非常有价值的。</p>
 
-<p>下面我们理论联系实际，通过实验来测试总结一下这个问题。首先构造测试环境，数据库测试环境为（ 5.7.21 MySQL Community Server 和5.6.20-enterprise-commercial，这两个测试环境我都测试验证过）</p>
+<p>分布式跟踪的基本理念是非常简单直接的：在系统、应用、网络以及中间件中，请求（一般是用户发起的）路径上的每个转折点，甚至可以说每个点必须要识别并检测（instrument）。这些点有着特殊的意义，因为它们通常代表了执行流上的分支，比如使用多个线程并行处理、进行异步计算或者发起进程外的网络调用。这些独立生成的跟踪数据必须要收集、协调和整理，在系统范围内为请求提供一个有意义的流视图。<a href="https://twitter.com/copyconstruct/">Cindy Sridharan</a> 提供了一个<a href="https://medium.com/@copyconstruct/monitoring-in-the-time-of-cloud-native-c87c7a5bfa3e">非常有用的指南</a>，该指南探讨了请求跟踪的基本原理，并将这项技术应用于现代监控和 “可观察性（observability）” 的两大支柱之中：日志和指标收集。</p>
 
-<pre><code>&gt; mysql&gt; use MyDB;
-Reading table information for completion of table and column names
-You can turn off this feature to get a quicker startup with -A
- 
-Database changed
-mysql&gt; create table test_blocking(id int primary key, name varchar(12));
-Query OK, 0 rows affected (0.05 sec)
- 
-mysql&gt; insert into test_blocking
- -&gt; select 1, &#39;kerry&#39; from dual;
-Query OK, 1 row affected (0.00 sec)
-Records: 1 Duplicates: 0 Warnings: 0
- 
-mysql&gt; insert into test_blocking
- -&gt; select 2, &#39;jimmy&#39; from dual;
-Query OK, 1 row affected (0.00 sec)
-Records: 1 Duplicates: 0 Warnings: 0
- 
-mysql&gt; insert into test_blocking
- -&gt; select 3, &#39;kkk&#39; from dual;
-Query OK, 1 row affected (0.00 sec)
-Records: 1 Duplicates: 0 Warnings: 0
-</code></pre>
+<h2 id="toc_1">剖析 Trace</h2>
 
-<p>准备好测试环境数据后，那么我们接下来开始实验，为了实验效果，我们先将参数innodb_lock_wait_timeout设置为100。</p>
+<p>按照<a href="https://www.cncf.io/">云原生计算基金会（Cloud Native Computing Foundation，CNCF）</a>的 <a href="http://opentracing.io/">OpenTracing API</a> 项目的定义，<a href="http://opentracing.io/documentation/#what-is-a-trace">trace</a> 能够告诉我们事务或工作流在整个系统的传播过程中经历的所有事情。在 OpenTracing 和 Dapper 中，trace 是由 “span” 所组成的一个有向无环图（directed acyclic graph，DAG），在有些工具中 “span” 也被称为“segment”，比如在 <a href="https://aws.amazon.com/xray/">AWS X-Ray</a> 中。span 是一个带有名称和计时的操作，它代表了 trace 中一个持续的工作片段。被检测的组件还可以将额外的上下文注释（元数据或 “<a href="https://github.com/opentracing/specification/blob/master/specification.md#user-content-set-a-baggage-item">baggage</a>”）添加到 span 中，例如，应用开发人员可能会使用一个跟踪 SDK 添加任意的 key-value 条目到当前的 span 中。需要注意的是，添加注释数据会带来内在的侵入性：添加注释的组件必须要感知跟踪框架的存在性。</p>
 
-<pre><code>&gt; mysql&gt; show variables like &#39;innodb_lock_wait_timeout&#39;;
-+--------------------------+-------+
-| Variable_name | Value |
-+--------------------------+-------+
-| innodb_lock_wait_timeout | 50 |
-+--------------------------+-------+
-1 row in set (0.00 sec)
- 
-mysql&gt; set global innodb_lock_wait_timeout=100 ;
-Query OK, 0 rows affected (0.00 sec)
- 
- 
-mysql&gt; select connection_id() from dual;
-+-----------------+
-| connection_id() |
-+-----------------+
-| 8 |
-+-----------------+
-1 row in set (0.00 sec)
- 
-mysql&gt; set session autocommit=0;
-Query OK, 0 rows affected (0.00 sec)
- 
-mysql&gt; select * from test_blocking where id=1 for update;
-+----+-------+
-| id | name |
-+----+-------+
-| 1 | kerry |
-+----+-------+
-1 row in set (0.00 sec)
-</code></pre>
+<p>Trace 数据一般会 “按照不同的频道（out of band）” 进行收集，并写入到本地数据文件中（由 agent 或 daemon 来生成），然后通过单独的网络进程拉取到中心化的存储中，这与当前日志和指标收集的做法非常类似。Trace 数据不会添加到请求本身上，因为这样能够保持请求的大小和语义不发生变化，本地存储的数据会在方便的时候被拉取到出来。</p>
 
-<p>然后在第二个连接会话中执行更新脚本，构造被阻塞的案例</p>
+<p>当请求初始化的时候，将会生成一个 “parent” span，该 span 可以与多个 “child” span 建立具有因果关系和临时的关联。图 1 来源于 OpenTracing 的文档，以可视化的方式展现了一个请求流中一系列的 span 及其关联关系。这种类型的可视化会添加一些上下文信息，包括时间、服务调用的层级以及进程 / 任务执行的串行或并行性。这种视图能够突出显示系统的关键路径，并且为我们提供了一个起点，让我们识别瓶颈以及需要提升的地方。很多分布式跟踪系统还提供了 API 或 UI，实现对 span 细节的进一步 “钻取”。</p>
 
-<pre><code>&gt; mysql&gt; select connection_id() from dual;
-+-----------------+
-| connection_id() |
-+-----------------+
-| 9 |
-+-----------------+
-1 row in set (0.00 sec)
- 
-mysql&gt; update test_blocking set name=&#39;kk&#39; where id=1;
-</code></pre>
+<p><a href="https://s3.amazonaws.com/infoq.content.live.0/articles/distributed-tracing-microservices/zh/resources/4101-1520271955968.png"><img src="https://res.infoq.com/articles/distributed-tracing-microservices/zh/resources/4101-1520271955968.png" alt=""/></a></p>
 
-<p>在第三个连接会话执行下面命令，查看TRANSACTIONS相关信息： </p>
+<p><small><strong>图 1 按照请求的生命线，以一系列 span 的形式可视化基本的跟踪（图片来源于 <a href="http://opentracing.io/documentation/#a-basic-trace">OpenTracing 文档</a>）</strong></small></p>
 
-<pre><code>&gt; mysql&gt; show engine innodb statusG;
-</code></pre>
+<h2 id="toc_2">实现分布式跟踪所面临的挑战</h2>
 
-<p><img src="media/15290802805331/15290814361997.jpg" alt=""/></p>
+<p>在历史上，为各种类型的分布式系统实现分布式跟踪会面临很多挑战。例如，使用多种编程语言实现的微服务架构可能并没有共享通用的检测点。Google 和 Twitter 分别创建了 Dapper 和 Zipkin 来实现跟踪，这相对较为简单，因为它们大多数的跨进程（跨服务）通信是通过同质的 RPC 框架完成的，Google 创建了 <a href="https://landing.google.com/sre/book/chapters/production-environment.html#our-software-infrastructure-XQs4iw">Stubby</a>（它的一个开源变种就是 <a href="https://grpc.io/">gRPC</a>），Twitter 则创建了 <a href="https://blog.twitter.com/engineering/en_us/a/2011/finagle-a-protocol-agnostic-rpc-system.html">Finagle</a>。</p>
 
-<p>使用show engine innodb status命令后，可以查看其输出的TRANSACTIONS部分信息，如上截图所示，找到类似TRX HAS BEEN WATING …部分的信息，</p>
+<p>Dapper 论文明确跟踪的价值只能通过如下的方式才能体现出来：（1）广泛部署，也就是系统的所有组成部分都要纳入检测，不能出现 “黑点（dark）”；（2）持续监控，也就是系统必须要一直处于监控之中，因为感兴趣的异常事件通常难以再现。</p>
 
-<p>通过那部分信息，我们可以看到update test_blocking set name=’kk’ where id=1这个SQL语句被阻塞了14秒，一直在等待获取X Lock。</p>
+<p>“service mesh” 网络代理的流行程度正在不断上升，比如 <a href="https://www.envoyproxy.io/">Envoy</a>、<a href="https://linkerd.io/">Linkerd</a> 和 <a href="https://conduit.io/">Conduit</a>（以及关联的控制层，如 <a href="https://istio.io/">Istio</a>），它们可能会推进多类型分布式系统中跟踪功能的采用，因为它们能够提供缺失的通用检测点。Sridharan 在它的 Medium 博客文章中详细讨论了<a href="https://medium.com/@copyconstruct/monitoring-in-the-time-of-cloud-native-c87c7a5bfa3e">可见性的问题：</a></p>
 
-<pre><code>&gt; TRANSACTIONS
- 
-------------
- 
-Trx id counter 148281 #下一个事务ID
- 
-Purge done for trx&#39;s n:o &lt; 148273 undo n:o &lt; 0 state: running but idle
- 
-History list length 552
- 
-LIST OF TRANSACTIONS FOR EACH SESSION:
- 
----TRANSACTION 0, not started
- 
-MySQL thread id 15, OS thread handle 0x4cc64940, query id 261 localhost root cleaning up
- 
----TRANSACTION 0, not started
- 
-MySQL thread id 14, OS thread handle 0x4cbe2940, query id 278 localhost root init
- 
-show engine innodb status
- 
----TRANSACTION 148280, ACTIVE 24 sec
- 
-2 lock struct(s), heap size 360, 1 row lock(s)
- 
-MySQL thread id 8, OS thread handle 0x4cba1940, query id 276 localhost root cleaning up
- 
----TRANSACTION 148279, ACTIVE 313 sec starting index read
- 
-mysql tables in use 1, locked 1
- 
-LOCK WAIT 2 lock struct(s), heap size 360, 1 row lock(s)
- 
-MySQL thread id 9, OS thread handle 0x4cc23940, query id 277 localhost root updating #线程ID为9， 操作系统线程句柄为0x4cc23940， 查询ID为277，账号为root的UPDATE操作
- 
-update test_blocking set name=&#39;kk&#39; where id=1 #具体SQL语句
- 
-------- TRX HAS BEEN WAITING 14 SEC FOR THIS LOCK TO BE GRANTED: #TRX等待授予锁已经有14秒了
- 
-RECORD LOCKS space id 337 page no 3 n bits 72 index `PRIMARY` of table `MyDB`.`test_blocking` trx id 148279 lock_mode X locks rec but not gap waiting
-</code></pre>
+<p>“Lyft 为所有的应用提供了跟踪支持，通过采用 service mesh 模式 [使用 Envoy 代理]，无需更改一行代码。Service mesh 能够帮助实现可见性，这是通过在 mesh 级别实现跟踪和状态收集做到的，它允许我们将单个服务视为黑盒，但是依然能够在整个 mesh 级别实现非常棒的可见性”;</p>
 
-<h1 id="toc_0">在space id=337（test_blocking表的表空间），page no=3的页上，表test_blocking上的主键索引在等待X锁</h1>
+<h2 id="toc_3">对速度的需求：请求跟踪与 APM</h2>
 
-<pre><code>Record lock, heap no 2 PHYSICAL RECORD: n_fields 4; compact format; info bits 0
- 
- 0: len 4; hex 80000001; asc ;; #第一个字段是主键，制度按长为4，值为1
- 
- 1: len 6; hex 000000024322; asc C&quot;;; #该字段为6个字节的事务id，这个id表示最近一次被更新的事务id（对应十进制为148258）
- 
- 2: len 7; hex 9a000001f20110; asc ;; #该字段为7个字节的回滚指针，用于mvcc
- 
- 3: len 5; hex 6b65727279; asc kerry;; #该字段表示的是此记录的第二个字段，长度为5，值为kerry（如果表有多个字段，那么此处后面还有记录）
-</code></pre>
+<p>Web 页面的加载速度会极大地影响用户的行为和转变。Google 使用其搜索引擎运行了一个<a href="https://research.googleblog.com/2009/06/speed-matters.html">延迟实验</a>，他们发现如果将结果页面的展现增加 100 到 400 毫秒的延迟，将会显著影响用户执行搜索的次数。Greg Linden 提到，在 2006 年 Amazon.com 运行了一个实验，如果页面加载的延迟增加 100 毫秒，<a href="http://glinden.blogspot.co.uk/2006/11/marissa-mayer-at-web-20.html">将会造成收入的大幅下降</a>。尽管理解整个系统中 Web 请求的流程非常具有挑战性，但是识别和消除性能瓶颈会带来显著的商业收益。</p>
 
-<p><img src="media/15290802805331/15290814738831.jpg" alt=""/></p>
+<p>请求跟踪的理念类似于应用性能监控（Application Performance Management，APM），它们都与监控有关，并且都关系到软件应用的性能和可用性的管理。APM 的目标在于探查和诊断复杂应用的性能问题，达到预期的服务等级协议（Service Level Agreement，SLA）。现代软件架构的分布式特性在不断增加，APM 工具也进行了适配以监控（可视化）这种类型的软件。图 2 展现了开源的 <a href="https://github.com/naver/pinpoint">Pinpoint APM</a> 工具的可视化界面，类似的视图在商业工具中也能见到，比如 <a href="https://www.dynatrace.com/">Dynatrace APM</a> 和 <a href="https://newrelic.com/application-monitoring">New Relic APM</a>。</p>
 
-<pre><code>&gt; mysql&gt; select * from information_schema.INNODB_SYS_DATAFILES where space=337;
-+-------+--------------------------+
-| SPACE | PATH |
-+-------+--------------------------+
-| 337 | ./MyDB/test_blocking.ibd |
-+-------+--------------------------+
-1 row in set (0.00 sec)
- 
-mysql&gt;
-</code></pre>
+<p><a href="https://s3.amazonaws.com/infoq.content.live.0/articles/distributed-tracing-microservices/zh/resources/3232-1520271955650.png"><img src="https://res.infoq.com/articles/distributed-tracing-microservices/zh/resources/3232-1520271955650.png" alt=""/></a></p>
 
-<p><img src="media/15290802805331/15290814799530.jpg" alt=""/></p>
+<p><small><strong>图 2 现代 APM 工具中的跟踪（图片来源 <a href="https://github.com/naver/pinpoint">Pinpoint APM GitHub 仓库</a>）</strong></small></p>
 
-<p>但是这种方式也有一些弊端，例如生产环境很复杂，尤其是有大量事务的情况下。诸多信息根本无法清晰判断知道谁阻塞了谁；其次一点也不直观； 另外，这个也无法定位blocker 的SQL语句。这种方式只能作为辅助分析用途，通过查看取锁的详细信息，帮助进一步诊断问题。 </p>
+<p>在请求跟踪和 APM 领域都面临一项挑战，那就是大规模系统不断生成的大量数据。AWS 云架构战略（Cloud Architecture Strategy）的 VP <a href="https://www.linkedin.com/in/adriancockcroft/">Adrian Cockcroft</a> 说到，公有云能够让大众更容易地使用强大且可扩展的基础设施和服务，但是监控系统必须要比被监控的系统 <a href="https://www.infoq.com/news/2015/06/monitoring-microservices">更加可用（也要更加可扩展）</a>。Google 在实现 Dapper 时通过采样跟踪解决了这个问题，一般是 1000 个请求中采样 1 个请求，他们发现通过这种比例依然能够生成有意义的观察结果。很多的工程师和思想领袖都在从事该领域的工作，包括可观察性平台 Honeycomb 的 CEO <a href="https://www.linkedin.com/in/charity-majors-826b765">Charity Majors</a>，他们都相信<a href="https://twitter.com/mipsytipsy/status/936484900286296064">监控数据的采样是非常重要的</a>：</p>
 
-<h2 id="toc_1">*<strong><em>2: Innotop工具</em></strong>*</h2>
+<blockquote>
+<p>这非常简单：如果你不采样的话，就无法扩展。如果你认为这是一种有争议的说法的话，那么说明你还没有真正处理过大规模的可观察性，或者你之前做得非常糟糕和浪费。</p>
+</blockquote>
 
-<p>如下所示，Innotop工具很多情况下也不能定位到阻塞的语句（Blocking Query）， 也仅仅能获取一些锁相关信息<br/>
-<img src="media/15290802805331/15290814903714.jpg" alt=""/><br/>
-<img src="media/15290802805331/15290814996755.jpg" alt=""/><br/>
-<img src="media/15290802805331/15290815034760.jpg" alt=""/></p>
+<p>InfoQ 最近参加了在美国奥斯汀举行的 <a href="https://events.linuxfoundation.org/events/kubecon-cloudnativecon-north-america-2018/">CNCF CloudNativeCon</a>，并与 <a href="https://www.linkedin.com/in/bensigelman">Ben Sigelman</a> 进行了交流，他是 Dapper 论文的作者之一，同时也是 <a href="https://lightstep.com/">LightStep</a> 的 CEO 和联合创始人，他最近宣布了一个新的商用跟踪平台 <a href="https://lightstep.com/blog/launching-lightstep/">“LightStep [x]PM”</a>。Sigelman 讨论了 LightStep 的非传统架构（它会在本地安装的 agent 上使用机器学习技术），允许分析 100.0% 的事务数据，而不是 Dapper 所实现的 0.01%：</p>
 
-<h2 id="toc_2">*<strong><em>3：通过查询information_schema数据库下与事务相关的几个系统表</em></strong>*</h2>
+<p>“我们过去和现在依然构建的工具对长期的性能分析是非常重要的，但是为了应对被监控系统的规模，Dapper 只会中心化地记录 0.01% 的性能数据，这意味着在特定的使用场景下，它是难以应对的，比如实时的事件响应（‘也就是最紧急的’）”。</p>
 
-<p>还是构造之前的测试案例，在第一个会话中使用SELECT FOR UPDATE锁定其中一行记录</p>
+<p>LightStep 在过去的 18 个月中已经与很多客户合作过，包括 Lyft（使用 Envoy 代理作为集成点）、Twilio、GitHub 和 DigitalOcean，业已证明他们的方案能够处理大量的数据：</p>
 
-<pre><code>&gt; mysql&gt; use MyDB;
-Database changed
-mysql&gt; set session autocommit=0;
-Query OK, 0 rows affected (0.00 sec)
-mysql&gt; select connection_id() from dual;
-+-----------------+
-| connection_id() |
-+-----------------+
-| 17 |
-+-----------------+
-1 row in set (0.00 sec)
- 
-mysql&gt; select * from test_blocking where id=1 for update;
-+----+-------+
-| id | name |
-+----+-------+
-| 1 | kerry |
-+----+-------+
-1 row in set (0.00 sec)
- 
-mysql&gt;
-</code></pre>
+<p>“Lyft 给我们发送了大量的数据，LightStep 每天分析 100,000,000,000 个微服务调用。乍一看上去，这是数据全是噪音，没有什么有用的信息：大量的数据混杂在一起并且不相关，但是通过全盘考虑，LightStep 能够衡量出性能是如何影响 Lyft 的不同方面的，然后使用端到端的跟踪展现问题和异常情况，这种跟踪能够从移动应用一直延伸到微服务技术栈的底部。”</p>
 
-<p>然后在第二个连接会话中执行更新脚本，构造被阻塞的案例</p>
+<p><a href="https://lightstep.com/product">LightStep [x]PM</a> 目前可以作为 SaaS 平台来使用。Sigelman 想要强调的是，尽管可以分析 100% 的请求，但是在本地安装的 agent 所收集的数据并不会全部传送到中心化的平台中。Sigelman 将这个产品视为” 新一代的 APM“工具，如果用户正在寻找针对复杂分布式应用的性能监控和自动分析的工具的话，那么它可以为用户带来价值。</p>
 
-<pre><code>&gt; mysql&gt; use MyDB;
-Database changed
-mysql&gt; select connection_id() from dual;
-+-----------------+
-| connection_id() |
-+-----------------+
-| 19 |
-+-----------------+
-1 row in set (0.00 sec)
- 
-mysql&gt; update test_blocking set name=&#39;kk&#39; where id=1;
-</code></pre>
+<h2 id="toc_4">结论</h2>
 
-<p>此时阻我们在第三个连接会话查找谁被阻塞了</p>
+<p>在分布式系统中，响应延迟可能会带来严重的商业影响，但是理解复杂系统中的请求流并识别瓶颈也是很有挑战性的任务。通过使用分布式跟踪，再结合其他的技术，如日志和监控指标，能够了解分布式应用的内部状况，这些应用可能是采用微服务的架构模式创建的。在分布式跟踪领域，开放的标准和工具正在不断组合，比如 OpenTracing API 和 OpenZipkin，商业的工具也在涌现，可能会与现有的 APM 供应商产生竞争。在为现代互联网服务实现分布式跟踪时，会面临一些挑战，比如处理大量的跟踪数据并生成有意义的输出，但是开源的生态系统和供应商正在应对这些挑战。</p>
 
-<pre><code>&gt; SELECT b.trx_mysql_thread_id AS &#39;blocked_thread_id&#39;
- ,b.trx_query AS &#39;blocked_sql_text&#39;
- ,c.trx_mysql_thread_id AS &#39;blocker_thread_id&#39;
- ,c.trx_query AS &#39;blocker_sql_text&#39;
- ,( Unix_timestamp() - Unix_timestamp(c.trx_started) ) 
- AS &#39;blocked_time&#39;
-FROM information_schema.innodb_lock_waits a 
- INNER JOIN information_schema.innodb_trx b 
- ON a.requesting_trx_id = b.trx_id 
- INNER JOIN information_schema.innodb_trx c 
- ON a.blocking_trx_id = c.trx_id 
-WHERE ( Unix_timestamp() - Unix_timestamp(c.trx_started) ) &gt; 4; 
- 
-SELECT a.sql_text, 
- c.id, 
- d.trx_started 
-FROM performance_schema.events_statements_current a 
- join performance_schema.threads b 
- ON a.thread_id = b.thread_id 
- join information_schema.processlist c 
- ON b.processlist_id = c.id 
- join information_schema.innodb_trx d 
- ON c.id = d.trx_mysql_thread_id 
-where c.id=17
-ORDER BY d.trx_startedG;
-</code></pre>
+<h2 id="toc_5">关于作者</h2>
 
-<p>如下截图所示，第一个SQL语句能够查到线程19 被线程 17阻塞了， 被阻塞的SQL语句为“update test_blocking set name=’kk’ where id=1;”, 能够查到被阻塞了多长时间，但是无法查到源头SQL语句。此时就需要第二个SQL语句登场，找到源头语句。</p>
+<p><strong><img src="https://res.infoq.com/articles/distributed-tracing-microservices/en/resources/6daniel-bryant-1519132850908.jpg" alt=""/>Daniel Bryant</strong> 一直在组织内部和技术方面引领变化。他目前的工作包括通过引入更好的需求收集和计划技术推进企业内部的敏捷性，关注于敏捷开发中的架构关联性，并且搭建持续集成 / 交付环境。Daniel 现在的技术专长是 “DevOps” 工具、云 / 容器平台和微服务实现。他还是伦敦 Java 社区（LJC）的领导者，参与多个开源项目，为 InfoQ、DZone 和 Voxxed 这样的技术网站撰写文章，并且经常在 QCon、JavaOne 和 Devoxx 这样的国际会议上发表演讲。</p>
 
-<p><img src="media/15290802805331/15290815196795.jpg" alt=""/></p>
-
-<p>但是不要太天真的认为第二个SQL语句能够获取所有场景下的阻塞源头SQL语句，实际业务场景，会话可能在执行一个存储过程或复杂的业务，有可能它执行完阻塞源头SQL后，继续在执行其它SQL语句，此时，你抓取的是这个连接会话最后执行的SQL语句，如下所示，我简单构造了一个例子。就能构造这样的一个场景。这个我曾经写过一篇博客“_为什么数据库有时候不能定位阻塞（Blocker）源头的SQL语句_”，分析SQL Server和ORACLE 定位查找阻塞源头SQL语句，现在看来真是大道同源，殊途同归。</p>
-
-<pre><code>&gt; mysql&gt; select * from test_blocking where id=1 for update;
-+----+-------+
-| id | name |
-+----+-------+
-| 1 | kerry |
-+----+-------+
-1 row in set (0.00 sec)
- 
-mysql&gt; delete from student where stu_id=1001;
-Query OK, 1 row affected (0.00 sec)
- 
-mysql&gt;
-</code></pre>
-
-<p><img src="media/15290802805331/15290815269311.jpg" alt=""/></p>
-
-<p>总结： 最简单、方便的还是上面两个SQL查询定位blocker的SQL语句，但是需要注意：有时候它也查不到真正阻塞的源头SQL语句。所以还需结合应用程序代码与上下文环境进行整体分析、判断！</p>
+<p><strong>查看英文原文：</strong><a href="https://www.infoq.com/articles/distributed-tracing-microservices">Distributed Tracing: Exploring the Past, Present and Future with Dapper, Zipkin and LightStep [x]PM</a></p>
 
                         
                       </div>
@@ -391,10 +196,10 @@ mysql&gt;
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/6/16</span>
+                    <span class="date">2018/7/28</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Database.html'>Database</a></span>
+          					    <span class="posted-in"><a href='Microservice.html'>Microservice</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -484,31 +289,31 @@ mysql&gt;
 	      
 		      
 			      <li class="post">
-			        <a href="15459058392039.html">Reliable Domain Events</a>
+			        <a href="15517999043443.html">The Art of Crafting Architectural Diagrams</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
+			        <a href="15517997955971.html">为什么说我们需要软件架构图？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
+			        <a href="15516128677869.html">DNS Servers That Offer Privacy and Filtering</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
+			        <a href="15516123108194.html">Airbnb's Migration from Monolith to Services</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
+			        <a href="15516097487470.html">Events As First-Class Citizens</a>
 			      </li>
 		     
 		  

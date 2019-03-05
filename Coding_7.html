@@ -105,84 +105,168 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15419493182627.html">
+                <a class="clearlink" href="15461346894128.html">
                 
-                  <h1>Java 测试</h1>
+                  <h1>Spring cache annotations: some tips & tricks</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
-                        	<h2 id="toc_0">66、线程的基本状态以及状态之间的关系？</h2>
-
-<p><img src="media/15419493182627/15419493198188.jpg" alt=""/></p>
-
-<h2 id="toc_1">80、事务的ACID是指什么？</h2>
-
-<ul>
-<li>原子性(Atomic)：事务中各项操作，要么全做要么全不做，任何一项操作的失败都会导致整个事务的失败；</li>
-<li>一致性(Consistent)：事务结束后系统状态是一致的；</li>
-<li>隔离性(Isolated)：并发执行的事务彼此无法看到对方的中间状态；</li>
-<li>持久性(Durable)：事务完成后所做的改动都会被持久化，即使发生灾难性的失败。通过日志和同步备份可以在故障发生后重建数据。</li>
-</ul>
-
-<blockquote>
-<p>补充：关于事务，在面试中被问到的概率是很高的，可以问的问题也是很多的。首先需要知道的是，只有存在并发数据访问时才需要事务。当多个事务访问同一数据时，可能会存在5类问题，包括3类数据读取问题（脏读、不可重复读和幻读）和2类数据更新问题（第1类丢失更新和第2类丢失更新）。</p>
+                        	<blockquote>
+<p>原文地址 <a href="https://www.foreach.be/blog/spring-cache-annotations-some-tips-tricks">https://www.foreach.be/blog/spring-cache-annotations-some-tips-tricks</a></p>
 </blockquote>
 
-<ul>
-<li>脏读（Dirty Read）：A事务读取B事务尚未提交的数据并在此基础上操作，而B事务执行回滚，那么A读取到的数据就是脏数据。</li>
-<li>幻读（Phantom Read）：事务A重新执行一个查询，返回一系列符合查询条件的行，发现其中插入了被事务B提交的行。</li>
-<li>第1类丢失更新：事务A撤销时，把已经提交的事务B的更新数据覆盖了。</li>
-<li>第2类丢失更新：事务A覆盖事务B已经提交的数据，造成事务B所做的操作丢失。</li>
-</ul>
+<p><u>Since version 3, Spring framework comes with a decent <a href="http://docs.spring.io/spring/docs/current/spring-framework-reference/html/cache.html">caching abstraction</a> layer that allows you to use annotations like @Cacheable to interact with your caches.  In this post I&#39;ll assume you know how the caching annotations work and provide you with some tips &amp; tricks for using them.</u></p>
 
-<table>
-<thead>
-<tr>
-<th>隔离级别</th>
-<th>脏读</th>
-<th>不可重复读</th>
-<th>幻读</th>
-<th>第一类丢失更新</th>
-<th>第二类丢失更新</th>
-</tr>
-</thead>
+<p><u>[This blog was updated on 27/11/2017 with  <a href="#synchronized-caching">synchronized caching</a> and <a href="#caching-and-transactions">tips on caching and transactions</a>.]</u></p>
 
-<tbody>
-<tr>
-<td>READ UNCOMMITED</td>
-<td>允许</td>
-<td>允许</td>
-<td>允许</td>
-<td>不允许</td>
-<td>允许</td>
-</tr>
-<tr>
-<td>READ COMMITTED</td>
-<td>不允许</td>
-<td>允许</td>
-<td>允许</td>
-<td>不允许</td>
-<td>允许</td>
-</tr>
-<tr>
-<td>REPEATABLE READ</td>
-<td>不允许</td>
-<td>不允许</td>
-<td>允许</td>
-<td>不允许</td>
-<td>不允许</td>
-</tr>
-<tr>
-<td>SERIALIZABLE</td>
-<td>不允许</td>
-<td>不允许</td>
-<td>不允许</td>
-<td>不允许</td>
-<td>不允许</td>
-</tr>
-</tbody>
-</table>
+<h2 id="toc_0">Beware of the default cache keys</h2>
+
+<p>Caching a method outcome is really easy to do. Simply adding <code>@Cacheable</code> with a cache name would work already:</p>
+
+<pre><code class="language-java">@Cacheable(value = &quot;reservationsCache&quot;)
+public List&lt;Reservation&gt; getReservationsForRestaurant( Restaurant restaurant ) {
+}
+</code></pre>
+
+<p>However, it is also easy to lose track of the actual cache key that is being used. The above call uses a default key generation strategy that creates a <code>SimpleKey</code> that consists of all the parameters with which the method was called. This requires the parameters to have a decent <code>hashCode()/equals()</code> implementation, which is not usually a problem in and of itself, except that the performance of <code>hashCode()</code> and <code>equals()</code> also impacts the performance of cache retrieval. Again, that&#39;s usually not much of an issue.</p>
+
+<p>A more important caveat here is that the parameters themselves become an integral part of the cache key, and that can have an unwanted impact on the actual heap size being used, as the cache key is kept on the heap as well. Consider our example: we use a Restaurant as the cache key. However the restaurant is a complex domain entity holding lots of data and having several collections of related entities. All this data is kept alive as long as the cache entry exists and keeps taking up room on the heap, even if it is no longer relevant.</p>
+
+<p>Suppose our restaurant has an id property that uniquely identifies that specific restaurant, which domain classes often do. We can easily adapt our code as follows:</p>
+
+<pre><code class="language-java">@Cacheable(value = &quot;reservationsCache&quot;, key = &quot;#restaurant.id&quot;)
+public List&lt;Reservation&gt; getReservationsForRestaurant( Restaurant restaurant ) {
+}
+</code></pre>
+
+<p>This uses <a href="http://docs.spring.io/spring/docs/current/spring-framework-reference/html/cache.html#cache-annotations-cacheable-k">SpEL</a> for declaring a custom key that will be the value of the id property.  In our case this would be a simple long, and that would remain the case even if the Restaurant entity grows over time.  How much memory is actually consumed depends on the VM, but it&#39;s not hard to imagine that a single Restaurant entity holds hundreds or thousands of longs worth of data (consider several strings).  After we started tuning some of our cache keys in our projects, we got improvements in the hundreds of MB when it came to heap consumed, ending up with us being able to cache much more.</p>
+
+<p>In short: you should not only pay attention to the unicity of your cache keys, but also to the size of the actual cache key being generated.  Use the key property or a custom key generator to have more fine-grained control over your cache keys.</p>
+
+<h2 id="toc_1">Cacheable annotations and synchronization</h2>
+
+<p>For very expensive methods, you want to optimize the cache hits as much as possible.  When being accessed by multiple threads, you ideally want the first thread to do the actual calculation and all other threads to fetch it from the cache.  A classic case where you would synchronize access to the method.  However, the following code does not do what we want:</p>
+
+<pre><code class="language-java">@Cacheable(value = &quot;reservationsCache&quot;, key = &quot;#restaurand.id&quot;)
+public synchronized List&lt;Reservation&gt; getReservationsForRestaurant( Restaurant restaurant ) {
+}
+</code></pre>
+
+<p>When using <code>@Cacheable</code> on a method, the caching code is outside of the original method body (added through AOP).  This means that any form of synchronization inside or on the method itself will take place <strong>after</strong> the actual cache lookup.  When calling the method the cache lookup will happen first and if there was a cache miss, then the lock will be taken and the method executed.  All cache misses will effectively execute the method and then insert the result into the cache, even if the calls are identical.</p>
+
+<p>You could solve this using manual caching with some form of <a href="https://en.wikipedia.org/wiki/Double-checked_locking">double-checked locking</a> or by moving the synchronization around the cacheable method.  Take into account that the latter will always apply the synchronization and it will most likely require you to add an extra bean depending on your <a href="https://docs.spring.io/spring/docs/5.0.1.RELEASE/spring-framework-reference/core.html#aop-introduction-proxies">AOP proxy strategy</a>. </p>
+
+<h4 id="toc_2">Update - Spring Framework 4.3</h4>
+
+<p>As of Spring Framework 4.3 there is some <a href="https://docs.spring.io/spring-framework/docs/current/spring-framework-reference/integration.html#cache-annotations-cacheable-synchronized">direct support for synchronized caching</a>: <code>@Cacheable</code> allows you to specify the <code>sync</code> attribute to ensure only a single thread is building the cache value. To get the behavior we want, the above example could be updated to:</p>
+
+<pre><code class="language-java">@Cacheable(value = &quot;reservationsCache&quot;, key = &quot;#restaurand.id&quot;, sync = true)
+public List&lt;Reservation&gt; getReservationsForRestaurant( Restaurant restaurant ) {
+}
+</code></pre>
+
+<h2 id="toc_3"><a id="synchronized-caching"></a>Combine @CachePut and @Cacheable to optimize cache use</h2>
+
+<p>Using <code>@Cacheable</code> combines both looking in the cache and storing the result. Using <code>@CachePut</code> and <code>@CacheEvict</code> annotations gives you more fine-grained control.  You can also use the <code>@Caching</code> annotation to combine multiple cache related annotations on a single method.  Avoid combining <code>@Cacheable</code> and <code>@CachePut</code> on the same method, as the behavior can be quite confusing.  But you can put them to some good use.  Consider the following traditional service/repository hierarchy:</p>
+
+<pre><code class="language-java">class UserService {
+    @Cacheable(value = &quot;userCache&quot;, unless = &quot;#result != null&quot;)
+    public User getUserById( long id ) {
+        return userRepository.getById( id );
+    }
+}
+
+class UserRepository {
+    @Caching(
+      put = {
+            @CachePut(value = &quot;userCache&quot;, key = &quot;&#39;username:&#39; + #result.username&quot;, condition = &quot;#result != null&quot;),
+            @CachePut(value = &quot;userCache&quot;, key = &quot;#result.id&quot;, condition = &quot;#result != null&quot;)
+      }
+    )
+    @Transactional(readOnly = true)
+    public User getById( long id ) {
+       ...
+    }
+}
+</code></pre>
+
+<p>In our example, when calling <code>userService.getUserById</code>, a lookup is done in the user cache using the id as cache key.  If no value is found, the call is forwarded to <code>userRepository.getById</code>.  The latter method does not look into the cache but will store the result under two different cache keys in the cache.  Even if the item already existed in the cache, a call to the repository would update it.</p>
+
+<p>In a situation like this it is vital to make good use of the conditional properties (<code>condition</code> and <code>unless</code>) on the cache annotations.  In the example the result from the repository is only added to the cache if it is not null.  Without the condition we would get an exception as the outcome of <code>#result.username</code> could not be determined.  So in our code the repository does not cache any null values. On the other hand, the service call only stores null results back in the cache.  In our case this is the required behavior, as we do want to cache missing results for performance reasons.  Non-null values are cached by the repository, nulls by the service, the disadvantage being that cache logic is dispersed over several beans.</p>
+
+<p>Caveat: If we were to remove the condition altogether on the service method, two identical cache puts would occur for every call with a valid result.  First the <code>@CachePut</code> from the repository, followed by storing the result because of the <code>@Cacheable</code> on the service method.  Be aware that only the first would be an actual cache put (inserting a new entry), immediately followed by an update of the same item.  This might not really be a performance issue, but when using cache replication that behaves differently for puts and updates - for example using <a href="http://www.ehcache.org/documentation/2.8/replication/rmi-replicated-caching.html">Ehcache</a> - this can bring some unwanted side effects.</p>
+
+<p>If we don&#39;t want the service method to cache anything at all but simply look in the cache, we could use <code>unless =&quot;true&quot;</code>. </p>
+
+<h2 id="toc_4"><strong><a id="caching-and-transactions"></a>Caching and transactions</strong></h2>
+
+<p>Caching using annotations is very easy and transparent, but combined with transactions you sometimes need to take some special care. Suppose we have the following repository:</p>
+
+<pre><code class="language-java">class UserRepository {
+    @CachePut(value = &quot;userCache&quot;, key = &quot;#result.username&quot;)
+    @Transactional(readOnly = true)
+    User getByUsername( String username );
+
+    @CacheEvict(value = “userCache”, key = &quot;#p0.username&quot;),
+    @Transactional
+    void save( User user );
+}
+</code></pre>
+
+<p>We now create a single outer transaction that first saves the user and then fetches it.</p>
+
+<pre><code class="language-java">class UserService {
+    @Transactional
+    User updateAndRefresh( User user ) {
+        userRepository.save(user);
+        return userRepository.getByUsername( user.getUsername() );
+    }
+}
+</code></pre>
+
+<p>The user will first be removed from the cache, only to be stored again right after. However, suppose that our <code>updateAndRefresh()</code> method is not the end of the transaction, and further on an exception occurs. The exception will cause the transaction to rollback. The changes will not be persisted in the backing database, but your cache will have been updated. Your system is now in an inconsistent state.</p>
+
+<p>You can avoid this problem by binding your cache operations to the running transaction, and only execute them when the transaction commits. Attaching operations to the current transaction can be done using the <code>TransactionSynchronizationManager</code>, but Spring already has a <code>[TransactionAwareCacheDecorator](https://docs.spring.io/spring/docs/current/javadoc-api/org/springframework/cache/transaction/TransactionAwareCacheDecorator.html)</code> which does just that. It wraps around any <code>Cache</code> implementation and ensures that any put, evict or clear operations only execute after a successful commit of the current transaction (or immediately if there is no transaction).</p>
+
+<p>If you do your cache operations manually, you can fetch the <code>Cache</code> from the <code>CacheManager</code> and wrap it yourself with a <code>TransactionAwareCacheDecorator</code>.</p>
+
+<pre><code class="language-java">Cache transactionAwareUserCache( CacheManager cacheManager ) {
+    return new TransactionAwareCacheDecorator( cacheManager.getCache( “userCache” ) );
+}
+</code></pre>
+
+<p> This works just fine if you do not use the cache annotations. If you want to use cache annotations and have transparent transactional support, you should configure your <code>CacheManager</code> to hand out out transaction aware caches.</p>
+
+<p>Some <code>CacheManager</code> implementations, like <code>EhCacheCacheManager</code>, extend <code>AbstractTransactionSupportingCacheManager</code> and support handing out transaction aware caches directly:</p>
+
+<pre><code class="language-java">@Bean
+public CacheManager cacheManager( net.sf.ehcache.CacheManager ehCacheCacheManager ) {
+    EhCacheCacheManager cacheManager = new EhCacheCacheManager();
+    cacheManager.setCacheManager( ehCacheCacheManager );
+    cacheManager.setTransactionAware( true );
+    return cacheManager;
+}
+
+</code></pre>
+
+<p>For other <code>CacheManager</code> implementations, for example the <code>SimpleCacheManager</code>, you can use a <code>TransactionAwareCacheManagerProxy</code>.</p>
+
+<pre><code class="language-java">@Bean
+public CacheManager cacheManager() {
+    SimpleCacheManager cacheManager = new SimpleCacheManager();
+    cacheManager.setCaches( Collections.singletonList( new ConcurrentMapCache( “userCache” ) ) );
+
+    // manually call initialize the caches as our SimpleCacheManager is not declared as a bean
+    cacheManager.initializeCaches(); 
+
+    return new TransactionAwareCacheManagerProxy( cacheManager );
+}
+</code></pre>
+
+<p>The <code>TransactionAwareCacheDecorator</code> is perhaps a lesser known feature of the Spring cache abstraction infrastructure. But it is no less useful and can be very helpful in avoiding some very hard to debug issues that pop up when combining caching with transactions.</p>
+
+<p><u>Using the cache annotations from Spring is fairly straightforward, but it can sometimes be a bit unclear exactly what&#39;s happening and that can lead to strange results.  With this post, I hope to have given you some insights so certain pitfalls can easily be avoided.  All feedback and questions are appreciated, that&#39;s what the comments are for.</u></p>
 
                         
                       </div>
@@ -191,10 +275,10 @@
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/11/11</span>
+                    <span class="date">2018/12/30</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Java.html'>Java</a></span>
+          					    <span class="posted-in"><a href='Spring.html'>Spring</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -284,31 +368,31 @@
 	      
 		      
 			      <li class="post">
-			        <a href="15459058392039.html">Reliable Domain Events</a>
+			        <a href="15517999043443.html">The Art of Crafting Architectural Diagrams</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
+			        <a href="15517997955971.html">为什么说我们需要软件架构图？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
+			        <a href="15516128677869.html">DNS Servers That Offer Privacy and Filtering</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
+			        <a href="15516123108194.html">Airbnb's Migration from Monolith to Services</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
+			        <a href="15516097487470.html">Events As First-Class Citizens</a>
 			      </li>
 		     
 		  

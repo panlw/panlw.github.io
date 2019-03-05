@@ -105,282 +105,247 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15316410286252.html">
+                <a class="clearlink" href="15352960653784.html">
                 
-                  <h1>GitHub的MySQL高可用性实践</h1>
+                  <h1>如何用Go实现一款类似滴滴优步的网络约车软件(含源码)</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
-                        	<blockquote>
-<p><a href="https://mp.weixin.qq.com/s/J1dFPs_ijEk20f3q6GismQ">https://mp.weixin.qq.com/s/J1dFPs_ijEk20f3q6GismQ</a></p>
-</blockquote>
-
-<pre><code>作者｜Shlomi Noach
-译者｜张健欣
+                        	<pre><code>Andrew Minkin  高可用架构  2017-02-28
 </code></pre>
 
 <blockquote>
-<p>本文阐述了 GitHub 的 MySQL 高可用性和主服务发现解决方案，这个方案使得 GitHub 能够可靠地进行跨数据中心运维、克服数据中心隔离的影响并实现故障时的短宕机时间。</p>
+<p><a href="https://mp.weixin.qq.com/s?__biz=MzAwMDU1MTE1OQ==&amp;mid=2653548297&amp;idx=1&amp;sn=71fc309da16f1ed2b3d8b0d847f730a0&amp;chksm=813a7e91b64df78734a2d155e79bedab66ebd078aed5d6ab3f01eb1b1b2a1d957f7c3ca204d5&amp;scene=21#wechat_redirect">https://mp.weixin.qq.com/s?__biz=MzAwMDU1MTE1OQ==&amp;mid=2653548297&amp;idx=1&amp;sn=71fc309da16f1ed2b3d8b0d847f730a0&amp;chksm=813a7e91b64df78734a2d155e79bedab66ebd078aed5d6ab3f01eb1b1b2a1d957f7c3ca204d5&amp;scene=21#wechat_redirect</a></p>
 </blockquote>
 
-<p>GitHub 使用 MySQL 作为所有非<code>git</code>项目的主要数据存储，因此 MySQL 的可用性对于 GitHub 的运维来说至关重要。站点本身、GitHub 的 API、身份验证等都需要数据库访问。我们运行多个 MySQL 集群来服务我们的不同服务和任务。我们的集群使用经典的主 - 副设置，其中集群的单个节点（主节点）能够接受写操作。其它集群节点（副节点）异步更新主节点的变更并服务我们的读流量。</p>
+<p>导读：我们经常使用打车软件出行，也经常思考其架构设计。本文作者在所在国家也负责开发一款打车软件，并且开源了其中大部分代码，可以帮助我们更好了解网络约车软件的架构体系。本文由高可用架构翻译。</p>
 
-<p>主节点的可用性特别地重要。主节点不可用时，集群就不能接受写操作：任何需要持久化的写操作都不能被持久化。任何传入的变更，例如提交代码、提问题、用户创建、代码审查、新建代码库等等，都会失败。</p>
+<p><img src="http://mmbiz.qpic.cn/mmbiz_png/8XkvNnTiapOMnaWlypBttlyEyfP2FFJwMFfEjD6rrQsA0WwRZRO3qIAxXqlMnWvILWiadCNXYPEa33aJO5PsaLDQ/0?wx_fmt=png" alt=""/></p>
 
-<p>为了支持写操作，我们显然需要有一个可用的写节点，即集群的主节点。但同样重要的是，我们需要能够识别，或者发现，那个节点。</p>
+<p>各位读者好，本文将给大家分享我们如何通过内存存储实现地图动画车效果。 我们公司也运营了一个类似 Uber 的软件 Namba Taxi，我们需要在客户端主屏幕上显示动画车。 这篇文章是关于功能如何完整实现的文章，主要目的不是介绍 Go 语言。</p>
 
-<p>遇到一个故障时，比如主节点崩溃的场景，我们必须确保存在一个新的主节点，并且能够快速通告其身份。检测故障、运行故障恢复以及通告新主节点身份所花费的时间组成了总宕机时间。</p>
+<h2 id="toc_0"><strong>开始</strong></h2>
 
-<p>本文阐述了 GitHub 的 MySQL 高可用性和主服务发现解决方案，这个方案使得我们能够可靠地进行跨数据中心运维、克服数据中心隔离的影响并实现故障时的短宕机时间。</p>
+<p>这个故事始于 2015 年，我们的移动开发人员开发一款软件，工作主题是为出租车司机提供打车服务。 在应用程序中，动画汽车看起来像下面的图中动画那样 [1] 。</p>
 
-<h2 id="toc_0">高可用性目标</h2>
+<p><img src="http://mmbiz.qpic.cn/mmbiz_png/8XkvNnTiapOMnaWlypBttlyEyfP2FFJwMxosd5hJ54PXZDDXnOFqibTIYtdsQGWtr4VTgYObn1zb2ULagtDvmMCg/0?wx_fmt=png" alt=""/></p>
 
-<p>本文描述的解决方案是对 GitHub 先前实现的高可用性（HA）解决方案的迭代和改进。随着我们规模的扩大，我们的 MySQL HA 策略必须适应变化。我们希望对我们的 MySQL 和 GitHub 的其它服务运用相似的 HA 策略。</p>
+<p>我们的第一个挑战是缺乏地图跟踪数据。我们每 15 秒获取一次位置数据。 我们不能简单减小上报间隔，因为当司机端程序上行数据时候，同时需要获取当前订单，下一个订单，以及一些警报功能（一个 SOS 按钮， 当司机按下它，其他司机就可以帮助他）。当我们减少更新间隔时，系统流量更大。 我们不确认我们是否能够扛住如此大的刷新。</p>
 
-<p>当考虑高可用性和服务发现时，一些问题可以指导你找到一个恰当的解决方案。这些问题包括但不限于：</p>
+<h2 id="toc_1"><strong>实现的第一步</strong></h2>
 
-<ul>
-<li><p>你能容忍的宕机时间是多久？</p></li>
-<li><p>崩溃检测的可靠性如何？你能容忍假阳性（过早进行故障恢复）吗？</p></li>
-<li><p>故障恢复的可靠性如何？它在哪些情况下会失败？</p></li>
-<li><p>解决方案跨数据中心能力如何？在低延迟和高延迟网络的能力如何？</p></li>
-<li><p>解决方案能克服完整的数据中心故障或网络隔离的影响吗？</p></li>
-<li><p>如果有的话，什么机制能够防止或减轻脑裂现象（两个服务器都宣称是指定集群的主节点，都独立地彼此无意识地接受写操作）？</p></li>
-<li><p>你能够承受数据丢失吗？到什么程度？</p></li>
-</ul>
+<p>我们第一次的尝试比较简单：</p>
 
-<p>为了说明上述一些问题，让我们先看一下我们之前的 HA 迭代以及为什么我们要改变它。</p>
+<ol>
+<li><p>处理请求并保存坐标。</p></li>
+<li><p>创建另一个请求并为汽车设置动画。</p></li>
+</ol>
 
-<h2 id="toc_1">远离基于 VIP 和 DNS 的服务发现</h2>
+<p>显而易见，这样做存在一些问题，如大家在一些打车软件所见，我们不能正确地绘制汽车路线，汽车可能跑在田野，森林，湖泊和公寓上，用这种方法后效果看起来是这样的 [2]。</p>
 
-<p>在我们之前的迭代中，我们使用：</p>
+<p><img src="http://mmbiz.qpic.cn/mmbiz_png/8XkvNnTiapOMnaWlypBttlyEyfP2FFJwMdWKnMmHpaANJJicc67qKbmkgTPExVVtAl0y9MOeW1bjbRBavJOakx4w/0?wx_fmt=gif" alt=""/></p>
 
-<ul>
-<li><p>orchestrator (<a href="https://githubengineering.com/orchestrator-github/">https://githubengineering.com/orchestrator-github/</a>) 用于故障监听和故障恢复</p></li>
-<li><p>VIP 和 DNS 用于发现主节点</p></li>
-</ul>
+<p>作为问题的解决方案，我们使用 OpenStreetMap Routeing Machine（OSRM）来规划线路并改进我们的算法，并使用相同的超时设置。</p>
 
-<p>在那个迭代中，客户端通过使用一个名称，例如<code>mysql-writer-1.github.net</code>来发现写节点。这个名称解析为主节点获取的虚拟 IP 地址（Virtual IP address，VIP）。</p>
+<ol>
+<li><p>发起请求。</p></li>
+<li><p>获取坐标。</p></li>
+<li><p>将保存的坐标发送到服务器。</p></li>
+<li><p>通过 OSRM 构建路线。</p></li>
+<li><p>返回数据到客户端。</p></li>
+</ol>
 
-<p>因此，平常的时候，客户端会只解析这个名称，连接解析到的 IP 地址，然后找到正在另一端监听的主节点。</p>
+<p>通过线路规划体系，现在似乎可以工作了，但我们又面临单向道路的问题</p>
 
-<p>这个副本拓扑，跨越 3 个不同的数据中心：</p>
+<p><img src="http://mmbiz.qpic.cn/mmbiz_png/8XkvNnTiapOMnaWlypBttlyEyfP2FFJwMoo1cEvvjvZgAuZ35V80cBJRJxyqHyfIGvQmDxJzDfMgUS2xuzzbNZg/0?wx_fmt=png" alt=""/></p>
 
-<p><img src="https://mmbiz.qpic.cn/mmbiz_png/FE4VibF0SjfNElvLNcBKtkApBEKRqzNbx8remfnnePa5aPxXwZ0cXfZia36ibrMbn2icLEBciaarLZ7AP49AniaCib6OA/640?wx_fmt=png" alt=""/></p>
+<p>例如，司机停留在红点的十字路口。 但他的设备位置准确性有问题，导致数据标记在十字路口的对面。 在客户端，我们获取这些坐标，保存并发送到后端，OSRM 建立一个合法的路线，并返回给应用程序。因为客户端移动得非常快，所以这种情况路线规划很可笑。<br/>
+我们以一种朴素的方式解决了这个问题。 <strong>我们检查两点之间的最短距离，并且不建立距离小于 20 米的路线。</strong> 使用该算法经过几天的测试后，我们决定发布我们的应用程序并希望获取一些反馈。<br/>
+尽管如此，我们的版本还存在一些问题，所以我们决定进行第二次迭代。</p>
 
-<p>当发生一个主节点故障事件时，一个新的服务器（副本之一），必须被提升为主节点。</p>
+<ol>
+<li><p>第一是车费计算器，<strong>计算是在司机端（客户端）完成，这样避免发送无用的请求</strong>，可以节约很多服务端资源。 另一方面，为了安全等方面考虑，我们需要在服务器端复制数据并保存它。</p></li>
+<li><p>此外，我们意识到每 15 秒一次上报太少，因为用户在屏幕打开后，15 秒后才会看到车在移动。</p></li>
+<li><p>此外，我们在司机端的 GPS 模块有很多问题，这个可能跟司机的手机设备相关。</p></li>
+<li><p>最后，我们想要在主屏幕上渲染动画车。</p></li>
+</ol>
 
-<p><code>orchestrator</code>将监测到一个故障，提升一个新的主节点，然后采取行动重新分配名称 /VIP。客户端并不知道主节点的身份：它们所知道的只是一个名称，而那个名称现在一定解析到了新的主节点。然而，注意：</p>
+<h2 id="toc_2"><strong>还需要解决的问题</strong></h2>
 
-<p>VIP 是协作的：它们被数据库服务器本身声明和拥有。为了获取或释放一个 VIP，一个服务器必须发送一个 ARP 请求。在新提升的主节点获取这个 VIP 之前，拥有这个 VIP 的服务器必须先释放这个 VIP。这有一些不如人意的效果：</p>
+<ol>
+<li><p>从司机收集更多的数据</p></li>
+<li><p>在主屏幕上显示动画车</p></li>
+<li><p>在服务器端存储行车过程中计费数据</p></li>
+<li><p>节约移动流量</p></li>
+<li><p>每秒收集一次数据</p></li>
+</ol>
 
-<ul>
-<li><p>一个故障恢复操作按顺序首先会请求挂掉的主节点释放 VIP，然后请求新提升的主节点获取这个 VIP。但如果老的主节点无法访问或者拒绝释放 VIP 呢？假设在那台服务器上一开始发生了一个故障，那么它也很可能不会及时响应或者根本不响应。</p></li>
-<li><p>我们会面临裂脑处境：两个主机声称拥有相同的 VIP。不同的客户端根据最短网络路径，可能会连接到其中任何一个服务器。</p></li>
-<li><p>这个问题的根源是依赖于两个独立服务器的合作，而这种设置是不可靠的。</p></li>
-<li><p>即使旧的主节点合作，这个工作流也浪费了宝贵的时间：切换到新的主节点时，需要等待与旧的主节点的联系。</p></li>
-<li><p>而且当 VIP 改变时，不能保证现有的客户端与旧的服务器的连接断开，从而导致我们仍面临裂脑处境。</p></li>
-</ul>
+<p>我想谈一谈有关节约移动流量带宽的问题。在我们国家，出租车收费非常便宜，我们像使用公共交通那样使用出租车。 例如，从城市的一边跑到另一边可能只需要 2 欧元，这就跟在巴黎坐地铁价格差不多。但另外一方面移动带宽成本还也很高，如果我们每秒节约 100 字节，那么我们将给为公司节省差不多 2000 美元。</p>
 
-<p>在我们的设置中，VIP 与物理地址绑定。它们属于一个交换机或路由器。因此，我们只能将 VIP 重新分配给相互定位的服务器。特别是，在某些情况下，我们不能将 VIP 分配给在不同数据中心提升的服务器，并且必须更改 DNS。</p>
+<h2 id="toc_3"><strong>数据追踪</strong></h2>
 
-<ul>
-<li>  DNS 的变化需要更长的时间来传播。客户端会为了预配置时间而缓存 DNS 名称。一个跨数据中心的故障意味着更长的宕机时间：让所有客户端意识到新主节点的身份需要花费更长时间。</li>
-</ul>
+<ol>
+<li><p>司机位置（纬度，经度）</p></li>
+<li><p>司机当前的 session 信息，在登录时我们会给司机端提供 session id</p></li>
+<li><p>订单信息（订单 ID 和车费）</p></li>
+</ol>
 
-<p>仅仅这些限制就足以促使我们去寻找一种新的解决方案，但还有更多的顾虑：</p>
+<p>我们决定每一次数据上报应小于 100 字节。 我们寻找传输协议来解决这个问题</p>
 
-<ul>
-<li><p>主节点通过<code>pt-heartbeat</code>服务来自我注入心跳，从而达到延迟测量和节流控制的目的。这个服务必须在新提升的主节点上开启。如果可能的话，这个服务会在旧的主节点上会被关停。</p></li>
-<li><p>同样地，Pseudo-GTID 注入是由主节点自我管理的。它需要在新的主节点上开启，而且最好在旧的主节点上关停。</p></li>
-<li><p>新的主节点被设置为可写的。如果可能的话，旧的主节点被设置为<code>read_only</code>。</p></li>
-</ul>
+<p>正如你可以看到，我们审视了以下几个协议：</p>
 
-<p>这些额外的步骤的执行时间构成了总宕机时间的一部分，并且引入了它们自己的故障和冲突。</p>
+<ol>
+<li><p>HTTP</p></li>
+<li><p>WebSockets</p></li>
+<li><p>TCP</p></li>
+<li><p>UDP</p></li>
+</ol>
 
-<p>这个解决方案是有效的，而且 GitHub 已经有运行良好的非常成功的 MySQL 故障恢复措施，但是我们想要在以下方面提升我们的高可用性：</p>
+<p><strong>对我们来说理想的选择是 UDP</strong>，因为：</p>
 
-<ul>
-<li><p>不依赖数据中心。</p></li>
-<li><p>克服数据中心故障的影响。</p></li>
-<li><p>移除不可靠的协作工作流。</p></li>
-<li><p>减少总宕机时间。</p></li>
-<li><p>尽可能实现无损故障恢复。</p></li>
-</ul>
+<ol>
+<li><p>我们只发送数据报</p></li>
+<li><p>我们不需要保证送达</p></li>
+<li><p>极简主义</p></li>
+<li><p>保存大量数据</p></li>
+<li><p>只有 20 字节开销</p></li>
+<li><p>在我们的国家的移动网络没有被阻止</p></li>
+</ol>
 
-<h2 id="toc_2">GitHub 的高可用性方案：orchestrator、Consul 和 GLB</h2>
+<p>至于数据序列化，我们考察了：</p>
 
-<p>我们的新策略以及附带的改进，解决或者减轻了上述的许多担忧。在目前的高可用性设置中我们使用：</p>
+<ol>
+<li><p>JSON</p></li>
+<li><p>MsgPack</p></li>
+<li><p>Protobuf</p></li>
+</ol>
 
-<ul>
-<li><p>orchestrator 用来运行故障监听和故障恢复。我们使用了如下图所示的一个跨数据中心的 orchestrator/raft。</p></li>
-<li><p>Hashicorp 公司的用于服务发现的 Consul。</p></li>
-<li><p>作为客户端和写操作节点之间的代理层的 GLB/HAProxy。</p></li>
-<li><p>用于网络路由的<code>anycast</code>。</p></li>
-</ul>
+<p><strong>我们选择 ProtoBuf</strong>，因为它对小数据非常有效。</p>
 
-<p><img src="https://mmbiz.qpic.cn/mmbiz_png/FE4VibF0SjfNElvLNcBKtkApBEKRqzNbxtzJR0SWVD6clpF03I1T9Gewm2KLm54OEic0qdXicGUI4hicOndlhfo4eQ/640?wx_fmt=png" alt=""/></p>
+<p><img src="http://mmbiz.qpic.cn/mmbiz_png/8XkvNnTiapOMnaWlypBttlyEyfP2FFJwMLibAuRGlVYtrciaab5sWnAvKNlqe2ia2EiawGkbC9UovDeibPfdU186oGrQ/0?wx_fmt=png" alt=""/></p>
 
-<p>新设置完全删除了 VIP 和 DNS 更改。并且在引入更多组件的同时，我们使得组件解耦并简化了任务，还使用了稳健的解决方案。详解如下：</p>
+<p>以看到最近的竞争对手是 PB 的三倍。（小编：可以参考 TimYang 的一条微博 [3] ）</p>
 
-<p><strong>一个普通的工作流</strong></p>
+<h2 id="toc_4"><strong>每次上报总共的数据</strong></h2>
 
-<p>平常，App 通过 GLB/HAProxy 连接到写操作节点。</p>
+<ol>
+<li><p>42 字节的业务数据</p></li>
+<li><p>加上 20 字节的 IP 报头</p></li>
+<li><p>得到每次上报 62 字节数据</p></li>
+</ol>
 
-<p>App 不会意识到主节点的身份。和以前一样，它们使用一个名称。例如，<code>cluster1</code>的主节点会是<code>mysql-writer-1.github.net</code>。然而，在我们目前的设置中，这个名称会被解析到一个任播（anycast）IP。</p>
+<p>当我们获得数据时，我们考虑如何存储。</p>
 
-<p>通过<code>anycast</code>方法，这个名称在任何地方都被解析为相同的 IP，但是流量会根据客户端位置分别进行路由。特别地，我们的每个数据中心都在多个区域部署了 GLB（我们的高可用负载均衡）。到<code>mysql-writer-1.github.net</code>的流量通常路由到本地数据中心的 GLB 集群。因此，所有的客户端都是由本地代理服务的。</p>
+<h2 id="toc_5"><strong>数据存储</strong></h2>
 
-<p>我们在 HAProxy 上运行 GLB。我们的 HAProxy 有写操作池：每个 MySQL 集群一个池，而每个池有一个后端服务器作为这个集群的主节点。所有的 GLB/HAProxy 区域在所有的数据中心都拥有相同的写操作池，而它们都指向这些池中完全相同的后端服务器。因此，如果一个 App 想要向<code>mysql-writer-1.github.net</code>写入，这跟它与哪个 GLB 服务器连接无关。它将总是被路由到<code>cluster1</code>主节点。</p>
+<p>我们需要存储这些数据：</p>
 
-<p>就 App 而言，服务发现在 GLB 终止，并且永远不需要重新发现。流量都是在 GLB 上路由到正确的目的地。</p>
+<ol>
+<li><p>标识司机的会话信息 session id</p></li>
+<li><p>车牌号</p></li>
+<li><p>订单 ID 和计费信息</p></li>
+<li><p>执行搜索的最后位置</p></li>
+<li><p>N 次最后位置以规划路线</p></li>
+</ol>
 
-<p>那么，GLB 如何知道将哪些服务器作为后端列表，以及我们如何将更改传播到 GLB？</p>
+<h2 id="toc_6"><strong>使用的存储</strong></h2>
 
-<p><strong>Consul 的服务发现</strong></p>
+<ol>
+<li><p>使用 Percona 存储所有数据。 我们存储司机，订单，计费等。</p></li>
+<li><p>Redis 作为用于缓存。</p></li>
+<li><p>Elasticsearch 用于地理编码</p></li>
+</ol>
 
-<p>Consul 作为一种服务发现解决方案而闻名，并且还提供 DNS 服务。然而在我们的解决方案中，我们用它作为一个高可用的键值对（KV）存储器。</p>
+<p>如上所述，当有大量在线司机时候，使用这些存储来保存数据并不方便。 所以我们需要地理索引。</p>
 
-<p>我们使用 Consul 的 KV 存储器写入集群主节点的身份。对于每个集群，都有一套 KV 记录表明集群的主节点的 fqdn、port、ipv4 和 ipv6。</p>
+<p>我们评估了两个地理索引：</p>
 
-<p>每个 GLB/HAProxy 节点都运行 consul-template：一个监听 Consul 数据变化的服务（在我们的案例中：是指集群主节点数据的变化）。<code>console-template</code>会生成一个有效的配置文件，并且能够基于配置的变化重新加载 HAProxy。</p>
+<ol>
+<li><p>KD 树</p></li>
+<li><p>R 树。</p></li>
+</ol>
 
-<p>因此，Consul 中每个主节点身份的改变都被每个 GLB/HAProxy 观测，然后重新配置自身，将新的主节点设置为一个集群的后端池的单个实体，然后重新加载以反映那些变化。</p>
+<p>我们对地理索引的要求：</p>
 
-<p>在 GitHub，我们在每个数据中心都有一个 Consul 设置，而且每个设置都是高可用的。然而，这些设置是彼此独立的。它们不会彼此复制，也不共享任何数据。</p>
+<ol>
+<li><p>搜索 N 个最近的点。</p></li>
+<li><p>我们需要一个平衡树，以在最糟糕的情况下提供最好的搜索</p></li>
+</ol>
 
-<p>那么，Consul 是如何得知变化的呢？这些信息又是如何跨平台分布的呢？</p>
+<h2 id="toc_7">KD 树<img src="http://mmbiz.qpic.cn/mmbiz_png/8XkvNnTiapOMnaWlypBttlyEyfP2FFJwMNpwaMWy5okg9EBiaHFXPRZuX6SwT3ceQKficI55o5bCebUcPNDgicySKw/0?wx_fmt=png" alt=""/></h2>
 
-<p><strong>orchestrator/raft</strong></p>
+<p>KD 树并不适合我们的需要，因为它是不平衡的，只能搜索一个最近的点。 我们可以在 kd-tree 上实现 k-nearest 邻居，但是没必要重造轮子，因为 R-tree 已经解决了这个问题。</p>
 
-<p>我们运行一个<code>orchestrator/raft</code>设置：<code>orchestrator</code>节点通过 raft 共识相互通信。我们每个数据中心有 1 到 2 个<code>orchestrator</code>节点。</p>
+<h2 id="toc_8">R - 树</h2>
 
-<p><code>orchestrator</code>负责故障检测、MySQL 故障恢复并将主节点的变更通知 Consul。故障恢复由单个<code>orchestrator/raft</code>领导节点维护，但是集群现在有一个新的主节点这个变更消息是通过 raft 机制传播给所有<code>orchestrator</code>节点的。</p>
+<p><img src="http://mmbiz.qpic.cn/mmbiz_png/8XkvNnTiapOMnaWlypBttlyEyfP2FFJwMsYQQnUbcAwXMXR5drAE1gxHPEDeKnYfct9TgYtzyQjEnQxxicicPGicnw/0?wx_fmt=png" alt=""/></p>
 
-<p>当<code>orchestrator</code>节点接收到主节点变更消息时，它们都会通知他们的本地 Consul 设置：它们各自调用一次 KV 写操作。拥有 1 个以上<code>orchestrator</code>的数据中心将会向 Consul 有多次（等同的）写操作。</p>
+<p>它看起来像这样。 我们可以执行搜索 N 个最近点，并且它是平衡树。 我们选择了这个。</p>
 
-<p><strong>整合工作流</strong></p>
+<p>您可以得到它的 Go 语言实现源码 [5]。</p>
 
-<p>在一个主节点宕机场景：</p>
+<p>另外，我们需要一个过期机制，因为我们需要使司机的超时机制，比如司机端 900 秒没有响应则在服务器删除会话。 所以我们需要 LRU 数据结构来存储最后的位置。 同时因为我们只存储 N 个位置。 如果我们尝试添加数据时候，队列存储已满，我们则删除最少使用的那个条目。 </p>
 
-<ul>
-<li><p><code>orchestrator</code>节点监测到故障。</p></li>
-<li><p><code>orchestrator/raft</code>领导开始一次恢复措施，提升一个新的主节点。</p></li>
-<li><p><code>orchestrator/raft</code>将主节点变更通告给所有 raft 集群节点。</p></li>
-<li><p>每个<code>orchestrator/raft</code>成员接收到一个领导变更通知。它们各自在本地 Consul 的 KV 存储器中更新新的主节点的身份。</p></li>
-<li><p>每个 GLB/HAProxy 都运行了<code>consul-template</code>，监控 Consul 的 KV 存储中的变更，然后重新配置和加载 HAProxy。</p></li>
-<li><p>客户端流量被重定向到新的主节点。</p></li>
-</ul>
+<p>下面是我们的存储架构。</p>
 
-<p>此外：</p>
+<ol>
+<li><p>我们将所有数据存储在内存中。</p></li>
+<li><p><strong>我们使用 R-tree 执行搜索最近的司机</strong>。</p></li>
+<li><p>此外，我们使用两个检索图，可以并按车牌号或 session 执行搜索</p></li>
+</ol>
 
-<ul>
-<li><p>无需传播 DNS 变更。</p></li>
-<li><p>没有 TTL。</p></li>
-<li><p>这个流程不需要挂掉的主节点的合作。它很大程度上被忽略了。</p></li>
-</ul>
+<h2 id="toc_9"><strong>我们打车软件最终算法</strong></h2>
 
-<p><strong>更多细节</strong></p>
+<p>这里是后端的最终算法：</p>
 
-<p>为了进一步保障这个流程，我们还做了如下工作：</p>
+<ol>
+<li><p>使用 UDP 传输数据</p></li>
+<li><p>尝试从存储获取司机</p></li>
+<li><p>如果存储不存在 - 则从 Redis 获取司机</p></li>
+<li><p>检查并验证数据</p></li>
+<li><p>将司机保存到存储</p></li>
+<li><p>如果不存在 - 初始化 LRU</p></li>
+<li><p>更新 r-tree</p></li>
+</ol>
 
-<ul>
-<li><p>HAProxy 配置了一个非常短的<code>hard-stop-after</code>。当它用写操作池中的一个新的后端服务器重新加载时，它会自动终止任何现存的与旧的主节点的连接。</p></li>
-<li><p>通过<code>hard-stop-after</code>，我们甚至不需要来自客户端的配合，而且这样减轻了裂脑场景。值的注意的是，这并不是严密的，在我们杀死旧连接之前会过去一段时间。但是在那之后，我们就可以放心不会出现令人讨厌的意外。</p></li>
-<li><p>我们并没有严格要求 Consul 在所有时间都是可用的。事实上，我们只需要它在故障恢复时可用。如果 Consul 碰巧挂掉了，GLB 会继续使用最近的已知值操作，不会采取剧烈的行动。</p></li>
-<li><p>GLB 被设置来验证新提升的主节点的身份。类似于我们的上下文感知 MySQL 池，在后端服务器进行检查，来确认它确实是一个写操作节点。如果碰巧删除了 Consul 中的主节点信息，没有问题；空白的条目会被忽略。如果我们在 Consul 中误写入了一个非主节点服务器的名称，没有问题；GLB 会拒绝更新它并使用上次已知的状态运行。</p></li>
-</ul>
+<h2 id="toc_10"><strong>HTTP 接口</strong></h2>
 
-<p>我们会在下面章节中进一步解决担忧并追求高可用性目标。</p>
+<p>我们实现了这些接口：</p>
 
-<h2 id="toc_3">orchestrator/raft 故障检测</h2>
+<ol>
+<li><p>返回最近的司机；</p></li>
+<li><p>从存储中删除司机（通过车牌号或 session id）</p></li>
+<li><p>获取行程信息</p></li>
+<li><p>获取司机信息</p></li>
+</ol>
 
-<p><code>orchestrator</code>使用一种整体方案来检测故障，因此是非常可靠的。我们不观测假阳性：我们不会过早启动故障恢复，因此不会遭受不必要的宕机时间。</p>
+<h2 id="toc_11"><strong>结论</strong></h2>
 
-<p><code>orchestrator/raft</code>进一步解决了一个完整的数据中心网络隔离的情况（即数据中心围栏）。数据中心网络隔离会引起混淆：那个数据中心中的服务器能够彼此通信。是它们与其它数据中心网络隔离了？还是其它数据中心被网络隔离了？</p>
+<p>最后，我想给出我们在后端系统中总结的经验：</p>
 
-<p>在一个<code>orchestrator/raft</code>设置中，<code>raft</code>领导节点是运行故障恢复的节点。领导节点是指获得大多数群体支持的节点。我们的<code>orchestrator</code>节点部署就是这样，没有单个数据中心占大多数支持，任何 n-1 个数据中心占大多数支持。</p>
+<ol>
+<li><p>UDP + Protobuf 以节省数据</p></li>
+<li><p>内存存储</p></li>
+<li><p>R 树获取最近的司机</p></li>
+<li><p>LRU 缓存用于存储最后的 n 个位置</p></li>
+<li><p>OSRM 用于地图匹配和定制路线</p>
 
-<p>在一个完整的数据中心网络隔离事件中，那个数据中心中的<code>orchestrator</code>节点与其他数据中心中的对等节点断开连接。因此，在隔离的数据中心中的<code>orchestrator</code>节点不能成为<code>raft</code>集群的领导节点。如果任何这种节点碰巧成为领导节点，它也会下台。一个新的领导节点会从其它数据中心分配。这个领导节点将获得所有其它数据中心的支持，而这些数据中心能够彼此通信。</p>
+<p><img src="http://mmbiz.qpic.cn/mmbiz_png/8XkvNnTiapOMnaWlypBttlyEyfP2FFJwM4mXrsdcMWvsrRnGLjT82TuFmG7CMibUeb7ONlhHxRscdWpTD34nImNg/0?wx_fmt=png" alt=""/></p></li>
+</ol>
 
-<p>因此，<code>orchestrator</code>节点就是网络隔离的数据中心之外的一个节点。在一个隔离的数据中心应该有一个主节点，<code>orchestrator</code>将启动故障恢复，用可用数据中心之一里的一个服务器取代它。我们通过将决策委托给非隔离数据中心中的群体来减轻数据中心隔离。</p>
+<p>您可以在 github [5] 上查看上面整个过程的源代码。现在功能还比较简单，但实现了文章中描述的许多功能。</p>
 
-<h2 id="toc_4">更快的通告</h2>
+<p><strong>参考资源</strong></p>
 
-<p>可以通过更快速地通告主节点变更来进一步减少总宕机时间。这如何实现呢？</p>
-
-<p>当<code>orchestrator</code>开始故障恢复时，它观测可被提升的服务器群。理解复制原则并遵从暗示和限制，能够基于最佳做法作出优化的决策。</p>
-
-<p>需要意识到，可用于提升的服务器也是一个理想的候选者，例如：</p>
-
-<ul>
-<li><p>没有什么可以阻止服务器的提升（而且用户已经潜在暗示这些服务器是首选提升对象）；</p></li>
-<li><p>这些服务器能够将其所有的兄弟节点作为复制品。</p></li>
-</ul>
-
-<p>在这种情况，<code>orchestrator</code>首先将服务器设置为可写的，然后迅速通告服务器的提升（写入 Consul KV），同时异步开始修复复制树（这个操作通常会花费更多时间）。</p>
-
-<p>很可能当我们的 GLB 服务器完全重新加载时，复制树已经完好无损了，但这不是严格必需的。服务器可以接收写操作！</p>
-
-<h2 id="toc_5">半同步复制</h2>
-
-<p>在 MySQL 的半同步复制中，在变更已经提交到一个或多个副本之前，主服务器不会承认这个事务提交。这提供了一种实现无损故障恢复的方法：任何提交到主节点的变更都已经应用或者等待被应用到某个副本。</p>
-
-<p>一致性伴随着成本：可用性风险。如果没有副本确认收到变更，主节点会阻塞并且写操作会停顿。幸运的是，有一个超时配置，超过超时时间，主节点能够恢复到异步复制模式，使得写操作再次可用。</p>
-
-<p>我们将我们的超时配置设置为一个合理的低值：<code>500ms</code>。这足够将主节点的变更传递给本地数据中心副本以及远程的数据中心。有了这个超时，我们就可以观测完美的半同步行为（不回滚到异步复制），同时在确认失败的情况下会感受到一个可接受的非常短的阻塞时间。</p>
-
-<p>我们在本地数据中心副本上启用半同步，而且在主节点挂掉事件中，我们期望（尽管并不严格强制）无损故障恢复。但是，我们不会期望一个完整的数据中心故障的无损故障恢复，因为它的代价非常大。</p>
-
-<p>在进行半同步超时实验时，我们还观察到一种对我们有利的现象：我们能够在主节点故障中影响理想的候选者的身份。通过在指定服务器上启用半同步并将它们标记为候选者，我们能够通过影响故障结果来减少总宕机时间。我们在实验中观察到，我们通常能够提升理想的候选者并因此快速进行通告。</p>
-
-<p><section class="" style="font-family: Avenir, -apple-system-font, 微软雅黑, sans-serif;line-height: 1.1;color: rgb(63, 63, 63);font-size: 20px;text-align: center;white-space: normal;background-color: rgb(255, 255, 255);">心跳注入</section></p>
-
-<p>我们选择在任何地方任何时间管理<code>pt-heartbeat</code>服务的开启 / 关闭，而不是只在提升 / 降级的主节点上管理<code>pt-heartbeat</code>服务的开启 / 关闭。这需要一些补丁，改变它们的<code>read_only</code>状态或者完全奔溃，以便使 pt-heartbeat 与服务器一致。</p>
-
-<p>在我们当前设置中，<code>pt-heartbeat</code>服务运行在主节点和副本上。在主节点上，它们生成心跳事件。在副本上，它们标识服务器是<code>read_only</code>并周期性检查它们的状态。一旦一个服务器被提升为主节点，那个服务器上的<code>pt-heartbeat</code>将其标识为可写的，并开始注入心跳事件。</p>
-
-<h2 id="toc_6">orchestrator 所有权委托</h2>
-
-<p>我们进一步委托给<code>orchestrator</code>：</p>
-
-<ul>
-<li><p>Preudo-GTID 注入</p></li>
-<li><p>将提升的主节点设置为可写的并清除它的复制状态</p></li>
-<li><p>如果可能的话，将旧的主节点设置为<code>read_only</code></p></li>
-</ul>
-
-<p>在新的主节点上，这减少了摩擦。被提升的主节点明显需要是活跃的和可访问的，否则我们不会提升它。那么，可以让<code>orchestrator</code>直接将变更应用到提升的主节点上。</p>
-
-<h2 id="toc_7">限制和缺陷</h2>
-
-<p>代理层使得 App 意识不到主节点的身份，同时它还对主节点屏蔽了 App 的身份。主节点看到的都是来自代理层的连接，而我们丢失了真正连接来源的信息。</p>
-
-<p>随着分布式系统的发展，我们仍然面临未处理过的场景。</p>
-
-<p>尤其是，在一个数据中心隔离场景中，假设主节点是在隔离的数据中心，那个数据中心的 App 仍然能够向主节点写入。一旦网络恢复，这可能导致状态不一致。我们通过从非常孤立的数据中心实现一个可靠的 STONITH 来减轻这种裂脑现象。像之前一样，主节点降级之前会经过一些时间，并且会存在一段时间的裂脑。避免裂脑现象的运维成本非常高。</p>
-
-<p>存在更多场景：故障恢复时 Consul 宕机；部分数据中心隔离；其它场景等。我们明白，在这种性质的分布式系统中，不可能关闭所有的漏洞，因此我们关注最重要的场景。</p>
-
-<h2 id="toc_8">结果</h2>
-
-<p>我们的 orchestrator/GLB/Consul 设置提供了：</p>
-
-<ul>
-<li><p>可靠的故障检测</p></li>
-<li><p>不依赖数据中心的故障恢复</p></li>
-<li><p>典型的无损故障恢复</p></li>
-<li><p>数据中心网络隔离支持</p></li>
-<li><p>减轻裂脑现象（更多工作仍在进行中）</p></li>
-<li><p>没有合作依赖</p></li>
-<li><p>大部分场景下的<code>10-13 秒</code>的总宕机时间</p></li>
-<li><p>总宕机时间在非常少的场景下会长达<code>20 秒</code>，在极端情况下会长达<code>25 秒</code>。</p></li>
-</ul>
-
-<h2 id="toc_9">结论</h2>
-
-<p>orchestratoion/proxy/service-discovery 范式在解耦架构中使用了众所周知且令人信赖的组件，使得它更容易部署、运维和观测，并且每个组件都可以独立地扩大或缩小规模。我们将不断测试我们的设置，从而不断寻求改进。</p>
+<ol>
+<li><p>GIF 动画下载：<a href="https://cdn-images-1.medium.com/max/1600/1*nI6cNApASR1mg6F5Sjgp7Q.gif">https://cdn-images-1.medium.com/max/1600/1*nI6cNApASR1mg6F5Sjgp7Q.gif</a></p></li>
+<li><p><a href="https://cdn-images-1.medium.com/max/1600/1*KfGB1SARPoqOUtPtl4NNBg.gif">https://cdn-images-1.medium.com/max/1600/1*KfGB1SARPoqOUtPtl4NNBg.gif</a></p></li>
+<li><p><a href="http://weibo.com/10503/24F1QpDmL">http://weibo.com/10503/24F1QpDmL</a></p></li>
+<li><p><a href="https://github.com/dhconnelly/rtreego">https://github.com/dhconnelly/rtreego</a></p></li>
+<li><p><a href="https://github.com/maddevsio/openfreecabs">https://github.com/maddevsio/openfreecabs</a></p></li>
+<li><p>本文英文原文：<a href="https://blog.maddevs.io/how-we-built-a-backend-system-for-uber-like-map-with-animated-cars-on-it-using-go-29d5dcd517a#.npo2x5788">https://blog.maddevs.io/how-we-built-a-backend-system-for-uber-like-map-with-animated-cars-on-it-using-go-29d5dcd517a#.npo2x5788</a></p></li>
+</ol>
 
                         
                       </div>
@@ -389,10 +354,10 @@
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/7/15</span>
+                    <span class="date">2018/8/26</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='HA.html'>HA</a></span>
+          					    <span class="posted-in"><a href='Go.html'>Go</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -482,31 +447,31 @@
 	      
 		      
 			      <li class="post">
-			        <a href="15459058392039.html">Reliable Domain Events</a>
+			        <a href="15517999043443.html">The Art of Crafting Architectural Diagrams</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
+			        <a href="15517997955971.html">为什么说我们需要软件架构图？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
+			        <a href="15516128677869.html">DNS Servers That Offer Privacy and Filtering</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
+			        <a href="15516123108194.html">Airbnb's Migration from Monolith to Services</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
+			        <a href="15516097487470.html">Events As First-Class Citizens</a>
 			      </li>
 		     
 		  

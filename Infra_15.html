@@ -105,1024 +105,156 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15331749691571.html">
+                <a class="clearlink" href="15381224274794.html">
                 
-                  <h1>基于ZooKeeper的分布式锁和队列</h1>
+                  <h1>How To Back Up, Restore, and Migrate a MongoDB Database on Ubuntu 14.04</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
-                        	<blockquote>
-<p><a href="http://www.cnblogs.com/luxiaoxun/p/4889764.html">http://www.cnblogs.com/luxiaoxun/p/4889764.html</a></p>
+                        	<pre><code>April 15, 2016, Anatoliy Dimitrov
+</code></pre>
+
+<blockquote>
+<p>原文地址 <a href="https://www.digitalocean.com/community/tutorials/how-to-back-up-restore-and-migrate-a-mongodb-database-on-ubuntu-14-04">https://www.digitalocean.com/community/tutorials/how-to-back-up-restore-and-migrate-a-mongodb-database-on-ubuntu-14-04</a></p>
 </blockquote>
 
-<p>在分布式系统中，往往需要一些分布式同步原语来做一些协同工作，<a href="http://www.cnblogs.com/luxiaoxun/p/4887452.html">上一篇</a>文章介绍了 Zookeeper 的基本原理，本文介绍下基于 Zookeeper 的 Lock 和 Queue 的实现，主要代码都来自 Zookeeper 的官方 recipe。</p>
+<p>MongoDB is one of the most popular NoSQL database engines. It is famous for being scalable, powerful, reliable and easy to use. In this article we&#39;ll show you how to back up, restore, and migrate your MongoDB databases.</p>
 
-<h3 id="toc_0">锁（Lock）</h3>
+<p>Importing and exporting a database means dealing with data in a human-readable format, compatible with other software products. In contrast, the backup and restore operations create or use MongoDB-specific binary data, which preserves not only the consistency and integrity of your data but also its specific MongoDB attributes. Thus, for migration its usually preferable to use backup and restore as long as the source and target systems are compatible.</p>
 
-<p>完全分布式锁是全局同步的，这意味着在任何时刻没有两个客户端会同时认为它们都拥有相同的锁，使用 Zookeeper 可以实现分布式锁，需要首先定义一个锁节点（lock root node）。</p>
+<h2 id="toc_0">Prerequisites</h2>
 
-<p>需要获得锁的客户端按照以下步骤来获取锁：</p>
-
-<ol>
-<li> 保证锁节点（lock root node）这个父根节点的存在，这个节点是每个要获取 lock 客户端共用的，这个节点是 PERSISTENT 的。</li>
-<li><p>第一次需要创建本客户端要获取 lock 的节点，调用 create( )，并设置 节点为 EPHEMERAL_SEQUENTIAL 类型，表示该节点为临时的和顺序的。如果获取锁的节点挂掉，则该节点自动失效，可以让其他节点获取锁。</p></li>
-<li><p>在父锁节点（lock root node）上调用 getChildren() ，不需要设置监视标志。 (为了避免 “羊群效应”).</p></li>
-<li><p>按照 Fair 竞争的原则，将步骤 3 中的子节点（要获取锁的节点）按照节点顺序的大小做排序，取出编号最小的一个节点做为 lock 的 owner，判断自己的节点 id<br/>
-是否就为 owner id，如果是则返回，lock 成功。如果不是则调用 exists( ) 监听比自己小的前一位的 id，关注它锁释放的操作（也就是 exist watch）。</p></li>
-<li><p>如果第 4 步监听 exist 的 watch 被触发，则继续按 4 中的原则判断自己是否能获取到 lock。</p></li>
-</ol>
-
-<p>释放锁：需要释放锁的客户端只需要删除在第 2 步中创建的节点即可。</p>
-
-<p>注意事项：</p>
-
-<p>一个节点的删除只会导致一个客户端被唤醒，因为每个节点只被一个客户端 watch，这避免了 “羊群效应”。</p>
-
-<p>一个分布式 lock 的实现：</p>
-
-<pre><code class="language-java">package org.apache.zookeeper.recipes.lock;
-
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.apache.zookeeper.KeeperException;
-import org.apache.zookeeper.WatchedEvent;
-import org.apache.zookeeper.Watcher;
-import static org.apache.zookeeper.CreateMode.EPHEMERAL_SEQUENTIAL;
-import org.apache.zookeeper.ZooKeeper;
-import org.apache.zookeeper.data.ACL;
-import org.apache.zookeeper.data.Stat;
-
-import java.util.List;
-import java.util.SortedSet;
-import java.util.TreeSet;
-
-/**
- * A &lt;a href=&quot;package.html&quot;&gt;protocol to implement an exclusive
- *  write lock or to elect a leader&lt;/a&gt;. &lt;p/&gt; You invoke {@link #lock()} to 
- *  start the process of grabbing the lock; you may get the lock then or it may be 
- *  some time later. &lt;p/&gt; You can register a listener so that you are invoked 
- *  when you get the lock; otherwise you can ask if you have the lock
- *  by calling {@link #isOwner()}
- *
- */
-public class WriteLock extends ProtocolSupport {
-    private static final Logger LOG = LoggerFactory.getLogger(WriteLock.class);
-
-    private final String dir;
-    private String id;
-    private ZNodeName idName;
-    private String ownerId;
-    private String lastChildId;
-    private byte[] data = {0x12, 0x34};
-    private LockListener callback;
-    private LockZooKeeperOperation zop;
-
-    /**
-     * zookeeper contructor for writelock
-     * @param zookeeper zookeeper client instance
-     * @param dir the parent path you want to use for locking
-     * @param acls the acls that you want to use for all the paths, 
-     * if null world read/write is used.
-     */
-    public WriteLock(ZooKeeper zookeeper, String dir, List&lt;ACL&gt; acl) {
-        super(zookeeper);
-        this.dir = dir;
-        if (acl != null) {
-            setAcl(acl);
-        }
-        this.zop = new LockZooKeeperOperation();
-    }
-
-    /**
-     * zookeeper contructor for writelock with callback
-     * @param zookeeper the zookeeper client instance
-     * @param dir the parent path you want to use for locking
-     * @param acl the acls that you want to use for all the paths
-     * @param callback the call back instance
-     */
-    public WriteLock(ZooKeeper zookeeper, String dir, List&lt;ACL&gt; acl, 
-            LockListener callback) {
-        this(zookeeper, dir, acl);
-        this.callback = callback;
-    }
-
-    /**
-     * return the current locklistener
-     * @return the locklistener
-     */
-    public LockListener getLockListener() {
-        return this.callback;
-    }
-
-    /**
-     * register a different call back listener
-     * @param callback the call back instance
-     */
-    public void setLockListener(LockListener callback) {
-        this.callback = callback;
-    }
-
-    /**
-     * Removes the lock or associated znode if 
-     * you no longer require the lock. this also 
-     * removes your request in the queue for locking
-     * in case you do not already hold the lock.
-     * @throws RuntimeException throws a runtime exception
-     * if it cannot connect to zookeeper.
-     */
-    public synchronized void unlock() throws RuntimeException {
-
-        if (!isClosed() &amp;&amp; id != null) {
-            // we don&#39;t need to retry this operation in the case of failure
-            // as ZK will remove ephemeral files and we don&#39;t wanna hang
-            // this process when closing if we cannot reconnect to ZK
-            try {
-                ZooKeeperOperation zopdel = new ZooKeeperOperation() {
-                    public boolean execute() throws KeeperException,
-                        InterruptedException {
-                        zookeeper.delete(id, -1);   
-                        return Boolean.TRUE;
-                    }
-                };
-                zopdel.execute();
-            } catch (InterruptedException e) {
-                LOG.warn(&quot;Caught: &quot; + e, e);
-                //set that we have been interrupted.
-               Thread.currentThread().interrupt();
-            } catch (KeeperException.NoNodeException e) {
-                // do nothing
-            } catch (KeeperException e) {
-                LOG.warn(&quot;Caught: &quot; + e, e);
-                throw (RuntimeException) new RuntimeException(e.getMessage()).
-                    initCause(e);
-            }
-            finally {
-                if (callback != null) {
-                    callback.lockReleased();
-                }
-                id = null;
-            }
-        }
-    }
-
-    /** 
-     * the watcher called on  
-     * getting watch while watching 
-     * my predecessor
-     */
-    private class LockWatcher implements Watcher {
-        public void process(WatchedEvent event) {
-            // lets either become the leader or watch the new/updated node
-            LOG.debug(&quot;Watcher fired on path: &quot; + event.getPath() + &quot; state: &quot; + 
-                    event.getState() + &quot; type &quot; + event.getType());
-            try {
-                lock();
-            } catch (Exception e) {
-                LOG.warn(&quot;Failed to acquire lock: &quot; + e, e);
-            }
-        }
-    }
-
-    /**
-     * a zoookeeper operation that is mainly responsible
-     * for all the magic required for locking.
-     */
-    private  class LockZooKeeperOperation implements ZooKeeperOperation {
-
-        /** find if we have been created earler if not create our node
-         * 
-         * @param prefix the prefix node
-         * @param zookeeper teh zookeeper client
-         * @param dir the dir paretn
-         * @throws KeeperException
-         * @throws InterruptedException
-         */
-        private void findPrefixInChildren(String prefix, ZooKeeper zookeeper, String dir) 
-            throws KeeperException, InterruptedException {
-            List&lt;String&gt; names = zookeeper.getChildren(dir, false);
-            for (String name : names) {
-                if (name.startsWith(prefix)) {
-                    id = dir + &quot;/&quot; + name;
-                    if (LOG.isDebugEnabled()) {
-                        LOG.debug(&quot;Found id created last time: &quot; + id);
-                    }
-                    break;
-                }
-            }
-            if (id == null) {
-                id = zookeeper.create(dir + &quot;/&quot; + prefix, data, 
-                        getAcl(), EPHEMERAL_SEQUENTIAL);
-
-                if (LOG.isDebugEnabled()) {
-                    LOG.debug(&quot;Created id: &quot; + id);
-                }
-            }
-
-        }
-
-        /**
-         * the command that is run and retried for actually 
-         * obtaining the lock
-         * @return if the command was successful or not
-         */
-        public boolean execute() throws KeeperException, InterruptedException {
-            do {
-                if (id == null) {
-                    long sessionId = zookeeper.getSessionId();
-                    String prefix = &quot;x-&quot; + sessionId + &quot;-&quot;;
-                    // lets try look up the current ID if we failed 
-                    // in the middle of creating the znode
-                    findPrefixInChildren(prefix, zookeeper, dir);
-                    idName = new ZNodeName(id);
-                }
-                if (id != null) {
-                    List&lt;String&gt; names = zookeeper.getChildren(dir, false);
-                    if (names.isEmpty()) {
-                        LOG.warn(&quot;No children in: &quot; + dir + &quot; when we&#39;ve just &quot; +
-                        &quot;created one! Lets recreate it...&quot;);
-                        // lets force the recreation of the id
-                        id = null;
-                    } else {
-                        // lets sort them explicitly (though they do seem to come back in order ususally :)
-                        SortedSet&lt;ZNodeName&gt; sortedNames = new TreeSet&lt;ZNodeName&gt;();
-                        for (String name : names) {
-                            sortedNames.add(new ZNodeName(dir + &quot;/&quot; + name));
-                        }
-                        ownerId = sortedNames.first().getName();
-                        SortedSet&lt;ZNodeName&gt; lessThanMe = sortedNames.headSet(idName);
-                        if (!lessThanMe.isEmpty()) {
-                            ZNodeName lastChildName = lessThanMe.last();
-                            lastChildId = lastChildName.getName();
-                            if (LOG.isDebugEnabled()) {
-                                LOG.debug(&quot;watching less than me node: &quot; + lastChildId);
-                            }
-                            Stat stat = zookeeper.exists(lastChildId, new LockWatcher());
-                            if (stat != null) {
-                                return Boolean.FALSE;
-                            } else {
-                                LOG.warn(&quot;Could not find the&quot; +
-                                        &quot; stats for less than me: &quot; + lastChildName.getName());
-                            }
-                        } else {
-                            if (isOwner()) {
-                                if (callback != null) {
-                                    callback.lockAcquired();
-                                }
-                                return Boolean.TRUE;
-                            }
-                        }
-                    }
-                }
-            }
-            while (id == null);
-            return Boolean.FALSE;
-        }
-    };
-
-    /**
-     * Attempts to acquire the exclusive write lock returning whether or not it was
-     * acquired. Note that the exclusive lock may be acquired some time later after
-     * this method has been invoked due to the current lock owner going away.
-     */
-    public synchronized boolean lock() throws KeeperException, InterruptedException {
-        if (isClosed()) {
-            return false;
-        }
-        ensurePathExists(dir);
-
-        return (Boolean) retryOperation(zop);
-    }
-
-    /**
-     * return the parent dir for lock
-     * @return the parent dir used for locks.
-     */
-    public String getDir() {
-        return dir;
-    }
-
-    /**
-     * Returns true if this node is the owner of the
-     *  lock (or the leader)
-     */
-    public boolean isOwner() {
-        return id != null &amp;&amp; ownerId != null &amp;&amp; id.equals(ownerId);
-    }
-
-    /**
-     * return the id for this lock
-     * @return the id for this lock
-     */
-    public String getId() {
-       return this.id;
-    }
-}
-</code></pre>
-
-<p>注意这里的 lock，可能会失败，会尝试多次，每次失败后会 Sleep 一段时间。</p>
-
-<p>PS：官方的代码有个小 bug，id 和 ownerId 应该都是全路径，即 id = dir + &quot;/&quot; + name; 原代码在 findPrefixInChildren 里有问题。</p>
-
-<p>用于辅助节点大小顺序排序的类：</p>
-
-<pre><code class="language-java">package org.apache.zookeeper.recipes.lock;
-
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
-/**
- * Represents an ephemeral znode name which has an ordered sequence number and
- * can be sorted in order
- * 
- */
-class ZNodeName implements Comparable&lt;ZNodeName&gt; {
-    private final String name;
-    private String prefix;
-    private int sequence = -1;
-    private static final Logger LOG = LoggerFactory.getLogger(ZNodeName.class);
-
-    public ZNodeName(String name) {
-        if (name == null) {
-            throw new NullPointerException(&quot;id cannot be null&quot;);
-        }
-        this.name = name;
-        this.prefix = name;
-        int idx = name.lastIndexOf(&#39;-&#39;);
-        if (idx &gt;= 0) {
-            this.prefix = name.substring(0, idx);
-            try {
-                this.sequence = Integer.parseInt(name.substring(idx + 1));
-                // If an exception occurred we misdetected a sequence suffix,
-                // so return -1.
-            } catch (NumberFormatException e) {
-                LOG.info(&quot;Number format exception for &quot; + idx, e);
-            } catch (ArrayIndexOutOfBoundsException e) {
-                LOG.info(&quot;Array out of bounds for &quot; + idx, e);
-            }
-        }
-    }
-
-    @Override
-    public String toString() {
-        return name.toString();
-    }
-
-    @Override
-    public boolean equals(Object o) {
-        if (this == o)
-            return true;
-        if (o == null || getClass() != o.getClass())
-            return false;
-
-        ZNodeName sequence = (ZNodeName) o;
-
-        if (!name.equals(sequence.name))
-            return false;
-
-        return true;
-    }
-
-    @Override
-    public int hashCode() {
-        return name.hashCode() + 37;
-    }
-
-    public int compareTo(ZNodeName that) {
-        int s1 = this.sequence;
-        int s2 = that.sequence;
-        if (s1 == -1 &amp;&amp; s2 == -1) {
-            return this.name.compareTo(that.name);
-        }
-        if (s1 == -1) {
-            return -1;
-        } else if (s2 == -1) {
-            return 1;
-        } else {
-            return s1 - s2;
-        }
-    }
-
-    /**
-     * Returns the name of the znode
-     */
-    public String getName() {
-        return name;
-    }
-
-    /**
-     * Returns the sequence number
-     */
-    public int getZNodeName() {
-        return sequence;
-    }
-
-    /**
-     * Returns the text prefix before the sequence number
-     */
-    public String getPrefix() {
-        return prefix;
-    }
-}
-</code></pre>
-
-<p>PS：这个 ZNodeName 类是被我修改过的，官方的代码比较有问题，官方的先用了节点路径的前缀 prefix 比较，再去比较 sequence 序号是不对的，这样会导致 sessionid 小的总是能拿到锁。应该直接比较全局有序的 sequence 序号，小的先拿到锁，先到先得。</p>
-
-<p>Zookeeper 统一操作 ZooKeeperOperation 接口：</p>
-
-<pre><code class="language-java">public interface ZooKeeperOperation {
-
-    /**
-     * Performs the operation - which may be involved multiple times if the connection
-     * to ZooKeeper closes during this operation
-     *
-     * @return the result of the operation or null
-     * @throws KeeperException
-     * @throws InterruptedException
-     */
-    public boolean execute() throws KeeperException, InterruptedException;
-}
-</code></pre>
-
-<p>因为 Zookeeper 的操作会失败，这个类封装了多次尝试：</p>
-
-<pre><code class="language-java">/**
- *
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the &quot;License&quot;); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- * http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-package org.apache.zookeeper.recipes.lock;
-
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.apache.zookeeper.CreateMode;
-import org.apache.zookeeper.KeeperException;
-import org.apache.zookeeper.ZooDefs;
-import org.apache.zookeeper.ZooKeeper;
-import org.apache.zookeeper.data.ACL;
-import org.apache.zookeeper.data.Stat;
-import org.apache.zookeeper.recipes.lock.ZooKeeperOperation;
-
-import java.util.List;
-import java.util.concurrent.atomic.AtomicBoolean;
-
-/**
- * A base class for protocol implementations which provides a number of higher 
- * level helper methods for working with ZooKeeper along with retrying synchronous
- *  operations if the connection to ZooKeeper closes such as 
- *  {@link #retryOperation(ZooKeeperOperation)}
- *
- */
-class ProtocolSupport {
-    private static final Logger LOG = LoggerFactory.getLogger(ProtocolSupport.class);
-
-    protected final ZooKeeper zookeeper;
-    private AtomicBoolean closed = new AtomicBoolean(false);
-    private long retryDelay = 500L;
-    private int retryCount = 10;
-    private List&lt;ACL&gt; acl = ZooDefs.Ids.OPEN_ACL_UNSAFE;
-
-    public ProtocolSupport(ZooKeeper zookeeper) {
-        this.zookeeper = zookeeper;
-    }
-
-    /**
-     * Closes this strategy and releases any ZooKeeper resources; but keeps the
-     *  ZooKeeper instance open
-     */
-    public void close() {
-        if (closed.compareAndSet(false, true)) {
-            doClose();
-        }
-    }
-
-    /**
-     * return zookeeper client instance
-     * @return zookeeper client instance
-     */
-    public ZooKeeper getZookeeper() {
-        return zookeeper;
-    }
-
-    /**
-     * return the acl its using
-     * @return the acl.
-     */
-    public List&lt;ACL&gt; getAcl() {
-        return acl;
-    }
-
-    /**
-     * set the acl 
-     * @param acl the acl to set to
-     */
-    public void setAcl(List&lt;ACL&gt; acl) {
-        this.acl = acl;
-    }
-
-    /**
-     * get the retry delay in milliseconds
-     * @return the retry delay
-     */
-    public long getRetryDelay() {
-        return retryDelay;
-    }
-
-    /**
-     * Sets the time waited between retry delays
-     * @param retryDelay the retry delay
-     */
-    public void setRetryDelay(long retryDelay) {
-        this.retryDelay = retryDelay;
-    }
-
-    /**
-     * Allow derived classes to perform 
-     * some custom closing operations to release resources
-     */
-    protected void doClose() {
-    }
-
-    /**
-     * Perform the given operation, retrying if the connection fails
-     * @return object. it needs to be cast to the callee&#39;s expected 
-     * return type.
-     */
-    protected Object retryOperation(ZooKeeperOperation operation) 
-        throws KeeperException, InterruptedException {
-        KeeperException exception = null;
-        for (int i = 0; i &lt; retryCount; i++) {
-            try {
-                return operation.execute();
-            } catch (KeeperException.SessionExpiredException e) {
-                LOG.warn(&quot;Session expired for: &quot; + zookeeper + &quot; so reconnecting due to: &quot; + e, e);
-                throw e;
-            } catch (KeeperException.ConnectionLossException e) {
-                if (exception == null) {
-                    exception = e;
-                }
-                LOG.debug(&quot;Attempt &quot; + i + &quot; failed with connection loss so &quot; +
-                        &quot;attempting to reconnect: &quot; + e, e);
-                retryDelay(i);
-            }
-        }
-        throw exception;
-    }
-
-    /**
-     * Ensures that the given path exists with no data, the current
-     * ACL and no flags
-     * @param path
-     */
-    protected void ensurePathExists(String path) {
-        ensureExists(path, null, acl, CreateMode.PERSISTENT);
-    }
-
-    /**
-     * Ensures that the given path exists with the given data, ACL and flags
-     * @param path
-     * @param acl
-     * @param flags
-     */
-    protected void ensureExists(final String path, final byte[] data,
-            final List&lt;ACL&gt; acl, final CreateMode flags) {
-        try {
-            retryOperation(new ZooKeeperOperation() {
-                public boolean execute() throws KeeperException, InterruptedException {
-                    Stat stat = zookeeper.exists(path, false);
-                    if (stat != null) {
-                        return true;
-                    }
-                    zookeeper.create(path, data, acl, flags);
-                    return true;
-                }
-            });
-        } catch (KeeperException e) {
-            LOG.warn(&quot;Caught: &quot; + e, e);
-        } catch (InterruptedException e) {
-            LOG.warn(&quot;Caught: &quot; + e, e);
-        }
-    }
-
-    /**
-     * Returns true if this protocol has been closed
-     * @return true if this protocol is closed
-     */
-    protected boolean isClosed() {
-        return closed.get();
-    }
-
-    /**
-     * Performs a retry delay if this is not the first attempt
-     * @param attemptCount the number of the attempts performed so far
-     */
-    protected void retryDelay(int attemptCount) {
-        if (attemptCount &gt; 0) {
-            try {
-                Thread.sleep(attemptCount * retryDelay);
-            } catch (InterruptedException e) {
-                LOG.debug(&quot;Failed to sleep: &quot; + e, e);
-            }
-        }
-    }
-}
-</code></pre>
-
-<p>这个类是本客户端获取到 lock 和释放 lock 的时候触发操作的接口：</p>
-
-<pre><code class="language-java">public interface LockListener {
-    /**
-     * call back called when the lock 
-     * is acquired
-     */
-    public void lockAcquired();
-
-    /**
-     * call back called when the lock is 
-     * released.
-     */
-    public void lockReleased();
-}
-</code></pre>
-
-<h3 id="toc_1">队列（Queue）</h3>
-
-<p>分布式队列是通用的数据结构，为了在 Zookeeper 中实现分布式队列，首先需要指定一个 Znode 节点作为队列节点（queue node）， 各个分布式客户端通过调用 create() 函数向队列中放入数据，调用 create() 时节点路径名带 &quot;qn-&quot; 结尾，并设置顺序（_sequence_）节点标志。 由于设置了节点的顺序标志，新的路径名具有以下字符串模式：&quot;_path-to-queue-node_/qn-X&quot;，X 是唯一自增号。需要从队列中获取数据 / 移除数据的客户端首先调用 getChildren() 函数，有数据则获取（获取数据后可以删除也可以不删），没有则在队列节点（queue node）上将 _watch_ 设置为 true，等待触发并处理最小序号的节点（即从序号最小的节点中取数据）。</p>
-
-<p>实现步骤基本如下：</p>
-
-<p>前提：需要一个队列 root 节点 dir</p>
-
-<p>入队：使用 create() 创建节点，将共享数据 data 放在该节点上，节点类型为 PERSISTENT_SEQUENTIAL，永久顺序性的（也可以设置为临时的，看需求）。</p>
-
-<p>出队：因为队列可能为空，2 种方式处理：一种如果为空则 wait 等待，一种返回异常。</p>
-
-<p>等待方式：这里使用了 CountDownLatch 的等待和 Watcher 的通知机制，使用了 TreeMap 的排序获取节点顺序最小的数据（FIFO）。</p>
-
-<p>抛出异常：getChildren() 获取队列数据时，如果 size==0 则抛出异常。</p>
-
-<p>一个分布式 Queue 的实现，详细代码：</p>
-
-<pre><code class="language-java">package org.apache.zookeeper.recipes.queue;
-
-import java.util.List;
-import java.util.NoSuchElementException;
-import java.util.TreeMap;
-import java.util.concurrent.CountDownLatch;
-
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.apache.zookeeper.CreateMode;
-import org.apache.zookeeper.KeeperException;
-import org.apache.zookeeper.WatchedEvent;
-import org.apache.zookeeper.Watcher;
-import org.apache.zookeeper.ZooDefs;
-import org.apache.zookeeper.ZooKeeper;
-import org.apache.zookeeper.data.ACL;
-import org.apache.zookeeper.data.Stat;
-
-/**
- * 
- * A &lt;a href=&quot;package.html&quot;&gt;protocol to implement a distributed queue&lt;/a&gt;.
- * 
- */
-public class DistributedQueue {
-    private static final Logger LOG = LoggerFactory.getLogger(DistributedQueue.class);
-
-    private final String dir;
-
-    private ZooKeeper zookeeper;
-    private List&lt;ACL&gt; acl = ZooDefs.Ids.OPEN_ACL_UNSAFE;
-
-    private final String prefix = &quot;qn-&quot;;
-
-    public DistributedQueue(ZooKeeper zookeeper, String dir, List&lt;ACL&gt; acl){
-        this.dir = dir;
-
-        if(acl != null){
-            this.acl = acl;
-        }
-        this.zookeeper = zookeeper;
-
-        //Add root dir first if not exists
-        if (zookeeper != null) {
-            try {
-                Stat s = zookeeper.exists(dir, false);
-                if (s == null) {
-                    zookeeper.create(dir, new byte[0], acl, CreateMode.PERSISTENT);
-                }
-            } catch (KeeperException e) {
-                LOG.error(e.toString());
-            } catch (InterruptedException e) {
-                LOG.error(e.toString());
-            }
-        }
-    }
-
-    /**
-     * Returns a Map of the children, ordered by id.
-     * @param watcher optional watcher on getChildren() operation.
-     * @return map from id to child name for all children
-     */
-    private TreeMap&lt;Long,String&gt; orderedChildren(Watcher watcher) throws KeeperException, InterruptedException {
-        TreeMap&lt;Long,String&gt; orderedChildren = new TreeMap&lt;Long,String&gt;();
-
-        List&lt;String&gt; childNames = null;
-        try{
-            childNames = zookeeper.getChildren(dir, watcher);
-        }catch (KeeperException.NoNodeException e){
-            throw e;
-        }
-
-        for(String childName : childNames){
-            try{
-                //Check format
-                if(!childName.regionMatches(0, prefix, 0, prefix.length())){
-                    LOG.warn(&quot;Found child node with improper name: &quot; + childName);
-                    continue;
-                }
-                String suffix = childName.substring(prefix.length());
-                Long childId = new Long(suffix);
-                orderedChildren.put(childId,childName);
-            }catch(NumberFormatException e){
-                LOG.warn(&quot;Found child node with improper format : &quot; + childName + &quot; &quot; + e,e);
-            }
-        }
-
-        return orderedChildren;
-    }
-
-    /**
-     * Find the smallest child node.
-     * @return The name of the smallest child node.
-     */
-    private String smallestChildName() throws KeeperException, InterruptedException {
-        long minId = Long.MAX_VALUE;
-        String minName = &quot;&quot;;
-
-        List&lt;String&gt; childNames = null;
-
-        try{
-            childNames = zookeeper.getChildren(dir, false);
-        }catch(KeeperException.NoNodeException e){
-            LOG.warn(&quot;Caught: &quot; +e,e);
-            return null;
-        }
-
-        for(String childName : childNames){
-            try{
-                //Check format
-                if(!childName.regionMatches(0, prefix, 0, prefix.length())){
-                    LOG.warn(&quot;Found child node with improper name: &quot; + childName);
-                    continue;
-                }
-                String suffix = childName.substring(prefix.length());
-                long childId = Long.parseLong(suffix);
-                if(childId &lt; minId){
-                    minId = childId;
-                    minName = childName;
-                }
-            }catch(NumberFormatException e){
-                LOG.warn(&quot;Found child node with improper format : &quot; + childName + &quot; &quot; + e,e);
-            }
-        }
-
-        if(minId &lt; Long.MAX_VALUE){
-            return minName;
-        }else{
-            return null;
-        }
-    }
-
-    /**
-     * Return the head of the queue without modifying the queue.
-     * @return the data at the head of the queue.
-     * @throws NoSuchElementException
-     * @throws KeeperException
-     * @throws InterruptedException
-     */
-    public byte[] element() throws NoSuchElementException, KeeperException, InterruptedException {
-        TreeMap&lt;Long,String&gt; orderedChildren;
-
-        // element, take, and remove follow the same pattern.
-        // We want to return the child node with the smallest sequence number.
-        // Since other clients are remove()ing and take()ing nodes concurrently, 
-        // the child with the smallest sequence number in orderedChildren might be gone by the time we check.
-        // We don&#39;t call getChildren again until we have tried the rest of the nodes in sequence order.
-        while(true){
-            try{
-                orderedChildren = orderedChildren(null);
-            }catch(KeeperException.NoNodeException e){
-                throw new NoSuchElementException();
-            }
-            if(orderedChildren.size() == 0 ) throw new NoSuchElementException();
-
-            for(String headNode : orderedChildren.values()){
-                if(headNode != null){
-                    try{
-                        return zookeeper.getData(dir+&quot;/&quot;+headNode, false, null);
-                    }catch(KeeperException.NoNodeException e){
-                        //Another client removed the node first, try next
-                    }
-                }
-            }
-
-        }
-    }
-
-    /**
-     * Attempts to remove the head of the queue and return it.
-     * @return The former head of the queue
-     * @throws NoSuchElementException
-     * @throws KeeperException
-     * @throws InterruptedException
-     */
-    public byte[] remove() throws NoSuchElementException, KeeperException, InterruptedException {
-        TreeMap&lt;Long,String&gt; orderedChildren;
-        // Same as for element.  Should refactor this.
-        while(true){
-            try{
-                orderedChildren = orderedChildren(null);
-            }catch(KeeperException.NoNodeException e){
-                throw new NoSuchElementException();
-            }
-            if(orderedChildren.size() == 0) throw new NoSuchElementException();
-
-            for(String headNode : orderedChildren.values()){
-                String path = dir +&quot;/&quot;+headNode;
-                try{
-                    byte[] data = zookeeper.getData(path, false, null);
-                    zookeeper.delete(path, -1);
-                    return data;
-                }catch(KeeperException.NoNodeException e){
-                    // Another client deleted the node first.
-                }
-            }
-        }
-    }
-
-    private class LatchChildWatcher implements Watcher {
-
-        CountDownLatch latch;
-
-        public LatchChildWatcher(){
-            latch = new CountDownLatch(1);
-        }
-
-        public void process(WatchedEvent event){
-            LOG.debug(&quot;Watcher fired on path: &quot; + event.getPath() + &quot; state: &quot; + 
-                    event.getState() + &quot; type &quot; + event.getType());
-            latch.countDown();
-        }
-        public void await() throws InterruptedException {
-            latch.await();
-        }
-    }
-
-    /**
-     * Removes the head of the queue and returns it, blocks until it succeeds.
-     * @return The former head of the queue
-     * @throws NoSuchElementException
-     * @throws KeeperException
-     * @throws InterruptedException
-     */
-    public byte[] take() throws KeeperException, InterruptedException {
-        TreeMap&lt;Long,String&gt; orderedChildren;
-        // Same as for element.  Should refactor this.
-        while(true){
-            LatchChildWatcher childWatcher = new LatchChildWatcher();
-            try{
-                orderedChildren = orderedChildren(childWatcher);
-            }catch(KeeperException.NoNodeException e){
-                zookeeper.create(dir, new byte[0], acl, CreateMode.PERSISTENT);
-                continue;
-            }
-            if(orderedChildren.size() == 0){
-                childWatcher.await();
-                continue;
-            }
-
-            for(String headNode : orderedChildren.values()){
-                String path = dir +&quot;/&quot;+headNode;
-                try{
-                    byte[] data = zookeeper.getData(path, false, null);
-                    zookeeper.delete(path, -1);
-                    return data;
-                }catch(KeeperException.NoNodeException e){
-                    // Another client deleted the node first.
-                }
-            }
-        }
-    }
-
-    /**
-     * Inserts data into queue.
-     * @param data
-     * @return true if data was successfully added
-     */
-    public boolean offer(byte[] data) throws KeeperException, InterruptedException{
-        for(;;){
-            try{
-                zookeeper.create(dir+&quot;/&quot;+prefix, data, acl, CreateMode.PERSISTENT_SEQUENTIAL);
-                return true;
-            }catch(KeeperException.NoNodeException e){
-                zookeeper.create(dir, new byte[0], acl, CreateMode.PERSISTENT);
-            }
-        }
-    }
-
-    /**
-     * Returns the data at the first element of the queue, or null if the queue is empty.
-     * @return data at the first element of the queue, or null.
-     * @throws KeeperException
-     * @throws InterruptedException
-     */
-    public byte[] peek() throws KeeperException, InterruptedException{
-        try{
-            return element();
-        }catch(NoSuchElementException e){
-            return null;
-        }
-    }
-
-    /**
-     * Attempts to remove the head of the queue and return it. Returns null if the queue is empty.
-     * @return Head of the queue or null.
-     * @throws KeeperException
-     * @throws InterruptedException
-     */
-    public byte[] poll() throws KeeperException, InterruptedException {
-        try{
-            return remove();
-        }catch(NoSuchElementException e){
-            return null;
-        }
-    }
-}
-</code></pre>
-
-<p><strong>Apache Curator</strong></p>
-
-<p>Curator 是一个封装 Zookeeper 操作的库，使用这个库的好处是 Curator 帮你管理和 Zookeeper 的连接，当连接有问题时会自动重试（retry）。</p>
-
-<pre><code class="language-java">RetryPolicy retryPolicy = new ExponentialBackoffRetry(1000, 3)
-CuratorFramework client = CuratorFrameworkFactory.newClient(zookeeperConnectionString, retryPolicy);
-client.start();
-</code></pre>
-
-<p>Curator 已经封装了一些常用的 Recipes</p>
-
-<h4 id="toc_2">Distributed Lock</h4>
-
-<pre><code class="language-java">InterProcessMutex lock = new InterProcessMutex(client, lockPath);
-if ( lock.acquire(maxWait, waitUnit) ) 
-{
-    try 
-    {
-        // do some work inside of the critical section here
-    }
-    finally
-    {
-        lock.release();
-    }
-}
-</code></pre>
-
-<h4 id="toc_3">Leader Election</h4>
-
-<pre><code class="language-java">LeaderSelectorListener listener = new LeaderSelectorListenerAdapter()
-{
-    public void takeLeadership(CuratorFramework client) throws Exception
-    {
-        // this callback will get called when you are the leader
-        // do whatever leader work you need to and only exit
-        // this method when you want to relinquish leadership
-    }
-}
-
-LeaderSelector selector = new LeaderSelector(client, path, listener);
-selector.autoRequeue();  // not required, but this is behavior that you will probably expect
-selector.start();
-</code></pre>
-
-<h2 id="toc_4">参考</h2>
+<p>Before following this tutorial, please make sure you complete the following prerequisites:</p>
 
 <ul>
-<li><a href="http://zookeeper.apache.org/doc/trunk/recipes.html">http://zookeeper.apache.org/doc/trunk/recipes.html</a></li>
-<li><a href="http://curator.apache.org/curator-recipes/index.html">http://curator.apache.org/curator-recipes/index.html</a></li>
+<li>  Ubuntu 14.04 Droplet</li>
+<li>  Non-root sudo user. Check out <a href="https://www.digitalocean.com/community/tutorials/initial-server-setup-with-ubuntu-14-04">Initial Server Setup with Ubuntu 14.04</a> for details.</li>
+<li>  MongoDB installed and configured using the article <a href="https://www.digitalocean.com/community/tutorials/how-to-install-mongodb-on-ubuntu-14-04">How to Install MongoDB on Ubuntu 14.04</a>.</li>
+<li>  Example MongoDB database imported using the instructions in <a href="https://www.digitalocean.com/community/tutorials/how-to-import-and-export-a-mongodb-database-on-ubuntu-14-04">How To Import and Export a MongoDB Database on Ubuntu 14.04</a></li>
 </ul>
+
+<p>Except otherwise noted, all of the commands that require root privileges in this tutorial should be run as a non-root user with sudo privileges.</p>
+
+<h2 id="toc_1">Understanding the Basics</h2>
+
+<p>Before continue further with this article some basic understanding on the matter is needed. If you have experience with popular relational database systems such as MySQL, you may find some similarities when working with MongoDB.</p>
+
+<p>The first thing you should know is that MongoDB uses <a href="http://json.org/">json</a> and bson (binary json) formats for storing its information. Json is the human-readable format which is perfect for exporting and, eventually, importing your data. You can further manage your exported data with any tool which supports json, including a simple text editor.</p>
+
+<p>An example json document looks like this:</p>
+
+<p>Example of json Format</p>
+
+<pre><code class="language-json">{&quot;address&quot;:[
+    {&quot;building&quot;:&quot;1007&quot;, &quot;street&quot;:&quot;Park Ave&quot;},
+    {&quot;building&quot;:&quot;1008&quot;, &quot;street&quot;:&quot;New Ave&quot;},
+]}
+</code></pre>
+
+<p>Json is very convenient to work with, but it does not support all the data types available in bson. This means that there will be the so called &#39;loss of fidelity&#39; of the information if you use json. For backing up and restoring, it&#39;s better to use the binary bson.</p>
+
+<p>Second, you don&#39;t have to worry about explicitly creating a MongoDB database. If the database you specify for import doesn&#39;t already exist, it is automatically created. Even better is the case with the collections&#39; (database tables) structure. In contrast to other database engines, in MongoDB the structure is again automatically created upon the first document (database row) insert.</p>
+
+<p>Third, in MongoDB reading or inserting large amounts of data, such as for the tasks of this article, can be resource intensive and consume much of the CPU, memory, and disk space. This is something critical considering that MongoDB is frequently used for large databases and Big Data. The simplest solution to this problem is to run the exports and backups during the night or during non-peak hours.</p>
+
+<p>Fourth, information consistency could be problematic if you have a busy MongoDB server where the information changes during the database export or backup process. There is no simple solution to this problem, but at the end of this article, you will see recommendations to further read about replication.</p>
+
+<p>While you can use the <a href="https://www.digitalocean.com/community/tutorials/how-to-import-and-export-a-mongodb-database-on-ubuntu-14-04">import and export functions</a> to backup and restore your data, there are better ways to ensure the full integrity of your MongoDB databases. To backup your data you should use the command <code>mongodump</code>. For restoring, use <code>mongorestore</code>. Let&#39;s see how they work.</p>
+
+<h2 id="toc_2">Backing Up a MongoDB Database</h2>
+
+<p>Let&#39;s cover backing up your MongoDB database first.</p>
+
+<p>An important argument to <code>mongodump</code> is <code>--db</code>, which specifies the name of the database which you want to back up. If you don&#39;t specify a database name, <code>mongodump</code> backups all of your databases. The second important argument is <code>--out</code> which specifies the directory in which the data will be dumped. Let&#39;s take an example with backing up the <code>newdb</code> database and storing it in the <code>/var/backups/mongobackups</code> directory. Ideally, we&#39;ll have each of our backups in a directory with the current date like <code>/var/backups/mongobackups/01-20-16</code> (20th January 2016). First, let&#39;s create that directory <code>/var/backups/mongobackups</code> with the command:</p>
+
+<pre><code class="language-bash">sudo mkdir /var/backups/mongobackups
+</code></pre>
+
+<p>Then our backup command should look like this:</p>
+
+<pre><code class="language-bash">sudo mongodump --db newdb --out /var/backups/mongobackups/`date +&quot;%m-%d-%y&quot;`
+
+</code></pre>
+
+<p>A successfully executed backup will have an output such as:</p>
+
+<p>Output of mongodump</p>
+
+<pre><code class="language-log">2016-01-20T10:11:57.685-0500    writing newdb.restaurants to /var/backups/mongobackups/01-20-16/newdb/restaurants.bson
+2016-01-20T10:11:57.907-0500    writing newdb.restaurants metadata to /var/backups/mongobackups/01-20-16/newdb/restaurants.metadata.json
+2016-01-20T10:11:57.911-0500    done dumping newdb.restaurants (25359 documents)
+2016-01-20T10:11:57.911-0500    writing newdb.system.indexes to /var/backups/mongobackups/01-20-16/newdb/system.indexes.bson
+</code></pre>
+
+<p>Note that in the above directory path we have used <code>date +&quot;%m-%d-%y&quot;</code> which gets the current date automatically. This will allow us to have the backups inside the directory <code>/var/backups/01-20-16/</code>. This is especially convenient when we automate the backups.</p>
+
+<p>At this point you have a complete backup of the <code>newdb</code> database in the directory <code>/var/backups/mongobackups/01-20-16/newdb/</code>. This backup has everything to restore the <code>newdb</code> properly and preserve its so called &quot;fidelity&quot;.</p>
+
+<p>As a general rule, you should make regular backups, such as on a daily basis, and preferably during a time when the server is least loaded. Thus, you can set the <code>mongodump</code> command as a cron job so that it&#39;s run regularly, e.g. every day at 03:03 AM. To accomplish this open crontab, cron&#39;s editor like this:</p>
+
+<pre><code class="language-bash">sudo crontab -e
+</code></pre>
+
+<p>Note that when you run <code>sudo crontab</code> you will be editing the cron jobs for the root user. This is recommended because if you set the crons for your user, they might not be executed properly, especially if your sudo profile requires password verification.</p>
+
+<p>Inside the crontab prompt insert the following <code>mongodump</code> command:</p>
+
+<p>Crontab window</p>
+
+<pre><code class="language-cron">3 3 * * * mongodump --out /var/backups/mongobackups/`date +&quot;%m-%d-%y&quot;`
+</code></pre>
+
+<p>In the above command we are omitting the <code>--db</code> argument on purpose because typically you will want to have all of your databases backed up.</p>
+
+<p>Depending on your MongoDB database sizes you may soon run out of disk space with too many backups. That&#39;s why it&#39;s also recommended to clean the old backups regularly or to compress them. For example, to delete all the backups older than 7 days you can use the following bash command:</p>
+
+<pre><code class="language-bash">find /var/backups/mongobackups/ -mtime +7 -exec rm -rf {} \;
+</code></pre>
+
+<p>Similarly to the previous <code>mongodump</code> command, this one can be also added as a cron job. It should run just before you start the next backup, e.g. at 03:01 AM. For this purpose open again crontab:</p>
+
+<pre><code class="language-bash">sudo crontab -e
+</code></pre>
+
+<p>After that insert the following line:</p>
+
+<p>Crontab window</p>
+
+<pre><code class="language-cron">3 1 * * * find /var/backups/mongobackups/ -mtime +7 -exec rm -rf {} \;
+
+</code></pre>
+
+<p>Completing all the tasks in this step will ensure a good backup solution for your MongoDB databases.</p>
+
+<h2 id="toc_3">Restoring and Migrating a MongoDB Database</h2>
+
+<p>By restoring your MongoDB database from a previous backup (such as one from the previous step) you will be able to have the exact copy of your MongoDB information taken at a certain time, including all the indexes and data types. This is especially useful when you want to migrate your MongoDB databases. For restoring MongoDB we&#39;ll be using the command <code>mongorestore</code> which works with the binary backup produced by <code>mongodump</code>.</p>
+
+<p>Let&#39;s continue our examples with the <code>newdb</code> database and see how we can restore it from the previously taken backup. As arguments we&#39;ll specify first the name of the database with the <code>--db</code> argument. Then with <code>--drop</code> we&#39;ll make sure that the target database is first dropped so that the backup is restored in a clean database. As a final argument we&#39;ll specify the directory of the last backup <code>/var/backups/mongobackups/01-20-16/newdb/</code>. So the whole command will look like this (replace with the date of the backup you wish to restore):</p>
+
+<pre><code class="language-bash">sudo mongorestore --db newdb --drop /var/backups/mongobackups/01-20-16/newdb/
+</code></pre>
+
+<p>A successful execution will show the following output:</p>
+
+<p>Output of mongorestore</p>
+
+<pre><code class="language-log">2016-01-20T10:44:47.876-0500    building a list of collections to restore from /var/backups/mongobackups/01-20-16/newdb/ dir
+2016-01-20T10:44:47.908-0500    reading metadata file from /var/backups/mongobackups/01-20-16/newdb/restaurants.metadata.json
+2016-01-20T10:44:47.909-0500    restoring newdb.restaurants from file /var/backups/mongobackups/01-20-16/newdb/restaurants.bson
+2016-01-20T10:44:48.591-0500    restoring indexes for collection newdb.restaurants from metadata
+2016-01-20T10:44:48.592-0500    finished restoring newdb.restaurants (25359 documents)
+2016-01-20T10:44:48.592-0500    done
+</code></pre>
+
+<p>In the above case we are restoring the data on the same server where the backup has been created. If you wish to migrate the data to another server and use the same technique, you should just copy the backup directory, which is <code>/var/backups/mongobackups/01-20-16/newdb/</code> in our case, to the other server.</p>
+
+<h2 id="toc_4">Conclusion</h2>
+
+<p>This article has introduced you to the essentials of managing your MongoDB data in terms of backing up, restoring, and migrating databases. You can continue further reading on <a href="https://www.digitalocean.com/community/tutorials/how-to-set-up-a-scalable-mongodb-database">How To Set Up a Scalable MongoDB Database</a> in which MongoDB replication is explained.</p>
+
+<p>Replication is not only useful for scalability, but it&#39;s also important for the current topics. Replication allows you to continue running your MongoDB service uninterrupted from a slave MongoDB server while you are restoring the master one from a failure. Part of the replication is also the <a href="https://docs.mongodb.org/manual/core/replica-set-oplog/">operations log (oplog)</a>, which records all the operations that modify your data. You can use this log, just as you would use the binary log in MySQL, to restore your data after the last backup has taken place. Recall that backups usually take place during the night, and if you decide to restore a backup in the evening you will be missing all the updates since the last backup.</p>
 
                         
                       </div>
@@ -1131,10 +263,10 @@ selector.start();
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/8/2</span>
+                    <span class="date">2018/9/28</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Orchestrator.html'>Orchestrator</a></span>
+          					    <span class="posted-in"><a href='Database.html'>Database</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -1224,31 +356,31 @@ selector.start();
 	      
 		      
 			      <li class="post">
-			        <a href="15459058392039.html">Reliable Domain Events</a>
+			        <a href="15517999043443.html">The Art of Crafting Architectural Diagrams</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
+			        <a href="15517997955971.html">为什么说我们需要软件架构图？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
+			        <a href="15516128677869.html">DNS Servers That Offer Privacy and Filtering</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
+			        <a href="15516123108194.html">Airbnb's Migration from Monolith to Services</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
+			        <a href="15516097487470.html">Events As First-Class Citizens</a>
 			      </li>
 		     
 		  

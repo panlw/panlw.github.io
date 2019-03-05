@@ -105,441 +105,429 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15327406535943.html">
+                <a class="clearlink" href="15401080666894.html">
                 
-                  <h1>理解OAuth 2.0</h1>
+                  <h1>Thread Pools in NGINX Boost Performance 9x!</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
-                        	<p><a href="http://en.wikipedia.org/wiki/OAuth">OAuth</a> 是一个关于授权（authorization）的开放网络标准，在全世界得到广泛应用，目前的版本是 2.0 版。</p>
-
-<p>本文对 OAuth 2.0 的设计思路和运行流程，做一个简明通俗的解释，主要参考材料为 <a href="http://www.rfcreader.com/#rfc6749">RFC 6749</a>。</p>
-
-<p><img src="http://www.ruanyifeng.com/blogimg/asset/2014/bg2014051201.png" alt=""/></p>
-
-<h2 id="toc_0">一、应用场景</h2>
-
-<p>为了理解 OAuth 的适用场合，让我举一个假设的例子。</p>
-
-<p>有一个 &quot;云冲印&quot; 的网站，可以将用户储存在 Google 的照片，冲印出来。用户为了使用该服务，必须让 &quot;云冲印&quot; 读取自己储存在 Google 上的照片。</p>
-
-<p><img src="http://www.ruanyifeng.com/blogimg/asset/2014/bg2014051202.png" alt=""/></p>
-
-<p>问题是只有得到用户的授权，Google 才会同意 &quot;云冲印&quot; 读取这些照片。那么，&quot;云冲印&quot; 怎样获得用户的授权呢？</p>
-
-<p>传统方法是，用户将自己的 Google 用户名和密码，告诉 &quot;云冲印&quot;，后者就可以读取用户的照片了。这样的做法有以下几个严重的缺点。</p>
-
-<blockquote>
-<p>（1）&quot;云冲印&quot; 为了后续的服务，会保存用户的密码，这样很不安全。</p>
-
-<p>（2）Google 不得不部署密码登录，而我们知道，单纯的密码登录并不安全。</p>
-
-<p>（3）&quot;云冲印&quot; 拥有了获取用户储存在 Google 所有资料的权力，用户没法限制 &quot;云冲印&quot; 获得授权的范围和有效期。</p>
-
-<p>（4）用户只有修改密码，才能收回赋予 &quot;云冲印&quot; 的权力。但是这样做，会使得其他所有获得用户授权的第三方应用程序全部失效。</p>
-
-<p>（5）只要有一个第三方应用程序被破解，就会导致用户密码泄漏，以及所有被密码保护的数据泄漏。</p>
+                        	<blockquote>
+<p><a href="https://www.nginx.com/blog/thread-pools-boost-performance-9x/">https://www.nginx.com/blog/thread-pools-boost-performance-9x/</a></p>
 </blockquote>
 
-<p>OAuth 就是为了解决上面这些问题而诞生的。</p>
+<p>It’s well known that NGINX uses an <a href="http://nginx.com/blog/inside-nginx-how-we-designed-for-performance-scale/">asynchronous, event‑driven approach to handling connections</a>. This means that instead of creating another dedicated process or thread for each request (like servers with a traditional architecture), it handles multiple connections and requests in one worker process. To achieve this, NGINX works with sockets in a non‑blocking mode and uses efficient methods such as <a href="http://man7.org/linux/man-pages/man7/epoll.7.html">epoll</a> and <a href="https://www.freebsd.org/cgi/man.cgi?query=kqueue">kqueue</a>.</p>
 
-<h2 id="toc_1">二、名词定义</h2>
+<p>Because the number of full‑weight processes is small (usually only one per CPU core) and constant, much less memory is consumed and CPU cycles aren’t wasted on task switching. The advantages of such an approach are well‑known through the example of NGINX itself. It successfully handles millions of simultaneous requests and scales very well.</p>
 
-<p>在详细讲解 OAuth 2.0 之前，需要了解几个专用名词。它们对读懂后面的讲解，尤其是几张图，至关重要。</p>
-
-<blockquote>
-<p>（1） <strong>Third-party application</strong>：第三方应用程序，本文中又称 &quot;客户端&quot;（client），即上一节例子中的 &quot;云冲印&quot;。</p>
-
-<p>（2）<strong>HTTP service</strong>：HTTP 服务提供商，本文中简称 &quot;服务提供商&quot;，即上一节例子中的 Google。</p>
-
-<p>（3）<strong>Resource Owner</strong>：资源所有者，本文中又称 &quot;用户&quot;（user）。</p>
-
-<p>（4）<strong>User Agent</strong>：用户代理，本文中就是指浏览器。</p>
-
-<p>（5）<strong>Authorization server</strong>：认证服务器，即服务提供商专门用来处理认证的服务器。</p>
-
-<p>（6）<strong>Resource server</strong>：资源服务器，即服务提供商存放用户生成的资源的服务器。它与认证服务器，可以是同一台服务器，也可以是不同的服务器。</p>
-</blockquote>
-
-<p>知道了上面这些名词，就不难理解，OAuth 的作用就是让 &quot;客户端&quot; 安全可控地获取 &quot;用户&quot; 的授权，与 &quot;服务商提供商&quot; 进行互动。</p>
-
-<h2 id="toc_2">三、OAuth 的思路</h2>
-
-<p>OAuth 在 &quot;客户端&quot; 与 &quot;服务提供商&quot; 之间，设置了一个授权层（authorization layer）。&quot;客户端&quot; 不能直接登录 &quot;服务提供商&quot;，只能登录授权层，以此将用户与客户端区分开来。&quot;客户端&quot; 登录授权层所用的令牌（token），与用户的密码不同。用户可以在登录的时候，指定授权层令牌的权限范围和有效期。</p>
-
-<p>&quot;客户端&quot; 登录授权层以后，&quot;服务提供商&quot; 根据令牌的权限范围和有效期，向 &quot;客户端&quot; 开放用户储存的资料。</p>
-
-<h2 id="toc_3">四、运行流程</h2>
-
-<p>OAuth 2.0 的运行流程如下图，摘自 RFC 6749。</p>
-
-<p><img src="http://www.ruanyifeng.com/blogimg/asset/2014/bg2014051203.png" alt=""/></p>
+<p><img src="media/15401080666894/15401081464365.jpg" alt=""/></p>
 
 <blockquote>
-<p>（A）用户打开客户端以后，客户端要求用户给予授权。</p>
-
-<p>（B）用户同意给予客户端授权。</p>
-
-<p>（C）客户端使用上一步获得的授权，向认证服务器申请令牌。</p>
-
-<p>（D）认证服务器对客户端进行认证以后，确认无误，同意发放令牌。</p>
-
-<p>（E）客户端使用令牌，向资源服务器申请获取资源。</p>
-
-<p>（F）资源服务器确认令牌无误，同意向客户端开放资源。</p>
+<p>Each process consumes additional memory, and each switch between them consumes CPU cycles and trashes L‑caches</p>
 </blockquote>
 
-<p>不难看出来，上面六个步骤之中，B 是关键，即用户怎样才能给于客户端授权。有了这个授权以后，客户端就可以获取令牌，进而凭令牌获取资源。</p>
+<p>But the asynchronous, event‑driven approach still has a problem. Or, as I like to think of it, an “enemy”. And the name of the enemy is: <strong>blocking</strong>. Unfortunately, many third‑party modules use blocking calls, and users (and sometimes even the developers of the modules) aren’t aware of the drawbacks. Blocking operations can ruin NGINX performance and must be avoided at all costs.</p>
 
-<p>下面一一讲解客户端获取授权的四种模式。</p>
+<p>Even in the current official NGINX code it’s not possible to avoid blocking operations in every case, and to solve this problem the new “thread pools” mechanism was <a href="http://hg.nginx.org/nginx/rev/466bd63b63d1">implemented in NGINX version 1.7.11</a> and <a href="http://nginx.com/blog/nginx-plus-r7-released/#thread-pools">NGINX Plus Release 7</a>. What it is and how it supposed to be used, we will cover later. Now let’s meet face to face with our enemy.</p>
 
-<h2 id="toc_4">五、客户端的授权模式</h2>
+<p><u>Editor – For an overview of NGINX Plus R7, see <a href="https://www.nginx.com/blog/nginx-plus-r7-released/">Announcing NGINX Plus R7</a> on our blog.</u></p>
 
-<p>客户端必须得到用户的授权（authorization grant），才能获得令牌（access token）。OAuth 2.0 定义了四种授权方式。</p>
+<p>_For detailed discussions of other new features in NGINX Plus R7, see these related blog posts:</p>
 
 <ul>
-<li>  授权码模式（authorization code）</li>
-<li>  简化模式（implicit）</li>
-<li>  密码模式（resource owner password credentials）</li>
-<li>  客户端模式（client credentials）</li>
+<li>  <a href="https://www.nginx.com/blog/http2-r7/">HTTP/2 Now Fully Supported in NGINX Plus</a></li>
+<li>  <a href="https://www.nginx.com/blog/socket-sharding-nginx-release-1-9-1/">Socket Sharding in NGINX</a></li>
+<li>  <a href="https://www.nginx.com/blog/dashboard-r7">The New NGINX Plus Dashboard in Release 7</a></li>
+<li>  <a href="https://www.nginx.com/blog/tcp-load-balancing-r7">TCP Load Balancing in NGINX Plus R7</a>_ </li>
 </ul>
 
-<h2 id="toc_5">六、授权码模式</h2>
+<h2 id="toc_0">The Problem</h2>
 
-<p>授权码模式（authorization code）是功能最完整、流程最严密的授权模式。它的特点就是通过客户端的后台服务器，与 &quot;服务提供商&quot; 的认证服务器进行互动。</p>
+<p>First, for better understanding of the problem a few words about how NGINX works.</p>
 
-<p><img src="http://www.ruanyifeng.com/blogimg/asset/2014/bg2014051204.png" alt=""/></p>
+<p>In general, NGINX is an event handler, a controller that receives information from the kernel about all events occurring on connections and then gives commands to the operating system about what to do. In fact, NGINX does all the hard work by orchestrating the operating system, while the operating system does the routine work of reading and sending bytes. So it’s very important for NGINX to respond fast and in a timely manner.</p>
 
-<p>它的步骤如下：</p>
+<p><img src="media/15401080666894/15401081641234.jpg" alt=""/></p>
 
 <blockquote>
-<p>（A）用户访问客户端，后者将前者导向认证服务器。</p>
-
-<p>（B）用户选择是否给予客户端授权。</p>
-
-<p>（C）假设用户给予授权，认证服务器将用户导向客户端事先指定的 &quot;重定向 URI&quot;（redirection URI），同时附上一个授权码。</p>
-
-<p>（D）客户端收到授权码，附上早先的 &quot;重定向 URI&quot;，向认证服务器申请令牌。这一步是在客户端的后台的服务器上完成的，对用户不可见。</p>
-
-<p>（E）认证服务器核对了授权码和重定向 URI，确认无误后，向客户端发送访问令牌（access token）和更新令牌（refresh token）。</p>
+<p>The worker process listens for and processes events from the kernel</p>
 </blockquote>
 
-<p>下面是上面这些步骤所需要的参数。</p>
+<p>The events can be timeouts, notifications about sockets ready to read or to write, or notifications about an error that occurred. NGINX receives a bunch of events and then processes them one by one, doing the necessary actions. Thus all the processing is done in a simple loop over a queue in one thread. NGINX dequeues an event from the queue and then reacts to it by, for example, writing or reading a socket. In most cases, this is extremely quick (perhaps just requiring a few CPU cycles to copy some data in memory) and NGINX proceeds through all of the events in the queue in an instant.</p>
 
-<p>A 步骤中，客户端申请认证的 URI，包含以下参数：</p>
-
-<ul>
-<li>  response_type：表示授权类型，必选项，此处的值固定为 &quot;code&quot;</li>
-<li>  client_id：表示客户端的 ID，必选项</li>
-<li>  redirect_uri：表示重定向 URI，可选项</li>
-<li>  scope：表示申请的权限范围，可选项</li>
-<li>  state：表示客户端的当前状态，可以指定任意值，认证服务器会原封不动地返回这个值。</li>
-</ul>
-
-<p>下面是一个例子。</p>
+<p><img src="media/15401080666894/15401081758160.jpg" alt=""/></p>
 
 <blockquote>
-<pre><code>
-GET /authorize?response_type=code&amp;client_id=s6BhdRkqt3&amp;state=xyz
-        &amp;redirect_uri=https%3A%2F%2Fclient%2Eexample%2Ecom%2Fcb HTTP/1.1
-Host: server.example.com
+<p>All processing is done in a simple loop by one thread</p>
+</blockquote>
 
+<p>But what will happen if some long and heavy operation has occurred? The whole cycle of event processing will get stuck waiting for this operation to finish.</p>
+
+<p>So, by saying “a blocking operation” we mean any operation that stops the cycle of handling events for a significant amount of time. Operations can be blocking for various reasons. For example, NGINX might be busy with lengthy, CPU‑intensive processing, or it might have to wait to access a resource (such as a hard drive, or a mutex or library function call that gets responses from a database in a synchronous manner, etc.). The key point is that while processing such operations, the worker process cannot do anything else and cannot handle other events, even if there are more system resources available and some events in the queue could utilize those resources.</p>
+
+<p>Imagine a salesperson in a store with a long queue in front of him. The first guy in the queue asks for something that is not in the store but is in the warehouse. The salesperson goes to the warehouse to deliver the goods. Now the entire queue must wait a couple of hours for this delivery and everyone in the queue is unhappy. Can you imagine the reaction of the people? The waiting time of every person in the queue is increased by these hours, but the items they intend to buy might be right there in the shop.</p>
+
+<p><img src="media/15401080666894/15401081890992.jpg" alt=""/></p>
+
+<blockquote>
+<p>Everyone in the queue has to wait for the first person’s order</p>
+</blockquote>
+
+<p>Nearly the same situation happens with NGINX when it asks to read a file that isn’t cached in memory, but needs to be read from disk. Hard drives are slow (especially the spinning ones), and while the other requests waiting in the queue might not need access to the drive, they are forced to wait anyway. As a result, latencies increase and system resources are not fully utilized.</p>
+
+<p><img src="media/15401080666894/15401082010258.jpg" alt=""/></p>
+
+<blockquote>
+<p>Just one blocking operation can delay all following operations for a significant time</p>
+</blockquote>
+
+<p>Some operating systems provide an asynchronous interface for reading and sending files and NGINX can use this interface (see the <a href="http://nginx.org/en/docs/http/ngx_http_core_module.html#aio">aio</a> directive). A good example here is FreeBSD. Unfortunately, we can’t say the same about Linux. Although Linux provides a kind of asynchronous interface for reading files, it has a couple of significant drawbacks. One of them is alignment requirements for file access and buffers, but NGINX handles that well. But the second problem is worse. The asynchronous interface requires the <code>O_DIRECT</code> flag to be set on the file descriptor, which means that any access to the file will bypass the cache in memory and increase load on the hard disks. That definitely doesn’t make it optimal for many cases.</p>
+
+<p>To solve this problem in particular, thread pools were introduced in NGINX 1.7.11 and NGINX Plus Release 7.</p>
+
+<p>Now let’s dive into what thread pools are about and how they work.</p>
+
+<h2 id="toc_1">Thread Pools</h2>
+
+<p>Let’s return to our poor sales assistant who delivers goods from a faraway warehouse. But he has become smarter (or maybe he became smarter after being beaten by the crowd of angry clients?) and hired a delivery service. Now when somebody asks for something from the faraway warehouse, instead of going to the warehouse himself, he just drops an order to a delivery service and they will handle the order while our sales assistant will continue serving other customers. Thus only those clients whose goods aren’t in the store are waiting for delivery, while others can be served immediately.</p>
+
+<p><img src="media/15401080666894/15401082115635.jpg" alt=""/></p>
+
+<blockquote>
+<p>Passing an order to the delivery service unblocks the queue</p>
+</blockquote>
+
+<p>In terms of NGINX, the thread pool is performing the functions of the delivery service. It consists of a task queue and a number of threads that handle the queue. When a worker process needs to do a potentially long operation, instead of processing the operation by itself it puts a task in the pool’s queue, from which it can be taken and processed by any free thread.</p>
+
+<p><img src="media/15401080666894/15401082238769.jpg" alt=""/></p>
+
+<blockquote>
+<p>The worker process offloads blocking operations to the thread pool</p>
+</blockquote>
+
+<p>It seems then we have another queue. Right. But in this case the queue is limited by a specific resource. We can’t read from a drive faster than the drive is capable of producing data. Now at least the drive doesn’t delay processing of other events and only the requests that need to access files are waiting.</p>
+
+<p>The “reading from disk” operation is often used as the most common example of a blocking operation, but actually the thread pools implementation in NGINX can be used for any tasks that aren’t appropriate to process in the main working cycle.</p>
+
+<p>At the moment, offloading to thread pools is implemented only for three essential operations: the <code>read()</code> syscall on most operating systems, <code>sendfile()</code> on Linux, and <code>aio_write()</code> on Linux which is used when writing some temporary files such as those for the cache. We will continue to test and benchmark the implementation, and we may offload other operations to the thread pools in future releases if there’s a clear benefit.</p>
+
+<p><u>Editor – Support for the</u> <code>aio_write()</code> <u>syscall was added in <a href="http://hg.nginx.org/nginx/rev/fc72784b1f52">NGINX 1.9.13</a> and <a href="https://www.nginx.com/blog/nginx-plus-r9-released/#aio-write">NGINX Plus R9</a>.</u></p>
+
+<h2 id="toc_2">Benchmarking</h2>
+
+<p>It’s time to move from theory to practice. To demonstrate the effect of using thread pools we are going to perform a synthetic benchmark that simulates the worst mix of blocking and nonblocking operations.</p>
+
+<p>It requires a data set that is guaranteed not to fit in memory. On a machine with 48 GB of RAM, we have generated 256 GB of random data in 4‑MB files, and then have configured NGINX 1.9.0 to serve it.</p>
+
+<p>The configuration is pretty simple:</p>
+
+<pre><code>worker_processes 16;
+
+events {
+    accept_mutex off;
+}
+
+http {
+    include mime.types;
+    default_type application/octet-stream;
+
+    access_log off;
+    sendfile on;
+    sendfile_max_chunk 512k;
+
+    server {
+        listen 8000;
+
+        location / {
+            root /storage;
+        }
+    }
+}
 </code></pre>
-</blockquote>
 
-<p>C 步骤中，服务器回应客户端的 URI，包含以下参数：</p>
+<p>As you can see, to achieve better performance some tuning was done: <code>[logging](http://nginx.org/en/docs/http/ngx_http_log_module.html#access_log)</code> and <code>[accept_mutex](http://nginx.org/en/docs/ngx_core_module.html#accept_mutex)</code> were disabled, <code>[sendfile](http://nginx.org/en/docs/http/ngx_http_core_module.html#sendfile)</code> was enabled, and <code>[sendfile_max_chunk](http://nginx.org/en/docs/http/ngx_http_core_module.html#sendfile_max_chunk)</code> was set. The last directive can reduce the maximum time spent in blocking <code>sendfile()</code> calls, since NGINX won’t try to send the whole file at once, but will do it in 512‑KB chunks.</p>
 
-<ul>
-<li>  code：表示授权码，必选项。该码的有效期应该很短，通常设为 10 分钟，客户端只能使用该码一次，否则会被授权服务器拒绝。该码与客户端 ID 和重定向 URI，是一一对应关系。</li>
-<li>  state：如果客户端的请求中包含这个参数，认证服务器的回应也必须一模一样包含这个参数。</li>
-</ul>
+<p>The machine has two Intel Xeon E5645 (12 cores, 24 HT‑threads in total) processors and a 10‑Gbps network interface. The disk subsystem is represented by four Western Digital WD1003FBYX hard drives arranged in a RAID10 array. All of this hardware is powered by Ubuntu Server 14.04.1 LTS.</p>
 
-<p>下面是一个例子。</p>
+<p><img src="media/15401080666894/15401082447034.jpg" alt=""/></p>
 
 <blockquote>
-<pre><code>
-HTTP/1.1 302 Found
-Location: https://client.example.com/cb?code=SplxlOBeZQQYbYS6WxSbIA
-          &amp;state=xyz
+<p>Configuration of load generators and NGINX for the benchmark</p>
+</blockquote>
 
+<p>The clients are represented by two machines with the same specifications. On one of these machines, <a href="https://github.com/wg/wrk"><code>wrk</code></a> creates load using a Lua script. The script requests files from our server in a random order using 200 parallel connections, and each request is likely to result in a cache miss and a blocking read from disk. Let’s call this load the <u>random</u> load.</p>
+
+<p>On the second client machine we will run another copy of <code>wrk</code> that will request the same file multiple times using 50 parallel connections. Since this file will be frequently accessed, it will remain in memory all the time. In normal circumstances, NGINX would serve these requests very quickly, but performance will fall if the worker processes are blocked by other requests. Let’s call this load the <u>constant</u> load.</p>
+
+<p>The performance will be measured by monitoring throughput of the server machine using <code>ifstat</code> and by obtaining <code>wrk</code> results from the second client.</p>
+
+<p>Now, the first run without thread pools does not give us very exciting results:</p>
+
+<pre><code>% ifstat -bi eth2
+eth2
+Kbps in  Kbps out
+5531.24  1.03e+06
+4855.23  812922.7
+5994.66  1.07e+06
+5476.27  981529.3
+6353.62  1.12e+06
+5166.17  892770.3
+5522.81  978540.8
+6208.10  985466.7
+6370.79  1.12e+06
+6123.33  1.07e+06
 </code></pre>
-</blockquote>
 
-<p>D 步骤中，客户端向认证服务器申请令牌的 HTTP 请求，包含以下参数：</p>
+<p>As you can see, with this configuration the server is able to produce about 1 Gbps of traffic in total. In the output from <code>top</code>, we can see that all of worker processes spend most of the time in blocking I/O (they are in a <code>D</code> state):</p>
 
-<ul>
-<li>  grant_type：表示使用的授权模式，必选项，此处的值固定为 &quot;authorization_code&quot;。</li>
-<li>  code：表示上一步获得的授权码，必选项。</li>
-<li>  redirect_uri：表示重定向 URI，必选项，且必须与 A 步骤中的该参数值保持一致。</li>
-<li>  client_id：表示客户端 ID，必选项。</li>
-</ul>
+<pre><code>top - 10:40:47 up 11 days,  1:32,  1 user,  load average: 49.61, 45.77 62.89
+Tasks: 375 total,  2 running, 373 sleeping,  0 stopped,  0 zombie
+%Cpu(s):  0.0 us,  0.3 sy,  0.0 ni, 67.7 id, 31.9 wa,  0.0 hi,  0.0 si,  0.0 st
+KiB Mem:  49453440 total, 49149308 used,   304132 free,    98780 buffers
+KiB Swap: 10474236 total,    20124 used, 10454112 free, 46903412 cached Mem
 
-<p>下面是一个例子。</p>
-
-<blockquote>
-<pre><code>
-POST /token HTTP/1.1
-Host: server.example.com
-Authorization: Basic czZCaGRSa3F0MzpnWDFmQmF0M2JW
-Content-Type: application/x-www-form-urlencoded
-
-grant_type=authorization_code&amp;code=SplxlOBeZQQYbYS6WxSbIA
-&amp;redirect_uri=https%3A%2F%2Fclient%2Eexample%2Ecom%2Fcb
-
+  PID USER     PR  NI    VIRT    RES     SHR S  %CPU %MEM    TIME+ COMMAND
+ 4639 vbart    20   0   47180  28152     496 D   0.7  0.1  0:00.17 nginx
+ 4632 vbart    20   0   47180  28196     536 D   0.3  0.1  0:00.11 nginx
+ 4633 vbart    20   0   47180  28324     540 D   0.3  0.1  0:00.11 nginx
+ 4635 vbart    20   0   47180  28136     480 D   0.3  0.1  0:00.12 nginx
+ 4636 vbart    20   0   47180  28208     536 D   0.3  0.1  0:00.14 nginx
+ 4637 vbart    20   0   47180  28208     536 D   0.3  0.1  0:00.10 nginx
+ 4638 vbart    20   0   47180  28204     536 D   0.3  0.1  0:00.12 nginx
+ 4640 vbart    20   0   47180  28324     540 D   0.3  0.1  0:00.13 nginx
+ 4641 vbart    20   0   47180  28324     540 D   0.3  0.1  0:00.13 nginx
+ 4642 vbart    20   0   47180  28208     536 D   0.3  0.1  0:00.11 nginx
+ 4643 vbart    20   0   47180  28276     536 D   0.3  0.1  0:00.29 nginx
+ 4644 vbart    20   0   47180  28204     536 D   0.3  0.1  0:00.11 nginx
+ 4645 vbart    20   0   47180  28204     536 D   0.3  0.1  0:00.17 nginx
+ 4646 vbart    20   0   47180  28204     536 D   0.3  0.1  0:00.12 nginx
+ 4647 vbart    20   0   47180  28208     532 D   0.3  0.1  0:00.17 nginx
+ 4631 vbart    20   0   47180    756     252 S   0.0  0.1  0:00.00 nginx
+ 4634 vbart    20   0   47180  28208     536 D   0.0  0.1  0:00.11 nginx&lt;
+ 4648 vbart    20   0   25232   1956    1160 R   0.0  0.0  0:00.08 top
+25921 vbart    20   0  121956   2232    1056 S   0.0  0.0  0:01.97 sshd
+25923 vbart    20   0   40304   4160    2208 S   0.0  0.0  0:00.53 zsh
 </code></pre>
-</blockquote>
 
-<p>E 步骤中，认证服务器发送的 HTTP 回复，包含以下参数：</p>
+<p>In this case the throughput is limited by the disk subsystem, while the CPU is idle most of the time. The results from <code>wrk</code> are also very low:</p>
 
-<ul>
-<li>  access_token：表示访问令牌，必选项。</li>
-<li>  token_type：表示令牌类型，该值大小写不敏感，必选项，可以是 bearer 类型或 mac 类型。</li>
-<li>  expires_in：表示过期时间，单位为秒。如果省略该参数，必须其他方式设置过期时间。</li>
-<li>  refresh_token：表示更新令牌，用来获取下一次的访问令牌，可选项。</li>
-<li>  scope：表示权限范围，如果与客户端申请的范围一致，此项可省略。</li>
-</ul>
-
-<p>下面是一个例子。</p>
-
-<blockquote>
-<pre><code>
-     HTTP/1.1 200 OK
-     Content-Type: application/json;charset=UTF-8
-     Cache-Control: no-store
-     Pragma: no-cache
-
-     {
-       &quot;access_token&quot;:&quot;2YotnFZFEjr1zCsicMWpAA&quot;,
-       &quot;token_type&quot;:&quot;example&quot;,
-       &quot;expires_in&quot;:3600,
-       &quot;refresh_token&quot;:&quot;tGzv3JOkF0XG5Qx2TlKWIA&quot;,
-       &quot;example_parameter&quot;:&quot;example_value&quot;
-     }
-
+<pre><code>Running 1m test @ http://192.0.2.1:8000/1/1/1
+  12 threads and 50 connections
+  Thread Stats   Avg    Stdev     Max  +/- Stdev
+    Latency     7.42s  5.31s   24.41s   74.73%
+    Req/Sec     0.15    0.36     1.00    84.62%
+  488 requests in 1.01m, 2.01GB read
+Requests/sec:      8.08
+Transfer/sec:     34.07MB
 </code></pre>
-</blockquote>
 
-<p>从上面代码可以看到，相关参数使用 JSON 格式发送（Content-Type: application/json）。此外，HTTP 头信息中明确指定不得缓存。</p>
+<p>And remember, this is for the file that should be served from memory! The excessively large latencies are because all the worker processes are busy with reading files from the drives to serve the random load created by 200 connections from the first client, and cannot handle our requests in good time.</p>
 
-<h2 id="toc_6">七、简化模式</h2>
+<p>It’s time to put our thread pools in play. For this we just add the <code>[aio](http://nginx.org/en/docs/http/ngx_http_core_module.html#aio)</code> <code>threads</code> directive to the <code>location</code> block:</p>
 
-<p>简化模式（implicit grant type）不通过第三方应用程序的服务器，直接在浏览器中向认证服务器申请令牌，跳过了 &quot;授权码&quot; 这个步骤，因此得名。所有步骤在浏览器中完成，令牌对访问者是可见的，且客户端不需要认证。</p>
-
-<p><img src="http://www.ruanyifeng.com/blogimg/asset/2014/bg2014051205.png" alt=""/></p>
-
-<p>它的步骤如下：</p>
-
-<blockquote>
-<p>（A）客户端将用户导向认证服务器。</p>
-
-<p>（B）用户决定是否给于客户端授权。</p>
-
-<p>（C）假设用户给予授权，认证服务器将用户导向客户端指定的 &quot;重定向 URI&quot;，并在 URI 的 Hash 部分包含了访问令牌。</p>
-
-<p>（D）浏览器向资源服务器发出请求，其中不包括上一步收到的 Hash 值。</p>
-
-<p>（E）资源服务器返回一个网页，其中包含的代码可以获取 Hash 值中的令牌。</p>
-
-<p>（F）浏览器执行上一步获得的脚本，提取出令牌。</p>
-
-<p>（G）浏览器将令牌发给客户端。</p>
-</blockquote>
-
-<p>下面是上面这些步骤所需要的参数。</p>
-
-<p>A 步骤中，客户端发出的 HTTP 请求，包含以下参数：</p>
-
-<ul>
-<li>  response_type：表示授权类型，此处的值固定为 &quot;token&quot;，必选项。</li>
-<li>  client_id：表示客户端的 ID，必选项。</li>
-<li>  redirect_uri：表示重定向的 URI，可选项。</li>
-<li>  scope：表示权限范围，可选项。</li>
-<li>  state：表示客户端的当前状态，可以指定任意值，认证服务器会原封不动地返回这个值。</li>
-</ul>
-
-<p>下面是一个例子。</p>
-
-<blockquote>
-<pre><code>
-    GET /authorize?response_type=token&amp;client_id=s6BhdRkqt3&amp;state=xyz
-        &amp;redirect_uri=https%3A%2F%2Fclient%2Eexample%2Ecom%2Fcb HTTP/1.1
-    Host: server.example.com
-
+<pre><code>location / {
+    root /storage;
+    aio threads;
+}
 </code></pre>
-</blockquote>
 
-<p>C 步骤中，认证服务器回应客户端的 URI，包含以下参数：</p>
+<p>and ask NGINX to reload its configuration.</p>
 
-<ul>
-<li>  access_token：表示访问令牌，必选项。</li>
-<li>  token_type：表示令牌类型，该值大小写不敏感，必选项。</li>
-<li>  expires_in：表示过期时间，单位为秒。如果省略该参数，必须其他方式设置过期时间。</li>
-<li>  scope：表示权限范围，如果与客户端申请的范围一致，此项可省略。</li>
-<li>  state：如果客户端的请求中包含这个参数，认证服务器的回应也必须一模一样包含这个参数。</li>
-</ul>
+<p>After that we repeat the test:</p>
 
-<p>下面是一个例子。</p>
-
-<blockquote>
-<pre><code>
-     HTTP/1.1 302 Found
-     Location: http://example.com/cb#access_token=2YotnFZFEjr1zCsicMWpAA
-               &amp;state=xyz&amp;token_type=example&amp;expires_in=3600
-
+<pre><code>% ifstat -bi eth2
+eth2
+Kbps in  Kbps out
+60915.19  9.51e+06
+59978.89  9.51e+06
+60122.38  9.51e+06
+61179.06  9.51e+06
+61798.40  9.51e+06
+57072.97  9.50e+06
+56072.61  9.51e+06
+61279.63  9.51e+06
+61243.54  9.51e+06
+59632.50  9.50e+06
 </code></pre>
-</blockquote>
 
-<p>在上面的例子中，认证服务器用 HTTP 头信息的 Location 栏，指定浏览器重定向的网址。注意，在这个网址的 Hash 部分包含了令牌。</p>
+<p>Now our server produces <strong>9.5 Gbps</strong>, compared to ~1 Gbps without thread pools!</p>
 
-<p>根据上面的 D 步骤，下一步浏览器会访问 Location 指定的网址，但是 Hash 部分不会发送。接下来的 E 步骤，服务提供商的资源服务器发送过来的代码，会提取出 Hash 中的令牌。</p>
+<p>It probably could produce even more, but it has already reached the practical maximum network capacity, so in this test NGINX is limited by the network interface. The worker processes spend most of the time just sleeping and waiting for new events (they are in <code>S</code> state in <code>top</code>):</p>
 
-<h2 id="toc_7">八、密码模式</h2>
+<pre><code>top - 10:43:17 up 11 days,  1:35,  1 user,  load average: 172.71, 93.84, 77.90
+Tasks: 376 total,  1 running, 375 sleeping,  0 stopped,  0 zombie
+%Cpu(s):  0.2 us,  1.2 sy,  0.0 ni, 34.8 id, 61.5 wa,  0.0 hi,  2.3 si,  0.0 st
+KiB Mem:  49453440 total, 49096836 used,   356604 free,    97236 buffers
+KiB Swap: 10474236 total,    22860 used, 10451376 free, 46836580 cached Mem
 
-<p>密码模式（Resource Owner Password Credentials Grant）中，用户向客户端提供自己的用户名和密码。客户端使用这些信息，向 &quot;服务商提供商&quot; 索要授权。</p>
-
-<p>在这种模式中，用户必须把自己的密码给客户端，但是客户端不得储存密码。这通常用在用户对客户端高度信任的情况下，比如客户端是操作系统的一部分，或者由一个著名公司出品。而认证服务器只有在其他授权模式无法执行的情况下，才能考虑使用这种模式。</p>
-
-<p><img src="http://www.ruanyifeng.com/blogimg/asset/2014/bg2014051206.png" alt=""/></p>
-
-<p>它的步骤如下：</p>
-
-<blockquote>
-<p>（A）用户向客户端提供用户名和密码。</p>
-
-<p>（B）客户端将用户名和密码发给认证服务器，向后者请求令牌。</p>
-
-<p>（C）认证服务器确认无误后，向客户端提供访问令牌。</p>
-</blockquote>
-
-<p>B 步骤中，客户端发出的 HTTP 请求，包含以下参数：</p>
-
-<ul>
-<li>  grant_type：表示授权类型，此处的值固定为 &quot;password&quot;，必选项。</li>
-<li>  username：表示用户名，必选项。</li>
-<li>  password：表示用户的密码，必选项。</li>
-<li>  scope：表示权限范围，可选项。</li>
-</ul>
-
-<p>下面是一个例子。</p>
-
-<blockquote>
-<pre><code>
-     POST /token HTTP/1.1
-     Host: server.example.com
-     Authorization: Basic czZCaGRSa3F0MzpnWDFmQmF0M2JW
-     Content-Type: application/x-www-form-urlencoded
-
-     grant_type=password&amp;username=johndoe&amp;password=A3ddj3w
-
+  PID USER     PR  NI    VIRT    RES     SHR S  %CPU %MEM    TIME+ COMMAND
+ 4654 vbart    20   0  309708  28844     596 S   9.0  0.1  0:08.65 nginx
+ 4660 vbart    20   0  309748  28920     596 S   6.6  0.1  0:14.82 nginx
+ 4658 vbart    20   0  309452  28424     520 S   4.3  0.1  0:01.40 nginx
+ 4663 vbart    20   0  309452  28476     572 S   4.3  0.1  0:01.32 nginx
+ 4667 vbart    20   0  309584  28712     588 S   3.7  0.1  0:05.19 nginx
+ 4656 vbart    20   0  309452  28476     572 S   3.3  0.1  0:01.84 nginx
+ 4664 vbart    20   0  309452  28428     524 S   3.3  0.1  0:01.29 nginx
+ 4652 vbart    20   0  309452  28476     572 S   3.0  0.1  0:01.46 nginx
+ 4662 vbart    20   0  309552  28700     596 S   2.7  0.1  0:05.92 nginx
+ 4661 vbart    20   0  309464  28636     596 S   2.3  0.1  0:01.59 nginx
+ 4653 vbart    20   0  309452  28476     572 S   1.7  0.1  0:01.70 nginx
+ 4666 vbart    20   0  309452  28428     524 S   1.3  0.1  0:01.63 nginx
+ 4657 vbart    20   0  309584  28696     592 S   1.0  0.1  0:00.64 nginx
+ 4655 vbart    20   0  30958   28476     572 S   0.7  0.1  0:02.81 nginx
+ 4659 vbart    20   0  309452  28468     564 S   0.3  0.1  0:01.20 nginx
+ 4665 vbart    20   0  309452  28476     572 S   0.3  0.1  0:00.71 nginx
+ 5180 vbart    20   0   25232   1952    1156 R   0.0  0.0  0:00.45 top
+ 4651 vbart    20   0   20032    752     252 S   0.0  0.0  0:00.00 nginx
+25921 vbart    20   0  121956   2176    1000 S   0.0  0.0  0:01.98 sshd
+25923 vbart    20   0   40304   3840    2208 S   0.0  0.0  0:00.54 zsh
 </code></pre>
-</blockquote>
 
-<p>C 步骤中，认证服务器向客户端发送访问令牌，下面是一个例子。</p>
+<p>There are still plenty of CPU resources.</p>
 
-<blockquote>
-<pre><code>
-     HTTP/1.1 200 OK
-     Content-Type: application/json;charset=UTF-8
-     Cache-Control: no-store
-     Pragma: no-cache
+<p>The results of <code>wrk</code>:</p>
 
-     {
-       &quot;access_token&quot;:&quot;2YotnFZFEjr1zCsicMWpAA&quot;,
-       &quot;token_type&quot;:&quot;example&quot;,
-       &quot;expires_in&quot;:3600,
-       &quot;refresh_token&quot;:&quot;tGzv3JOkF0XG5Qx2TlKWIA&quot;,
-       &quot;example_parameter&quot;:&quot;example_value&quot;
-     }
-
+<pre><code>Running 1m test @ http://192.0.2.1:8000/1/1/1
+  12 threads and 50 connections
+  Thread Stats   Avg      Stdev     Max  +/- Stdev
+    Latency   226.32ms  392.76ms   1.72s   93.48%
+    Req/Sec    20.02     10.84    59.00    65.91%
+  15045 requests in 1.00m, 58.86GB read
+Requests/sec:    250.57
+Transfer/sec:      0.98GB
 </code></pre>
-</blockquote>
 
-<p>上面代码中，各个参数的含义参见《授权码模式》一节。</p>
+<p>The average time to serve a 4‑MB file has been reduced from 7.42 seconds to 226.32 milliseconds (33 times less), and the number of requests per second has increased by 31 times (250 vs 8)!</p>
 
-<p>整个过程中，客户端不得保存用户的密码。</p>
+<p>The explanation is that our requests no longer wait in the events queue for processing while worker processes are blocked on reading, but are handled by free threads. As long as the disk subsystem is doing its job as best it can serving our random load from the first client machine, NGINX uses the rest of the CPU resources and network capacity to serve requests of the second client from memory.</p>
 
-<h2 id="toc_8">九、客户端模式</h2>
+<h2 id="toc_3">Still Not a Silver Bullet</h2>
 
-<p>客户端模式（Client Credentials Grant）指客户端以自己的名义，而不是以用户的名义，向 &quot;服务提供商&quot; 进行认证。严格地说，客户端模式并不属于 OAuth 框架所要解决的问题。在这种模式中，用户直接向客户端注册，客户端以自己的名义要求 &quot;服务提供商&quot; 提供服务，其实不存在授权问题。</p>
+<p>After all our fears about blocking operations and some exciting results, probably most of you already are going to configure thread pools on your servers. Don’t hurry.</p>
 
-<p><img src="http://www.ruanyifeng.com/blogimg/asset/2014/bg2014051207.png" alt=""/></p>
+<p>The truth is that fortunately most read and send file operations do not deal with slow hard drives. If you have enough RAM to store the data set, then an operating system will be clever enough to cache frequently used files in a so‑called “page cache”.</p>
 
-<p>它的步骤如下：</p>
+<p>The page cache works pretty well and allows NGINX to demonstrate great performance in almost all common use cases. Reading from the page cache is quite quick and no one can call such operations “blocking.” On the other hand, offloading to a thread pool has some overhead.</p>
 
-<blockquote>
-<p>（A）客户端向认证服务器进行身份认证，并要求一个访问令牌。</p>
+<p>So if you have a reasonable amount of RAM and your working data set isn’t very big, then NGINX already works in the most optimal way without using thread pools.</p>
 
-<p>（B）认证服务器确认无误后，向客户端提供访问令牌。</p>
-</blockquote>
+<p>Offloading read operations to the thread pool is a technique applicable to very specific tasks. It is most useful where the volume of frequently requested content doesn’t fit into the operating system’s VM cache. This might be the case with, for instance, a heavily loaded NGINX‑based streaming media server. This is the situation we’ve simulated in our benchmark.</p>
 
-<p>A 步骤中，客户端发出的 HTTP 请求，包含以下参数：</p>
+<p>It would be great if we could improve the offloading of read operations into thread pools. All we need is an efficient way to know if the needed file data is in memory or not, and only in the latter case should the reading operation be offloaded to a separate thread.</p>
 
-<ul>
-<li>  grant_type：表示授权类型，此处的值固定为 &quot;client_credentials&quot;，必选项。</li>
-<li>  scope：表示权限范围，可选项。</li>
-</ul>
+<p>Turning back to our sales analogy, currently the salesman cannot know if the requested item is in the store and must either always pass all orders to the delivery service or always handle them himself.</p>
 
-<blockquote>
-<pre><code>
-     POST /token HTTP/1.1
-     Host: server.example.com
-     Authorization: Basic czZCaGRSa3F0MzpnWDFmQmF0M2JW
-     Content-Type: application/x-www-form-urlencoded
+<p>The culprit is that operating systems are missing this feature. The first attempts to add it to Linux as the <a href="https://lwn.net/Articles/371538/"><code>fincore()</code></a> syscall were in 2010 but that didn’t happen. Later there were a number of attempts to implement it as a new <code>preadv2()</code> syscall with the <code>RWF_NONBLOCK</code> flag (see <a href="https://lwn.net/Articles/612483/">Nonblocking buffered file read operations</a> and <a href="https://lwn.net/Articles/636967/">Asynchronous buffered read operations</a> at LWN.net for details). The fate of all these patches is still unclear. The sad point here is that it seems the main reason why these patches haven’t been accepted yet to the kernel is continuous <a href="http://bikeshed.com/">bikeshedding</a>.</p>
 
-     grant_type=client_credentials
+<p>On the other hand, users of FreeBSD don’t need to worry at all. FreeBSD already has a sufficiently good asynchronous interface for reading files, which you should use instead of thread pools.</p>
 
+<h2 id="toc_4">Configuring Thread Pools</h2>
+
+<p>So if you are sure that you can get some benefit out of using thread pools in your use case, then it’s time to dive deep into configuration.</p>
+
+<p>The configuration is quite easy and flexible. The first thing you should have is NGINX version 1.7.11 or later, compiled with the <code>--with-threads</code> argument to the <code>configure</code> command. NGINX Plus users need Release 7 or later. In the simplest case, the configuration looks very plain. All you need is to include the <a href="http://nginx.org/en/docs/http/ngx_http_core_module.html#aio"><code>aio</code></a> <code>threads</code> directive in the appropriate context:</p>
+
+<pre><code># in the &#39;http&#39;, &#39;server&#39;, or &#39;location&#39; context
+aio threads;
 </code></pre>
-</blockquote>
 
-<p>认证服务器必须以某种方式，验证客户端身份。</p>
+<p>This is the minimal possible configuration of thread pools. In fact, it’s a short version of the following configuration:</p>
 
-<p>B 步骤中，认证服务器向客户端发送访问令牌，下面是一个例子。</p>
+<pre><code># in the &#39;main&#39; context
+thread_pool default threads=32 max_queue=65536;
 
-<blockquote>
-<pre><code>
-     HTTP/1.1 200 OK
-     Content-Type: application/json;charset=UTF-8
-     Cache-Control: no-store
-     Pragma: no-cache
-
-     {
-       &quot;access_token&quot;:&quot;2YotnFZFEjr1zCsicMWpAA&quot;,
-       &quot;token_type&quot;:&quot;example&quot;,
-       &quot;expires_in&quot;:3600,
-       &quot;example_parameter&quot;:&quot;example_value&quot;
-     }
-
+# in the &#39;http&#39;, &#39;server&#39;, or &#39;location&#39; context
+aio threads=default;
 </code></pre>
-</blockquote>
 
-<p>上面代码中，各个参数的含义参见《授权码模式》一节。</p>
+<p>It defines a thread pool called <strong>default</strong> with 32 working threads and a maximum length for the task queue of 65536 tasks. If the task queue is overloaded, NGINX rejects the request and logs this error:</p>
 
-<h2 id="toc_9">十、更新令牌</h2>
-
-<p>如果用户访问的时候，客户端的 &quot;访问令牌&quot; 已经过期，则需要使用 &quot;更新令牌&quot; 申请一个新的访问令牌。</p>
-
-<p>客户端发出更新令牌的 HTTP 请求，包含以下参数：</p>
-
-<ul>
-<li>  grant_type：表示使用的授权模式，此处的值固定为 &quot;refresh_token&quot;，必选项。</li>
-<li>  refresh_token：表示早前收到的更新令牌，必选项。</li>
-<li>  scope：表示申请的授权范围，不可以超出上一次申请的范围，如果省略该参数，则表示与上一次一致。</li>
-</ul>
-
-<p>下面是一个例子。</p>
-
-<blockquote>
-<pre><code>
-     POST /token HTTP/1.1
-     Host: server.example.com
-     Authorization: Basic czZCaGRSa3F0MzpnWDFmQmF0M2JW
-     Content-Type: application/x-www-form-urlencoded
-
-     grant_type=refresh_token&amp;refresh_token=tGzv3JOkF0XG5Qx2TlKWIA
-
+<pre><code>thread pool &quot;NAME&quot; queue overflow: N tasks waiting
 </code></pre>
-</blockquote>
+
+<p>The error means it’s possible that the threads aren’t able to handle the work as quickly as it is added to the queue. You can try increasing the maximum queue size, but if that doesn’t help, then it indicates that your system is not capable of serving so many requests.</p>
+
+<p>As you already noticed, with the <a href="http://nginx.org/en/docs/ngx_core_module.html#thread_pool"><code>thread_pool</code></a> directive you can configure the number of threads, the maximum length of the queue, and the name of a specific thread pool. The last implies that you can configure several independent thread pools and use them in different places of your configuration file to serve different purposes:</p>
+
+<pre><code># in the &#39;main&#39; context
+thread_pool one threads=128 max_queue=0;
+thread_pool two threads=32;
+
+http {
+    server {
+        location /one {
+            aio threads=one;
+        }
+
+        location /two {
+            aio threads=two;
+        }
+
+    }
+    # ...
+}
+</code></pre>
+
+<p>If the <code>max_queue</code> parameter isn’t specified, the value 65536 is used by default. As shown, it’s possible to set <code>max_queue</code> to zero. In this case the thread pool will only be able to handle as many tasks as there are threads configured; no tasks will wait in the queue.</p>
+
+<p>Now let’s imagine you have a server with three hard drives and you want this server to work as a “caching proxy” that caches all responses from your backends. The expected amount of cached data far exceeds the available RAM. It’s actually a caching node for your personal CDN. Of course in this case the most important thing is to achieve maximum performance from the drives.</p>
+
+<p>One of your options is to configure a RAID array. This approach has its pros and cons. Now with NGINX you can take another one:</p>
+
+<pre><code># We assume that each of the hard drives is mounted on one of these directories:
+# /mnt/disk1, /mnt/disk2, or /mnt/disk3
+
+# in the &#39;main&#39; context
+thread_pool pool_1 threads=16;
+thread_pool pool_2 threads=16;
+thread_pool pool_3 threads=16;
+
+http {
+    proxy_cache_path /mnt/disk1 levels=1:2 keys_zone=cache_1:256m max_size=1024G 
+                     use_temp_path=off;
+    proxy_cache_path /mnt/disk2 levels=1:2 keys_zone=cache_2:256m max_size=1024G 
+                     use_temp_path=off;
+    proxy_cache_path /mnt/disk3 levels=1:2 keys_zone=cache_3:256m max_size=1024G 
+                     use_temp_path=off;
+
+    split_clients $request_uri $disk {
+        33.3%     1;
+        33.3%     2;
+        *         3;
+    }
+
+    server {
+        # ...
+        location / {
+            proxy_pass http://backend;
+            proxy_cache_key $request_uri;
+            proxy_cache cache_$disk;
+            aio threads=pool_$disk;
+            sendfile on;
+        }
+    }
+}
+</code></pre>
+
+<p>In this configuration, the <code>thread_pool</code> directives define a dedicated, independent thread pool for each disk, and the <a href="http://nginx.org/en/docs/http/ngx_http_proxy_module.html#proxy_cache_path"><code>proxy_cache_path</code></a> directives define an dedicated, independent cache on each disk.</p>
+
+<p>The <a href="http://nginx.org/en/docs/http/ngx_http_split_clients_module.html"><code>split_clients</code></a> module is used for load balancing between the caches (and as a result between the disks), which perfectly fits this task.</p>
+
+<p>The <code>use_temp_path=off</code> parameter to the <code>proxy_cache_path</code> directive instructs NGINX to save temporary files into the same directories where the corresponding cache data is located. It is needed to avoid copying response data between the hard drives when updating our caches.</p>
+
+<p>All this together allows us to get maximum performance out of the current disk subsystem, because NGINX through separate thread pools interacts with the drives in parallel and independently. Each of the drives is served by 16 independent threads with a dedicated task queue for reading and sending files.</p>
+
+<p>I bet your clients like this custom‑tailored approach. Be sure that your hard drives like it too.</p>
+
+<p>This example is a good demonstration of how flexibly NGINX can be tuned specifically for your hardware. It’s like you are giving instructions to NGINX about the best way to interact with the machine and your data set. And by fine‑tuning NGINX in user space, you can ensure that your software, operating system, and hardware work together in the most optimal mode to utilize all the system resources as effectively as possible.</p>
+
+<h2 id="toc_5">Conclusion</h2>
+
+<p>Summing up, thread pools is a great feature that pushes NGINX to new levels of performance by eliminating one of its well‑known and long‑time enemies – blocking – especially when we are speaking about really large volumes of content.</p>
+
+<p>And there is even more to come. As previously mentioned, this brand‑new interface potentially allows offloading of any long and blocking operation without any loss of performance. NGINX opens up new horizons in terms of having a mass of new modules and functionality. Lots of popular libraries still do not provide an asynchronous nonblocking interface, which previously made them incompatible with NGINX. We may spend a lot of time and resources on developing our own nonblocking prototype of some library, but will it always be worth the effort? Now, with thread pools on board, it is possible to use such libraries relatively easily, making such modules without an impact on performance.</p>
+
+<p>Stay tuned.</p>
 
                         
                       </div>
@@ -548,10 +536,10 @@ grant_type=authorization_code&amp;code=SplxlOBeZQQYbYS6WxSbIA
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/7/28</span>
+                    <span class="date">2018/10/21</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Authn&Authz.html'>Authn&Authz</a></span>
+          					    <span class="posted-in"><a href='RPC&NIO.html'>RPC&NIO</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -641,31 +629,31 @@ grant_type=authorization_code&amp;code=SplxlOBeZQQYbYS6WxSbIA
 	      
 		      
 			      <li class="post">
-			        <a href="15459058392039.html">Reliable Domain Events</a>
+			        <a href="15517999043443.html">The Art of Crafting Architectural Diagrams</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
+			        <a href="15517997955971.html">为什么说我们需要软件架构图？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
+			        <a href="15516128677869.html">DNS Servers That Offer Privacy and Filtering</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
+			        <a href="15516123108194.html">Airbnb's Migration from Monolith to Services</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
+			        <a href="15516097487470.html">Events As First-Class Citizens</a>
 			      </li>
 		     
 		  

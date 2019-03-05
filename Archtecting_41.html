@@ -105,267 +105,169 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15316420362215.html">
+                <a class="clearlink" href="15389112375926.html">
                 
-                  <h1>研究consul的service mesh功能</h1>
+                  <h1>安全领域的重要概念</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
-                        	<blockquote>
-<p><a href="https://jeremy-xu.oschina.io/2018/07/%E7%A0%94%E7%A9%B6consul%E7%9A%84service-mesh%E5%8A%9F%E8%83%BD/">https://jeremy-xu.oschina.io/2018/07/%E7%A0%94%E7%A9%B6consul%E7%9A%84service-mesh%E5%8A%9F%E8%83%BD/</a></p>
-</blockquote>
+                        	<h2 id="toc_0"><a href="https://zh.wikipedia.org/wiki/%E5%AE%89%E5%85%A8%E6%96%AD%E8%A8%80%E6%A0%87%E8%AE%B0%E8%AF%AD%E8%A8%80">安全断言标记语言(Security Assertion Markup Language，简称SAML)</a></h2>
 
-<pre><code>2018-07-06
-</code></pre>
+<h3 id="toc_1">原则</h3>
 
-<p>之前一直是将 consul 当成一个服务发现、分布式 KV 服务、服务健康检查服务等，不过前几天 <a href="https://www.hashicorp.com/blog/consul-1-2-service-mesh">consul 发布了 1.2 版本</a>，宣称其实现了 Service Mesh 方案，最近在做 Service Mesh 相关的工作，正好有一点时间，就花时间研究一下。</p>
-
-<h2 id="toc_0"><a href="#%E8%AF%95%E7%94%A8consul%E7%9A%84service-mesh"></a>试用 consul 的 service mesh</h2>
-
-<h3 id="toc_1"><a href="#%E5%8D%87%E7%BA%A7consul%E8%87%B31-2%E7%89%88%E6%9C%AC"></a>升级 consul 至 1.2 版本</h3>
-
-<p>macOS 下升级 consul 很简单，简单用 brew 命令就好</p>
-
-<pre><code class="language-bash">brew update consul
-</code></pre>
-
-<p>为了方便后面修改 consul 的配置文件，添加一个<code>-config-dir</code>参数</p>
-
-<p><code>/usr/local/opt/consul/homebrew.mxcl.consul.plist</code></p>
-
-<pre><code class="language-xml">&lt;?xml version=&quot;1.0&quot; encoding=&quot;UTF-8&quot;?&gt;
-&lt;!DOCTYPE plist PUBLIC &quot;-//Apple//DTD PLIST 1.0//EN&quot; &quot;http://www.apple.com/DTDs/PropertyList-1.0.dtd&quot;&gt;
-&lt;plist version=&quot;1.0&quot;&gt;
-  &lt;dict&gt;
-    &lt;key&gt;KeepAlive&lt;/key&gt;
-    &lt;dict&gt;
-      &lt;key&gt;SuccessfulExit&lt;/key&gt;
-      &lt;false/&gt;
-    &lt;/dict&gt;
-    &lt;key&gt;Label&lt;/key&gt;
-    &lt;string&gt;homebrew.mxcl.consul&lt;/string&gt;
-    &lt;key&gt;ProgramArguments&lt;/key&gt;
-    &lt;array&gt;
-      &lt;string&gt;/usr/local/opt/consul/bin/consul&lt;/string&gt;
-      &lt;string&gt;agent&lt;/string&gt;
-      &lt;string&gt;-dev&lt;/string&gt;
-      &lt;string&gt;-advertise&lt;/string&gt;
-      &lt;string&gt;127.0.0.1&lt;/string&gt;
-      &lt;string&gt;-config-dir&lt;/string&gt;
-      &lt;string&gt;/usr/local/etc/consul.d&lt;/string&gt;
-    &lt;/array&gt;
-    &lt;key&gt;RunAtLoad&lt;/key&gt;
-    &lt;true/&gt;
-    &lt;key&gt;WorkingDirectory&lt;/key&gt;
-    &lt;string&gt;/usr/local/var&lt;/string&gt;
-    &lt;key&gt;StandardErrorPath&lt;/key&gt;
-    &lt;string&gt;/usr/local/var/log/consul.log&lt;/string&gt;
-    &lt;key&gt;StandardOutPath&lt;/key&gt;
-    &lt;string&gt;/usr/local/var/log/consul.log&lt;/string&gt;
-  &lt;/dict&gt;
-&lt;/plist&gt;
-</code></pre>
-
-<p>这个配置文件中，我添加了以下两行：</p>
-
-<pre><code class="language-xml">&lt;string&gt;-config-dir&lt;/string&gt;
-&lt;string&gt;/usr/local/etc/consul.d&lt;/string&gt;
-</code></pre>
-
-<h3 id="toc_2"><a href="#%E5%86%99%E4%B8%A4%E4%B8%AA%E6%A8%A1%E6%8B%9F%E7%9A%84%E5%BE%AE%E6%9C%8D%E5%8A%A1"></a>写两个模拟的微服务</h3>
-
-<p>用 golang 写两个小程序，用以模拟两个微服务。</p>
-
-<p><code>service1.go</code></p>
-
-<pre><code class="language-go">package main
-import (
-    &quot;net/http&quot;
-    &quot;log&quot;
-    &quot;io&quot;
-)
-func TestServer(w http.ResponseWriter, req *http.Request) {
-    resp, err := http.Get(&quot;http://127.0.0.1:8082/test2&quot;)
-    if resp != nil &amp;&amp; resp.Body != nil {
-        defer resp.Body.Close()
-    }
-    if err != nil {
-        w.Write([]byte(&quot;make request failed\n&quot;))
-        return
-    }
-    io.Copy(w, resp.Body)
-}
-func main() {
-    http.HandleFunc(&quot;/test1&quot;, TestServer)
-    err := http.ListenAndServe(&quot;:8081&quot;, nil)
-    if err != nil {
-        log.Fatal(&quot;ListenAndServe: &quot;, err)
-    }
-}
-</code></pre>
-
-<p><code>service2.go</code></p>
-
-<pre><code class="language-go">package main
-import (
-    &quot;io&quot;
-    &quot;net/http&quot;
-    &quot;log&quot;
-)
-func TestServer(w http.ResponseWriter, req *http.Request) {
-    io.WriteString(w, &quot;hello, world!\n&quot;)
-}
-func main() {
-    http.HandleFunc(&quot;/test2&quot;, TestServer)
-    err := http.ListenAndServe(&quot;:8082&quot;, nil)
-    if err != nil {
-        log.Fatal(&quot;ListenAndServe: &quot;, err)
-    }
-}
-</code></pre>
-
-<p>这里模拟微服务<code>service1</code>调用<code>service2</code>。</p>
-
-<h3 id="toc_3"><a href="#%E5%9C%A8consul%E9%87%8C%E9%85%8D%E7%BD%AE%E4%B8%A4%E4%B8%AA%E6%9C%8D%E5%8A%A1"></a>在 consul 里配置两个服务</h3>
-
-<p>在 consul 的配置文件目录下新建两个 json 文件，用来配置上述两个服务。</p>
-
-<p><code>/usr/local/etc/consul.d/01_service1.json</code>:</p>
-
-<pre><code class="language-json">{
-  &quot;service&quot;: {
-    &quot;name&quot;: &quot;service1&quot;,
-    &quot;port&quot;: 8081,
-    &quot;connect&quot;: {
-      &quot;proxy&quot;: {
-        &quot;config&quot;: {
-          &quot;upstreams&quot;: [{
-             &quot;destination_name&quot;: &quot;service2&quot;,
-             &quot;local_bind_port&quot;: 38082
-          }]
-        }
-      }
-    }
-  }
-}
-</code></pre>
-
-<p><code>/usr/local/etc/consul.d/01_service2.json</code>:</p>
-
-<pre><code class="language-json">{
-  &quot;service&quot;: {
-    &quot;name&quot;: &quot;service2&quot;,
-    &quot;port&quot;: 8082,
-    &quot;connect&quot;: {
-      &quot;proxy&quot;: {
-      }
-    }
-  }
-}
-</code></pre>
-
-<p>然后执行命令重新加载 consul 的配置</p>
-
-<pre><code class="language-bash">consul reload
-</code></pre>
-
-<p>修改 service1 中引用 service2 的代码：</p>
-
-<pre><code class="language-go">......
-func TestServer(w http.ResponseWriter, req *http.Request) {
-    //resp, err := http.Get(&quot;http://127.0.0.1:8082/test2&quot;)
-    resp, err := http.Get(&quot;http://127.0.0.1:38082/test2&quot;)
-    if resp != nil &amp;&amp; resp.Body != nil {
-        defer resp.Body.Close()
-    }
-    if err != nil {
-        w.Write([]byte(&quot;make request failed\n&quot;))
-        return
-    }
-    io.Copy(w, resp.Body)
-}
-......
-</code></pre>
-
-<h3 id="toc_4"><a href="#%E8%B7%91%E8%B5%B7%E6%9D%A5"></a>跑起来</h3>
-
-<p>将 service1、service2 跑起来，然后用 curl 命令访问 service1</p>
-
-<pre><code class="language-bash">&gt; go run service1.go &amp;&gt; /dev/null
-&gt; go run service2.go &amp;&gt; /dev/null
-&gt; curl http://127.0.0.1:8081/test1
-# 如果出现以下输出，则说明一切正常，Bingo!
-hello, world!
-</code></pre>
-
-<h3 id="toc_5"><a href="#%E5%85%B6%E5%AE%83%E4%BD%BF%E7%94%A8%E6%96%B9%E6%B3%95"></a>其它使用方法</h3>
-
-<p>除了 Service Mesh 的玩法，consul 1.2 还提供了 SDK 的用法。简单来说就是 Go 语言开发的微服务按照它的规范修改服务提供方、服务消费方的代码，服务间的调用将会自动使用底层的 connect 隧道。这个使用方法不太符合 service mesh 的初衷，做过微服务框架 sdk 的我不是太喜欢，这里就不详细讲了，可以参考官方给出的文档。</p>
-
-<p><a href="https://www.consul.io/docs/connect/native.html">Connect Native 原理</a></p>
-
-<p><a href="https://www.consul.io/docs/connect/native/go.html">Connect Native Go 语言项目改造指引</a></p>
-
-<h2 id="toc_6"><a href="#consul%E7%9A%84service-mesh%E5%8E%9F%E7%90%86%E5%88%86%E6%9E%90"></a>consul 的 service mesh 原理分析</h2>
-
-<p>其实 consul 的文档本身说的比较明白，这里结合 consul-ui 及代码大概分析一下。</p>
-
-<p>当给 consul 的服务配置里添加了<code>&quot;connect&quot;: { &quot;proxy&quot;: { } }</code>后，consul 将会为每个服务实例创建一个专门的隧道代理，如下图所示：</p>
-
-<p><a href="https://jeremy-xu.oschina.io/images/20180708/image-20180708231726604.png"><img src="https://jeremy-xu.oschina.io/images/20180708/image-20180708231726604.png" alt=""/></a></p>
-
-<p>隧道代理的作用是当以 connect 模式连入时，会自动建立一条到原服务实例的 tcp 隧道，后面 tcp 层以上的应用协议数据流将在这条 tcp 隧道上传输，具体代码在<code>https://github.com/hashicorp/consul/blob/master/connect/proxy/listener.go#NewPublicListener</code>。</p>
-
-<p>而涉及服务间调用时，在 consul 服务配置里添加服务<code>UpstreamListener</code>声明，服务消费方访问服务时需使用<code>UpstreamListener</code>的地址。<code>UpstreamListener</code>实际上是一个反向代理，当访问它时，它会以 connect 模式连接对应的服务实例<code>Connect Proxy</code>，具体代码在<code>https://github.com/hashicorp/consul/blob/master/connect/proxy/listener.go#NewUpstreamListener</code>。</p>
-
-<p>结合上述两条规则，整个数据链路就通了。</p>
-
-<p>这里有一个问题，为啥一定要 connect 模式的隧道代理呢？反向代理服务不能直接连接原来的目标服务地址吗？</p>
-
-<p>看了下<code>https://github.com/hashicorp/consul/blob/master/connect/service.go#Dial</code>，大概知道原因了。因为 connect 模式的隧道代理是使用 TLS 加密的，这样物理服务器节点之间的网络流量就走 TLS 安全连接了，再加上 <a href="https://www.consul.io/docs/connect/intentions.html">intentions</a> 机制，服务间的调用安全性上有了很大保障。还有一个原因，如果采用 <a href="https://www.consul.io/docs/connect/native/go.html">Connect-Native</a> 的方式集成 consul 的 service mesh 功能，底层连接是 TLS，上层就可以很方便地走 HTTP/2.0 协议了。</p>
-
-<h2 id="toc_7"><a href="#consul%E7%9A%84service-mesh%E4%BC%98%E7%BC%BA%E7%82%B9%E5%88%86%E6%9E%90"></a>consul 的 service mesh 优缺点分析</h2>
-
-<p>优点：</p>
+<p><img src="media/15389112375926/15389191925301.png" alt=""/></p>
 
 <ol>
-<li><p>直接使用 tcp 隧道，因此直接支持各类基于 tcp 的协议代理，如 HTTP/1.1、HTTP/2.0、GRPC。</p></li>
-<li><p>实现原理简单，<code>https://github.com/hashicorp/consul/blob/master/connect/</code>、<code>https://github.com/hashicorp/consul/tree/master/api/connect*.go</code>、<code>https://github.com/hashicorp/consul/tree/master/agent/connect/</code>下的关键文件不超过 20 个，逻辑很容易就看清了。</p></li>
-<li><p>直接结合 consul 做服务注册与服务发现，集成度高。</p></li>
+<li><p>HTTP Request to Service Provider<br/>
+In step 1, the principal, via an HTTP User Agent, makes an HTTP request for a secured resource at the service provider without a security context.</p></li>
+<li><p>Service Provider Determines Identity Provider<br/>
+In step 2, the service provider obtains the location of an endpoint at an identity provider for the authentication request protocol that supports its preferred binding. The means by which this is accomplished is implementation-dependent. The service provider MAY use the SAML identity provider discovery profile described in Section 4.3.</p></li>
+<li><p><AuthnRequest> issued by Service Provider to Identity Provider<br/>
+In step 3, the service provider issues an <AuthnRequest> message to be delivered by the user<br/>
+agent to the identity provider. Either the HTTP Redirect, HTTP POST, or HTTP Artifact binding<br/>
+can be used to transfer the message to the identity provider through the user agent.</p></li>
+<li><p>Identity Provider identifies Principal<br/>
+In step 4, the principal is identified by the identity provider by some means outside the scope of this profile. This may require a new act of authentication, or it may reuse an existing authenticated session.</p></li>
+<li><p>Identity Provider issues <Response> to Service Provider<br/>
+In step 5, the identity provider issues a <Response> message to be delivered by the user agent to the service provider. Either the HTTP POST, or HTTP Artifact binding can be used to transfer the message to the service provider through the user agent. The message may indicate an error, or will include (at least) an authentication assertion. The HTTP Redirect binding MUST NOT be used, as the response will typically exceed the URL length permitted by most user agents.</p></li>
+<li><p>Service Provider grants or denies access to Principal<br/>
+In step 6, having received the response from the identity provider, the service provider can<br/>
+respond to the principal&#39;s user agent with its own error, or can establish its own security context for the principal and return the requested resource.</p>
+
+<p>Note that an identity provider can initiate this profile at step 5 and issue a <Response> message to a service provider without the preceding steps.</p></li>
 </ol>
 
-<p>缺点：</p>
+<p>SAML规范定义了三个角色：委托人（通常为一名用户）、身份提供者（IdP），服务提供者（SP）。在用SAML解决的使用案例中，委托人从服务提供者那里请求一项服务。服务提供者请求身份提供者并从那里并获得一个身份断言。服务提供者可以基于这一断言进行访问控制的判断——即决定委托人是否有权执行某些服务。</p>
+
+<p>在将身份断言发送给服务提供者之前，身份提供者也可能向委托人要求一些信息——例如用户名和密码，以验证委托人的身份。SAML规范了三方之间的断言，尤其是断言身份消息是由身份提供者传递给服务提供者。在SAML中，一个身份提供者可能提供SAML断言给许多服务提供者。同样的，一个服务提供者可以依赖并信任许多独立的身份提供者的断言。</p>
+
+<h3 id="toc_2">设计</h3>
+
+<p>SAML 创建在一些现有标准之上：</p>
+
+<ul>
+<li><p>Extensible Markup Language (XML)<br/>
+大多数SAML交换是以一个标准化的XML方言表示，这也是SAML的名称（Security Assertion Markup Language）的根源。; XML Schema (XSD): SAML断言和协议部分采用XML Schema。</p></li>
+<li><p>XML Signature<br/>
+SAML 1.1和SAML 2.0都为身份验证和消息完整性使用基于XML Signature标准的数字签名。</p></li>
+<li><p>XML Encryption<br/>
+SAML 2.0使用XML Encryption为加密名称标识符、加密属性和加密断言提供元素（SAML 1.1没有加密功能）。但XML加密据报有着严重的安全问题。[8][9]</p></li>
+<li><p>Hypertext Transfer Protocol (HTTP)<br/>
+SAML很大程度上依赖超文本传输协议作为其通信协议。</p></li>
+<li><p>SOAP<br/>
+SAML指定使用SOAP，尤其是SOAP 1.1。</p></li>
+</ul>
+
+<p>SAML定义了基于XML的断言、协议、绑定和配置。术语SAML核心（SAML Core）指SAML断言的一般语法和语义，以及用于请求和在系统实体间传输这些断言的协议。SAML协议指谁来传输，而不是如何传输（后者由所选择的绑定决定）。因此SAML核心只定义了“纯粹的”SAML断言，以及SAML的请求和响应元素。</p>
+
+<p>SAML绑定决定SAML请求和响应如何映射到标准的消息或通信协议。一个重要的、同步的绑定是SAML SOAP绑定。</p>
+
+<p>SAML配置是使用特定断言、协议和绑定组成的适用于所定义使用情况的一个具体表现形式。</p>
+
+<h3 id="toc_3">断言</h3>
+
+<p>一个SAML断言包含一个安全信息包：</p>
+
+<pre><code class="language-xml">&lt;saml:Assertion ...&gt;
+   ..
+&lt;/saml:Assertion&gt;
+</code></pre>
+
+<p>简而言之，依赖方按下述方式解释一个断言：</p>
+
+<pre><code>断言A是在条件C 有效的前提下由发布者R 关于主题S在时间t发布的 。
+</code></pre>
+
+<p>SAML断言通常从IdP传送到SP。断言包括一些SP用来做权限控制的声明（statements）。SAML提供如下三种语句：</p>
 
 <ol>
-<li> 目前的负载均衡算法还很简单，就是随机，见下面：</li>
+<li>身份验证（Authentication）声明</li>
+<li>属性（Attribute）声明</li>
+<li>授权决策（Authorization decision）声明</li>
 </ol>
 
-<p><a href="https://jeremy-xu.oschina.io/images/20180708/image-20180708231828625.png"><img src="https://jeremy-xu.oschina.io/images/20180708/image-20180708231828625.png" alt=""/></a></p>
+<p>身份验证声明会向SP断言，该委托人确实被IdP在一个特定的时间通过一个特定的认证方式成功认证。关于该被认证的委托人的其他信息（也叫身份验证上下文）也可能会包含在一条身份验证声明中。</p>
+
+<p>属性声明会断言，一个主题和一些属性关联。一个属性是一个简单的键值对。依赖方使用属性来实现访问控制。</p>
+
+<p>授权决策声明会断言，在证据E下一个主题是否被允许在资源R上执行动作A。SAML中的授权决策声明的功能被有意的限制了，因为在更高级的使用场景中更推荐使用XACML。</p>
+
+<h3 id="toc_4">协议</h3>
+
+<p><img src="media/15389112375926/15389114752946.jpg" alt=""/><br/>
+SAML协议响应</p>
+
+<p>A SAML protocol describes how certain SAML elements (including assertions) are packaged within SAML request and response elements, and gives the processing rules that SAML entities must follow when producing or consuming these elements. For the most part, a SAML protocol is a simple request-response protocol.</p>
+
+<p>The most important type of SAML protocol request is called a query. A service provider makes a query directly to an identity provider over a secure back channel. Thus query messages are typically bound to SOAP.</p>
+
+<p>Corresponding to the three types of statements, there are three types of SAML queries:</p>
 
 <ol>
-<li><p>一些微服务框架的基本功能还不具备，如超时、重试、熔断、流量分配等，可以从<code>https://github.com/hashicorp/consul/blob/master/connect/proxy/listener.go#handleConn</code>这里开始扩展。</p></li>
-<li><p>需要手动修改 consul 的服务配置；服务消费方要根据 consul 里的服务配置，修改调用其它服务的地址（这里跟 service mesh 的初衷有些不符）。</p></li>
+<li>Authentication query</li>
+<li>Attribute query</li>
+<li>Authorization decision query</li>
 </ol>
 
-<h2 id="toc_8"><a href="#%E6%80%BB%E7%BB%93"></a>总结</h2>
+<p>Of these, the attribute query is perhaps most important (and still the object of much research[来源请求]). The result of an attribute query is a SAML response containing an assertion, which itself contains an attribute statement. See the SAML 2.0 topic for an example of attribute query/response.</p>
 
-<p>目前来看 consul 的 service mesh 方案还比较简单，功能很基本，但具备进一步扩展的空间，可以好好研究学习它的代码。</p>
+<h3 id="toc_5">绑定</h3>
 
-<h2 id="toc_9"><a href="#%E5%8F%82%E8%80%83"></a>参考</h2>
+<p>A SAML binding is a mapping of a SAML protocol message onto standard messaging formats and/or communications protocols. For example, the SAML SOAP binding specifies how a SAML message is encapsulated in a SOAP envelope, which itself is bound to an HTTP message.</p>
+
+<p>SAML 1.1 specifies just one binding, the SAML SOAP Binding. In addition to SOAP, implicit in SAML 1.1 Web Browser SSO are the precursors of the HTTP POST Binding, the HTTP Redirect Binding, and the HTTP Artifact Binding. These are not defined explicitly, however, and are only used in conjunction with SAML 1.1 Web Browser SSO. The notion of binding is not fully developed until SAML 2.0.</p>
+
+<p>SAML 2.0 completely separates the binding concept from the underlying profile. In fact, there is a brand new binding specification in SAML 2.0 that defines the following standalone bindings:</p>
 
 <ol>
-<li> <a href="https://www.hashicorp.com/blog/consul-1-2-service-mesh">https://www.hashicorp.com/blog/consul-1-2-service-mesh</a></li>
-<li> <a href="https://www.consul.io/intro/getting-started/connect.html">https://www.consul.io/intro/getting-started/connect.html</a></li>
-<li> <a href="https://www.consul.io/docs/agent/options.html">https://www.consul.io/docs/agent/options.html</a></li>
-<li> <a href="https://www.consul.io/docs/connect/intentions.html">https://www.consul.io/docs/connect/intentions.html</a></li>
-<li> <a href="https://www.consul.io/docs/connect/native.html">https://www.consul.io/docs/connect/native.html</a></li>
-<li> <a href="https://www.consul.io/docs/connect/native/go.html">https://www.consul.io/docs/connect/native/go.html</a></li>
-<li> <a href="https://www.consul.io/docs/connect/configuration.html">https://www.consul.io/docs/connect/configuration.html</a></li>
-<li> <a href="https://www.consul.io/docs/connect/proxies.html">https://www.consul.io/docs/connect/proxies.html</a></li>
-<li> <a href="https://www.consul.io/docs/connect/dev.html">https://www.consul.io/docs/connect/dev.html</a></li>
-<li> <a href="https://www.consul.io/docs/connect/ca/consul.html">https://www.consul.io/docs/connect/ca/consul.html</a></li>
+<li>SAML SOAP Binding (based on SOAP 1.1)</li>
+<li>Reverse SOAP (PAOS) Binding</li>
+<li>HTTP Redirect (GET) Binding</li>
+<li>HTTP POST Binding</li>
+<li>HTTP Artifact Binding</li>
+<li>SAML URI Binding</li>
 </ol>
+
+<p><img src="media/15389112375926/15389114495009.jpg" alt=""/><br/>
+SAML over SOAP over HTTP</p>
+
+<h3 id="toc_6">配置</h3>
+
+<p>A SAML profile describes in detail how SAML assertions, protocols, and bindings combine to support a defined use case. The most important SAML profile is the Web Browser SSO Profile.</p>
+
+<p>The Web Browser SSO Profile was completely refactored for SAML 2.0. Conceptually, SAML 1.1 Browser/Artifact and Browser/POST are special cases of SAML 2.0 Web Browser SSO. The latter is considerably more flexible than its SAML 1.1 counterpart due to the new &quot;plug-and-play&quot; binding design of SAML 2.0. Unlike previous versions, SAML 2.0 browser flows begin with a request at the service provider. This provides greater flexibility, but SP-initiated flows naturally give rise to the so-called Identity Provider Discovery problem, the focus of much research today. In addition to Web Browser SSO, SAML 2.0 introduces numerous new profiles:</p>
+
+<ul>
+<li>SSO Profiles
+
+<ul>
+<li>Web Browser SSO Profile</li>
+<li>Enhanced Client or Proxy (ECP) Profile</li>
+<li>Identity Provider Discovery Profile</li>
+<li>Single Logout Profile</li>
+<li>Name Identifier Management Profile</li>
+</ul></li>
+<li>Artifact Resolution Profile</li>
+<li>Assertion Query/Request Profile</li>
+<li>Name Identifier Mapping Profile</li>
+<li>SAML Attribute Profiles</li>
+</ul>
+
+<h3 id="toc_7">安全</h3>
+
+<p>SAML规范推荐、并在某些情况下要求各种安全机制：</p>
+
+<ul>
+<li>TLS 1.0+用于传输层安全</li>
+<li>XML Signature和XML Encryption用于消息层安全</li>
+</ul>
+
+<h3 id="toc_8">使用</h3>
+
+<p>SAML的主要用途是“网页浏览器单点登录（SSO）。</p>
+
+<p>A user wielding a user agent (usually a web browser) requests a web resource protected by a SAML service provider. The service provider, wishing to know the identity of the requesting user, issues an authentication request to a SAML identity provider through the user agent. The resulting protocol flow is depicted in the following diagram.</p>
 
                         
                       </div>
@@ -374,10 +276,10 @@ hello, world!
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/7/15</span>
+                    <span class="date">2018/10/7</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Microservice.html'>Microservice</a></span>
+          					    <span class="posted-in"><a href='Authn&Authz.html'>Authn&Authz</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -467,31 +369,31 @@ hello, world!
 	      
 		      
 			      <li class="post">
-			        <a href="15459058392039.html">Reliable Domain Events</a>
+			        <a href="15517999043443.html">The Art of Crafting Architectural Diagrams</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
+			        <a href="15517997955971.html">为什么说我们需要软件架构图？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
+			        <a href="15516128677869.html">DNS Servers That Offer Privacy and Filtering</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
+			        <a href="15516123108194.html">Airbnb's Migration from Monolith to Services</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
+			        <a href="15516097487470.html">Events As First-Class Citizens</a>
 			      </li>
 		     
 		  

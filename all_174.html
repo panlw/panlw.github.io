@@ -105,132 +105,443 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15277814705334.html">
+                <a class="clearlink" href="15290784953983.html">
                 
-                  <h1>有货移动端DevOps-自建APM系统</h1>
+                  <h1>swoole 协程初体验</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://mp.weixin.qq.com/s?__biz=MzIzNjUxMzk2NQ==&amp;mid=2247489376&amp;idx=1&amp;sn=2c06cd726d03317ab3b2134e393d101e&amp;chksm=e8d7e8a2dfa061b4b8f4b95a710e7538becf501951ca451c63473e219d9e610c230549ceb709&amp;mpshare=1&amp;scene=23&amp;srcid=0529xDVbCCeY0HgyVSeq5kjF%23rd">原文</a>：曹镏  高效开发运维 2018/05/28</p>
-
-<p>本文概述了有货 App 团队的同学，在资源有限的情况下，自己动手，借助多种数据工具，通过简洁的架构，为有货 App 开发一套多维实时的监控系统，从而更好地完成自己的工作，也给其他团队的小伙伴在自建 APM 的道路上提供一个参考，为移动端的 DevOps 打开一些思路。</p>
+<p><a href="https://www.jianshu.com/p/745b0b3ffae7">https://www.jianshu.com/p/745b0b3ffae7</a><br/>
+2018-5-30 14:31:38</p>
 </blockquote>
 
-<p>得益于智能手机的发展，当下我们对用户的体验追求已经到了几乎极致的程度。主流的监控 OneAPM，New Relic… 由于面向广大用户，强调数据共性，很难通过 UDID 或者 UID 来定位一些比较难以复现或局部的问题。同时由于数据保密性等原因，对事件上报的信息量也是非常的有限。随着用户规模的增长，特殊问题，局部问题覆盖的用户越来越来，自建监控就一个必然的选择。</p>
+<p>折腾 swoole 协程有一段时间了, 总结一篇入门贴, 希望对新手有帮助.</p>
 
-<p>需求是迫切的，资源是有限的。为了尽快的上线监控系统。有货 iOS 和 Android 的小伙伴们本着 “流自己的汗，吃自己的饭，自己的事情自己干” 的原则，不强调客观条件，自己撸出了一套 App 的 APM 监控系统。</p>
+<p>内容概览:</p>
 
-<h2 id="toc_0">设计</h2>
+<ul>
+<li>  协程的执行顺序: 初窥 swoole 中协程的调度</li>
+<li>  协程为什么快: 减少 IO 阻塞带来的性能损耗</li>
+<li>  swoole 协程和 go 协程对比: 单进程 vs 多线程</li>
+</ul>
 
-<p>我们把问题处理的流程大致梳理为 “持续监控”、“发现问题” 、“定位问题”、“修复问题”。这往复的四个步骤，其中“监控”，“发现” 和“定位”都依赖于系统的采集和上报。</p>
+<h2 id="toc_0">协程的执行顺序</h2>
 
-<p><img src="https://mmbiz.qpic.cn/mmbiz_png/FE4VibF0SjfMusg7SyM0ljwABGInyksDablCiaxacwcMhpe7mshHNYgG6nx8TaOGTPnjoPibnP1wcibNY1QOSvibbKg/640?wx_fmt=png" alt=""/></p>
+<p>先来看看基础的例子:</p>
 
-<p>通过对需求的分析，我们把数据以事件的形式上报，上报后数据根据场景分为两类：</p>
+<pre><code class="language-go">go(function () {
+    echo &quot;hello go1 \n&quot;;
+});
 
-<ol>
-<li> 指标类数据</li>
-<li> 日志类数据</li>
-</ol>
+echo &quot;hello main \n&quot;;
 
-<h3 id="toc_1">1. 指标类数据</h3>
+go(function () {
+    echo &quot;hello go2 \n&quot;;
+});
 
-<p>指标类数据主要是对用户上报的信息根据我们需要的维度做聚合，便于我们掌握 app 的整体情况，比如用户整体的网络错误，网络延时。从整体的角度观察我们 app 的健康程度。 这个过程概括为 “发现问题”。</p>
+</code></pre>
 
-<h3 id="toc_2">2. 日志类数据</h3>
+<p><code>go()</code> 是 <code>\Co::create()</code> 的缩写, 用来创建一个协程, 接受 callback 作为参数, callback 中的代码, 会在这个新建的协程中执行.</p>
 
-<p>日志类数据则记录完整的上报数据，用于我们对问题的诊断。 这个过程概括为 “定位问题”。<br/>
-围绕这两类数据的采集和分析，我们启动了第一阶段的项目。</p>
+<p><strong>备注</strong>: <code>\Swoole\Coroutine</code> 可以简写为 <code>\Co</code></p>
 
-<h2 id="toc_3">第一阶段</h2>
+<p>上面的代码执行结果:</p>
 
-<p><img src="https://mmbiz.qpic.cn/mmbiz_png/FE4VibF0SjfMusg7SyM0ljwABGInyksDaGjaAY4ibHZrcU93rkaS4Mrb4DSFRibVMMfXia9e5Pbyfcru4WHIBLaACw/640?wx_fmt=png" alt=""/></p>
+<pre><code class="language-sh">root@b98940b00a9b /v/w/c/p/swoole# php co.php
+hello go1
+hello main
+hello go2
+</code></pre>
 
-<p>App 将事件数据上报至 OpenResty，在 OpenResty 中对请求进行简单的处理和封装，拆分成指标和日志，然后将处理完成的数据分别写入 InfluxDB 和 MongoDB 中。再通过 Grafana 实现数据可视化。通过一个 Web 页面来查询存储在 MongoDB 中的日志。</p>
+<p>执行结果和我们平时写代码的顺序, 好像没啥区别. 实际执行过程:</p>
 
-<p>App 上报的数据转换为有意义的指标, 这个过程是靠 “聚合” 来实现的。这套系统中 “聚合” 则是借助 InfluxDB 完成的。</p>
+<ul>
+<li>  运行此段代码, <strong>系统启动一个新进程</strong></li>
+<li>  遇到 <code>go()</code>, 当前进程中生成一个协程, 协程中输出 <code>heelo go1</code>, 协程退出</li>
+<li>  进程继续向下执行代码, 输出 <code>hello main</code></li>
+<li>  再生成一个协程, 协程中输出 <code>heelo go2</code>, 协程退出</li>
+</ul>
 
-<h3 id="toc_4">InfluxDB</h3>
+<p><strong>运行此段代码, 系统启动一个新进程</strong>. 如果不理解这句话, 你可以使用如下代码:</p>
 
-<p>在 InfluxDB 中，我们先将所有数据写入不同类型的事实表中，然后通过多个 Continuous Query 对数据进行聚合处理，把大量的明细数据聚合成一定时间周期的聚合数据（主要的周期为 30 秒或 1 分钟），再通过 Retention Policy 来控制不同类型表的数据有效期，达到资源最高效利用的目的。</p>
+<pre><code class="language-php">// co.php
+&lt;?php
 
-<p><img src="https://mmbiz.qpic.cn/mmbiz_png/FE4VibF0SjfMusg7SyM0ljwABGInyksDaPyFpDrdMAVBjicTsq0VNibcEaDz40Cia8A6RgHOB9hNpSMpGafRfl1LZA/640?wx_fmt=png" alt=""/></p>
+sleep(100);
 
-<p>数据可视化部分则用 Grafana 来支撑的，我们的 Main Dashboard 通过 20 张的图表来展示整体的健康状况，同时在这 20 张图表背后，还有数个更加详细的图表支撑微观方面数据。</p>
+</code></pre>
 
-<p>比如有张图表绘制的是当前全网用户设备发生的网络错误率。 通过这个指标和 24 小时前的对比，我们能够直观了解整体的网络健康状况。当该指标超过某个阈值或相比昨天同时段对比有明显上升，则触发告警。实现 “发现问题”。</p>
+<p>执行并使用 <code>ps aux</code> 查看系统中的进程:</p>
 
-<p><img src="https://mmbiz.qpic.cn/mmbiz_png/FE4VibF0SjfMusg7SyM0ljwABGInyksDaoHzy1BDC7ichtoHqVhdAB7UFB2CgYrGYSiadsNGM8VruT7cwzic8CePoQ/640?wx_fmt=png" alt=""/></p>
+<pre><code class="language-sh">root@b98940b00a9b /v/w/c/p/swoole# php co.php &amp;
+⏎
+root@b98940b00a9b /v/w/c/p/swoole# ps aux
+PID   USER     TIME   COMMAND
+    1 root       0:00 php -a
+   10 root       0:00 sh
+   19 root       0:01 fish
+  749 root       0:00 php co.php
+  760 root       0:00 ps aux
+⏎
 
-<p>当出现告警后，通过网络相关的 dashboard 查看是由哪个接口发生的，什么类型的错误。再根据错误类型去日志平台查询日志。完成 “定位问题”。</p>
+</code></pre>
 
-<h3 id="toc_5">MongoDB</h3>
+<p>我们来稍微改一改, 体验协程的调度:</p>
 
-<p>对于日志数据我们直接将上报的 json 内容逐条拆分后写入 Mongodb。直接通过 web 页面从 Mongodb 查询对应时间的 App 日志。</p>
+<pre><code class="language-go">use Co;
 
-<p>这套系统的优势体现在架构非常的轻盈，成本很低。只需要简单的 OpenResty 的开发以及对 InfluxDB 做一些连续查询。在日志量不大的情况下，完全可以满足基本的移动端性能监控以及异常监测的需求。</p>
+go(function () {
+    Co::sleep(1); // 只新增了一行代码
+    echo &quot;hello go1 \n&quot;;
+});
 
-<p>在运行了一段时间后，我们有了新的需求。</p>
+echo &quot;hello main \n&quot;;
 
-<p>中国有 23 个省，5 个自治区，4 个直辖市，以及香港、澳门 2 个特别行政区。电信、联通、移动三大运营商。网络制式从 2G、3G、4G 到 WiFi，还有各种各样的移动设备。这些条件构成了数量难以想象的场景。当仅仅在个别场景下发生问题，或是部分场景下发生问题的时候。我们 “发现问题” 的即时性会变差，“定位问题”所用的时间也越发的变长。</p>
+go(function () {
+    echo &quot;hello go2 \n&quot;;
+});
 
-<p>为了缩短 “定位问题” 的时间。提高发现问题和解决问题的效率。多维分析能力是我们所渴望的，如果在原有的系统上做多维分析，存在如下问题：</p>
+</code></pre>
 
-<ol>
-<li><p>InfluxDB 缺乏合理免费的集群方案，我们在建立了自己的 APM 以后，客户端同学对数据和监测的需求突飞猛进，数据量每天以几何级数增长，再对其进行多维分析，单机的 InfluxDB 很难满足性能要求。</p></li>
-<li><p>MongoDB 在数据量很大的场景下，直接查询速度很慢。由于我们日志数据的多样性，在对多个维度建索引后，整体索引效率很低。</p></li>
-</ol>
+<p><code>\Co::sleep()</code> 函数功能和 <code>sleep()</code> 差不多, 但是它模拟的是 <strong>IO 等待</strong> (IO 后面会细讲). 执行的结果如下:</p>
 
-<p><section class="" style="font-family: Avenir, -apple-system-font, 微软雅黑, sans-serif;line-height: 1.1;color: rgb(63, 63, 63);font-size: 20px;text-align: center;white-space: normal;background-color: rgb(255, 255, 255);">第二阶段</section></p>
+<pre><code>root@b98940b00a9b /v/w/c/p/swoole# php co.php
+hello main
+hello go2
+hello go1
 
-<p><img src="https://mmbiz.qpic.cn/mmbiz_png/FE4VibF0SjfMusg7SyM0ljwABGInyksDaFpHbicibZsT8FMpAf9ibF97iadUDnfFBjvvWcW3CU2gcGP4oTmYk6qVVlw/640?wx_fmt=png" alt=""/></p>
+</code></pre>
 
-<p>为了满足大量（这里暂时不成为海量）数据的多维实时查询的需求，我们对架构中数据库和数据摄入过程进行了升级，InfluxDB 变更为 Druid， MongoDB 变更为 Greenplum， 数据也不再由 OpenResty 直接插入，而是通过了 Kafka 和 log 文件把写入过程解耦，减少数据写入次数，提升处理数据的量级。</p>
+<p>怎么不是顺序执行的呢? 实际执行过程:</p>
 
-<h3 id="toc_6">Druid</h3>
+<ul>
+<li>  运行此段代码, 系统启动一个新进程</li>
+<li>  遇到 <code>go()</code>, 当前进程中生成一个协程</li>
+<li>  协程中遇到 <strong>IO 阻塞</strong> (这里是 <code>Co::sleep()</code> 模拟出的 <strong>IO 等待</strong>), <strong>协程让出控制, 进入协程调度队列</strong></li>
+<li>  进程继续向下执行, 输出 <code>hello main</code></li>
+<li>  执行下一个协程, 输出 <code>hello go2</code></li>
+<li>  之前的协程准备就绪, 继续执行, 输出 <code>hello go1</code></li>
+</ul>
 
-<p>Druid 是在海量时序数据上面提供实时分析查询的开源 OLAP 数据存储。</p>
+<p>到这里, 已经可以看到 swoole 中 <strong>协程与进程的关系</strong>, 以及 <strong>协程的调度</strong>, 我们再改一改刚才的程序:</p>
 
-<p>Druid 本身对于 join 这样的操作很不友好，所以我们没有考虑用一些模型（星型或者雪花型），而是采用大的事实表，其中包含了一次事实关联的所有维度，看着很臃肿，但是查询的性能让人满意。在随时变更维度的情况下，Druid 实时查询依然维持在秒级。这不得不让人刮目相看。</p>
+<pre><code class="language-go">go(function () {
+    Co::sleep(1);
+    echo &quot;hello go1 \n&quot;;
+});
 
-<p>同时丰富的查询组件和聚合函数，让复杂的查询得以简单的实现。所以在查询性能、便捷性、数据量等方面的综合考量下，我们选择了 Druid 作为 InfluxDB 的升级方案。</p>
+echo &quot;hello main \n&quot;;
 
-<p>不同于 InfluxDB，我们不再通过连续查询来做数据聚合，Druid 自身在摄入的过程中可以对指定的 Dimension 进行 roll-up 操作。极大的压缩了数据量。我们的数据经过 roll-up，每分钟从 25 万条压缩到了 8 万多条，效果比较显著。不过压缩数据是以牺牲原始数据为代价的，预聚合仅保留指定的 Dimension 及 Aggregations 结果，所以请妥善设置 Dimension。 Dimension 会发生 SQL 中 Group By 的效果，参数维度多势必降低聚合效果。尤其需要的注意 Dimension 的选择，如果一不小心选择了高基字段作为 Dimension，那么压缩效率会低的惊人。我们曾经因为数据处理的失误，将一个 Dimension 的 Value 数从 2000 变成了 200W, 直接导致当天的 segments 占用的空间比以往大 22 倍。通过摄入周期的调整，还可以做到更大的压缩比，这个取决 queryGranularity 字段，它决定了压缩后的数据最小时间粒度，目前我们使用的是分钟。</p>
+go(function () {
+    Co::sleep(1);
+    echo &quot;hello go2 \n&quot;;
+});
 
-<p>在使用 Grafana 接入 Druid 的时候还是遇到一些小坑，由于 Grafana 官方集成的 Druid 插件实在是功能太有限，比如对 Time Range 的限制，我们不得不在源码的基础上做了部分调整。</p>
+</code></pre>
 
-<p><section class="" style="font-family: Avenir, -apple-system-font, 微软雅黑, sans-serif;line-height: 1.1;color: rgb(63, 63, 63);font-size: 16px;text-align: center;white-space: normal;background-color: rgb(255, 255, 255);">Kafka</section></p>
+<p>我想你已经知道输出是什么样子了:</p>
 
-<p>Druid 两种数据摄入源:</p>
+<pre><code class="language-sh">root@b98940b00a9b /v/w/c/p/swoole# php co.php
+hello main
+hello go1
+hello go2
+⏎
 
-<ol>
-<li> 流式数据</li>
-<li> 静态文件数据</li>
-</ol>
+</code></pre>
 
-<p>这两种数据源又都有两种方式摄入，分别为 pull 方式和 push 方式。我们采用了 real time index（push 的一种）方式，启动实时 task 来从 kafka 中摄取数据。</p>
+<h2 id="toc_1">协程快在哪? 减少 IO 阻塞导致的性能损失</h2>
 
-<h3 id="toc_7">Greenplum</h3>
+<p>大家可能听到使用协程的最多的理由, 可能就是 <strong>协程快</strong>. 那看起来和平时写得差不多的代码, 为什么就要快一些呢? 一个常见的理由是, <strong>可以创建很多个协程来执行任务, 所以快</strong>. 这种说法是对的, 不过还停留在表面.</p>
 
-<p>Greenplum 相比我们原先使用的 MongoDB, 支持列式存储, 并行查询效率更高。在不建索引的情况下，50 列千万级别的数据在 1，2 秒能查完，完全满足我们对日志查询的需求。</p>
+<p>首先, 一般的计算机任务分为 2 种:</p>
 
-<p>起初我们使用 Http 的方式批量插入 Greenplum，但是当写入速度超过 6 千条每秒时，查询速度直线下降。</p>
+<ul>
+<li>  CPU 密集型, 比如加减乘除等科学计算</li>
+<li>  IO 密集型, 比如网络请求, 文件读写等</li>
+</ul>
 
-<p>明显写入不是 Greenplum 的强项，为了解决这个问题，我们是把日志以文件的形式写入 NFS 中, 由 Greenplum 定时摄入。</p>
+<p>其次, 高性能相关的 2 个概念:</p>
 
-<p>同时为了保证性能和简化写入，还对 OpenResty 的写入进行了优化，利用 nginx 的 subrequest 写 access.log 的功能来实现日志写入，并且整个过程封装到协程中执行。调整后每分钟能够轻松写入 50 万条。</p>
+<ul>
+<li>  并行: 同一个时刻, 同一个 CPU 只能执行同一个任务, 要同时执行多个任务, 就需要有多个 CPU 才行</li>
+<li>  并发: 由于 CPU 切换任务非常快, 快到人类可以感知的极限, 就会有很多任务 <strong>同时执行</strong> 的错觉</li>
+</ul>
 
-<p><img src="https://mmbiz.qpic.cn/mmbiz_png/FE4VibF0SjfMusg7SyM0ljwABGInyksDaHan3wopRd9Jujiay2MExXXoq7zpGiaRwhmHJjdh0NwWnAclbFzqB1VJg/640?wx_fmt=png" alt=""/></p>
+<p>了解了这些, 我们再来看协程, 协程适合的是 <strong>IO 密集型</strong> 应用, 因为协程在 <strong>IO 阻塞</strong> 时会自动调度, 减少 IO 阻塞导致的时间损失.</p>
 
-<h2 id="toc_8">总结</h2>
+<p>我们可以对比下面三段代码:</p>
 
-<p>这套系统对个性问题，共性问题的快速甄别起到了关键性的作用，也极大的提升了定位问题的速度。在针对某些维度或特征做针对性的优化的时候，效果也更容易监控。</p>
+<ul>
+<li>  普通版: 执行 4 个任务</li>
+</ul>
 
-<p>通过不同类型事件的采集，我们还实现了页面响应时间（多维）、http 请求分阶段响应时间（多维）、页面卡顿分析、页面加载性能监控等多方位的监控系统，为我们的优化工作指明了方向。对于 iOS 或者 Android 开发的同学，这样一套系统既能满足需求，也易于开发，相比传统 ELK 日志分析在实时性和简易性都提升很多。</p>
+<pre><code class="language-php">$n = 4;
+for ($i = 0; $i &lt; $n; $i++) {
+    sleep(1);
+    echo microtime(true) . &quot;: hello $i \n&quot;;
+};
+echo &quot;hello main \n&quot;;
 
-<p>如果技术团队的资源比较紧张，移动端的同学自己动手实践下 DevOps 也是不错的选择。</p>
+</code></pre>
+
+<pre><code class="language-sh">root@b98940b00a9b /v/w/c/p/swoole# time php co.php
+1528965075.4608: hello 0
+1528965076.461: hello 1
+1528965077.4613: hello 2
+1528965078.4616: hello 3
+hello main
+real    0m 4.02s
+user    0m 0.01s
+sys     0m 0.00s
+⏎
+
+</code></pre>
+
+<ul>
+<li>  单个协程版:</li>
+</ul>
+
+<pre><code class="language-php">$n = 4;
+go(function () use ($n) {
+    for ($i = 0; $i &lt; $n; $i++) {
+        Co::sleep(1);
+        echo microtime(true) . &quot;: hello $i \n&quot;;
+    };
+});
+echo &quot;hello main \n&quot;;
+
+</code></pre>
+
+<pre><code>root@b98940b00a9b /v/w/c/p/swoole# time php co.php
+hello main
+1528965150.4834: hello 0
+1528965151.4846: hello 1
+1528965152.4859: hello 2
+1528965153.4872: hello 3
+real    0m 4.03s
+user    0m 0.00s
+sys     0m 0.02s
+⏎
+
+</code></pre>
+
+<ul>
+<li>  多协程版: <strong>见证奇迹的时刻</strong></li>
+</ul>
+
+<pre><code class="language-php">$n = 4;
+for ($i = 0; $i &lt; $n; $i++) {
+    go(function () use ($i) {
+        Co::sleep(1);
+        echo microtime(true) . &quot;: hello $i \n&quot;;
+    });
+};
+echo &quot;hello main \n&quot;;
+
+</code></pre>
+
+<pre><code class="language-sh">root@b98940b00a9b /v/w/c/p/swoole# time php co.php
+hello main
+1528965245.5491: hello 0
+1528965245.5498: hello 3
+1528965245.5502: hello 2
+1528965245.5506: hello 1
+real    0m 1.02s
+user    0m 0.01s
+sys     0m 0.00s
+⏎
+
+</code></pre>
+
+<p>为什么时间有这么大的差异呢:</p>
+
+<ul>
+<li>  普通写法, 会遇到 <strong>IO 阻塞</strong> 导致的性能损失</li>
+<li>  单协程: 尽管 IO 阻塞 引发了协程调度, 但当前只有一个协程, 调度之后还是执行当前协程</li>
+<li>  多协程: 真正发挥出了协程的优势, 遇到 IO 阻塞 时发生调度, IO 就绪时恢复运行</li>
+</ul>
+
+<p>我们将多协程版稍微修改一下:</p>
+
+<ul>
+<li>  多协程版 2: CPU 密集型</li>
+</ul>
+
+<pre><code class="language-php">$n = 4;
+for ($i = 0; $i &lt; $n; $i++) {
+    go(function () use ($i) {
+        // Co::sleep(1);
+        sleep(1);
+        echo microtime(true) . &quot;: hello $i \n&quot;;
+    });
+};
+echo &quot;hello main \n&quot;;
+
+</code></pre>
+
+<pre><code class="language-sh">root@b98940b00a9b /v/w/c/p/swoole# time php co.php
+1528965743.4327: hello 0
+1528965744.4331: hello 1
+1528965745.4337: hello 2
+1528965746.4342: hello 3
+hello main
+real    0m 4.02s
+user    0m 0.01s
+sys     0m 0.00s
+⏎
+
+</code></pre>
+
+<p>只是将 <code>Co::sleep()</code> 改成了 <code>sleep()</code>, 时间又和普通版差不多了. 因为:</p>
+
+<ul>
+<li>  <code>sleep()</code> 可以看做是 CPU 密集型任务, 不会引起协程的调度</li>
+<li>  <code>Co::sleep()</code> 模拟的是 IO 密集型任务, 会引发协程的调度</li>
+</ul>
+
+<p><strong>这也是为什么, 协程适合 IO 密集型 的应用.</strong></p>
+
+<p>再来一组对比的例子: 使用 redis</p>
+
+<pre><code class="language-php">// 同步版, redis使用时会有 IO 阻塞
+$cnt = 2000;
+for ($i = 0; $i &lt; $cnt; $i++) {
+    $redis = new \Redis();
+    $redis-&gt;connect(&#39;redis&#39;);
+    $redis-&gt;auth(&#39;123&#39;);
+    $key = $redis-&gt;get(&#39;key&#39;);
+}
+
+// 单协程版: 只有一个协程, 并没有使用到协程调度减少 IO 阻塞
+go(function () use ($cnt) {
+    for ($i = 0; $i &lt; $cnt; $i++) {
+        $redis = new Co\Redis();
+        $redis-&gt;connect(&#39;redis&#39;, 6379);
+        $redis-&gt;auth(&#39;123&#39;);
+        $redis-&gt;get(&#39;key&#39;);
+    }
+});
+
+// 多协程版, 真正使用到协程调度带来的 IO 阻塞时的调度
+for ($i = 0; $i &lt; $cnt; $i++) {
+    go(function () {
+        $redis = new Co\Redis();
+        $redis-&gt;connect(&#39;redis&#39;, 6379);
+        $redis-&gt;auth(&#39;123&#39;);
+        $redis-&gt;get(&#39;key&#39;);
+    });
+}
+
+</code></pre>
+
+<p>性能对比:</p>
+
+<pre><code class="language-sh"># 多协程版
+root@0124f915c976 /v/w/c/p/swoole# time php co.php
+real    0m 0.54s
+user    0m 0.04s
+sys     0m 0.23s
+⏎
+
+# 同步版
+root@0124f915c976 /v/w/c/p/swoole# time php co.php
+real    0m 1.48s
+user    0m 0.17s
+sys     0m 0.57s
+⏎
+
+</code></pre>
+
+<h2 id="toc_2">swoole 协程和 go 协程对比: 单进程 vs 多线程</h2>
+
+<p>接触过 go 协程的 coder, 初始接触 swoole 的协程会有点 <strong>懵</strong>, 比如对比下面的代码:</p>
+
+<pre><code class="language-go">package main
+
+import (
+    &quot;fmt&quot;
+    &quot;time&quot;
+)
+
+func main() {
+    go func() {
+        fmt.Println(&quot;hello go&quot;)
+    }()
+
+    fmt.Println(&quot;hello main&quot;)
+
+    time.Sleep(time.Second)
+}
+
+</code></pre>
+
+<pre><code class="language-sh">&gt; 14:11 src $ go run test.go
+hello main
+hello go
+
+</code></pre>
+
+<p>刚写 go 协程的 coder, 在写这个代码的时候会被告知不要忘了 <code>time.Sleep(time.Second)</code>, 否则看不到输出 <code>hello go</code>, 其次, <code>hello go</code> 与 <code>hello main</code> 的顺序也和 swoole 中的协程不一样.</p>
+
+<p>原因就在于 swoole 和 go 中, <strong>实现协程调度的模型不同</strong>.</p>
+
+<p>上面 go 代码的执行过程:</p>
+
+<ul>
+<li>  运行 go 代码, 系统启动一个新进程</li>
+<li>  查找 <code>package main</code>, 然后执行其中的 <code>func mian()</code></li>
+<li>  <strong>遇到协程, 交给协程调度器执行</strong></li>
+<li>  继续向下执行, 输出 <code>hello main</code></li>
+<li>  如果不添加 <code>time.Sleep(time.Second)</code>, main 函数执行完, 程序结束, 进程退出, 导致调度中的协程也终止</li>
+</ul>
+
+<p>go 中的协程, 使用的 MPG 模型:</p>
+
+<ul>
+<li>  M 指的是 Machine, 一个 M 直接关联了一个内核线程</li>
+<li>  P 指的是 processor, 代表了 M 所需的上下文环境, 也是处理用户级代码逻辑的处理器</li>
+<li>  G 指的是 Goroutine, 其实本质上也是一种轻量级的线程</li>
+</ul>
+
+<p><img src="https://upload-images.jianshu.io/upload_images/567399-d400f4b192f3dc48.png" alt=""/></p>
+
+<p>而 swoole 中的协程调度使用 <strong>单进程模型</strong>, 所有协程都是在当前进程中进行调度, 单进程的好处也很明显 -- <strong>简单 / 不用加锁 / 性能也高</strong>.</p>
+
+<p>无论是 go 的 MPG 模型, 还是 swoole 的 单进程模型, 都是对 CSP 理论 的实现.</p>
+
+<blockquote>
+<p>CSP 通信方式, 在 1985 年时的论文就已经有了, 做理论研究的人, 如果没有能提前几年, 十几年甚至几十年的大胆假设, 可能很难提高了.</p>
+</blockquote>
+
+<h2 id="toc_3">写在最后</h2>
+
+<p>今天从 <code>go()</code> 出发, 得以一瞥协程世界, 协程的世界里还有很多很有意思的东西, 需要我们去发现. 比如:</p>
+
+<ul>
+<li>  我们普通版的代码是当前进程里执行的, 只是单个进程, 可我们现在可能有了很多协程, 会不会有什么奇遇呢?</li>
+</ul>
+
+<p>还有一个细节: swoole 中有 <code>Co::sleep()</code> 和 <code>sleep()</code> 2 个方法的, 而 go 中只有 <code>time.Sleep()</code> 一个方法?</p>
+
+<p>这是 swoole 协程需要经历的一个阶段 (毕竟 go 快 10 年了), 还不够 <strong>智能的判断 IO 阻塞</strong>, 所以上面也使用了相应的协程版 redis <code>co\Redis()</code> -- 你得使用配套协程版, 才能达到协程调度的效果.</p>
+
+<p>如果对协程的发展阶段感兴趣, 可以阅读下面这篇文章:</p>
+
+<ul>
+<li>  <a href="https://my.oschina.net/yyzybb/blog/1817226">Why c++ coroutine？Why libgo？</a>: 关于协程全景式的概述的, 推荐花时间读一读</li>
+</ul>
+
+<p>想解锁 swoole 协程的更多姿势:</p>
+
+<ul>
+<li>  <a href="https://segmentfault.com/a/1190000013239349">Swoole 2.1 正式版发布，协程 + 通道带来全新的 PHP 编程模式</a></li>
+<li>  <a href="https://segmentfault.com/a/1190000015291606">Swoole 4.0 正式版，面向生产环境的 PHP 协程引擎</a></li>
+<li>  <a href="https://github.com/ThinkDevelopers/PHPConChina/blob/master/PHPCON2018/Swoole4-%E5%85%A8%E6%96%B0%E7%9A%84PHP%E7%BC%96%E7%A8%8B%E6%A8%A1%E5%BC%8F_%E9%9F%A9%E5%A4%A9%E5%B3%B0_PHPCON2018.pdf">Swoole4 - 全新的 PHP 编程模式_韩天峰_PHPCON2018</a></li>
+</ul>
+
+<p>最后, <a href="https://gitee.com/daydaygo/coding/blob/master/php/swoole/co.php">本期示例代码可以从我的开源项目中获取, 请享用</a></p>
 
                         
                       </div>
@@ -239,10 +550,10 @@
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/5/31</span>
+                    <span class="date">2018/6/16</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Container.html'>Container</a></span>
+          					    <span class="posted-in"><a href='Cocurrency.html'>Cocurrency</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -332,31 +643,31 @@
 	      
 		      
 			      <li class="post">
-			        <a href="15459058392039.html">Reliable Domain Events</a>
+			        <a href="15517999043443.html">The Art of Crafting Architectural Diagrams</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
+			        <a href="15517997955971.html">为什么说我们需要软件架构图？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
+			        <a href="15516128677869.html">DNS Servers That Offer Privacy and Filtering</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
+			        <a href="15516123108194.html">Airbnb's Migration from Monolith to Services</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
+			        <a href="15516097487470.html">Events As First-Class Citizens</a>
 			      </li>
 		     
 		  

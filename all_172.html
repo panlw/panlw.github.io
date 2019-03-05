@@ -105,169 +105,284 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15277821532847.html">
+                <a class="clearlink" href="15290802805331.html">
                 
-                  <h1>Aspect-Oriented Programming in Spring Boot Part 2: Spring JDK Proxies vs CGLIB vs AspectJ</h1>
+                  <h1>MySQL Innodb 如何找出阻塞事务源头 SQL</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p>Justin Wilson May 9, 2016<br/>
-<a href="https://www.credera.com/blog/technology-insights/open-source-technology-insights/aspect-oriented-programming-in-spring-boot-part-2-spring-jdk-proxies-vs-cglib-vs-aspectj/">https://www.credera.com/blog/technology-insights/open-source-technology-insights/aspect-oriented-programming-in-spring-boot-part-2-spring-jdk-proxies-vs-cglib-vs-aspectj/</a></p>
+<p>来源：潇湘隐者<br/>
+<a href="http://www.cnblogs.com/kerrycode/p/8948335.html">www.cnblogs.com/kerrycode/p/8948335.html</a></p>
 </blockquote>
 
-<p>This is the second entry in a three-part series on aspect-oriented programming (AOP) with Spring Boot. This entry covers the differences between using AOP with Spring JDK proxies, CGLIB proxes, and AspectJ load-time weaving (LTW). The <a href="https://www.credera.com/blog/technology-insights/open-source-technology-insights/aspect-oriented-programming-in-spring-boot-part-1-making-your-own-hystrix-aspect/">first entry</a> covered how to write your own aspect, and the <a href="https://www.credera.com/blog/technology-insights/open-source-technology-insights/aspect-oriented-programming-in-spring-boot-part-3-setting-up-aspectj-load-time-weaving/">last entry</a> will contain detailed AspectJ LTW setup information.</p>
+<p><strong>在MySQL数据库中出现了阻塞问题，如何快速查找定位问题根源？</strong>在实验开始前，我们先梳理一下有什么工具或命令查看MySQL的阻塞，另外，我们也要一一对比其优劣，因为有些命令可能在实际环境下可能并不适用。</p>
 
-<p><strong>How Can You Call Code Without Writing Its Invocation?</strong></p>
+<ol>
+<li>show engine innodb status</li>
+<li>Innotop工具 </li>
+<li>INNODB_TRX 等系统表</li>
+</ol>
 
-<p>The Spring framework supports two main methods of AOP—Spring proxies and AspectJ. Both methods allow code snippets called aspects to be injected or “woven” around existing code by targeting specific join points. However, even though both AOP styles can use the same code for their aspects, the way in which they weave those aspects into existing code is completely different.</p>
+<p>下面我们理论联系实际，通过实验来测试总结一下这个问题。首先构造测试环境，数据库测试环境为（ 5.7.21 MySQL Community Server 和5.6.20-enterprise-commercial，这两个测试环境我都测试验证过）</p>
 
-<p><strong>Spring Proxies: JDK and CGLIB Styles</strong></p>
-
-<p>Every Spring bean (heretofore referred to as just a “bean”) can be considered a managed component. Whenever you declare a bean in XML or use @Component, @Service, or @Repository on a class targeted by Spring’s annotation component scanning (which is enabled by default for Spring Boot), that class is instantiated and managed as a singleton bean by the Spring framework. (It’s technically possible to use different scoping mechanisms to avoid singletons, but those won’t be covered here; see <a href="https://www.credera.com/blog/technology-insights/java/dependency-injection-part-3-spring/">my blog series on dependency injection</a> for more information.) Spring can inject references to that bean into other beans that request it using the @Autowired annotation (or @Resource or @Inject annotations) or beans that use “ref” in their XML definition. However, Spring doesn’t actually provide a literal reference to the original bean when it’s injected—it wraps the bean in a proxy class to give Spring a chance to weave in AOP code if needed.</p>
-
-<p>There are two ways Spring can make proxies:</p>
-
-<p>1. By default, Spring will try to use <a href="http://www.ibm.com/developerworks/java/library/j-jtp08305/index.html">JDK dynamic proxy libraries</a> to create a new instance of the injected bean’s interface which will act as a delegate to that bean. This behavior is demonstrated by the <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-proxy/src/test/java/org/jdw/blog/ProxyHystrixAspectTest.java#L36">unit tests</a> that use injected beans with interfaces in the <a href="https://github.com/jwilsoncredera/spring-aop-blog/tree/master/spring-aop-proxy">spring-aop-proxy sample project</a>.</p>
-
-<p><a href="https://www.credera.com/wp-content/uploads/2016/04/Picture2-4.png"><img src="https://www.credera.com/wp-content/uploads/2016/04/xPicture2-4.png.pagespeed.ic.dhHNYptsoi.webp" alt="Picture2"/></a></p>
-
-<p>2. If CGLIB is available on the classpath (which comes by default with Spring Boot) and there is no interface to implement a proxy with, CGLIB will be used to make a new object that extends the target bean’s class and acts as a delegate to that original bean. This behavior is also demonstrated by a <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-proxy/src/test/java/org/jdw/blog/ProxyHystrixAspectTest.java#L65">unit test</a> that uses an injected bean without an interface in the <a href="https://github.com/jwilsoncredera/spring-aop-blog/tree/master/spring-aop-proxy">spring-aop-proxy sample project</a>.</p>
-
-<p><a href="https://www.credera.com/wp-content/uploads/2016/04/Picture3-3.png"><img src="https://www.credera.com/wp-content/uploads/2016/04/xPicture3-3.png.pagespeed.ic.W2zdwkeosT.webp" alt="Picture3"/></a></p>
-
-<p>By default, Spring Boot will use JDK proxies if the bean has an interface and CGLIB proxies if the bean does not. If you try to inject a bean using its concrete class and that bean has an interface, Spring will fail to find the bean with a NoSuchBeanDefinitionException because it will fail to create a JDK proxy using the concrete class. In the first example above, that would be using this:</p>
-
-<p>| </p>
-
-<pre><code class="language-java">@Autowired
-private ImplForInterface bean;
+<pre><code>&gt; mysql&gt; use MyDB;
+Reading table information for completion of table and column names
+You can turn off this feature to get a quicker startup with -A
+ 
+Database changed
+mysql&gt; create table test_blocking(id int primary key, name varchar(12));
+Query OK, 0 rows affected (0.05 sec)
+ 
+mysql&gt; insert into test_blocking
+ -&gt; select 1, &#39;kerry&#39; from dual;
+Query OK, 1 row affected (0.00 sec)
+Records: 1 Duplicates: 0 Warnings: 0
+ 
+mysql&gt; insert into test_blocking
+ -&gt; select 2, &#39;jimmy&#39; from dual;
+Query OK, 1 row affected (0.00 sec)
+Records: 1 Duplicates: 0 Warnings: 0
+ 
+mysql&gt; insert into test_blocking
+ -&gt; select 3, &#39;kkk&#39; from dual;
+Query OK, 1 row affected (0.00 sec)
+Records: 1 Duplicates: 0 Warnings: 0
 </code></pre>
 
-<p>Instead of this:</p>
+<p>准备好测试环境数据后，那么我们接下来开始实验，为了实验效果，我们先将参数innodb_lock_wait_timeout设置为100。</p>
 
-<pre><code class="language-java">@Autowired
-private Interface bean;
+<pre><code>&gt; mysql&gt; show variables like &#39;innodb_lock_wait_timeout&#39;;
++--------------------------+-------+
+| Variable_name | Value |
++--------------------------+-------+
+| innodb_lock_wait_timeout | 50 |
++--------------------------+-------+
+1 row in set (0.00 sec)
+ 
+mysql&gt; set global innodb_lock_wait_timeout=100 ;
+Query OK, 0 rows affected (0.00 sec)
+ 
+ 
+mysql&gt; select connection_id() from dual;
++-----------------+
+| connection_id() |
++-----------------+
+| 8 |
++-----------------+
+1 row in set (0.00 sec)
+ 
+mysql&gt; set session autocommit=0;
+Query OK, 0 rows affected (0.00 sec)
+ 
+mysql&gt; select * from test_blocking where id=1 for update;
++----+-------+
+| id | name |
++----+-------+
+| 1 | kerry |
++----+-------+
+1 row in set (0.00 sec)
 </code></pre>
 
-<p>To get around this limitation and be able to inject concrete classes that have interfaces, you have to tell Spring to always use CGLIB for all beans. This will disable Spring’s use of JDK proxies entirely, making Spring always extend concrete classes even if an interface is injected. To enable this in Spring Boot, just add the following Java property, as seen in the <a href="https://github.com/jwilsoncredera/spring-aop-blog/tree/master/spring-aop-proxy-cglib">spring-aop-proxy-cglib</a> sample project’s <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-proxy-cglib/src/main/resources/application.properties">application.properties</a> file:</p>
+<p>然后在第二个连接会话中执行更新脚本，构造被阻塞的案例</p>
 
-<p>spring.aop.proxy-target-class=true</p>
-
-<p><strong>Spring Proxies: Annotations on Interfaces</strong></p>
-
-<p>Consider an aspect that’s used to weave code around annotated methods (such as the <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-common/src/main/java/org/jdw/blog/common/aspect/HystrixAspect.java">HystrixAspect</a> that targets <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-common/src/main/java/org/jdw/blog/common/annotation/HystrixWrapper.java">@HystrixWrapper</a> annotated methods from part one in this series).</p>
-
-<ul>
-<li>  When a Spring JDK proxy is used, the join point annotation should be present on both the interface’s method and the concrete class’s method for the aspect to trigger correctly.
-
-<ul>
-<li>  The <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-proxy/src/test/java/org/jdw/blog/ProxyHystrixAspectTest.java#L72">second to last test in the spring-aop-proxy test class</a> proves that both the interface and the concrete class require the join point annotation when a JDK proxy is used.</li>
-</ul></li>
-<li>  When a CGLIB proxy is used, the concrete implementation must have the annotation on its method for the aspect to trigger.
-
-<ul>
-<li>  The <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-proxy-cglib/src/test/java/org/jdw/blog/ProxyCglibHystrixAspectTest.java#L96">second to last test in the spring-aop-proxy-cglib test class</a> proves that the interface’s join point annotations are ignored when CGLIB is used.</li>
-</ul></li>
-</ul>
-
-<p>The <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-proxy/src/test/java/org/jdw/blog/ProxyHystrixAspectTest.java#L48">JDK proxy unit test that expects an <strong>InaccessablePointcutAnnotationException</strong></a> is of particular interest. It demonstrates that if you’re using a JDK proxy and the join point annotation is present on the concrete implementation of a bean and not on its interface, the aspect will still trigger but it won’t be able to find the annotation that was used to trigger it. This prevents us from finding the Hystrix command group key that should come from the wrapped method’s annotation, as shown in the bold parts of the example below. (<a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-common/src/main/java/org/jdw/blog/common/annotation/HystrixWrapper.java">This</a> is the GitHub link for the @HystrixWrapper annotation, and <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-common/src/main/java/org/jdw/blog/common/aspect/HystrixAspect.java">this</a> is the link for the HystrixAspect.)</p>
-
-<pre><code class="language-java">@Retention(RetentionPolicy.RUNTIME)
-@Target(ElementType.METHOD)
-public @interface HystrixWrapper {
-  public String commandGroupKey();
-}
-@Aspect
-@Component
-public class HystrixAspect {
-
-  @Around(&quot;within(org.jdw.blog..*) &amp;amp;&amp;amp; &quot;  &quot;@annotation(org.jdw.blog.common.annotation.HystrixWrapper)&quot;)
-  public Object around(final ProceedingJoinPoint joinPoint) {
-
-    Method method = ((MethodSignature) joinPoint.getSignature()).getMethod();
-    HystrixWrapper annotation = method.getAnnotation(HystrixWrapper.class);
-    if (annotation == null) {      // Can occur when not using CCGLIB-style &#39;subclass&#39; proxies,
-      // when using an interface that has a concrete class
-      // that has the annotation.
-      throw new InaccessablePointcutAnnotationException();    }
-
-    // Hystrix invocation code goes here, see GitHub for details. 
-    // [https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-common/src/main/java/org/jdw/blog/common/aspect/HystrixAdvice.java](https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-common/src/main/java/org/jdw/blog/common/aspect/HystrixAdvice.java)
-  }
-}
+<pre><code>&gt; mysql&gt; select connection_id() from dual;
++-----------------+
+| connection_id() |
++-----------------+
+| 9 |
++-----------------+
+1 row in set (0.00 sec)
+ 
+mysql&gt; update test_blocking set name=&#39;kk&#39; where id=1;
 </code></pre>
 
-<p><strong>I recommend always using CGLIB to avoid this edge case.</strong> Doing so makes all Spring proxy behavior consistent since JDK proxies will never be used, it allows the injection of concrete implementations of beans which can be useful for unit tests, and it negates the need to duplicate join point annotations on interfaces and concrete classes (which could easily get out of sync). As a reminder, to always use CGLIB, just set the “spring.aop.proxy-target-class” property to true.</p>
+<p>在第三个连接会话执行下面命令，查看TRANSACTIONS相关信息： </p>
 
-<p>Before using CGLIB, ensure your codebase always uses pre-existing AOP annotations (such as @Transactional) on concrete classes instead of only on interfaces. Interface-only AOP annotations will be ignored when CGLIB is enabled. Changing when @Transactional aspects are triggered could lead to items not being saved to the database, or poor performance due to transactional boundary shifting.</p>
-
-<p><strong>Spring Proxies: Annotations in Concrete Classes</strong></p>
-
-<p>Both JDK- and CGLIB-style Spring proxies have one glaring weakness—AOP can only be invoked by calling a method on an injected bean. Consider a bean with these two methods (all of the classes in <a href="https://github.com/jwilsoncredera/spring-aop-blog/tree/master/spring-aop-common/src/main/java/org/jdw/blog/common/executable">this package</a> qualify):</p>
-
-<pre><code class="language-java">@HystrixWrapper(commandGroupKey = &quot;blog&quot;)
-public long hystrixWrappedGetCurrentThreadId() {
-  return getCurrentThreadId();
-}
-
-public long nestedHystrixWrappedGetCurrentThreadId() {
-  return hystrixWrappedGetCurrentThreadId();
-}
+<pre><code>&gt; mysql&gt; show engine innodb statusG;
 </code></pre>
 
-<p>The second method cannot trigger the HystrixAspect when calling the first method because it invokes the first method directly without going through a Spring proxy—the bean is just calling one of its own methods. Spring doesn’t have any opportunities to inject the aspect code. This is demonstrated by every other test in both the <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-proxy/src/test/java/org/jdw/blog/ProxyHystrixAspectTest.java#L42">spring-aop-proxy test class</a> and <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-proxy-cglib/src/test/java/org/jdw/blog/ProxyCglibHystrixAspectTest.java#L41">spring-aop-proxy-cglib test class</a> (all the tests that start with “testNestedHystrixWrappedMethod”).</p>
+<p><img src="media/15290802805331/15290814361997.jpg" alt=""/></p>
 
-<p>However, when AspectJ is used instead of Spring proxies, the HystrixAspect <u>does</u> trigger when a bean calls its own join point annotated method. This is shown by every other test in the <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-aspectj-ltw/src/test/java/org/jdw/blog/AspectJHystrixAspectTest.java#L41">spring-aop-aspectj-ltw test class</a> (which also begin with “testNestedHystrixWrappedMethod”)—every scenario that fails to invoke the Hystrix aspect for Spring proxies succeeds for AspectJ (except for <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-aspectj-ltw/src/test/java/org/jdw/blog/AspectJHystrixAspectTest.java#L101">one specific scenario</a> which will be covered later). How can this be?</p>
+<p>使用show engine innodb status命令后，可以查看其输出的TRANSACTIONS部分信息，如上截图所示，找到类似TRX HAS BEEN WATING …部分的信息，</p>
 
-<p><strong>AspectJ</strong></p>
+<p>通过那部分信息，我们可以看到update test_blocking set name=’kk’ where id=1这个SQL语句被阻塞了14秒，一直在等待获取X Lock。</p>
 
-<p>AspectJ extends the Java compiler to weave aspect code directly into join points. It doesn’t require Spring to run. Instead, you need to use <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-aspectj-ltw/README.md">JVM arguments</a> to enable a compiler extension along with an <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-aspectj-ltw/src/main/resources/META-INF/aop.xml">aop.xml file</a> and <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-aspectj-ltw/src/main/java/org/jdw/blog/config/AspectJConfig.java">another configuration file</a> which will be covered in part three of this series.</p>
-
-<p>This has two important ramifications. First, if you’re using AspectJ, you don’t need to inject Spring beans to invoke AOP functionality. Technically you don’t even need Spring beans for AOP at all when AspectJ is enabled—you could manually create a new object and invoke AOP code on it right away if it had join points your aspects could target.</p>
-
-<p>Second, if an object calls its own methods it can trigger AOP code, unlike AOP using Spring proxies. Here’s a visual example of how this AspectJ behavior would look if the @HystrixAspect used @Before instead of @Around to inject code in front of its join point targets instead of completely wrapping them (because it’s easier to depict):</p>
-
-<p><a href="https://www.credera.com/wp-content/uploads/2016/04/Picture5-2.png"><img src="https://www.credera.com/wp-content/uploads/2016/04/xPicture5-2.png.pagespeed.ic.PXtdJ6_MY_.webp" alt="Picture5"/></a></p>
-
-<p>The fact that beans can trigger their own AOP code means you need to be very careful when enabling AspectJ on existing Spring projects, because this can change when database transactions are started by @Transactional annotations. For example, if you had a bean with two methods and one didn’t have an @Transactional annotation and it called another one that did, then that invocation would start a database transaction with AspectJ enabled but not with default Spring proxy-based AOP.</p>
-
-<pre><code class="language-java">public void notAnnotated() {
-  annotated();
-}
-
-@Transactional
-public void annotated() {
-  // With AspectJ, a direct call from notAnnotated will enable the transaction.
-  // Without it, this method will only get a transaction if it was called from a Spring proxy.
-}
+<pre><code>&gt; TRANSACTIONS
+ 
+------------
+ 
+Trx id counter 148281 #下一个事务ID
+ 
+Purge done for trx&#39;s n:o &lt; 148273 undo n:o &lt; 0 state: running but idle
+ 
+History list length 552
+ 
+LIST OF TRANSACTIONS FOR EACH SESSION:
+ 
+---TRANSACTION 0, not started
+ 
+MySQL thread id 15, OS thread handle 0x4cc64940, query id 261 localhost root cleaning up
+ 
+---TRANSACTION 0, not started
+ 
+MySQL thread id 14, OS thread handle 0x4cbe2940, query id 278 localhost root init
+ 
+show engine innodb status
+ 
+---TRANSACTION 148280, ACTIVE 24 sec
+ 
+2 lock struct(s), heap size 360, 1 row lock(s)
+ 
+MySQL thread id 8, OS thread handle 0x4cba1940, query id 276 localhost root cleaning up
+ 
+---TRANSACTION 148279, ACTIVE 313 sec starting index read
+ 
+mysql tables in use 1, locked 1
+ 
+LOCK WAIT 2 lock struct(s), heap size 360, 1 row lock(s)
+ 
+MySQL thread id 9, OS thread handle 0x4cc23940, query id 277 localhost root updating #线程ID为9， 操作系统线程句柄为0x4cc23940， 查询ID为277，账号为root的UPDATE操作
+ 
+update test_blocking set name=&#39;kk&#39; where id=1 #具体SQL语句
+ 
+------- TRX HAS BEEN WAITING 14 SEC FOR THIS LOCK TO BE GRANTED: #TRX等待授予锁已经有14秒了
+ 
+RECORD LOCKS space id 337 page no 3 n bits 72 index `PRIMARY` of table `MyDB`.`test_blocking` trx id 148279 lock_mode X locks rec but not gap waiting
 </code></pre>
 
-<p>Luckily, there is a way around this issue—AspectJ and Spring proxies can co-exist. The <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-aspectj-ltw/src/main/resources/META-INF/aop.xml">aop.xml file</a> lets you decide which aspects will be managed by AspectJ and which packages are included or excluded from AspectJ code weaving. If you exclude classes that use @Transactional from AspectJ weaving, their behavior will default to the same Spring proxy behavior they were using before. Stay tuned for part three of this series, which covers how to configure an aop.xml file.</p>
+<h1 id="toc_0">在space id=337（test_blocking表的表空间），page no=3的页上，表test_blocking上的主键索引在等待X锁</h1>
 
-<p><strong>What About That Unit Test Where AspectJ Didn’t Work?</strong></p>
-
-<p>As noted earlier, every other test in the <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-aspectj-ltw/src/test/java/org/jdw/blog/AspectJHystrixAspectTest.java#L41">spring-aop-aspectj unit test</a> (which each begin with “testNestedHystrixWrappedMethod”) demonstrates how beans can trigger the HystrixAspect when calling their own @HystrixWrapper join point annotated methods without going through Spring beans… except for the <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-aspectj-ltw/src/test/java/org/jdw/blog/AspectJHystrixAspectTest.java#L102">last test</a>.</p>
-
-<p>That last test invokes the “nestedGetCurrentThreadId” method on a Spring CGLIB proxy of a class similar to the example below (<a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-common/src/main/java/org/jdw/blog/common/executable/NonAnnotatedImplForInterfaceWithAnnotation.java#L22">GitHub link for the original class</a>). The class’s interface annotates “getCurrentThreadId” with @HystrixWrapper, but the concrete class itself does not. Thus, when “getCurrentThreadId” is invoked by “nestedGetCurrentThreadId” within the CGLIB proxy, AspectJ looks at the concrete class instead of the interface and can’t find the @HystrixWrapper join point. Therefore, the HystrixAspect is not woven.</p>
-
-<pre><code class="language-java">@Override
-public long getCurrentThreadId () {
-  return Thread.currentThread().getId();
-}
-
-@Override
-public long nestedGetCurrentThreadId () {
-  return getCurrentThreadId();
-}
+<pre><code>Record lock, heap no 2 PHYSICAL RECORD: n_fields 4; compact format; info bits 0
+ 
+ 0: len 4; hex 80000001; asc ;; #第一个字段是主键，制度按长为4，值为1
+ 
+ 1: len 6; hex 000000024322; asc C&quot;;; #该字段为6个字节的事务id，这个id表示最近一次被更新的事务id（对应十进制为148258）
+ 
+ 2: len 7; hex 9a000001f20110; asc ;; #该字段为7个字节的回滚指针，用于mvcc
+ 
+ 3: len 5; hex 6b65727279; asc kerry;; #该字段表示的是此记录的第二个字段，长度为5，值为kerry（如果表有多个字段，那么此处后面还有记录）
 </code></pre>
 
-<p>The takeaway from this scenario is that you should always put join point annotations on concrete classes when using AspectJ, just like you should when using Spring CGLIB proxies for AOP.</p>
+<p><img src="media/15290802805331/15290814738831.jpg" alt=""/></p>
 
-<p><strong>Next Steps</strong></p>
+<pre><code>&gt; mysql&gt; select * from information_schema.INNODB_SYS_DATAFILES where space=337;
++-------+--------------------------+
+| SPACE | PATH |
++-------+--------------------------+
+| 337 | ./MyDB/test_blocking.ibd |
++-------+--------------------------+
+1 row in set (0.00 sec)
+ 
+mysql&gt;
+</code></pre>
 
-<p>Stay tuned for the third and final entry in this blog series, which will cover how to configure AspectJ for Spring Boot. It contains a critical piece of JVM configuration information that isn’t widely found in other tutorials (including Spring’s own documentation), so be sure to catch the next entry by following @CrederaOpen on Twitter or connecting with us on LinkedIn.</p>
+<p><img src="media/15290802805331/15290814799530.jpg" alt=""/></p>
+
+<p>但是这种方式也有一些弊端，例如生产环境很复杂，尤其是有大量事务的情况下。诸多信息根本无法清晰判断知道谁阻塞了谁；其次一点也不直观； 另外，这个也无法定位blocker 的SQL语句。这种方式只能作为辅助分析用途，通过查看取锁的详细信息，帮助进一步诊断问题。 </p>
+
+<h2 id="toc_1">*<strong><em>2: Innotop工具</em></strong>*</h2>
+
+<p>如下所示，Innotop工具很多情况下也不能定位到阻塞的语句（Blocking Query）， 也仅仅能获取一些锁相关信息<br/>
+<img src="media/15290802805331/15290814903714.jpg" alt=""/><br/>
+<img src="media/15290802805331/15290814996755.jpg" alt=""/><br/>
+<img src="media/15290802805331/15290815034760.jpg" alt=""/></p>
+
+<h2 id="toc_2">*<strong><em>3：通过查询information_schema数据库下与事务相关的几个系统表</em></strong>*</h2>
+
+<p>还是构造之前的测试案例，在第一个会话中使用SELECT FOR UPDATE锁定其中一行记录</p>
+
+<pre><code>&gt; mysql&gt; use MyDB;
+Database changed
+mysql&gt; set session autocommit=0;
+Query OK, 0 rows affected (0.00 sec)
+mysql&gt; select connection_id() from dual;
++-----------------+
+| connection_id() |
++-----------------+
+| 17 |
++-----------------+
+1 row in set (0.00 sec)
+ 
+mysql&gt; select * from test_blocking where id=1 for update;
++----+-------+
+| id | name |
++----+-------+
+| 1 | kerry |
++----+-------+
+1 row in set (0.00 sec)
+ 
+mysql&gt;
+</code></pre>
+
+<p>然后在第二个连接会话中执行更新脚本，构造被阻塞的案例</p>
+
+<pre><code>&gt; mysql&gt; use MyDB;
+Database changed
+mysql&gt; select connection_id() from dual;
++-----------------+
+| connection_id() |
++-----------------+
+| 19 |
++-----------------+
+1 row in set (0.00 sec)
+ 
+mysql&gt; update test_blocking set name=&#39;kk&#39; where id=1;
+</code></pre>
+
+<p>此时阻我们在第三个连接会话查找谁被阻塞了</p>
+
+<pre><code>&gt; SELECT b.trx_mysql_thread_id AS &#39;blocked_thread_id&#39;
+ ,b.trx_query AS &#39;blocked_sql_text&#39;
+ ,c.trx_mysql_thread_id AS &#39;blocker_thread_id&#39;
+ ,c.trx_query AS &#39;blocker_sql_text&#39;
+ ,( Unix_timestamp() - Unix_timestamp(c.trx_started) ) 
+ AS &#39;blocked_time&#39;
+FROM information_schema.innodb_lock_waits a 
+ INNER JOIN information_schema.innodb_trx b 
+ ON a.requesting_trx_id = b.trx_id 
+ INNER JOIN information_schema.innodb_trx c 
+ ON a.blocking_trx_id = c.trx_id 
+WHERE ( Unix_timestamp() - Unix_timestamp(c.trx_started) ) &gt; 4; 
+ 
+SELECT a.sql_text, 
+ c.id, 
+ d.trx_started 
+FROM performance_schema.events_statements_current a 
+ join performance_schema.threads b 
+ ON a.thread_id = b.thread_id 
+ join information_schema.processlist c 
+ ON b.processlist_id = c.id 
+ join information_schema.innodb_trx d 
+ ON c.id = d.trx_mysql_thread_id 
+where c.id=17
+ORDER BY d.trx_startedG;
+</code></pre>
+
+<p>如下截图所示，第一个SQL语句能够查到线程19 被线程 17阻塞了， 被阻塞的SQL语句为“update test_blocking set name=’kk’ where id=1;”, 能够查到被阻塞了多长时间，但是无法查到源头SQL语句。此时就需要第二个SQL语句登场，找到源头语句。</p>
+
+<p><img src="media/15290802805331/15290815196795.jpg" alt=""/></p>
+
+<p>但是不要太天真的认为第二个SQL语句能够获取所有场景下的阻塞源头SQL语句，实际业务场景，会话可能在执行一个存储过程或复杂的业务，有可能它执行完阻塞源头SQL后，继续在执行其它SQL语句，此时，你抓取的是这个连接会话最后执行的SQL语句，如下所示，我简单构造了一个例子。就能构造这样的一个场景。这个我曾经写过一篇博客“_为什么数据库有时候不能定位阻塞（Blocker）源头的SQL语句_”，分析SQL Server和ORACLE 定位查找阻塞源头SQL语句，现在看来真是大道同源，殊途同归。</p>
+
+<pre><code>&gt; mysql&gt; select * from test_blocking where id=1 for update;
++----+-------+
+| id | name |
++----+-------+
+| 1 | kerry |
++----+-------+
+1 row in set (0.00 sec)
+ 
+mysql&gt; delete from student where stu_id=1001;
+Query OK, 1 row affected (0.00 sec)
+ 
+mysql&gt;
+</code></pre>
+
+<p><img src="media/15290802805331/15290815269311.jpg" alt=""/></p>
+
+<p>总结： 最简单、方便的还是上面两个SQL查询定位blocker的SQL语句，但是需要注意：有时候它也查不到真正阻塞的源头SQL语句。所以还需结合应用程序代码与上下文环境进行整体分析、判断！</p>
 
                         
                       </div>
@@ -276,10 +391,10 @@ public long nestedGetCurrentThreadId () {
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/5/31</span>
+                    <span class="date">2018/6/16</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Java.html'>Java</a></span>
+          					    <span class="posted-in"><a href='Database.html'>Database</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -369,31 +484,31 @@ public long nestedGetCurrentThreadId () {
 	      
 		      
 			      <li class="post">
-			        <a href="15459058392039.html">Reliable Domain Events</a>
+			        <a href="15517999043443.html">The Art of Crafting Architectural Diagrams</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
+			        <a href="15517997955971.html">为什么说我们需要软件架构图？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
+			        <a href="15516128677869.html">DNS Servers That Offer Privacy and Filtering</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
+			        <a href="15516123108194.html">Airbnb's Migration from Monolith to Services</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
+			        <a href="15516097487470.html">Events As First-Class Citizens</a>
 			      </li>
 		     
 		  

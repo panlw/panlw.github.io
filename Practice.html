@@ -105,280 +105,152 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15394417631263.html">
+                <a class="clearlink" href="15476522652046.html">
                 
-                  <h1>12 Factor CLI Apps</h1>
+                  <h1>客户端单周发版下的多分支自动化管理与实践</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
-                        	<blockquote>
-<p>原文地址 <a href="https://medium.com/@jdxcode/12-factor-cli-apps-dd3c227a0e46">https://medium.com/@jdxcode/12-factor-cli-apps-dd3c227a0e46</a></p>
+                        	<pre><code>原创： 王坤  美团技术团队  2019-01-10
+</code></pre>
+
+<blockquote>
+<p>原文地址 <a href="https://tech.meituan.com/2019/01/10/traffic-git-branch-management.html">https://tech.meituan.com/2019/01/10/traffic-git-branch-management.html</a></p>
 </blockquote>
 
-<p><img src="media/15394417631263/15394418131771.jpg" alt=""/></p>
+<h2 id="toc_0">背景</h2>
 
-<p>CLIs are a fantastic way to build products. Unlike web applications, they take a small fraction of the time to build and are much more powerful. With the web, you can do whatever the developer programmed. With CLIs, you can easily mash-up multiple tools together yourself to perform advanced tasks. They require more technical expertise to use, but still work well for admin tasks, power-user tasks, or developer products.</p>
+<p>目前，互联网产品呈现出高频优化迭代的趋势，需求方希望尽早地看到结果，并给予及时反馈，所以技术团队需要用 “小步快跑” 的姿势来做产品，尽早地交付新版本。基于以上背景，美团客户端研发平台适时地推行了单周发版的迭代策略。单周版本迭代的优点可以概括为三个方面：更快地验证产品创意是否符合预期，更灵活地上线节奏，更早地修复线上 Bug。</p>
 
-<p>At Heroku, we’ve come up with a methodology called the <a href="https://12factor.net/">12 factor app</a>. It’s a set of principles designed to make great web applications that are easy to maintain. In that spirit, here are 12 CLI factors to keep in mind when building your next CLI application. Following these principles will offer CLI UX that users will love.</p>
+<p>首先说一下美团平台的发版策略，主要变更点是由之前的每四周发一版改为每周都有发版。具体对比如下：</p>
 
-<p>We’ve also built a CLI framework called <a href="https://oclif.io/">oclif</a> that is designed to follow these principles to build great CLIs in Node.</p>
+<ul>
+<li>  （旧）三周迭代指的是 2 周开发 + 1 周半测试，依赖固定的排期和测试时间，如果错过排期，则需要等待至少 20 天方可跟着下个版本迭代发布，线上验证产品效果的时间偏长。具体示例描述如下：</li>
+</ul>
 
-<h3 id="toc_0">1. Great help is essential</h3>
+<p><img src="media/15476522652046/15476524491995.jpg" alt=""/></p>
 
-<p>Having good help documentation for a CLI is extremely important. It’s far more important than when building a web application as you can’t guide the user with a UI.</p>
+<ul>
+<li>  （新）单周版本迭代指一周一发版，单周迭代版本排期、测试不再依赖固定时间节点，需求开发并测试完成，就可以搭乘最近一周的发版 “小火车”，跟版发布直接上线。对于一般需求而言，这将会大大缩短迭代时间。</li>
+</ul>
 
-<p>A CLI should provide in-CLI help <strong>and</strong> help on the web (READMEs are a great place). That provides the immediate-ness of not needing to leave the terminal while also giving Google the opportunity to help your users (make sure Google is indexing the docs too btw).</p>
+<h2 id="toc_1">业务方研发人员的痛点</h2>
 
-<p>Unless you already know your users will want man pages, I wouldn’t bother also outputting them as they just aren’t used often enough anymore. Novice developers are unaware of them and they don’t work on Windows. Offline support isn’t necessary if you already have in-CLI help. Still, man page support is coming to oclif because in a framework I think it makes sense. It can be solved once for all oclif CLIs to reap the benefits.</p>
+<p>在之前按月发版的迭代节奏下，基本上所有的需求都属于串行开发，每个版本的开发流程比较固定。从 “评审 - 开发 - 提测 - 灰度 - 上线” 各个环节都处于一个固定的时间点来顺序执行，开发人力资源的协调方式也相对简单。全面推进单周发版之后，并不能把所有需求压缩到 5 天之内开发完成，而是会存在大量的并行开发的场景，之前的固定时间节点全部被打破，由固定周期变成了动态化调配，这给业务方的需求管理和研发人员人力管理都带来了指数式复杂度的提升。一旦进入并行开发，需求之间会产生冲突和依赖关系，版本代码也会随之产生冲突和依赖，这也大大提高了开发过程中的分支管理成本，如何规范化管理分支，降低分支冲突，把控代码质量，是本文接下来要讨论的重点。</p>
 
-<p>In the CLI, make sure <strong>all</strong> of the following displays the help. You can’t control what the user inputs so all of these <strong>must</strong> show help.</p>
+<p>下面描述了几种典型的单周发版带来的问题：</p>
 
-<pre># list all commands
-$ mycli
-$ mycli --help
-$ mycli help
-$ mycli -h</pre>
+<ul>
+<li>  <strong>业务需求开发周期不固定，会存在大量的多版本、多需求并行开发。平台只提供了单周发版的基础策略，每 5 天发一版，业务方完成需求即可搭车发版。</strong></li>
+</ul>
 
-<pre># get help for subcommand
-$ mycli subcommand --help
-$ mycli subcommand -h</pre>
+<p>对于各业务方来说，需求开发往往并不是都能在 5 天内完成，一般需求在 5~10 天左右，在之前串行发版模式下这个问题其实也存在，但并不突出，在单周发版的前提下，都要面临跨版本开发，意味着多个版本多个需求会同步并行开发，这给业务方的分支管理带来了极大的挑战。</p>
 
-<p><code>-h,--help</code> should be a reserved flag used for help only. In the case of <code>$ mycli subcommand help</code>. You can’t guarantee that <code>help</code> isn’t an argument that should be passed to the subcommand. In that case, it’s better to only show the help if it would otherwise error out with an invalid argument error. <u>There is actually a Heroku app named “help” which has caused this problem for me before.</u></p>
+<ul>
+<li>  <strong>业务方架构复杂，仓库依赖多，单周发版分支创建合并维护成本大。</strong></li>
+</ul>
 
-<p><a href="https://github.com/oclif/plugin-autocomplete">Shell completion</a> is another great way to offer help to the users.</p>
+<p>交通业务线涉及火车票、国内机票、国际机票多条业务线，代码仓库除了业务线的独立仓库，还有交通首页，交通公共仓库，RN 仓库等多个仓库，Android 端 6 个 Git 仓库，iOS 端 5 个仓库，RN5 个仓库，共计 16 个 Git 仓库。</p>
 
-<p>In terms of the help itself, show a description of the command, description of the arguments, description of all the flags, and most importantly: provide examples of common usage of the CLI. Even if the usage is obvious to you, it’s by far the most common referenced bit of documentation users will find.</p>
+<p>多仓库频繁发版分支代码存在安全风险，容易漏合代码，冲掉线上代码。</p>
 
-<p><img src="media/15394417631263/15394418413793.jpg" alt=""/></p>
+<p><img src="media/15476522652046/15476524998935.png" alt=""/></p>
 
-<p>Of course, by building a CLI with oclif you get all this for free. Online docs, in-CLI docs, and autocomplete. We’re even working on a linter to help you enforce descriptions everywhere.</p>
+<p>交通业务线仓库结构示意图</p>
 
-<p><img src="media/15394417631263/15394418550934.jpg" alt=""/><br/>
-Example oclif readme auto-documentation</p>
+<ul>
+<li>  <strong>业务线自身的公共基础库需求变动频繁。也需要具备单周发版的能力。</strong></li>
+</ul>
 
-<h3 id="toc_1">2. Prefer flags to args</h3>
+<p>例如交通公共基础仓库，承载了很多交通业务线的 UI 功能组件，这些公共组件的业务变化频繁，公共基础仓库变化的同时，可能会对使用组件的业务产生影响，需要同步的升级发版。美团平台的策略是公共服务组件每四个小版本统一升级一次，但对业务方自身组件这种策略限制较大，还是需要公共组件也要具备随时发版的能力。</p>
 
-<p>A CLI can accept 2 types of shell inputs: flags and args. Flags require a bit more typing, but make the CLI much clearer. For example, in the Heroku CLI we used to have a command called <code>heroku fork.</code> It took in a source app to copy from and a destination app to copy to. Initially, this used a flag and an argument like this:</p>
+<h2 id="toc_2">单周发版分支管理解决方案</h2>
 
-<pre><code>$ heroku fork FROMAPP --app TOAPP
-</code></pre>
+<p>针对上面提出的问题，交通客户端团队通过技术培训、流程优化、关键点检测、自动化处理等方式保证分支代码的安全。技术培训主要是加强技术人员分支管理的基本知识，Git 的正确使用方法，这里不做过多描述。本文主要讨论关键点检测，以及如何进行自动化的分支管理。</p>
 
-<p>Using a flag and an arg, it was really confusing which was the source and which was the destination app. We changed this to use flags for both:</p>
+<p>在实施单周发版之前，业务方代码仓库只有两个分支，Develop 分支，即开发分支；Stage 分支，即发版分支；开发流程基本在串行开发模式，每个版本 10 天开发，8 天测试，然后进入下一版本的开发。</p>
 
-<pre><code>$ heroku fork --from FROMAPP --to TOAPP
-</code></pre>
+<p><img src="media/15476522652046/15476524732843.png" alt=""/></p>
 
-<p>This way it’s clear which is the source and which is the destination.</p>
+<blockquote>
+<p>之前的串行发版模式</p>
+</blockquote>
 
-<p><u>Note that we actually removed this command from the Heroku CLI but it’s still a great example of how args can be confusing.</u></p>
+<p>这种方式只能适用于节奏固定的长周期开发方式，对于多版本并行开发来说，有点力不从心，显然已经不能承载当前更灵活的发版节奏。</p>
 
-<p>Sometimes args are just fine though when the argument is obvious such as <code>$ rm file_to_remove</code>. A good rule of thumb is 1 type of argument is fine, 2 types are very suspect, and 3 are never good.</p>
+<p>针对这些问题，我们推出了如下分支管理结构。总的来说，就是废除之前作为开发分支的 Develop 分支，建立对应的 Release 发版分支，每个版本打包从 Release 分支直接打包；同时 Stage 分支不再承担打包职责，而是作为一个主干分支实时同步所有已发布上线的功能，Stage 分支更像一个 “母体”，孵化出 Release 分支和其它 Feature 分支；当 Release 分支测试通过、并且发版上线之后，再合入到 Stage 分支，此时所有正在开发中的其它分支都需要同步 Stage 分支的最新代码，保证下一个即将发布的版本的功能代码的完整性。</p>
 
-<p>For <strong>variable</strong> length arguments, it’s fine to have multiple arguments. (For example, <code>$ rm file1 file2 file3</code>). It’s just when they’re different types that it becomes confusing to the user.</p>
+<p><img src="media/15476522652046/15476525527441.png" alt=""/></p>
 
-<p>Flags are also <strong>much</strong> easier to write autocomplete logic for as you know exactly what the value should be.</p>
+<blockquote>
+<p>交通业务单周发版分支管理模型示意图</p>
+</blockquote>
 
-<p>For CLIs that pass flags off to some other process (such as <code>heroku run</code>), the flag parser should accept a <code>--</code> argument to denote that it should stop parsing and simply pass everything down as an argument. This allows you to run a command like <code>heroku run -a myapp -- myscript.sh -a arg1</code> (This shows how <code>-a</code> can be a flag for <code>heroku run</code> but also a different <code>-a</code> is passed to the dyno).</p>
+<p>上面的流程描述可能有些复杂，下面是简化的流程图，每个版本都有自己的生命周期：</p>
 
-<h3 id="toc_2">3. What version am I on?</h3>
+<p><img src="media/15476522652046/15476525632719.png" alt=""/></p>
 
-<p>Ensure you can get the CLI version through any of the following:</p>
-
-<pre>$ mycli version # multi only
-$ mycli --version
-$ mycli -V</pre>
-
-<p>Unless it’s a single-command CLI that also has a <code>-v,--verbose</code> flag, <code>$ mycli -v</code> should also just display the CLI version. It’s frustrating to run 3 different commands to get the version for a CLI until you find the right one.</p>
-
-<p>The version command is a main place you’ll ask users for debugging information so it’s a good place to add any helpful extra information aside from just the version number that might help you diagnose issues.</p>
-
-<p>I also suggest sending the version string as the User-Agent so you can debug server-side issues. (Assuming your CLI uses an API of some sort)</p>
-
-<p><img src="media/15394417631263/15394418673166.jpg" alt=""/></p>
-
-<h3 id="toc_3">4. Mind the streams</h3>
-
-<p>Stdout and stderr provide a way for you to output messages to the user while also allowing them to redirect content to a file. For example:</p>
-
-<pre><code>$ myapp &gt; foo.txtWarning: something went wrong
-</code></pre>
-
-<p>Because this warning is on stderr, it doesn’t end up in the file. Putting the warning on stdout would not only hide the warning here, but it would be especially problematic for structured data like JSON or binary. Use stderr for errors and warnings which by default will always end up on the screen even if stdout is redirected.</p>
-
-<p>Not everything on stderr is an error though. For example, you can use curl to download a file but the progress output is on stderr. This allows you to redirect the stdout while still seeing the progress.</p>
-
-<p><img src="media/15394417631263/15394418810925.jpg" alt=""/></p>
-
-<p><strong>In short: stdout is for output, stderr is for messaging.</strong></p>
-
-<p><u>If you run a subcommand in your CLI, make sure you pipe the stderr of that subcommand up to the user always. This way any issues are surfaced ultimately to the user’s screen.</u></p>
-
-<h3 id="toc_4">5. Handle things going wrong</h3>
-
-<p>Things go wrong in CLIs much more often than in web apps. Without a UI to guide the user, the only thing we can do is display an error to the user. This is expected behavior and part of using any CLI.</p>
-
-<p>First and foremost, make your errors informative. A great error message should contain the following:</p>
+<blockquote>
+<p>交通业务单周发版分支生命周期</p>
+</blockquote>
 
 <ol>
-<li> Error code</li>
-<li> Error title</li>
-<li> Error description (Optional)</li>
-<li> How to fix the error</li>
-<li> URL for more information</li>
+<li> 从 Stage 创建一个 Release 分支；</li>
+<li> 进入开发阶段；</li>
+<li> 如果 Stage 分支有变化，同步 Stage 分支；</li>
+<li> 打包测试；</li>
+<li> 测试通过，发布线上；</li>
+<li> 发布线上之后，合回 Stage 分支。</li>
 </ol>
 
-<p>For example, if our CLI errored out with a file permission issue, we could show the following:</p>
+<p>为了适应单周发版，新的开发流程也引入了很多新的挑战。例如下图所示的一个 Branch 分支中涉及的六个关键点：创建分支、合入主干、主干变化通知、Merge 主干变化、检测主干同步、未同步拦截，除了这些还要考虑多仓库同步操作的问题，还有热修复版本的管理方式的问题。能否把这些关键节点合理的规范和把控起来，是我们当前应对多分支并行开发的主要难点：</p>
 
-<pre>$ myapp dump -o myfile.out
-Error: EPERM - Invalid permissions on myfile.out
-Cannot write to myfile.out, file does not have write permissions.
-Fix with: chmod +w myfile.out
-https://github.com/jdxcode/myapp</pre>
+<p><img src="media/15476522652046/15476525783976.png" alt=""/></p>
 
-<p><u>Just think if every CLI was this helpful how incredible it would be to be a programmer.</u></p>
+<blockquote>
+<p>交通业务单周发版关键节点</p>
+</blockquote>
 
-<p>Sometimes though you will have unhandled errors you didn’t expect the user to run into. For that, have a way to view full traceback information as well as full debug output with environment variables.</p>
+<p>如何更高效的解决这些问题呢？结合我们当前使用的工具：Git + Atlassian Stash 代码仓库管理工具；Jenkins Build 打包工具；大象（美团内部通讯工具）内网通信工具。目前这三个开发工具已经非常成熟、稳定，并且接口丰富易于扩展，我们需要配合当前单周发版的分支管理模式，利用这些工具来进行扩展开发，正所谓 “要站在巨人的肩膀上”。</p>
 
-<p>In oclif we use the <a href="https://www.npmjs.com/package/debug">debug</a> module which allows us to output debug statements grouped by component if the <code>DEBUG</code> environment variable is set. We have a lot of verbose logging if debug is fully enabled which is incredibly valuable to us when debugging issues.</p>
+<ol>
+<li><p><strong>创建分支 Release 分支如何创建，何时创建，分支命名规范定义如何约束？</strong></p>
 
-<p>Error logs can also be useful for post-mortem debugging but ensure they have timestamps, truncate them occasionally so they don’t eat up space on disk, and make sure they don’t contain ansi color codes.</p>
+<p>创建 Release 分支，本质上是从 Stage 新建一个分支，当前提前一个周期创建新的发版分支，例如在 10.1.1 版本 Release 后，创建 10.1.3 版本的分支，此时 10.1.2 版本处于开发测试阶段。业务方所有的分支命名和平台的分支命名保持一致，采用 Release/x.x.x 的格式，但同时需要升级成为即将发布的 Release 版本号，例如 10.1.3。</p>
 
-<h3 id="toc_5">6. Be fancy!</h3>
+<p>现在交通业务线多达十几个仓库，每个仓库每周都要操作一次需要耗费大量人力。之前每个分支的创建都是通过 Stash 或者手工创建，能不能自动化批处理的创建呢？答案是肯定的。对此，我们采用了 Jenkins 的方式，需要建立一个 Jenkins Job, 基本原理就是通过命令行的方式进行 Branch 的创建，然后通过 Job 管理，批处理建立所有仓库的 Release 分支，这样就收敛了 Branch 的创建，即采用统一的命名规范，并且同时升级版本号。这就解决了创建分支的难点，实现了自动化创建分支，并且实现了规范化命名。</p></li>
+<li><p><strong>如何知道 Stage 分支有变化，变化后需要做什么，不做会怎样？</strong></p>
 
-<p><img src="media/15394417631263/15394419039099.jpg" alt=""/></p>
+<p>一个好的开发习惯，就是每天写码之前都同步主分支，但是还是需要一个机制来确保同步。这里做了三个措施来确保各个分支和 Stage 是保持同步的：一个通知，一个警告，一次拦截。这三个步骤解决主干变化通知、检测主干同步、未同步拦截的问题。</p>
 
-<p>Modern CLIs shouldn’t be afraid to show off. Use colors/dimming to highlight important information. Use spinners and progress bars to show long-running tasks to tell the user you’re still working. Leverage OS notifications when a very long-running task is done.</p>
+<p><strong>一个通知：</strong>具体路径如下，建立了一个内部推送公众账号和一个 Jenkins 监听 Job，当所有交通业务仓库 Stage 分支有代码改动，通知所有对应的开发人员，该仓库有代码变化，请及时合入。</p>
 
-<p>Still, you need to be able to fall back and know <u>when</u> to fall back to more basic behavior. If the user’s stdout isn’t connected to a tty (usually this means they’re piping to a file), then don’t display colors on stdout. (likewise with stderr)</p>
+<p><strong>一次警告：</strong>本地开发过程中，每次提交代码到远端仓库时，会触发一个 Stage 分支代码同步检测的脚本，如果发现未同步，会通过内部通讯系统通知提交者存在未同步主分支问题。但这里目前并不做强制拦截，保证分支代码开发的整体流畅性。</p>
 
-<p>Spinners and progress bars are also not a good idea when it’s not a tty. These work by outputting ansi codes to overwrite which only works on a screen. You never want to output those codes to a file.</p>
+<p><strong>最终拦截：</strong>在开发分支打包的过程中强制拦截，最终功能代码上线还是需要打包操作。在打包操作时统一收口，由于之前打包也是在 Jenkins 上来完成的，这里我们也是通过在打包 Jenkins 上接入了分支合并检测的插件，这样每次打包时会再次检测和主分支的同步情况。如果发现未同步则打包失败，确保每次发版都包含当前线上已有代码的功能，防止新版本丢失功能。</p></li>
+<li><p><strong>如何合并分支，如何保证漏合？</strong></p>
 
-<p>The user may have reasons for just not wanting this fancy output. Respect this if <code>TERM=dumb</code>, <a href="https://no-color.org/">NO_COLOR</a> is set, or if they specify <code>--no-color</code>. I would also suggest adding in an app-specific <code>MYAPP_NOCOLOR=1</code> environment variable as well in case they want to disable color on just your CLI.</p>
+<p>和上面提到的第一个如何创建分支的问题类似，通过 Jenkins Job 来进行批量操作，可以一键创建所有分支的 Pull Request；在每个版本发版之前，统一进行一次打包，合入美团的主分支，防止多个仓库有漏合的情况。</p></li>
+<li><p><strong>公共基础库版本策略？</strong></p>
 
-<h3 id="toc_6">7. Prompt if you can</h3>
+<p>公共基础和业务分支保持同样的策略，通过批处理脚本同时建立分支，合并分支，监听分支变化，需要注意的是，每次版本升级，公共基础库也需要同步的打包，并且强制业务库升级。不然，如果基础仓库存在接口变动，有的业务升级了，有的业务没升级，最终会导致无法合入主分支，进而无法打出 App 包。</p></li>
+<li><p><strong>热修复的版本管理策略？</strong></p>
 
-<p>For accepting input, if stdin is a tty then prompt rather than forcing the user to specify a flag. Never <u>require</u> a prompt though. The user needs to be able to automate your CLI in a script so allow them to override prompts always.</p>
+<p>热修复确实是一种非常规的处理方式。从原则上来讲，热修复需要在对应的 Release 分支上进行修改，然后把修改合入 Stage 分支，同时需要同步到其它正在开发的分支。实际的处理需要根据具体情况来分析，是否需要对线上多个版本热修复。如果多版本都要修复就不能再合入 Stage 分支，否则会导致 Stage 分支冲突，如果把 Stage 分支合入需要热修复的其它分支，会把线上当前最新代码带入历史旧版本，会导致版本兼容性问题。最终执行起来可能还是对热修复版本进行单独处理，不一定要进行 Stage 主分支的同步，热修复的版本管理成本会比较高，更多的需要人工介入。</p></li>
+</ol>
 
-<p><img src="media/15394417631263/15394419178930.jpg" alt="" style="width:627px;"/><br/>
-Prompt example</p>
+<h2 id="toc_3">未来展望</h2>
 
-<p>Another great place to add prompts is confirmation dialogs for dangerous actions. For example when destroying a Heroku app, you’ll need to type the app name again to confirm:</p>
+<p>目前整体的分支发版流程已经基本完成，现在已经稳定运行了 10 个小版本，同时没有出现因为分支管理问题而引发的线上问题。</p>
 
-<p><img src="media/15394417631263/15394419258688.jpg" alt=""/></p>
+<p>不过，当前整体流程的自动化程度还有待提高，每周需要人工去触发，很多代码合并过程中的冲突问题还需要人工去解决。未来我们希望能够自动化地根据平台的版本号自动创建分支，并且对于一些简单的冲突问题拥有自动化的处理能力。随着单周发版的不断成熟，未来对于持续交付能力也将不断提升，发版节奏可以不限于单周，一周两版或是更快的发版节奏也成为一种新的可能。</p>
 
-<p>Checkboxes and radio buttons are a great way to improve CLI UX when you want to present options to the user visually:</p>
-
-<p><img src="media/15394417631263/15394419501894.jpg" alt=""/><br/>
-transferring multiple apps to a new user with the Heroku CLI</p>
-
-<h3 id="toc_7">8. Use tables</h3>
-
-<p><u>Note that</u> <code>_cli.table()_</code> <u>from</u> <a href="https://github.com/oclif/cli-ux/tree/supertable">_cli-ux@5_</a> <u>allows you to easily create tables following these principles.</u></p>
-
-<p>Tables are a very common way to output data in a CLI. It’s important that each row of your output is a single ‘entry’ of data. Never output table borders. It’s noisy and a huge pain for parsing. This is an example of what <strong>not</strong> to do:</p>
-
-<p><img src="media/15394417631263/15394419632407.jpg" alt=""/></p>
-
-<p>By keeping each row to a single entry, you can do things like pipe to wc to get the count of lines, or grep to filter each line:<br/>
-<img src="media/15394417631263/15394419720137.jpg" alt=""/></p>
-
-<p>listing files, piping to wc to count number of files, then doing the same of files with “.js” in the name. Note that wc has 3 counts: lines, words, and characters. You may also notice ls follows factor #6 where it behaves differently when piped vs when it is outputting to the screen (tty).</p>
-
-<p>Be mindful of the screen width. Only show a few columns by default but allow the user to pass <code>--columns</code> with a comma-separated list of column names to add less common types.</p>
-
-<p>Truncate rows that are going to spill over the current screen width unless <code>--no-truncate</code> is set.</p>
-
-<p>Show column headers by default but allow them to be hidden with <code>--no-headers</code>.</p>
-
-<p>Allow users to pass <code>--filter</code> to filter specific columns. (grep can usually do this, but a flag can filter on specific cell values)</p>
-
-<p>Allow sorting by column with <code>--sort</code>. Allow inverse and multi-column sort as well.</p>
-
-<p>Allow output in csv or json. Displaying raw output as json is a great way to output structured data. It can be manipulated with <a href="https://stedolan.github.io/jq/">jq</a>. While jq is incredibly useful, cut and awk are simpler tools that work better with csv data.</p>
-
-<h3 id="toc_8">9. Be speedy</h3>
-
-<p>CLIs need to start quickly. Use <code>$ time mycli</code> to benchmark your CLI. Here is a rough guide:</p>
+<h3 id="toc_4">作者介绍</h3>
 
 <ul>
-<li>  &lt;100ms: very fast (sadly, not feasible for scripting languages)</li>
-<li>  100ms–500ms: fast enough, aim here</li>
-<li>  500ms-2s: usable, but not going to impress anyone</li>
-<li>  2s+: languid, users will prefer to avoid your CLI at this point</li>
+<li>  王坤，美团客户端开发工程师，2016 年加入美团，目前主要负责大交通业务的客户端架构、版本管理及相关工作。</li>
 </ul>
-
-<p>Obviously if your CLI is performing a major task like downloading a large file or something heavily CPU-bound it won’t perform as quickly. In that case, make sure to show a progress bar or at least a spinner. Even just a spinner will give the impression the CLI is much faster than it is.</p>
-
-<p><u>oclif is designed to have minimal overhead. Right now on my box it sits around 150ms which is about as good as node can get. It doesn’t need to require all the js files in your CLI, just the command that is about to run. So even if you have hundreds of commands, the overhead will still be 150ms.</u></p>
-
-<h3 id="toc_9">10. Encourage contributions</h3>
-
-<p>Keep your code open source. This allows users to poke around and diagnose problems themselves. It’s healthy to the community to offer a sample in case it’s useful to others. It makes organizations look great as well.</p>
-
-<p><a href="https://choosealicense.com/">Make sure you pick a license of course</a>. GitHub and GitLab are great places to put your CLI and the README gives you a perfect place to provide an overview of the CLI.</p>
-
-<p>Write up how to run the CLI locally and run the test suites. Offer a <a href="https://help.github.com/articles/setting-guidelines-for-repository-contributors/">contribution guideline doc</a> to tell contributors what you expect in terms of commit syntax, code quality, tests, or whatever else is important for them to know.</p>
-
-<p><a href="https://help.github.com/articles/adding-a-code-of-conduct-to-your-project/">Add a code of conduct</a>. Even if you don’t feel that it’s necessary. It’s important to some people and they’ll feel much better by seeing one. To others they probably won’t even notice it. It’ll be helpful in the event someone is being rude and you have a document to point to.</p>
-
-<p>In oclif, the <a href="https://oclif.io/docs/plugins.html">plugins system</a> offers a great way for people to extend your CLI. These plugins can later be included as a core plugin to provide functionality to all users.</p>
-
-<h3 id="toc_10">11. Be clear about subcommands</h3>
-
-<p>There are 2 types of CLIs: single and multi-command. Single-command CLIs are basic UNIX-style CLIs like <code>cp</code> or <code>grep</code>. Multi-commands are more like <code>git</code> or <code>npm</code> which accept a subcommand as the first argument.</p>
-
-<p>If a CLI is simple and only performs one basic task, it’s good fit for a single-command CLI. Most CLIs, however, will probably benefit from using subcommands.</p>
-
-<p><u>Either way, if the user doesn’t pass anything arguments to the CLI, it’s always better to list the subcommands (for multi) or display the help (for single) rather than do some default behavior. Usually the user will do this before doing anything else.</u></p>
-
-<p>When you start using subcommands, it doesn’t take long before sub-subcommands become useful (we call these “topics” in oclif). Git chooses to separate subcommands from topics with spaces:</p>
-
-<pre><code>$ git submodule add git@github.com:oclif/command
-</code></pre>
-
-<p>Where in the Heroku CLI we use colons:</p>
-
-<pre><code>$ heroku domains:add www.myapp.com
-</code></pre>
-
-<p>Colons are preferable to help delineate the command between the arguments passed <u>to</u> the command. The user quickly learns that argument 1 is the command and how to get help for it.</p>
-
-<p><u>Getting into the weeds a little bit, there is another technical reason why we prefer colons. For topic-level commands like</u> <code>_$ heroku domains_</code> <u>we list all the domains of an app. If we used spaces to separate commands from subcommands</u> <strong>_and_</strong> <u>wanted this topic-level command to accept an argument, the parser could have no way to determine if the argument was a subcommand or argument to the topic command. Therefore, using spaces to separate makes it so you cannot have topic-commands also accept an argument.</u></p>
-
-<h3 id="toc_11">12. Follow XDG-spec</h3>
-
-<p><a href="https://standards.freedesktop.org/basedir-spec/basedir-spec-latest.html">XDG-spec</a> is a great standard that should be used to find out where to put files. Unless environment variables like <code>XDG_CONFIG_HOME</code> say otherwise, use <code>~/.config/myapp</code> for config files, and <code>~/.local/share/myapp</code> for data files.</p>
-
-<p>For cache files though, use <code>~/.cache/myapp</code> on Unix but on MacOS it’s better to default to <code>~/Library/Caches/myapp</code>. On Windows you can use <code>%LOCALAPPDATA%\myapp</code>.</p>
-
-<p></section></p>
-
-<p><section></p>
-
-<hr/>
-
-<p><a href="https://jsi2018.sched.com/event/bccc02beafef365630429e3ee1924291#">_If you happen to be at Node+JS Interactive this week, I’ll be giving a talk on this topic._</a></p>
-
-<p></section></p>
-
-<p><footer class="u-paddingTop10"><a href="https://creativecommons.org/licenses/by-sa/4.0/">Some rights reserved</a></p>
-
-<ul>
-<li>  <a href="https://medium.com/tag/programming?source=post">Programming</a></li>
-<li>  <a href="https://medium.com/tag/cli?source=post">Cli</a></li>
-</ul>
-
-<p><button class="button button--chromeless u-baseColor--buttonNormal js-multirecommendCountButton" data-action="show-recommends" data-action-value="dd3c227a0e46">2.4K</button><button class="button button--chromeless u-baseColor--buttonNormal" data-action="scroll-to-responses">8</button>*   <button class="button button--small u-noUserSelect button--withChrome u-baseColor--buttonNormal button--withHover button--unblock js-unblockButton" data-action="toggle-block-user" data-action-value="8fcea8539bad" data-action-source="footer_card">BlockedUnblock</button><button class="button button--primary button--small u-noUserSelect button--withChrome u-accentColor--buttonNormal button--follow js-followButton" data-action="toggle-subscribe-user" data-action-value="8fcea8539bad" data-action-source="footer_card-8fcea8539bad-------------------------follow_footer" data-subscribe-source="footer_card" data-follow-context-entity-id="dd3c227a0e46">FollowFollowing</button><a href="https://medium.com/@jdxcode?source=footer_card" title="Go to the profile of Jeff Dickey"><img src="https://cdn-images-1.medium.com/fit/c/60/60/1*118MlZMQLbKks1cgsrHC0g.jpeg" alt=""/></a></p>
-
-<pre><code>### [Jeff Dickey](https://medium.com/@jdxcode &quot;Go to the profile of Jeff Dickey&quot;)
-
-CLI Engineer at Heroku
-
-&lt;/footer&gt;
-</code></pre>
-
-<p></article></p>
 
                         
                       </div>
@@ -387,7 +259,7 @@ CLI Engineer at Heroku
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/10/13</span>
+                    <span class="date">2019/1/16</span>
                     <span>posted in&nbsp;</span> 
           				  
           					    <span class="posted-in"><a href='Practice.html'>Practice</a></span>
@@ -480,31 +352,31 @@ CLI Engineer at Heroku
 	      
 		      
 			      <li class="post">
-			        <a href="15459058392039.html">Reliable Domain Events</a>
+			        <a href="15517999043443.html">The Art of Crafting Architectural Diagrams</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
+			        <a href="15517997955971.html">为什么说我们需要软件架构图？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
+			        <a href="15516128677869.html">DNS Servers That Offer Privacy and Filtering</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
+			        <a href="15516123108194.html">Airbnb's Migration from Monolith to Services</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
+			        <a href="15516097487470.html">Events As First-Class Citizens</a>
 			      </li>
 		     
 		  

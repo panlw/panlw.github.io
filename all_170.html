@@ -105,200 +105,156 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15277832551515.html">
+                <a class="clearlink" href="15293215099975.html">
                 
-                  <h1>【原创】分布式之redis复习精讲</h1>
+                  <h1>从节省Redis内存空间说开去</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p>原文地址 <a href="http://www.cnblogs.com/rjzheng/p/9096228.html">http://www.cnblogs.com/rjzheng/p/9096228.html</a></p>
+<p><a href="https://mp.weixin.qq.com/s/tsZxYwoFtWwzOH1E28y6zg">https://mp.weixin.qq.com/s/tsZxYwoFtWwzOH1E28y6zg</a><br/>
+<a href="https://blog.csdn.net/clevercode/article/details/46691645">https://blog.csdn.net/clevercode/article/details/46691645</a></p>
 </blockquote>
 
-<h2 id="toc_0">引言</h2>
+<p><strong>前言</strong></p>
 
-<h3 id="toc_1">为什么写这篇文章?</h3>
+<p>上周部门会议上讨论的一个议题是如何节省 Redis 内存空间，其中有个小伙伴提到可以从压缩字符串入手，我觉得这是一个可以尝试的思路。因为有时候我们存在 Redis 中的值比较大，如果能对这些大字符串进行压缩，那么节省的内存空间还是很可观的。接下来将介绍几种常见的数据压缩算法，供大家参考。</p>
 
-<p>博主的<a href="http://www.cnblogs.com/rjzheng/p/8994962.html">《分布式之消息队列复习精讲》</a>得到了大家的好评，内心诚惶诚恐，想着再出一篇关于复习精讲的文章。但是还是要说明一下，复习精讲的文章偏面试准备，真正在开发过程中，还是脚踏实地，一步一个脚印，不要投机取巧。<br/>
-考虑到绝大部分写业务的程序员，在实际开发中使用 redis 的时候，只会 setvalue 和 getvalue 两个操作，对 redis 整体缺乏一个认知。又恰逢博主某个同事下周要去培训 redis，所以博主斗胆以 redis 为题材，对 redis 常见问题做一个总结，希望能够弥补大家的知识盲点。</p>
+<h1 id="toc_0">1 RLE</h1>
 
-<h3 id="toc_2">复习要点?</h3>
+<p>RLE 又叫 Run Length Encoding ，是一个针对无损压缩的非常简单的算法。它用重复字节和重复的次数来简单描述来代替重复的字节。尽管简单并且对于通常的压缩非常低效，但它有的时候却非常有用（例如， JPEG 就使用它）。</p>
 
-<p>本文围绕以下几点进行阐述<br/>
-1、为什么使用 redis<br/>
-2、使用 redis 有什么缺点<br/>
-3、单线程的 redis 为什么这么快<br/>
-4、redis 的数据类型，以及每种数据类型的使用场景<br/>
-5、redis 的过期策略以及内存淘汰机制<br/>
-6、redis 和数据库双写一致性问题<br/>
-7、如何应对缓存穿透和缓存雪崩问题<br/>
-8、如何解决 redis 的并发竞争问题</p>
+<h2 id="toc_1">1.1 原理</h2>
 
-<h2 id="toc_3">正文</h2>
+<p>图 2.1 显示了一个如何使用 RLE 算法来对一个数据流编码的例子，其中出现六次的符号‘ 93 ’已经用 3 个字节来代替：一个标记字节（‘ 0 ’在本例中）重复的次数（‘ 6 ’）和符号本身（‘ 93 ’）。</p>
 
-<h3 id="toc_4">1、为什么使用 redis</h3>
+<p>RLE 解码器遇到符号‘ 0 ’ 的时候，它表明后面的两个字节决定了需要输出哪个符号以及输出多少次。</p>
 
-<p><strong>分析</strong>: 博主觉得在项目中使用 redis，主要是从两个角度去考虑: <strong>性能</strong>和<strong>并发</strong>。当然，redis 还具备可以做分布式锁等其他功能，但是如果只是为了分布式锁这些其他功能，完全还有其他中间件 (如 zookpeer 等) 代替，并不是非要使用 redis。因此，这个问题主要从性能和并发两个角度去答。<br/>
-<strong>回答</strong>: 如下所示，分为两点<br/>
-<strong>（一）性能</strong><br/>
-如下图所示，我们在碰到需要执行耗时特别久，且结果不频繁变动的 SQL，就特别适合将运行结果放入缓存。这样，后面的请求就去缓存中读取，使得请求能够<strong>迅速响应</strong>。<br/>
-<img src="https://images.cnblogs.com/cnblogs_com/rjzheng/1202350/o_redis1.png" alt=""/><br/>
-<strong>题外话：</strong>忽然想聊一下这个<strong>迅速响应</strong>的标准。其实根据交互效果的不同，这个响应时间没有固定标准。不过曾经有人这么告诉我:&quot; 在理想状态下，我们的页面跳转需要在<strong>瞬间</strong>解决，对于页内操作则需要在<strong>刹那</strong>间解决。另外，超过<strong>一弹指</strong>的耗时操作要有进度提示，并且可以随时中止或取消，这样才能给用户最好的体验。&quot;<br/>
-那么<strong>瞬间、刹那、一弹指</strong>具体是多少时间呢？<br/>
-根据《摩诃僧祗律》记载</p>
+<p><img src="https://mmbiz.qpic.cn/mmbiz_jpg/XA3sPCPib1l6jia5WKgazEEVDPjibKHOz8rslINaKDFMvfr4bOibjNz1LLxJSDU1oI34BCTibPjokcy8BgFbKjwXHNg/640?wx_fmt=jpeg" alt=""/></p>
 
-<pre><code>一刹那者为一念，二十念为一瞬，二十瞬为一弹指，二十弹指为一罗预，二十罗预为一须臾，一日一夜有三十须臾。
-</code></pre>
+<p>1.2 实现</p>
 
-<p>那么，经过周密的计算，一<strong>瞬间</strong>为 0.36 秒, 一<strong>刹那</strong>有 0.018 秒. 一<strong>弹指</strong>长达 7.2 秒。<br/>
-<strong>（二）并发</strong><br/>
-如下图所示，在大并发的情况下，所有的请求直接访问数据库，数据库会出现连接异常。这个时候，就需要使用 redis 做一个缓冲操作，让请求先访问到 redis，而不是直接访问数据库。<br/>
-<img src="https://images.cnblogs.com/cnblogs_com/rjzheng/1202350/o_redis2.png" alt=""/></p>
+<p>RLE 可以使用很多不同的方法。基本压缩库中详细实现的方式是非常有效的一个。一个特殊的标记字节用来指示重复节的开始，而不是对于重复非重复节都 coding run 。</p>
 
-<h3 id="toc_5">2、使用 redis 有什么缺点</h3>
+<p>因此非重复节可以有任意长度而不被控制字节打断，除非指定的标记字节出现在非重复节（顶多以两个字节来编码）的稀有情况下。为了最优化效率，标记字节应该是输入流中最少出现的符号（或许就不存在）。</p>
 
-<p><strong>分析</strong>: 大家用 redis 这么久，这个问题是必须要了解的，基本上使用 redis 都会碰到一些问题，常见的也就几个。<br/>
-<strong>回答</strong>: 主要是四个问题<br/>
-(一) 缓存和数据库双写一致性问题<br/>
-(二) 缓存雪崩问题<br/>
-(三) 缓存击穿问题<br/>
-(四) 缓存的并发竞争问题<br/>
-这四个问题，我个人是觉得在项目中，比较常遇见的，具体解决方案，后文给出。</p>
+<p>重复 runs 能够在 32768 字节的时候运转。少于 129 字节的要求 3 个字节编码（标记 + 次数 + 符号），而大雨 128 字节要求四个字节（标记 + 次数的高 4 位 |0x80+ 次数的低 4 位）。这是通常所有采用的压缩的做法，并且也是相比较三个字节固定编码（允许使用 3 个字节来编码 256 个字节）而言非常少见的有损压缩率的方法。</p>
 
-<h3 id="toc_6">3、单线程的 redis 为什么这么快</h3>
+<p>在这种模式下，最坏的压缩结果是：</p>
 
-<p><strong>分析</strong>: 这个问题其实是对 redis 内部机制的一个考察。其实根据博主的面试经验，很多人其实都不知道 redis 是单线程工作模型。所以，这个问题还是应该要复习一下的。<br/>
-<strong>回答</strong>: 主要是以下三点<br/>
-(一) 纯内存操作<br/>
-(二) 单线程操作，避免了频繁的上下文切换<br/>
-(三) 采用了非阻塞 <strong>I/O 多路复用机制</strong></p>
+<p>输出大小 =257/256* 输入大小 +1</p>
 
-<p><strong>题外话：</strong>我们现在要仔细的说一说 I/O 多路复用机制，因为这个说法实在是太通俗了，通俗到一般人都不懂是什么意思。博主打一个比方：小曲在 S 城开了一家快递店，负责同城快送服务。小曲因为资金限制，雇佣了<strong>一批</strong>快递员，然后小曲发现资金不够了，只够买<strong>一辆</strong>车送快递。<br/>
-<strong>经营方式一</strong><br/>
-客户每送来一份快递，小曲就让一个快递员盯着，然后快递员开车去送快递。慢慢的小曲就发现了这种经营方式存在下述问题</p>
+<h1 id="toc_2">2 哈夫曼</h1>
 
-<ul>
-<li>  几十个快递员基本上时间都花在了抢车上了，大部分快递员都处在闲置状态，谁抢到了车，谁就能去送快递</li>
-<li>  随着快递的增多，快递员也越来越多，小曲发现快递店里越来越挤，没办法雇佣新的快递员了</li>
-<li>  快递员之间的协调很花时间</li>
-</ul>
+<p>哈夫曼编码是无损压缩当中最好的方法。它使用预先二进制描述来替换每个符号，长度由特殊符号出现的频率决定。常见的符号需要很少的位来表示，而不常见的符号需要很多位来表示。</p>
 
-<p>综合上述缺点，小曲痛定思痛，提出了下面的经营方式<br/>
-<strong>经营方式二</strong><br/>
-小曲只雇佣一个快递员。然后呢，客户送来的快递，小曲按<strong>送达地点</strong>标注好，然后<strong>依次</strong>放在一个地方。最后，那个快递员<strong>依次</strong>的去取快递，一次拿一个，然后开着车去送快递，送好了就回来拿下一个快递。</p>
+<p>哈夫曼算法在改变任何符号二进制编码引起少量密集表现方面是最佳的。然而，它并不处理符号的顺序和重复或序号的序列。</p>
 
-<p><strong>对比</strong><br/>
-上述两种经营方式对比，是不是明显觉得第二种，效率更高，更好呢。在上述比喻中:</p>
+<h2 id="toc_3">2.1 原理</h2>
 
-<ul>
-<li>  每个快递员 ------------------&gt; 每个线程</li>
-<li>  每个快递 --------------------&gt; 每个 socket(I/O 流)</li>
-<li>  快递的送达地点 --------------&gt;socket 的不同状态</li>
-<li>  客户送快递请求 --------------&gt; 来自客户端的请求</li>
-<li>  小曲的经营方式 --------------&gt; 服务端运行的代码</li>
-<li>  一辆车 ----------------------&gt;CPU 的核数</li>
-</ul>
+<p>我不打算探究哈夫曼编码的所有实际的细节，但基本的原理是为每个符号找到新的二进制表示，从而通常符号使用很少的位，不常见的符号使用较多的位。</p>
 
-<p>于是我们有如下结论<br/>
-1、经营方式一就是传统的并发模型，每个 I/O 流 (快递) 都有一个新的线程 (快递员) 管理。<br/>
-2、经营方式二就是 I/O 多路复用。只有单个线程 (一个快递员)，通过跟踪每个 I/O 流的状态 (每个快递的送达地点)，来管理多个 I/O 流。</p>
+<p>简短的说，这个问题的解决方案是为了查找每个符号的通用程度，我们建立一个未压缩数据的柱状图；通过递归拆分这个柱状图为两部分来创建一个二叉树，每个递归的一半应该和另一半具有同样的权（权是 ∑ <sup style="box-sizing: border-box;outline: 0px;word-break: break-all;">N </sup><sub style="box-sizing: border-box;outline: 0px;word-break: break-all;">K </sub>=<sub style="box-sizing: border-box;outline: 0px;word-break: break-all;">1</sub> 符号数 <sub style="box-sizing: border-box;outline: 0px;word-break: break-all;">k </sub>, N 是分之中符号的数量，符号数 <sub style="box-sizing: border-box;outline: 0px;word-break: break-all;">k </sub>是符号 k 出现的次数 ）</p>
 
-<p>下面类比到真实的 redis 线程模型，如图所示<br/>
-<img src="https://images.cnblogs.com/cnblogs_com/rjzheng/1202350/o_redis3.png" alt=""/><br/>
-参照上图，简单来说，就是。我们的 redis-client 在操作的时候，会产生具有不同事件类型的 socket。在服务端，有一段 I/0 多路复用程序，将其置入队列之中。然后，文件事件分派器，依次去队列中取，转发到不同的事件处理器中。<br/>
-需要说明的是，这个 I/O 多路复用机制，redis 还提供了 select、epoll、evport、kqueue 等多路复用函数库，大家可以自行去了解。</p>
+<p>这棵树有两个目的：</p>
 
-<h3 id="toc_7">4、redis 的数据类型，以及每种数据类型的使用场景</h3>
+<p>1．   编码器使用这棵树来找到每个符号最优的表示方法<br/>
+2．   解码器使用这棵树唯一的标识在压缩流中每个编码的开始和结束，其通过在读压缩数据位的时候自顶向底的遍历树，选择基于数据流中的每个独立位的分支，一旦一个到达叶子节点，解码器知道一个完整的编码已经读出来了。</p>
 
-<p><strong>分析</strong>：是不是觉得这个问题很基础，其实我也这么觉得。然而根据面试经验发现，至少百分八十的人答不上这个问题。建议，在项目中用到后，再类比记忆，体会更深，不要硬记。基本上，一个合格的程序员，五种类型都会用到。<br/>
-<strong>回答</strong>：一共五种<br/>
-(一)String<br/>
-这个其实没啥好说的，最常规的 set/get 操作，value 可以是 String 也可以是数字。一般做<strong>一些复杂的计数功能的缓存。</strong><br/>
-(二)hash<br/>
-这里 value 存放的是结构化的对象，比较方便的就是操作其中的某个字段。博主在做<strong>单点登录</strong>的时候，就是用这种数据结构存储用户信息，以 cookieId 作为 key，设置 30 分钟为缓存过期时间，能很好的模拟出类似 session 的效果。<br/>
-(三)list<br/>
-使用 List 的数据结构，可以<strong>做简单的消息队列的功能</strong>。另外还有一个就是，可以利用 lrange 命令，<strong>做基于 redis 的分页功能</strong>，性能极佳，用户体验好。<br/>
-(四)set<br/>
-因为 set 堆放的是一堆不重复值的集合。所以可以做<strong>全局去重的功能</strong>。为什么不用 JVM 自带的 Set 进行去重？因为我们的系统一般都是集群部署，使用 JVM 自带的 Set，比较麻烦，难道为了一个做一个全局去重，再起一个公共服务，太麻烦了。<br/>
-另外，就是利用交集、并集、差集等操作，可以<strong>计算共同喜好，全部的喜好，自己独有的喜好等功能</strong>。<br/>
-(五)sorted set<br/>
-sorted set 多了一个权重参数 score, 集合中的元素能够按 score 进行排列。可以做<strong>排行榜应用，取 TOP N 操作</strong>。另外，参照另一篇<a href="https://www.cnblogs.com/rjzheng/p/8972725.html">《分布式之延时任务方案解析》</a>，该文指出了 sorted set 可以用来做<strong>延时任务</strong>。最后一个应用就是可以做<strong>范围查找</strong>。</p>
+<p>我们来看一个例子会让我们更清楚。图 2.2 显示了一个 10 个字节的未压缩的数据。</p>
 
-<h3 id="toc_8">5、redis 的过期策略以及内存淘汰机制</h3>
+<p>根据符号频率，哈夫曼编码器生成哈夫曼树（图 2.4 ）和相应的编码表示（图 2.3 ）。</p>
 
-<p><strong>分析</strong>: 这个问题其实相当重要，到底 redis 有没用到家，这个问题就可以看出来。比如你 redis 只能存 5G 数据，可是你写了 10G，那会删 5G 的数据。怎么删的，这个问题思考过么？还有，你的数据已经设置了过期时间，但是时间到了，内存占用率还是比较高，有思考过原因么?<br/>
-<strong>回答</strong>:<br/>
-redis 采用的是定期删除 + 惰性删除策略。<br/>
-<strong>为什么不用定时删除策略?</strong><br/>
-定时删除, 用一个定时器来负责监视 key, 过期则自动删除。虽然内存及时释放，但是十分消耗 CPU 资源。在大并发请求下，CPU 要将时间应用在处理请求，而不是删除 key, 因此没有采用这一策略.<br/>
-<strong>定期删除 + 惰性删除是如何工作的呢?</strong><br/>
-定期删除，redis 默认每个 100ms 检查，是否有过期的 key, 有过期 key 则删除。需要说明的是，redis 不是每个 100ms 将所有的 key 检查一次，而是随机抽取进行检查 (如果每隔 100ms, 全部 key 进行检查，redis 岂不是卡死)。因此，如果只采用定期删除策略，会导致很多 key 到时间没有删除。<br/>
-于是，惰性删除派上用场。也就是说在你获取某个 key 的时候，redis 会检查一下，这个 key 如果设置了过期时间那么是否过期了？如果过期了此时就会删除。<br/>
-<strong>采用定期删除 + 惰性删除就没其他问题了么?</strong><br/>
-不是的，如果定期删除没删除 key。然后你也没即时去请求 key，也就是说惰性删除也没生效。这样，redis 的内存会越来越高。那么就应该采用<strong>内存淘汰机制</strong>。<br/>
-在 redis.conf 中有一行配置</p>
+<p><img src="https://mmbiz.qpic.cn/mmbiz_jpg/XA3sPCPib1l6jia5WKgazEEVDPjibKHOz8rN4YBTn5M9deDfQ84oS1YicO18tc4XJVmgZcpCSGQP0nEnn1FDgf6O4w/640?wx_fmt=jpeg" alt=""/></p>
 
-<pre><code># maxmemory-policy volatile-lru
-</code></pre>
+<p>你可以看到，常见的符号接近根，因此只要少数位来表示。于是最终的压缩数据流如图 2.5 所示。</p>
 
-<p>该配置就是配内存淘汰策略的 (什么，你没配过？好好反省一下自己)<br/>
-1）noeviction：当内存不足以容纳新写入数据时，新写入操作会报错。<strong>应该没人用吧。</strong><br/>
-2）allkeys-lru：当内存不足以容纳新写入数据时，在键空间中，移除最近最少使用的 key。<strong>推荐使用，目前项目在用这种。</strong><br/>
-3）allkeys-random：当内存不足以容纳新写入数据时，在键空间中，随机移除某个 key。<strong>应该也没人用吧，你不删最少使用 Key, 去随机删。</strong><br/>
-4）volatile-lru：当内存不足以容纳新写入数据时，在设置了过期时间的键空间中，移除最近最少使用的 key。<strong>这种情况一般是把 redis 既当缓存，又做持久化存储的时候才用。不推荐</strong><br/>
-5）volatile-random：当内存不足以容纳新写入数据时，在设置了过期时间的键空间中，随机移除某个 key。<strong>依然不推荐</strong><br/>
-6）volatile-ttl：当内存不足以容纳新写入数据时，在设置了过期时间的键空间中，有更早过期时间的 key 优先移除。<strong>不推荐</strong><br/>
-ps：如果没有设置 expire 的 key, 不满足先决条件 (prerequisites); 那么 volatile-lru, volatile-random 和 volatile-ttl 策略的行为, 和 noeviction(不删除) 基本上一致。</p>
+<p><img src="https://mmbiz.qpic.cn/mmbiz_jpg/XA3sPCPib1l6jia5WKgazEEVDPjibKHOz8rN5XbjThAK0X8TjTjvx1sATgTetFwyn6jL9sA8HFBX35RVOTHooYt1A/640?wx_fmt=jpeg" alt=""/></p>
 
-<h3 id="toc_9">6、redis 和数据库双写一致性问题</h3>
+<p><img src="https://mmbiz.qpic.cn/mmbiz_jpg/XA3sPCPib1l6jia5WKgazEEVDPjibKHOz8rpfNt5vdooNB0tu2XO2wrByeZzTdHxlxeJWKsjyAB0EFUv0ibvC7W9Hg/640?wx_fmt=jpeg" alt=""/></p>
 
-<p><strong>分析</strong>: 一致性问题是分布式常见问题，还可以再分为最终一致性和强一致性。数据库和缓存双写，就必然会存在不一致的问题。答这个问题，先明白一个前提。就是<strong>如果对数据有强一致性要求，不能放缓存。</strong>我们所做的一切，只能保证最终一致性。另外，我们所做的方案其实从根本上来说，只能说<strong>降低不一致发生的概率</strong>，无法完全避免。因此，有强一致性要求的数据，不能放缓存。<br/>
-<strong>回答</strong>:<a href="https://www.cnblogs.com/rjzheng/p/9041659.html">《分布式之数据库和缓存双写一致性方案解析》</a>给出了详细的分析，在这里简单的说一说。首先，采取正确更新策略，先更新数据库，再删缓存。其次，因为可能存在删除缓存失败的问题，提供一个补偿措施即可，例如利用消息队列。</p>
+<p>压缩后的数据流是 24 位（三个字节），原来是 80 位（ 10 个字节）。当然，我应该存储哈夫曼树，这样解码器就能够解码出对应的压缩流了，这就使得该例子中的真正数据流比输入的流数据量大。这是相对较短的数据上的副作用。对于大数据量来说，上面的哈夫曼树就不占太多比例了。</p>
 
-<h3 id="toc_10">7、如何应对缓存穿透和缓存雪崩问题</h3>
+<p><img src="https://mmbiz.qpic.cn/mmbiz_jpg/XA3sPCPib1l6jia5WKgazEEVDPjibKHOz8rwpdS3euibfb2eNiaAWD0PpCeF3qppC2KQbaZz2Zv7fVdts3becE6LYJw/640?wx_fmt=jpeg" alt=""/></p>
 
-<p><strong>分析</strong>: 这两个问题，说句实在话，一般中小型传统软件企业，很难碰到这个问题。如果有大并发的项目，流量有几百万左右。这两个问题一定要深刻考虑。<br/>
-<strong>回答</strong>: 如下所示<br/>
-<strong>缓存穿透</strong>，即黑客故意去请求缓存中不存在的数据，导致所有的请求都怼到数据库上，从而数据库连接异常。<br/>
-<strong>解决方案</strong>:<br/>
-(一) 利用互斥锁，缓存失效的时候，先去获得锁，得到锁了，再去请求数据库。没得到锁，则休眠一段时间重试<br/>
-(二) 采用异步更新策略，无论 key 是否取到值，都直接返回。value 值中维护一个缓存失效时间，缓存如果过期，异步起一个线程去读数据库，更新缓存。需要做<strong>缓存预热</strong> (项目启动前，先加载缓存) 操作。<br/>
-(三) 提供一个能迅速判断请求是否有效的拦截机制，比如，利用布隆过滤器，内部维护一系列合法有效的 key。迅速判断出，请求所携带的 Key 是否合法有效。如果不合法，则直接返回。<br/>
-<strong>缓存雪崩</strong>，即缓存同一时间大面积的失效，这个时候又来了一波请求，结果请求都怼到数据库上，从而导致数据库连接异常。<br/>
-<strong>解决方案</strong>:<br/>
-(一) 给缓存的失效时间，加上一个随机值，避免集体失效。<br/>
-(二) 使用互斥锁，但是该方案吞吐量明显下降了。<br/>
-(三) 双缓存。我们有两个缓存，缓存 A 和缓存 B。缓存 A 的失效时间为 20 分钟，缓存 B 不设失效时间。自己做缓存预热操作。然后细分以下几个小点</p>
+<p>解码的时候，从上到下遍历树，为压缩的流选择从左 / 右分支，每次碰到一个叶子节点的时候，就可以将对应的字节写到解压输出流中，然后再从根开始遍历。</p>
 
-<ul>
-<li>  I 从缓存 A 读数据库，有则直接返回</li>
-<li>  II A 没有数据，直接从 B 读数据，直接返回，并且异步启动一个更新线程。</li>
-<li>  III 更新线程同时更新缓存 A 和缓存 B。</li>
-</ul>
+<h2 id="toc_4">2.2 实现</h2>
 
-<h3 id="toc_11">8、如何解决 redis 的并发竞争 key 问题</h3>
+<p>哈夫曼编码器可以在基本压缩库中找到，其是非常直接的实现。</p>
 
-<p><strong>分析</strong>: 这个问题大致就是，同时有多个子系统去 set 一个 key。这个时候要注意什么呢？大家思考过么。需要说明一下，博主提前百度了一下，发现答案基本都是推荐用 redis 事务机制。博主<strong>不推荐使用 redis 的事务机制。</strong>因为我们的生产环境，基本都是 redis 集群环境，做了数据分片操作。你一个事务中有涉及到多个 key 操作的时候，这多个 key 不一定都存储在同一个 redis-server 上。因此，<strong>redis 的事务机制，十分鸡肋。</strong><br/>
-<strong>回答:</strong> 如下所示<br/>
-(1) 如果对这个 key 操作，<strong>不要求顺序</strong><br/>
-这种情况下，准备一个分布式锁，大家去抢锁，抢到锁就做 set 操作即可，比较简单。<br/>
-(2) 如果对这个 key 操作，<strong>要求顺序</strong><br/>
-假设有一个 key1, 系统 A 需要将 key1 设置为 valueA, 系统 B 需要将 key1 设置为 valueB, 系统 C 需要将 key1 设置为 valueC.<br/>
-期望按照 key1 的 value 值按照 valueA--&gt;valueB--&gt;valueC 的顺序变化。这种时候我们在数据写入数据库的时候，需要保存一个时间戳。假设时间戳如下</p>
+<p>这个实现的基本缺陷是：</p>
 
-<pre><code>系统A key 1 {valueA  3:00}
-系统B key 1 {valueB  3:05}
-系统C key 1 {valueC  3:10}
-</code></pre>
+<p>1．   慢位流实现<br/>
+2．   相当慢的解码（比编码慢）<br/>
+3．   最大的树深度是 32 （编码器在任何超过 32 位大小的时候退出）。如果我不是搞错的话，这是不可能的，除非输出的数据大于 2 <sup style="box-sizing: border-box;outline: 0px;word-break: break-all;">32</sup> 字节。</p>
 
-<p>那么，假设这会系统 B 先抢到锁，将 key1 设置为 {valueB 3:05}。接下来系统 A 抢到锁，发现自己的 valueA 的时间戳早于缓存中的时间戳，那就不做 set 操作了。以此类推。</p>
+<p>另一方面，这个实现有几个优点：</p>
 
-<p>其他方法，比如利用队列，将 set 方法变成串行访问也可以。总之，灵活变通。</p>
+<p>1．   哈夫曼树以一个紧密的形式每个符号要求 12 位（对于 8 位的符号）的方式存储，这意味着最大的头为 384 。<br/>
+2．   编码相当容易理解</p>
 
-<h2 id="toc_12">总结</h2>
+<p>哈夫曼编码在数据有噪音的情况（不是有规律的，例如 RLE ）下非常好，这中情况下大多数基于字典方式的编码器都有问题。</p>
 
-<p>本文对 redis 的常见问题做了一个总结。大部分是博主自己在工作中遇到，以及以前面试别人的时候，爱问的一些问题。另外，<strong>不推荐大家临时抱佛脚</strong>，真正碰到一些有经验的工程师，其实几下就能把你问懵。最后，希望大家有所收获吧。</p>
+<h1 id="toc_5">3 Rice</h1>
+
+<p>对于由大 word （例如： 16 或 32 位）组成的数据和较低的数据值， Rice 编码能够获得较好的压缩比。音频和高动态变化的图像都是这种类型的数据，它们被预处理过（例如 delta 相邻的采样）。</p>
+
+<p>尽管哈夫曼编码处理这种数据是最优的，却由于几个原因而不适合处理这种数据（例如： 32 位大小要求 16GB 的柱状图缓冲区来进行哈夫曼树编码）。因此一个比较动态的方式更适合由大 word 组成的数据。</p>
+
+<h2 id="toc_6">3.1 原理</h2>
+
+<p>Rice 编码背后的基本思想是尽可能的用较少的位来存储多个字（正像使用哈夫曼编码一样）。实际上，有人可能想到 Rice 是静态的哈夫曼编码（例如，编码不是由实际数据内容的统计信息决定，而是由小的值比高的值常见的假定决定）。</p>
+
+<p>编码非常简单：将值 X 用 X 个‘ 1 ’位之后跟一个 0 位来表示。</p>
+
+<h2 id="toc_7">3.2 实现</h2>
+
+<p>在基本压缩库针对 Rice 做了许多优化：</p>
+
+<p>1．   每个字最没有意义的位被存储为 k 和最有意义的 N-k 位用 Rice 编码。 K 作为先前流中少许采样的位平均数。这是通常最好使用 Rice 编码的方法，隐藏噪音且对于动态变化的范围并不导致非常长的 Rice 编码。<br/>
+2．   如果 rice 编码比固定的开端长， T ，一个可选的编码：输出 T 个‘ 1 ’位，紧跟（ log2(X-T) ）个‘ 1 ’和一个‘ 0 ’位，接着是 X-T （最没有意义的 (log2(X-T))-1 位）。这对于大值来说都是比较高效的代码并且阻止可笑的长 Rice 编码（最坏的情况，对于一个 32 位 word 单个 Rice 编码可能变成 2 <sup style="box-sizing: border-box;outline: 0px;word-break: break-all;">32 </sup>位或 512MB ）。</p>
+
+<p>如果开端是 4 ，下面是结果编码表：</p>
+
+<p><img src="https://mmbiz.qpic.cn/mmbiz_png/XA3sPCPib1l6jia5WKgazEEVDPjibKHOz8rOOibqB37z6QKMg3grXJh2GSTCkVFrLo5oIy3J9oxc8OORZ3nib9yCd9w/640?wx_fmt=png" alt=""/></p>
+
+<p>就像你看到的一样，在这个实现中使用 threshold 方法仅仅两个编码导致一个最坏的情况；剩下的编码产生比标准 Rice 编码还要短的编码。</p>
+
+<h1 id="toc_8">4 Lempel-Ziv (LZ77)</h1>
+
+<p>Lempel-Ziv 压缩模式有许多不同的变量。基本压缩库有清晰的 LZ77 算法的实现（ Lempel-Ziv ， 1977 ），执行的很好，源代码也非常容易理解。</p>
+
+<p>LZ 编码器能用来通用目标的压缩，特别对于文本执行的很好。它也在 RLE 和哈夫曼编码器（ RLE ， LZ ，哈夫曼）中使用来大多数情况下获得更多的压缩。</p>
+
+<h2 id="toc_9">4.1 原理</h2>
+
+<p>在 LZ 压缩算法的背后是使用 RLE 算法用先前出现的相同字节序列的引用来替代。</p>
+
+<p>简单的讲， LZ 算法被认为是字符串匹配的算法。例如：在一段文本中某字符串经常出现，并且可以通过前面文本中出现的字符串指针来表示。当然这个想法的前提是指针应该比字符串本身要短。</p>
+
+<p>例如，在上一段短语 “字符串” 经常出现，可以将除第一个字符串之外的所有用第一个字符串引用来表示从而节省一些空间。</p>
+
+<p>一个字符串引用通过下面的方式来表示：</p>
+
+<p>1．   唯一的标记<br/>
+2．   偏移数量<br/>
+3．   字符串长度</p>
+
+<p>由编码的模式决定引用是一个固定的或变动的长度。后面的情况经常是首选，因为它允许编码器用引用的大小来交换字符串的大小（例如，如果字符串相当长，增加引用的长度可能是值得的）。</p>
+
+<h2 id="toc_10">4.2 实现</h2>
+
+<p>使用 LZ77 的一个问题是由于算法需要字符串匹配，对于每个输入流的单个字节，每个流中此字节前面的哪个字节都必须被作为字符串的开始从而尽可能的进行字符串匹配，这意味着算法非常慢。</p>
+
+<p>另一个问题是为了最优化压缩而调整字符串引用的表示形式并不容易。例如，必须决定是否所有的引用和非压缩字节应该在压缩流中的字节边界发生。</p>
+
+<p>基本压缩库使用一个清晰的实现来保证所有的符号和引用是字节对齐的，因此牺牲了压缩比率，并且字符串匹配程序并不是最优化的（没有缓存、历史缓冲区或提高速度的小技巧），这意味着程序非常慢。</p>
+
+<p>另一方面，解压缩程序非常简单。</p>
+
+<p>一个提高 LZ77 速度的试验已经进行了，这个试验中使用数组索引来加速字符串匹配的过程。然而，它还是比通常的压缩程序慢。</p>
 
                         
                       </div>
@@ -307,10 +263,10 @@ ps：如果没有设置 expire 的 key, 不满足先决条件 (prerequisites); �
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/6/1</span>
+                    <span class="date">2018/6/18</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Cache.html'>Cache</a></span>
+          					    <span class="posted-in"><a href='Middleware.html'>Middleware</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -400,31 +356,31 @@ ps：如果没有设置 expire 的 key, 不满足先决条件 (prerequisites); �
 	      
 		      
 			      <li class="post">
-			        <a href="15459058392039.html">Reliable Domain Events</a>
+			        <a href="15517999043443.html">The Art of Crafting Architectural Diagrams</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
+			        <a href="15517997955971.html">为什么说我们需要软件架构图？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
+			        <a href="15516128677869.html">DNS Servers That Offer Privacy and Filtering</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
+			        <a href="15516123108194.html">Airbnb's Migration from Monolith to Services</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
+			        <a href="15516097487470.html">Events As First-Class Citizens</a>
 			      </li>
 		     
 		  

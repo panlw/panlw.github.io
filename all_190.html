@@ -105,213 +105,598 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15262240665064.html">
+                <a class="clearlink" href="15282771049157.html">
                 
-                  <h1>Spring Boot で WebSocket (STOMPではなく、TextWebSocketHandler)を試してみる</h1>
+                  <h1>ELK: Using a Centralized Logging Architecture</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p>2017-05-10<br/>
-<a href="http://blog.enjoyxstudy.com/entry/2017/05/10/000000">http://blog.enjoyxstudy.com/entry/2017/05/10/000000</a></p>
+<p>by Alexandre Lourenco  ·  Mar. 07, 15 · DevOps Zone · Tutorial<br/>
+<a href="https://dzone.com/articles/elk-using-centralized-logging">https://dzone.com/articles/elk-using-centralized-logging</a><br/>
+<a href="https://dzone.com/articles/elk-using-centralized-logging-0">https://dzone.com/articles/elk-using-centralized-logging-0</a></p>
 </blockquote>
 
-<p>こないだSTOMP over WebSocketを試してみましたが、今度はSTOMPを使わずに、<code>TextWebSocketHandler</code>を使ったWebSocketを試してみます。題材も同じくチャットです。</p>
+<p>Welcome, dear reader, to another post from my blog. On this new series, we will talk about a architecture specially designed to process data from log files coming from applications, with the junction of 3 tools, Logstash, ElasticSearch and Kibana. But after all, do we really need such a structure to process log files?</p>
+
+<p><strong>Stacks of log</strong></p>
+
+<p>On a company ecosystem, there is lots of systems, like the CRM, ERP, etc. On such environments, it is common for the systems to produce tons of logs, which provide not only a real-time analysis of the technical status of the software, but could also provide some business information too, like a log of a customer&#39;s behavior  on a  shopping cart, for example. To dive into this useful source of information, enters the ELK architecture, which name came from the initials of the software involved: ElasticSearch, LogStash and Kibana. The picture below shows in a macro vision the flow between the tools:</p>
+
+<p><img src="https://dl.dropboxusercontent.com/s/4kqrjggb1vqfqhq/architectureELKdzone.jpg?dl=0" alt=""/></p>
+
+<p>As we can see, there&#39;s a clear separation of concerns between the tools, where which one has his own individual part on the processing of the log data:</p>
 
 <ul>
-<li>  <a href="https://github.com/onozaty/sandbox-spring-boot/tree/master/spring-boot-websocket">sandbox-spring-boot/spring-boot-websocket at master · onozaty/sandbox-spring-boot · GitHub</a></li>
+<li>  <strong>Logstash</strong>: Responsible for collect the data, make transformations like parsing - using regular expressions - adding fields, formatting as structures like JSON, etc and finally sending the data to various destinations, like a ElasticSearch cluster. Later on this post we will see more detail about this useful tool;</li>
+<li>  <strong>ElasticSearch</strong>: RESTful data indexer, ElasticSearch provides a clustered solution to make searches and analysis on a set of data. On the second part of our series, we will see more about this tool;</li>
+<li>  <strong>Kibana</strong>: Web-based application, responsible for providing a light and easy-to-use dashboard tool. On the third and last part of our series, we will see more of this tool;</li>
 </ul>
 
-<p>ルームの情報をどのように渡そうか悩みました。コードを書き始めるまでは、WebSocketで接続する先にヘッダとかで渡せばいいかなと思っていましたが、調べてみたら渡せなかったので、やもえずURLのクエリパラメータとして渡すようにしました。</p>
+<p>So, to begin our road in the ELK stack, let&#39;s begin by talking about the tool responsible for integrating our data: LogStash.</p>
 
-<h2 id="toc_0">コード</h2>
+<p><strong>LogStash installation</strong></p>
 
-<p>テキストでのやり取りを行うので、<code>TextWebSocketHandler</code> を利用します。<code>TextWebSocketHandler</code>の各メソッドをoverrideして必要な処理を実装するだけです。</p>
+<p>To install, all we need to do is unzip the file we get from LogStash&#39;s site and run the binaries on the bin folder. The only pre-requisite for the tool is to have Java installed and configured in the environment. If the reader wants to follow my instructions with the same system then me, I am using Ubuntu 14.10 with Java 8, which can be downloaded from Oracle&#39;s site <a href="http://www.oracle.com/technetwork/java/javase/downloads/jdk8-downloads-2133151.html">here</a>.</p>
 
-<p>ルームの情報は、URLのクエリとしてクライアントから送っているので、接続が確立したタイミング(<code>afterConnectionEstablished</code>)にて、ルーム毎に<code>WebSocketSession</code>を保持するようにします。 メッセージを受け取ったら、自分のルームと同じ<code>WebSocketSession</code>に対して、メッセージを送るだけです。</p>
+<p>With Java installed and configured, we begin by downloading and unziping the file. To do this, we open a terminal and input:</p>
 
-<pre><code class="language-java">package com.example;
+<pre><code class="language-sh">curl https://download.elasticsearch.org/logstash/logstash/logstash-1.4.2.tar.gz | tar -xz
+</code></pre>
 
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.CopyOnWriteArraySet;
+<p>After the download, we will have LogStash on a folder on the same place we run our &#39;curl&#39; command. On the LogStash terminology, we have 4 types of configurations we can make for a stream, named:</p>
 
-import org.springframework.stereotype.Component;
-import org.springframework.web.socket.CloseStatus;
-import org.springframework.web.socket.TextMessage;
-import org.springframework.web.socket.WebSocketSession;
-import org.springframework.web.socket.handler.TextWebSocketHandler;
+<ul>
+<li>  <strong>input</strong>: On this configuration, we put the sources of our streams, that can range from polling files of a file system to more complex inputs such as a Amazon SQS queue and even Twitter;</li>
+<li>  <strong>codec</strong>: On this configuration we make transformations on the data, like turning into a JSON structure, or grouping together lines that are semantically related, like for example, a Java&#39;s stack trace;</li>
+<li>  <strong>filter</strong>: On this configuration we make operations such as parsing data from/to different formats, removal of special characters and checksums for deduplication;</li>
+<li>  <strong>output</strong>: On this configuration we define the destinations for the processed data, such as a ElasticSearch cluster, AWS SQS, Nagios etc;</li>
+</ul>
 
-@Component
-public class ChatHandler extends TextWebSocketHandler {
+<p>Now that we have established LogStash&#39;s configuration structure, let&#39;s begin with our first execution. In LogStash we have two ways to configure our execution, one way by providing the settings on the start command itself and the other one is by providing a configuration file for the command. The simplest way to boot a LogStash&#39;s stream is by setting the input and output as the console itself, to make this execution, we open a terminal, navigate to the bin folder of our LogStash&#39;s installation and execute the following command:</p>
 
-    private ConcurrentHashMap&lt;String, Set&lt;WebSocketSession&gt;&gt; roomSessionPool = new ConcurrentHashMap&lt;&gt;();
+<pre>./logstash -e 'input { stdin { } } output { stdout {} }'</pre>
 
-    @Override
-    public void afterConnectionEstablished(WebSocketSession session) throws Exception {
+<p>As we can see after we run the command, we booted LogStash, setting the console as the input and the output, without any transformation or filtering. To test, we simply input anything on the console, seeing that our message is displayed back by the tool:</p>
 
-        String roomName = session.getUri().getQuery();
+<p><img src="https://dl.dropboxusercontent.com/s/c2s4wiuo585hxaj/ELKpart1image1.jpg?dl=0" alt=""/></p>
 
-        roomSessionPool.compute(roomName, (key, sessions) -&gt; {
+<p>Now that we get the installation out of the way, let&#39;s begin with the actual lab. Unfortunately -or not, depending on the point of view -, it would take us a lot of time to show all the features of what we can do with the tool, so to make a short but illustrative example, we will start 2 logstash streams, to do the following:</p>
 
-            if (sessions == null) {
-                sessions = new CopyOnWriteArraySet&lt;&gt;();
+<p>1st stream:</p>
+
+<ul>
+<li>  The input will be made by a java program, which will produce a log file with log4j, representing technical information;</li>
+<li>  For now, we will just print logstash&#39;s events on the console, using the rubydebug codec. On our next part on the series, we will return to this configuration and change the output to send the events to elasticsearch;</li>
+</ul>
+
+<p>2nd stream:</p>
+
+<ul>
+<li>  The input will be made by the same java program, which will produce a positional file, representing business information of costumers and orders;</li>
+<li>  We will then use the grok filter to parse the data of the positional file into separated fields, producing the data for the output step;</li>
+<li>  Finally, we use the mongodb output, to save our data - filtering to only persist the orders - on a  Mongodb collection;</li>
+</ul>
+
+<p>With the streams defined, we can begin our coding. First, let&#39;s create the java program which will generate the inputs for the streams. The code for the program can be seen bellow:</p>
+
+<pre><code class="language-java">package com.technology.alexandreesl;
+import java.io.FileWriter;
+import java.io.IOException;
+import java.io.PrintWriter;
+import java.util.ArrayList;
+import java.util.Date;
+import java.util.List;
+import org.apache.log4j.Logger;
+
+public class LogStashProvider {
+    private static Logger logger = Logger.getLogger(LogStashProvider.class);
+    public static void main(String[] args) throws IOException {
+        try {
+            logger.info(&quot;STARTING DATA COLLECTION&quot;);
+            List&lt;String&gt; data = new ArrayList&lt;String&gt;();
+            Customer customer = new Customer();
+            customer.setName(&quot;Alexandre&quot;);
+            customer.setAge(32);
+            customer.setSex(&#39;M&#39;);
+            customer.setIdentification(&quot;4434554567&quot;);
+            List&lt;Order&gt; orders = new ArrayList&lt;Order&gt;();
+            for (int counter = 1; counter &lt; 10; counter++) {
+                Order order = new Order();
+                order.setOrderId(counter);
+                order.setProductId(counter);
+                order.setCustomerId(customer.getIdentification());
+                order.setQuantity(counter);
+                orders.add(order);
             }
-            sessions.add(session);
-
-            return sessions;
-        });
-    }
-
-    @Override
-    protected void handleTextMessage(WebSocketSession session, TextMessage message) throws Exception {
-
-        String roomName = session.getUri().getQuery();
-
-        for (WebSocketSession roomSession : roomSessionPool.get(roomName)) {
-            roomSession.sendMessage(message);
+            logger.info(&quot;FETCHING RESULTS INTO DESTINATION&quot;);
+            PrintWriter file = new PrintWriter(new FileWriter(
+                &quot;/home/alexandreesl/logstashdataexample/data&quot;
+                    + new Date().getTime() + &quot;.txt&quot;));
+            file.println(&quot;1&quot; + customer.getName() + customer.getSex()
+                + customer.getAge() + customer.getIdentification());
+            for (Order order : orders) {
+                file.println(&quot;2&quot; + order.getOrderId() + order.getCustomerId()
+                    + order.getProductId() + order.getQuantity());
+            }
+            logger.info(&quot;CLEANING UP!&quot;);
+            file.flush();
+            file.close();
+// forcing a error to simulate stack traces
+            PrintWriter fileError = new PrintWriter(new FileWriter(
+                &quot;/etc/nopermission.txt&quot;));
+        } catch (Exception e) {
+            logger.error(&quot;ERROR!&quot;, e);
         }
-    }
-
-    @Override
-    public void afterConnectionClosed(WebSocketSession session, CloseStatus status) throws Exception {
-
-        String roomName = session.getUri().getQuery();
-
-        roomSessionPool.compute(roomName, (key, sessions) -&gt; {
-
-            sessions.remove(session);
-            if (sessions.isEmpty()) {
-                // 1件もない場合はMapからクリア
-                sessions = null;
-            }
-
-            return sessions;
-        });
     }
 }
 </code></pre>
 
-<p>WebSocketの設定として、URLとHandlerを紐付けます。</p>
+<p>As we can see, it is a very simple class, that uses log4j to generate some log and output a positional file representing data from customers and orders and at the end, try to create a file on a folder we don&#39;t have permission to write by default,&quot;forcing&quot; a error to produce a stack trace. The complete code for the program can be found <a href="https://github.com/alexandreesl/LogStashProvider.git">here</a>. Now that we have made our data generator, let&#39;s begin the configuration for logstash. The configuration for our first example is the following:</p>
 
-<pre><code class="language-java">package com.example;
-
-import org.springframework.context.annotation.Configuration;
-import org.springframework.web.socket.config.annotation.EnableWebSocket;
-import org.springframework.web.socket.config.annotation.WebSocketConfigurer;
-import org.springframework.web.socket.config.annotation.WebSocketHandlerRegistry;
-
-import lombok.AllArgsConstructor;
-
-@Configuration
-@EnableWebSocket
-@AllArgsConstructor
-public class WebSocketConfig implements WebSocketConfigurer {
-
-    private final ChatHandler chatHandler;
-
-    @Override
-    public void registerWebSocketHandlers(WebSocketHandlerRegistry registry) {
-        registry.addHandler(chatHandler, &quot;/endpoint&quot;);
+<pre><code class="language-conf">input {
+    log4j {
+        port =&gt; 1500
+        type =&gt; &quot;log4j&quot;
+        tags =&gt; [ &quot;technical&quot;, &quot;log&quot;]
     }
-
+}
+output {
+    stdout { codec =&gt; rubydebug }
 }
 </code></pre>
 
-<p>クライアント側では、下記のようなコードになりました。</p>
+<p>To run the script, let&#39;s create a file called&quot;config1.conf&quot;and save the file with the script on the&quot;bin&quot;folder of logstash&#39;s installation folder. Finally, we run the script with the following command:</p>
 
-<pre><code class="language-html">&lt;!DOCTYPE html&gt;
-&lt;html lang=&quot;ja&quot;&gt;
-&lt;head&gt;
-&lt;meta charset=&quot;UTF-8&quot; /&gt;
-&lt;title&gt;チャット&lt;/title&gt;
-&lt;link rel=&quot;stylesheet&quot; href=&quot;/webjars/bootstrap/3.3.7/css/bootstrap.min.css&quot; /&gt;
-&lt;link rel=&quot;stylesheet&quot; href=&quot;/webjars/bootstrap/3.3.7/css/bootstrap-theme.min.css&quot; /&gt;
-&lt;/head&gt;
-&lt;body&gt;
-  &lt;div class=&quot;container&quot;&gt;
-    &lt;h2&gt;チャット&lt;/h2&gt;
-    &lt;div class=&quot;form-horizontal&quot;&gt;
-      &lt;div class=&quot;form-group&quot;&gt;
-        &lt;label for=&quot;roomName&quot; class=&quot;col-sm-2 control-label&quot;&gt;ルーム&lt;/label&gt;
-        &lt;div class=&quot;col-sm-2&quot;&gt;
-          &lt;input id=&quot;roomName&quot; type=&quot;text&quot; class=&quot;form-control&quot; value=&quot;example&quot; /&gt;
-        &lt;/div&gt;
-        &lt;div class=&quot;col-sm-3&quot;&gt;
-          &lt;button id=&quot;connectButton&quot; type=&quot;button&quot; class=&quot;btn btn-default&quot;&gt;接続&lt;/button&gt;
-          &lt;button id=&quot;disconnectButton&quot; class=&quot;btn btn-default&quot;&gt;切断&lt;/button&gt;
-        &lt;/div&gt;
-      &lt;/div&gt;
-      &lt;div class=&quot;form-group&quot;&gt;
-        &lt;label for=&quot;message&quot; class=&quot;col-sm-2 control-label&quot;&gt;メッセージ&lt;/label&gt;
-        &lt;div class=&quot;col-sm-4&quot;&gt;
-          &lt;input id=&quot;message&quot; type=&quot;text&quot; class=&quot;form-control&quot; /&gt;
-        &lt;/div&gt;
-        &lt;div class=&quot;col-sm-2&quot;&gt;
-          &lt;button id=&quot;sendButton&quot; type=&quot;button&quot; class=&quot;btn btn-default&quot;&gt;送信&lt;/button&gt;
-        &lt;/div&gt;
-      &lt;/div&gt;
-      &lt;div class=&quot;row&quot;&gt;
-        &lt;div class=&quot;col-sm-4 col-sm-offset-2&quot;&gt;
-          &lt;ul id=&quot;messageList&quot; class=&quot;list-unstyled&quot;&gt;
-          &lt;/ul&gt;
-        &lt;/div&gt;
-      &lt;/div&gt;
-    &lt;/div&gt;
-  &lt;/div&gt;
-  &lt;script src=&quot;/webjars/jquery/1.12.4/jquery.min.js&quot;&gt;&lt;/script&gt;
-  &lt;script src=&quot;/webjars/bootstrap/3.3.7/js/bootstrap.min.js&quot;&gt;&lt;/script&gt;
-  &lt;script&gt;
-    $(function() {
-      var endpoint = &#39;ws://&#39; + location.host + &#39;/endpoint&#39;;
-      var webSocket = null;
-
-      $(&#39;#connectButton&#39;).click(function() {
-
-        $(&quot;#messageList&quot;).empty();
-
-        webSocket = new WebSocket(endpoint + &#39;?&#39; + encodeURIComponent($(&#39;#roomName&#39;).val()));
-        webSocket.onopen = function() {
-          $(&#39;#roomName&#39;).prop(&#39;disabled&#39;, true);
-          $(&#39;#connectButton&#39;).prop(&#39;disabled&#39;, true);
-          $(&#39;#disconnectButton&#39;).prop(&#39;disabled&#39;, false);
-        };
-        webSocket.onclose = function() {
-        };
-        webSocket.onmessage = function(message) {
-          $(&#39;#messageList&#39;).prepend($(&#39;&lt;li&gt;&#39;).text(message.data));
-        };
-        webSocket.onerror = function() {
-          alert(&#39;エラーが発生しました。&#39;);
-        };
-      });
-
-      $(&#39;#disconnectButton&#39;).click(function() {
-
-        webSocket.close();
-        webSocket = null;
-
-        $(&#39;#roomName&#39;).prop(&#39;disabled&#39;, false);
-        $(&#39;#connectButton&#39;).prop(&#39;disabled&#39;, false);
-        $(&#39;#disconnectButton&#39;).prop(&#39;disabled&#39;, true);
-      });
-
-      $(&#39;#sendButton&#39;).click(function() {
-        if (!webSocket) {
-          alert(&#39;未接続です。&#39;);
-          return;
-        }
-
-        webSocket.send($(&#39;#message&#39;).val());
-      });
-    });
-  &lt;/script&gt;
-&lt;/body&gt;
-&lt;/html&gt;
+<pre><code class="language-sh">./logstash -f config1.conf
 </code></pre>
 
-<p>STOMPの時のほうが、いろいろシンプルに書けるので、ブラウザがクライアントならば、STOMPを使わない理由はないかなと思っています。</p>
+<p>This will start logstash process with the configurations we provided. To test, simply run the java program we coded earlier and we will see a sequence of message events in logstash&#39;s console window, generated by the rubydebug codec, like the one bellow, for example:</p>
+
+<pre><code class="language-log">{
+&quot;message&quot; =&gt; &quot;ERROR!&quot;,
+&quot;@version&quot; =&gt; &quot;1&quot;,
+&quot;@timestamp&quot; =&gt; &quot;2015-01-24T19:08:10.872Z&quot;,
+&quot;type&quot; =&gt; &quot;log4j&quot;,
+&quot;tags&quot; =&gt; [
+[0] &quot;technical&quot;,
+[1] &quot;log&quot;
+],
+&quot;host&quot; =&gt; &quot;127.0.0.1:34412&quot;,
+&quot;path&quot; =&gt; &quot;com.technology.alexandreesl.LogStashProvider&quot;,
+&quot;priority&quot; =&gt; &quot;ERROR&quot;,
+&quot;logger_name&quot; =&gt; &quot;com.technology.alexandreesl.LogStashProvider&quot;,
+&quot;thread&quot; =&gt; &quot;main&quot;,
+&quot;class&quot; =&gt; &quot;com.technology.alexandreesl.LogStashProvider&quot;,
+&quot;file&quot; =&gt; &quot;LogStashProvider.java:70&quot;,
+&quot;method&quot; =&gt; &quot;main&quot;,
+&quot;stack_trace&quot; =&gt; &quot;java.io.FileNotFoundException: /etc/nopermission.txt (Permission denied)\n\tat java.io.FileOutputStream.open(Native Method)\n\tat java.io.FileOutputStream.&lt;init&gt;(FileOutputStream.java:213)\n\tat java.io.FileOutputStream.&lt;init&gt;(FileOutputStream.java:101)\n\tat java.io.FileWriter.&lt;init&gt;(FileWriter.java:63)\n\tat com.technology.alexandreesl.LogStashProvider.main(LogStashProvider.java:66)&quot;
+}
+</code></pre>
+
+<p>Now, let&#39;s move on to the next stream. First, we create another file, called&quot;config2.conf&quot;, on the same folder we created the first one. On this new file, we create the following configuration:</p>
+
+<pre><code class="language-conf">input {
+    file {
+        path = &gt; &quot;/home/alexandreesl/logstashdataexample/data*.txt&quot;
+        start_position = &gt; &quot;beginning&quot;
+    }
+}
+filter {
+    grok {
+        match = &gt; [&quot;message&quot;, &quot;(?&lt;file_type&gt;.{1})(?&lt;name&gt;.{9})(?&lt;sex&gt;.{1})(?&lt;age&gt;.{2})(?&lt;identification&gt;.{10})&quot;, &quot;message&quot;, &quot;(?&lt;file_type&gt;.{1})(?&lt;order_id&gt;.{1})(?&lt;costumer_id&gt;.{10})(?&lt;product_id&gt;.{1})(?&lt;quantity&gt;.{1})&quot;]
+    }
+}
+output {
+    stdout {codec = &gt; rubydebug}
+    if [file_type] == &quot;2&quot; {
+        mongodb {
+            collection = &gt; &quot;testData&quot;
+            database = &gt; &quot;mydb&quot;
+            uri = &gt; &quot;mongodb://localhost&quot;
+        }
+    }
+}
+</code></pre>
+
+<p>With the configuration created, we can run our second example. Before we do that, however, let&#39;s dive a little on the configuration we just made. First, we used the file input, which will make logstash keep monitoring the files on the folder and processing them as they appear on the input folder.</p>
+
+<p>Next, we create a filter with the grok plugin. This filter uses combinations of regular expressions, that parses the data from the input. The plugin comes with more then 100 patterns pre-made that helps the development. Another useful tool in the use of grok is a site where we could test our expressions before use. Both links are available on the links section at the end of this post.</p>
+
+<p>Finally, we use the mongodb plugin, where we reference our logstash for a database and collection of a mongodb instance, where we will insert the data from the file into mongodb&#39;s documents. We also used again the rubydebug codec, so we can also see the processing of the files on the console. The reader will note that we used a&quot;if&quot;statement before the configuration of the mongodb output. After we parse the data with grok, we can use the newly created fields to do some logic on our stream. In this case, we filter to only process data with the type&quot;2&quot;, so only the order&#39;s data goes to the collection on mongodb, instead of all the data. We could have expanded more on this example, like saving the data into two different collections, but for the idea of passing a general view of the structure of logstash for the reader, the present logic will suffice.</p>
+
+<p><strong>PS:</strong> This example assumes the reader has mongodb installed and running on the default port of his environment, with a db &quot;mydb&quot; and a collection &quot;testData&quot; created. If the reader doesn&#39;t have mongodb, the instructions can be found on the <a href="http://docs.mongodb.org/manual/tutorial/getting-started/">official documentation</a>.</p>
+
+<p>Finally, with everything installed and configured, we run the script, with the following command:</p>
+
+<pre>./logstash -f config2.conf</pre>
+
+<p>After logstash&#39;s start, if we run our program to generate a file, we will see logstash working the data, like the screen bellow:</p>
+
+<p><img src="https://dl.dropboxusercontent.com/s/sjh61dwr5j50t1e/logstash2.png?dl=0" alt=""/></p>
+
+<p>And finally, if we query the collection on mongodb, we see the data is persisted:</p>
+
+<p><img src="https://dl.dropboxusercontent.com/s/2rk8e45qly5glkf/logstash3.png?dl=0" alt=""/></p>
+
+<p><strong>Conclusion</strong></p>
+
+<p>And so we conclude the first part of our series. With a simple usage, logstash prove to be a useful tool in the integration of information from different formats and sources, specially log-related. In the next part of our series, we will dive in the next tool of our stack: ElasticSearch. Until next time</p>
+
+<p><a href="http://logstash.net/">logstash - official site</a></p>
+
+<p><a href="https://github.com/alexandreesl/LogStashProvider.git">Source-code (Github)</a></p>
+
+<p><a href="https://grokdebug.herokuapp.com/">Grok Debugger (online testing of grok expressions)</a></p>
+
+<p><a href="https://github.com/elasticsearch/logstash/blob/v1.4.2/patterns/grok-patterns">Grok pre-made patterns</a></p>
+
+<hr/>
+
+<p>Welcome, dear reader, to another post of our series about the ELK stack for logging. On the last post, we talked about LogStash, a tool that allow us to integrate data from different sources to different destinations, using transformations along the way, in a stream-like form. On this post, we will talk about ElasticSearch, a indexer based on apache Lucene, which can allow us to organize our data and make textual searches on the data, in a scalable infrastructure. So, let&#39;s begin by understanding how ElasticSearch is organized on the inside</p>
+
+<p><strong>Indexes, documents and shards</strong></p>
+
+<p>On ElasticSearch, we have the concept of indexes. A index is like a repository, where we can store our data in the format of documents. A document on ElasticSearch&#39;s terminology consists of a structure for the data to be stored, analysed and classified, following a mapping definition, composed of a series of fields - a important thing to note, is that a field on ElasticSearch has the same type across the whole index, meaning that we cant have a field&quot;phone&quot; with the type int on a document and the type string on another.</p>
+
+<p>In turn, we have our documents stored on shards, which divide the data on segments based on a rule - by default, the segmentation is made by hashing the data, but it can also be manually manipulated -, making the searches faster.</p>
+
+<p>So, in a nutshell, we can say that the order of organization of ElasticSearch is as follows:</p>
+
+<p>Index &gt;&gt; Document (mappings/type) &gt;&gt; shard</p>
+
+<p>This organization is used by the user on the two basic operations of the cluster: indexing and searching.</p>
+
+<p>One last thing to say about documents is that they can not only be stored as independent , but also be mounted on a tree-like hierarchy, with links between them. This is useful in scenarios that we can make use of hierarchical searches, such as product&#39;s searches based on their categories.</p>
+
+<p><strong>Indexing</strong></p>
+
+<p>Indexing is the action of inputing the data from a external source to the cluster. ElasticSearch is a textual indexer, which means he can only analyse text on plain format, despite that we can use the cluster to store data in base64 format, using a plugin. Later on the post, we will see a example installation of a plugin, which are extensions we can aggregate to expand our cluster usability.</p>
+
+<p>When we index our data,  we define which fields are to be analysed, which analyser to use, if the default ones does not suffice and which fields we want to store the data on the cluster, so we can use as the result of our searches. One important thing to note about the indexing operations is that, despite it has CRUD-like operations, the data is not really updated or deleted on the cluster, instead a new version is generated and the old version is marked as deleted.</p>
+
+<p>This is a important thing to take note, because if not properly configured to make purges - which can be made with a configuration that break the shards into segments, and periodically make merges of the segments, phisically deleting the obsolet documents on the process -, the cluster will keep indefinitely expanding in size with the &quot;deleted&quot; older versions of our data, making specially the searches to became really slow.</p>
+
+<p>All the operations can be made with a REST API provided by ElasticSearch, that we will see later on this post.</p>
+
+<p><strong>Searching</strong></p>
+
+<p>The other, and probably most important, action on ElasticSearch, is the searching of the data previously indexed. Like the indexing action, ElasticSearch also provide a REST API for the searches. The API provides a very rich range of possibilities of searching, from basic term searches to more complex searches such as hierarchical searches, searches by synonims, language detections, etc.</p>
+
+<p>All the searching is based on a score system, where formulas are applied to confront the accuracy of the documents founded versus the query supplied. This score system can also be customized.</p>
+
+<p>By default, the searching on the cluster occurs in 2 phases:</p>
+
+<ul>
+<li>  On the first phase, the master node sends the query for all the nodes, and subsequently shards , retrieving just the IDs and scores of the documents. Using a parameter called _size_ which defines the maximum results from a query, the master selects the more meaningful documents, based on the score;</li>
+<li>  On the second phase, the master send requests for the nodes to retrieve the documents selected on the previous phase. After receiving the documents, the master finally sends the result for the client;</li>
+</ul>
+
+<p>Alongside this search type, there&#39;s also other modes, like the _query_and_fetch_. On this mode, the searching is made simultaneous on all shards, not only to retrieve the IDs and scores but also returning the data itself, limited only by the _size_ parameter, which is applied per shard. In turn, on this mode, the maximum of results returned will be the size parameter plus the number of shards.</p>
+
+<p>One interesting feature of ElasticSearch&#39;s configuration options is the ability to make some nodes exclusive to query operations, and others to make the storage part, called data nodes. This way, when we query, our query dont need to run  across all the cluster to formulate the results, making the searches faster. On the next section we will see a little more about cluster configurations.</p>
+
+<p><strong>Cluster capabilities</strong></p>
+
+<p>When we talk about a cluster, we talk about scalability, but we also talk about availability. On ElasticSearch, we can configure the replication of shards, where the data is replicated by a given factor, so we dont lose our data if a node is lost. The replication if also maintained by the cluster, so if we lost a replica, the cluster itself will distribute a new replica for another node.</p>
+
+<p>Other interesting feature of the cluster are the ability to discover itself. By the default configuration, when we start a node he will use a discovery mode called Zen, which uses unicast and multicast to search for another instances on all the ports of the OS. If it founds another instance, and the name of the cluster is the same - this is another one of the cluster&#39;s configuration properties. All of this configurations can be made on the file _elasticsearch.yml_, on the config folder -, it will communicate with the instance and establish a new node for the already running cluster. There is another modes for this feature, including the discover of nodes from other servers.</p>
+
+<p><strong>Logging</strong></p>
+
+<p>The reader could be thinking: &quot;Lol, do I need all of this to run a logging stack?&quot;.</p>
+
+<p>Of course that ElasticSearch is a very robust tool, that can be used on other solutions as well. However, on our case of making a centralized logging analysis solution, the core of ElasticSearch&#39;s capabilities serve us well for this task, after all, we are talking about the textual analysis of log texts, for use on dashboards, reports, or simply for real-time exploration of the data.</p>
+
+<p>Well, that concludes the conceptual part of our post. Now, let&#39;s move on to the practice.</p>
+
+<p><strong>Hands-on</strong></p>
+
+<p>So, without further delay, let&#39;s begin the hands-on. For this, we will use the previous Java program we used on our lab about LogStash. The code can be found on GitHub, <a href="https://github.com/alexandreesl/LogStashProvider.git">on this link</a>. On this program, we used the _org.apache.log4j.net.SocketAppender_ from log4j to send all the logging we make to LogStash. However, on that point we just printed the messages on the console, instead of sending to ElasticSearch. Before we change this, let&#39;s first start our cluster.</p>
+
+<p>To do this, first we need to download the last version from the site and unzip the tar. Let&#39;s open a terminal, and type the following command:</p>
+
+<pre>curl https://download.elasticsearch.org/elasticsearch/elasticsearch/elasticsearch-1.4.4.tar.gz | tar -zx</pre>
+
+<p>After running the command, we will find a new folder called &quot;elasticsearch-1.4.4&quot; created on the same folder we run our command. To our example, we will create 2 copies of this folder on a folder we call &quot;elasticsearchcluster&quot;, where each one will represent one node of the cluster. To do this, we run the following commands:</p>
+
+<pre><code class="language-sh">mkdir elasticsearchcluster
+sudo cp -avr elasticsearch-1.4.4/ elasticsearchcluster/elasticsearch-1.4.4-node1/
+sudo cp -avr elasticsearch-1.4.4/ elasticsearchcluster/elasticsearch-1.4.4-node2/
+</code></pre>
+
+<p>After we made our cluster structure, we dont need the original folder anymore, so we remove:</p>
+
+<pre><code class="language-sh">rm -R elasticsearch-1.4.4/
+</code></pre>
+
+<p>Now, let&#39;s finally start our cluster! To do this, we open a terminal, navigate to the bin folder of our first node (elasticsearch-1.4.4-node1) and type:<a href="#viewSource" title="view source">view sourc</a></p>
+
+<pre><code class="language-sh">./elasticsearch
+</code></pre>
+
+<p>After some seconds, we can see our first node is on:</p>
+
+<p><img src="https://dl.dropboxusercontent.com/s/0mb9no6kee8oicq/elastic1.png?dl=0" alt=""/></p>
+
+<p>For curiosity sake, we can see the name &quot;Feral&quot; on the node&#39;s name on the log. All the names generated by the tool are based on Marvel Comic&#39;s characters. IT world sure has some sense of humor, heh?</p>
+
+<p>Now, let&#39;s start our second node. On a new terminal window, let&#39;s navigate to the folder of our second node (elasticsearch-1.4.4-node2) and type again the command &quot;./elasticsearch&quot;. After some seconds, we can see that the node is also started:</p>
+
+<p><img src="https://dl.dropboxusercontent.com/s/816wtb4ak0o1j3b/elastic2.png?dl=0" alt=""/></p>
+
+<p>One interesting thing to notice is that our second node &quot;Ooze&quot;, has a mention of comunicating with our other node, &quot;Feral&quot;. That is the zen discover on the action, making the 2 nodes talk to each other and form a cluster. If we look again at the terminal of our first node, we can see another evidence of this bidirectional communication, as &quot;Feral&quot; has added &quot;Ooze&quot; to the cluster, as his role as a master node:</p>
+
+<p><img src="https://dl.dropboxusercontent.com/s/p15tuaw4qewmz2i/elastic3.png?dl=0" alt=""/></p>
+
+<p> Now that we have our cluster set up, let&#39;s adjust our logstash script to send the messages to the cluster. To do this, let&#39;s change the output part of the script, to the following:</p>
+
+<pre><code class="language-conf">input {
+    log4j {
+        port = &gt; 1500
+        type = &gt; &quot;log4j&quot;
+        tags = &gt; [&quot;technical&quot;, &quot;log&quot;]
+    }
+}
+
+output {
+    stdout {codec = &gt; rubydebug}
+    elasticsearch_http {
+        host = &gt; &quot;localhost&quot;
+        port = &gt; 9200
+        index = &gt; &quot;log4jlogs&quot;
+    }
+}
+</code></pre>
+
+<p>As we can see, we just included another output - we remained the console output just to check how logstash is receiving the data - including the ip and port where our ElasticSearch cluster will respond. We also defined the name of the index we want our logs to be stored. If this parameter is not defined, logstash will order elasticsearch to create a index with the pattern &quot;logstash-%{+YYYY.MM.dd}&quot;.</p>
+
+<p>To execute this script, we do like we did on the <a href="https://alexandreesl.wordpress.com/2015/01/26/elk-using-a-centralized-logging-architecture-part-1/" title="ELK: using a centralized logging architecture – part 1">previous post</a>, we put the new script on a file called &quot;configelasticsearch.conf&quot; on the bin folder of logstash, and run with the command:</p>
+
+<pre><code class="language-sh">./logstash -f configelasticsearch.conf
+</code></pre>
+
+<p><strong>PS1:</strong> On the<a href="https://github.com/alexandreesl/ElasticSearchConfigs.git"> GitHub repository</a>, it is possible to find this config file, alongside a file containing all the commands we will send to ElasticSearch from now on.</p>
+
+<p><strong>PS2: </strong>For simplicity sake, we will use the default mappings logstash provide for us when sending messages to the cluster. It is also possible to pass a elasticsearch&#39;s mapping structure, which consists of a JSON model, that logstash will use as a template. We will see the mapping from our log messages later on our lab, but for satisfying the reader curiosity for now, this is what a elasticsearch&#39;s mapping structure look like, for example for a document type &quot;product&quot;:</p>
+
+<pre><code class="language-json">&quot;mappings&quot;: {
+    &quot;product&quot;: {
+        &quot;properties&quot;: {
+            &quot;variation&quot;: {&quot;type&quot;: int}
+            &quot;color&quot;: {&quot;type&quot;: &quot;string&quot;}
+            &quot;code&quot;: {&quot;type&quot;: int}
+            &quot;quantity&quot;: {&quot;type&quot;: int}
+        }
+    }
+}
+</code></pre>
+
+<p>After some seconds, we can see that LogStash booted, so our configuration was a success. Now, let&#39;s begin sending our logs!</p>
+
+<p>To do this, we run the program from our previous post, running the class _com.technology.alexandreesl.LogStashProvider ._ We can see on the console of logstash, after starting the program, that the messages are going through the stack:</p>
+
+<p><img src="https://dl.dropboxusercontent.com/s/avoh8yu98u5oqbj/elastic4.png?dl=0" alt=""/></p>
+
+<p>Now that we have our cluster up and running, let&#39;s start to use it. First, let&#39;s see the mappings of the index that ElasticSearch created for us, based on the configuration we made on LogStash. Let&#39;s open a terminal and run the following command:</p>
+
+<p>curl -XGET &#39;localhost:9200/log4jlogs/_mapping?pretty&#39;</p>
+
+<p>On the command above, we are using ElasticSearch&#39;s REST API. The reader will notice that, after the ip and port, the URL contains the name of the index we configured. This pattern for calls of the API is applied to most of the actions, as we can see below:</p>
+
+<p><ip>:<port>/<index>/<doc type>/<action>?<attributes></p>
+
+<p>So, after this explanation, let&#39;s see the result from our call:</p>
+
+<pre><code class="language-json">{
+    &quot;log4jlogs&quot;: {
+        &quot;mappings&quot;: {
+            &quot;log4j&quot;: {
+                &quot;properties&quot;: {
+                    &quot;@timestamp&quot;: {
+                        &quot;type&quot;: &quot;date&quot;,
+                        &quot;format&quot;: &quot;dateOptionalTime&quot;
+                    },
+                    &quot;@version&quot;: {
+                        &quot;type&quot;: &quot;string&quot;
+                    },
+                    &quot;class&quot;: {
+                        &quot;type&quot;: &quot;string&quot;
+                    },
+                    &quot;file&quot;: {
+                        &quot;type&quot;: &quot;string&quot;
+                    },
+                    &quot;host&quot;: {
+                        &quot;type&quot;: &quot;string&quot;
+                    },
+                    &quot;logger_name&quot;: {
+                        &quot;type&quot;: &quot;string&quot;
+                    },
+                    &quot;message&quot;: {
+                        &quot;type&quot;: &quot;string&quot;
+                    },
+                    &quot;method&quot;: {
+                        &quot;type&quot;: &quot;string&quot;
+                    },
+                    &quot;path&quot;: {
+                        &quot;type&quot;: &quot;string&quot;
+                    },
+                    &quot;priority&quot;: {
+                        &quot;type&quot;: &quot;string&quot;
+                    },
+                    &quot;stack_trace&quot;: {
+                        &quot;type&quot;: &quot;string&quot;
+                    },
+                    &quot;tags&quot;: {
+                        &quot;type&quot;: &quot;string&quot;
+                    },
+                    &quot;thread&quot;: {
+                        &quot;type&quot;: &quot;string&quot;
+                    },
+                    &quot;type&quot;: {
+                        &quot;type&quot;: &quot;string&quot;
+                    }
+                }
+            }
+        }
+    }
+}
+</code></pre>
+
+<p>As we can see, the index &quot;log4jlogs&quot; was created, alongside the document type &quot;log4j&quot;. Also, a series of fields were created, representing information from the log messages, like the thread that generated the log, the class, the log level and the log message itself.</p>
+
+<p>Now, let&#39;s begin to make some searches.</p>
+
+<p>Let&#39;s begin by searching all log messages which the priority was&quot;INFO&quot;. We make this searching by running:</p>
+
+<p>curl -XGET &#39;localhost:9200/log4jlogs/log4j/_search?q=priority:info&amp;pretty=true&#39;</p>
+
+<p>A fragment of the result of the query would be something like the following:</p>
+
+<pre><code class="language-json">{
+    &quot;took&quot;: 12,
+    &quot;timed_out&quot;: false,
+    &quot;_shards&quot;: {
+        &quot;total&quot;: 5,
+        &quot;successful&quot;: 5,
+        &quot;failed&quot;: 0
+    },
+    &quot;hits&quot;: {
+        &quot;total&quot;: 18,
+        &quot;max_score&quot;: 1.1823215,
+        &quot;hits&quot;: [{
+        &quot;_index&quot;: &quot;log4jlogs&quot;,
+        &quot;_type&quot;: &quot;log4j&quot;,
+        &quot;_id&quot;: &quot;AUuxkDTk8qbJts0_16ph&quot;,
+        &quot;_score&quot;: 1.1823215,
+        &quot;_source&quot;: {&quot;message&quot;: &quot;STARTING DATA COLLECTION&quot;, &quot;@version&quot;: &quot;1&quot;, &quot;@timestamp&quot;: &quot;2015-02-22T13:53:12.907Z&quot;, &quot;type&quot;: &quot;log4j&quot;, &quot;tags&quot;: [&quot;technical&quot;, &quot;log&quot;], &quot;host&quot;:&quot;127.0.0.1:32942&quot;, &quot;path&quot;:&quot;com.technology.alexandreesl.LogStashProvider&quot;, &quot;priority&quot;:&quot;INFO&quot;, &quot;logger_name&quot;:&quot;com.technology.alexandreesl.LogStashProvider&quot;, &quot;thread&quot;:&quot;main&quot;, &quot;class&quot;:&quot;com.technology.alexandreesl.LogStashProvider&quot;, &quot;file&quot;:&quot;LogStashProvider.java:20&quot;, &quot;method&quot;:&quot;main&quot;}
+    }
+.
+.
+.
+</code></pre>
+
+<p>As we can see, the result is a JSON structure, with the documents that met our search. The beginning information of the result is not the documents themselves, but instead information about the search itself, such as the number of shards used, the seconds the search took to execute, etc. This kind of information is useful when we need to make a tuning of our searches, like manually defining the shards we which to use on the search, for example.</p>
+
+<p>Let&#39;s see another example. On our previous search, we received all the fields from the document on the result, which is not always the desired result, since we will not always use the whole information. To limit the fields we want to receive, we make our query like the following:</p>
+
+<pre><code class="language-sh">curl -XGET &#39;localhost:9200/log4jlogs/log4j/_search?pretty=true&#39; -d &#39;
+{
+    &quot;fields&quot; : [&quot;priority&quot;, &quot;message&quot;,&quot;class&quot;],
+    &quot;query&quot; : {
+        &quot;query_string&quot; : {&quot;query&quot; : &quot;priority:info&quot;}
+    }
+}&#39;
+</code></pre>
+
+<p>On the query above, we asked ElasticSearch to limit the return to only return the priority, message and class fields. A fragment of the result can be seen bellow:</p>
+
+<pre><code class="language-json">.
+.
+.
+{
+    &quot;_index&quot; : &quot;log4jlogs&quot;,
+    &quot;_type&quot; : &quot;log4j&quot;,
+    &quot;_id&quot; : &quot;AUuxkECZ8qbJts0_16pr&quot;,
+    &quot;_score&quot; : 1.1823215,
+    &quot;fields&quot; : {
+        &quot;priority&quot; : [ &quot;INFO&quot; ],
+        &quot;message&quot; : [ &quot;CLEANING UP!&quot; ],
+        &quot;class&quot; : [ &quot;com.technology.alexandreesl.LogStashProvider&quot; ]
+    }
+}
+.
+.
+.
+</code></pre>
+
+<p>Now, let&#39;s use the term search. On the term searches, we use ElasticSearch&#39;s textual analysis to find a term inside the text of a field. Let&#39;s run the following command:</p>
+
+<pre><code class="language-sh">curl -XGET &#39;localhost:9200/log4jlogs/log4j/_search?pretty=true&#39; -d &#39;
+{
+    &quot;fields&quot; : [&quot;priority&quot;, &quot;message&quot;,&quot;class&quot;],
+    &quot;query&quot; : {
+        &quot;term&quot; : {
+            &quot;message&quot; : &quot;up&quot;
+        }
+    }
+}&#39;
+</code></pre>
+
+<p>If we see the result, it would be all the log messages that contains the word &quot;up&quot;. A fragment of the result can be seen bellow:</p>
+
+<pre><code class="language-json">{
+    &quot;_index&quot; : &quot;log4jlogs&quot;,
+    &quot;_type&quot; : &quot;log4j&quot;,
+    &quot;_id&quot; : &quot;AUuxkESc8qbJts0_16pv&quot;,
+    &quot;_score&quot; : 1.1545612,
+    &quot;fields&quot; : {
+        &quot;priority&quot; : [ &quot;INFO&quot; ],
+        &quot;message&quot; : [ &quot;CLEANING UP!&quot; ],
+        &quot;class&quot; : [ &quot;com.technology.alexandreesl.LogStashProvider&quot; ]
+    }
+}
+</code></pre>
+
+<p>Of course, there is a lot more of searching options on ElasticSearch, but the examples provided on this post are enough to make a good starting point for the reader. To make a final example, we will use the &quot;prefix&quot; search. On this type of search, ElasticSearch will search for terms that start with our given text, on a given field. For example, to search for log messages that have words starting with &quot;clea&quot;, part of the word &quot;cleaning&quot;, we run the following:</p>
+
+<pre><code class="language-sh">curl -XGET &#39;localhost:9200/log4jlogs/log4j/_search?pretty=true&#39; -d &#39;
+{
+    &quot;fields&quot; : [&quot;priority&quot;, &quot;message&quot;,&quot;class&quot;],
+    &quot;query&quot; : {
+        &quot;prefix&quot; : {
+            &quot;message&quot; : &quot;clea&quot;
+        }
+    }
+}&#39;
+</code></pre>
+
+<p>If we see the results, we will see that are the same from the previous search, proving that our search worked correctly.</p>
+
+<p><strong>Kopf</strong></p>
+
+<p>The reader possibly could ask &quot;Is there another way to send my queries without using the terminal?&quot; or &quot;Is there any graphical tool that I can use to monitor the status of my cluster?&quot;. As a matter of fact, there is a answer for both of this questions, and the answer is the kopf plugin.</p>
+
+<p>As we said before, plugins are extensions that we can install to improve the capacities of our cluster. In order to install the plugin, first let&#39;s stop both the nodes of the cluster - press ctrl+c on both terminal windows to stop - then, navigate to the nodes root folder and type the following:</p>
+
+<pre><code class="language-sh">bin/plugin -install lmenezes/elasticsearch-kopf
+</code></pre>
+
+<p>If the plugin was installed correctly, we should see a message like the one bellow on the console:</p>
+
+<pre><code class="language-log">.
+.
+.
+-&gt; Installing lmenezes/elasticsearch-kopf...
+Trying [https://github.com/lmenezes/elasticsearch-kopf/archive/master.zip...](https://github.com/lmenezes/elasticsearch-kopf/archive/master.zip...)
+Downloading .....................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................DONE
+Installed lmenezes/elasticsearch-kopf into....
+</code></pre>
+
+<p>After installing on both nodes, we can start again the nodes, just as we did before. After the booting of the cluster, let&#39;s open a browser and type the following URL:</p>
+
+<p><a href="http://localhost:9200/_plugin/kopf">http://localhost:9200/_plugin/kopf</a></p>
+
+<p>We will see the following web page of the kopf plugin, showing the status of our cluster, such as the nodes, the indexes, shard information, etc</p>
+
+<p><img src="https://dl.dropboxusercontent.com/s/v1gevf01knh4efo/elastic5.png?dl=0" alt=""/></p>
+
+<p>Now, let&#39;s run our last example from the search queries on kopf. First, we select the&quot;rest&quot;option on the top menu. On the next screen, we select&quot;POST&quot; as the http method, include on the URL field the index and document type to narrow the results and on the textarea bellow we include our JSON query filters. The print bellow shows the query made on the interface:</p>
+
+<p><img src="https://dl.dropboxusercontent.com/s/qpc23126qwkakpy/elastic6.png?dl=0" alt=""/></p>
+
+<p><strong> Conclusion</strong></p>
+
+<p>And so we conclude our post about ElasticSearch. A very powerful tool on the indexing and analysis of textual information, the central stone on our ELK stack for logging is a tool to be used, not only on a logging analysis system, but on other solutions that his features can be useful as well.</p>
+
+<p>So, our stack is almost complete. We can gather our log information, and the information is indexed on our cluster. However, a final piece remains: we need a place where we can have a more friendly interface, that allow us not only to search the information, but also to make rich presentations of the data, such as dashboards. That&#39;s when it enters our last part of our ELK series and the last tool we will see, Kibana. Thank you for following me on another post, until next time.</p>
+
+<p><a href="https://github.com/alexandreesl/ElasticSearchConfigs">GitHub code (ElasticSearch)</a></p>
+
+<p><a href="https://github.com/alexandreesl/LogStashProvider">GitHub code (LogStash)</a></p>
+
+<p><a href="http://www.elasticsearch.org/">ElasticSearch (Official site)</a></p>
 
                         
                       </div>
@@ -320,10 +705,10 @@ public class WebSocketConfig implements WebSocketConfigurer {
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/5/13</span>
+                    <span class="date">2018/6/6</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Spring.html'>Spring</a></span>
+          					    <span class="posted-in"><a href='Logging.html'>Logging</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -413,31 +798,31 @@ public class WebSocketConfig implements WebSocketConfigurer {
 	      
 		      
 			      <li class="post">
-			        <a href="15459058392039.html">Reliable Domain Events</a>
+			        <a href="15517999043443.html">The Art of Crafting Architectural Diagrams</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
+			        <a href="15517997955971.html">为什么说我们需要软件架构图？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
+			        <a href="15516128677869.html">DNS Servers That Offer Privacy and Filtering</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
+			        <a href="15516123108194.html">Airbnb's Migration from Monolith to Services</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
+			        <a href="15516097487470.html">Events As First-Class Citizens</a>
 			      </li>
 		     
 		  

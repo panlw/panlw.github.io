@@ -105,126 +105,389 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15299316548658.html">
+                <a class="clearlink" href="15337171704262.html">
                 
-                  <h1>hbase 的架构及设计</h1>
+                  <h1>Introduction to Testing with Spock and Groovy</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://blog.csdn.net/liweisnake/article/details/78086262">https://blog.csdn.net/liweisnake/article/details/78086262</a></p>
+<p><a href="https://www.baeldung.com/groovy-spock">https://www.baeldung.com/groovy-spock</a></p>
+
+<p>Last modified: March 2, 2018</p>
 </blockquote>
 
-<p>hbase 是强一致性的海量数据库，无论是读写性能，或是数据容量，还是一致性方面，hbase 都有非常优秀的表现。</p>
+<h2 id="toc_0"><strong>1. Introduction</strong></h2>
 
-<p>本文从架构方面探讨 hbase 的主要设计，从而在需要 hbase 的场合能够更好的设计和判断。</p>
+<p>In this article, we’ll take a look at <a href="http://spockframework.org/">Spock</a>, a <a href="http://groovy-lang.org/">Groovy</a> testing framework. Mainly, Spock aims to be a more powerful alternative to the traditional JUnit stack, by leveraging Groovy features.</p>
 
-<p>首先，先来看看 <strong>hbase 的整体架构</strong>。除了 DFS 组件，hbase 的基本组件图实际上就是 Zookeeper，HMaster，RegionServer。</p>
+<p>Groovy is a JVM-based language which seamlessly integrates with Java. On top of interoperability, it offers additional language concepts such as being a dynamic, having optional types and meta-programming.</p>
 
-<p><img src="https://img-blog.csdn.net/20171007104837576?watermark/2/text/aHR0cDovL2Jsb2cuY3Nkbi5uZXQvbGl3ZWlzbmFrZQ==/font/5a6L5L2T/fontsize/400/fill/I0JBQkFCMA==/dissolve/70/gravity/Center" alt=""/></p>
+<p>By making use of Groovy, Spock introduces new and expressive ways of testing our Java applications, which simply aren’t possible in ordinary Java code. We’ll explore some of Spock’s high-level concepts during this article, with some practical step by step examples.</p>
 
-<p>其中，<strong>RegionServer</strong> 作为数据的实际存取服务器，主要负责数据的最终存取，一般情况都是多台；</p>
+<h2 id="toc_1"><strong>2. Maven Dependency</strong></h2>
 
-<p>RegionServer 根据不同的 row key 划分为许多 region，每个 region 按顺序存放从 startKey 到 endKey 的数据。每个 RegionServer 有下面这些组件：</p>
+<p>Before we get started, let’s add our <a href="http://search.maven.org/#search%7Cga%7C1%7C%20(g%3A%22org.spockframework%22%20AND%20a%3A%22spock-core%22)%20OR%20(g%3A%22org.codehaus.groovy%22%20AND%20a%3A%22groovy-all%22)">Maven dependencies</a>:</p>
 
-<p><img src="https://img-blog.csdn.net/20171015092617159?watermark/2/text/aHR0cDovL2Jsb2cuY3Nkbi5uZXQvbGl3ZWlzbmFrZQ==/font/5a6L5L2T/fontsize/400/fill/I0JBQkFCMA==/dissolve/70/gravity/Center" alt=""/><img src="https://img-blog.csdn.net/20171007212610301?watermark/2/text/aHR0cDovL2Jsb2cuY3Nkbi5uZXQvbGl3ZWlzbmFrZQ==/font/5a6L5L2T/fontsize/400/fill/I0JBQkFCMA==/dissolve/70/gravity/Center" alt=""/></p>
+<pre><code class="language-xml">&lt;dependency&gt;
+    &lt;groupId&gt;org.spockframework&lt;/groupId&gt;
+    &lt;artifactId&gt;spock-core&lt;/artifactId&gt;
+    &lt;version&gt;1.0-groovy-2.4&lt;/version&gt;
+    &lt;scope&gt;test&lt;/scope&gt;
+&lt;/dependency&gt;
+&lt;dependency&gt;
+    &lt;groupId&gt;org.codehaus.groovy&lt;/groupId&gt;
+    &lt;artifactId&gt;groovy-all&lt;/artifactId&gt;
+    &lt;version&gt;2.4.7&lt;/version&gt;
+    &lt;scope&gt;test&lt;/scope&gt;
+&lt;/dependency&gt;
+</code></pre>
 
-<p><strong>一个 WAL</strong>: write ahead log. 听名知其意，该文件是落库前先写的日志文件，它最主要的作用是恢复数据用，类似于 mysql 的 binlog。保存在 HDFS 中</p>
+<p>We’ve added both Spock and Groovy as we would any standard library. However, as Groovy is a new JVM language, we need to include the <u>gmavenplus</u> plugin in order to be able to compile and run it:</p>
 
-<p><strong>一个 BlockCache</strong>: regionServer 的读缓存。保存使用最频繁的数据，使用 LRU 算法换出不需要的数据。</p>
+<pre><code class="language-xml">&lt;plugin&gt;
+    &lt;groupId&gt;org.codehaus.gmavenplus&lt;/groupId&gt;
+    &lt;artifactId&gt;gmavenplus-plugin&lt;/artifactId&gt;
+    &lt;version&gt;1.5&lt;/version&gt;
+    &lt;executions&gt;
+        &lt;execution&gt;
+            &lt;goals&gt;
+                &lt;goal&gt;compile&lt;/goal&gt;
+                &lt;goal&gt;testCompile&lt;/goal&gt;
+            &lt;/goals&gt;
+        &lt;/execution&gt;
+     &lt;/executions&gt;
+&lt;/plugin&gt;
+</code></pre>
 
-<p><strong>多个 Region</strong>: 每个 region 包含多个 store，每个 CF 拥有一个 store</p>
+<p>Now we are ready to write our first Spock test, which will be written in Groovy code. Note that we are using Groovy and Spock only for testing purposes and this is why those dependencies are test-scoped.</p>
 
-<p><strong>store</strong>: 每个 store 包含多个 storeFile 和一个 memstore</p>
+<h2 id="toc_2"><strong>3. Structure of a Spock Test</strong></h2>
 
-<p><strong>Memstore</strong>: region 的写缓存。保存还未写入 HFile 的数据，写入数据前会先做排序，每个 region 每个 CF 都会拥有一个 Memstore，这就是为什么 CF 不能建太多的原因。</p>
+<h3 id="toc_3"><strong>3.1. Specifications and Features</strong></h3>
 
-<p><strong>storeFile</strong>: 真正存储 keyvalue 数据的文件，其保存的文件是排序过的。一个 storeFile 对应一个 HFile。保存在 HDFS 中</p>
+<p>As we are writing our tests in Groovy, we need to add them to the <u>src/test/groovy</u> directory, instead of <u>src/test/java.</u> Let’s create our first test in this directory, naming it <u>Specification.groovy:</u></p>
 
-<p>HFile 分为数据块，索引块，bloom 过滤器以及 trailer。</p>
+<pre><code class="language-java">class FirstSpecification extends Specification {
 
-<p><img src="https://img-blog.csdn.net/20171015100418759?watermark/2/text/aHR0cDovL2Jsb2cuY3Nkbi5uZXQvbGl3ZWlzbmFrZQ==/font/5a6L5L2T/fontsize/400/fill/I0JBQkFCMA==/dissolve/70/gravity/Center" alt=""/></p>
+}
+</code></pre>
 
-<p><strong>Trailer</strong> 主要记录了 HFile 的基本信息，各个部分的偏移和地址信息。</p>
+<p>Note that we are extending the <u>Specification</u> interface. Each Spock class must extend this in order to make the framework available to it. It’s doing so that allows us to implement our first <u>feature:</u></p>
 
-<p><strong>Data block</strong> 主要存储用户的 key-value 数据</p>
+<pre><code class="language-groovy">def &quot;one plus one should equal two&quot;() {
+  expect:
+  1 + 1 == 2
+}
+</code></pre>
 
-<p><strong>Bloom filter</strong> 主要用来快速定位文件是否不在数据块。</p>
+<p>Before explaining the code, it’s also worth noting that in Spock, what we refer to as a <u>feature</u> is somewhat synonymous to what we see as a <u>test</u> in JUnit. So <strong>whenever we refer to a <u>feature</u> we are actually referring to a <u>test.</u></strong></p>
 
-<p><img src="https://img-blog.csdn.net/20171015103532031?watermark/2/text/aHR0cDovL2Jsb2cuY3Nkbi5uZXQvbGl3ZWlzbmFrZQ==/font/5a6L5L2T/fontsize/400/fill/I0JBQkFCMA==/dissolve/70/gravity/Center" alt=""/></p>
+<p>Now, let’s analyze our <u>feature</u>. In doing so, we should immediately be able to see some differences between it and Java.</p>
 
-<p><img src="https://img-blog.csdn.net/20171015103549504?watermark/2/text/aHR0cDovL2Jsb2cuY3Nkbi5uZXQvbGl3ZWlzbmFrZQ==/font/5a6L5L2T/fontsize/400/fill/I0JBQkFCMA==/dissolve/70/gravity/Center" alt=""/></p>
+<p>The first difference is that the feature method name is written as an ordinary string. In JUnit, we would have had a method name which uses camelcase or underscores to separate the words, which would not have been as expressive or human readable.</p>
 
-<p>比较容易混淆的是 <strong>zookeeper 和 hmaster</strong>。</p>
+<p>The next is that our test code lives in an <u>expect</u> block. We will cover blocks in more detail shortly, but essentially they are a logical way of splitting up the different steps of our tests.</p>
 
-<p><strong>Zookeeper</strong> 负责保持多台 Hmaster 中只有一台是活跃的；存储 Hbase 的 schema，table，CF 等元信息；存储所有的 region 入口；监控 regionServer 的状态，并将该信息通知 hmaster。可以看出来，zookeeper 几乎是负责整个集群的关键信息存取以及关键状态监控。<strong>如果 zookeeper 挂了，那么整个 hbase 集群几乎就是不可用的状态</strong>。</p>
+<p>Finally, we realize that there are no assertions. That’s because the assertion is implicit, passing when our statement equals <u>true</u> and failing when it equals <u>false</u>. Again, we’ll cover assertions in more details shortly.</p>
 
-<p><img src="https://img-blog.csdn.net/20171007233209495?watermark/2/text/aHR0cDovL2Jsb2cuY3Nkbi5uZXQvbGl3ZWlzbmFrZQ==/font/5a6L5L2T/fontsize/400/fill/I0JBQkFCMA==/dissolve/70/gravity/Center" alt=""/></p>
+<h3 id="toc_4"><strong>3.2. Blocks</strong></h3>
 
-<p><strong>Hmaster</strong> 则是负责对 table 元数据的管理；对 HRegion 的负载均衡，调整 HRegion 的布局，比如分裂和合并；包括恢复数据的迁移等。Hmaster 相当于对 RegionServer 的后台管理，对于一些定制的管理行为，zookeeper 不可能帮你完成，于是乎才有了 hmaster。<strong>如果 hmaster 挂了，除了不能对 table 进行管理配置，不能扩展 region，并不会影响整体服务的可用性</strong>。</p>
+<p>Sometimes when writing JUnit a test, we might notice there isn’t an expressive way of breaking it up into parts. For example, if we were following behavior driven development, we might end up denoting the <u>given when then</u> parts using comments:</p>
 
-<p>接下来我们来关注一些关键流程。</p>
+<pre><code class="language-java">@Test
+public void givenTwoAndTwo_whenAdding_thenResultIsFour() {
+   // Given
+   int first = 2;
+   int second = 4;
+ 
+   // When
+   int result = 2 + 2;
+ 
+   // Then
+   assertTrue(result == 4)
+}
+</code></pre>
 
-<p><strong>客户端首次读写的流程</strong>：</p>
+<p>Spock addresses this problem with blocks. <strong>Blocks are a Spock native way of breaking up the phases of our test using labels.</strong> They give us labels for <u>given when then</u> and more:</p>
 
-<p>1. 客户端首先从 zookeeper 中得到 META table 的位置，根据 META table 的存储位置得到具体的 RegionServer 是哪台</p>
+<ol>
+<li> <u>Setup</u> (Aliased by Given) – Here we perform any setup needed before a test is run. This is an implicit block, with code not in any block at all becoming part of it</li>
+<li> <u>When</u> – This is where we provide a <u>stimulus</u> to what is under test. In other words, where we invoke our method under test</li>
+<li> <u>Then</u> – This is where the assertions belong. In Spock, these are evaluated as plain boolean assertions, which will be covered later</li>
+<li> <u>Expect</u> – This is a way of performing our <u>stimulus</u> and <u>assertion</u> within the same block. Depending on what we find more expressive, we may or may not choose to use this block</li>
+<li> <u>Cleanup</u> – Here we tear down any test dependency resources which would otherwise be left behind. For example, we might want to remove any files from the file system or remove test data written to a database</li>
+</ol>
 
-<p>2. 询问具体的 RegionServer</p>
+<p>Let’s try implementing our test again, this time making full use of blocks:</p>
 
-<p><strong>写流程</strong>：</p>
+<pre><code class="language-groovy">def &quot;two plus two should equal four&quot;() {
+    given:
+        int left = 2
+        int right = 2
+ 
+    when:
+        int result = left + right
+ 
+    then:
+        result == 4
+}
+</code></pre>
 
-<p>1. 首先写入 WAL 日志，以防 crash。</p>
+<p>As we can see, blocks help our test become more readable.</p>
 
-<p>2. 紧接着写入 Memstore，即写缓存。由于是内存写入，速度较快。</p>
+<h3 id="toc_5"><strong>3.3. Leveraging Groovy Features for Assertions</strong></h3>
 
-<p>3. 立马返回客户端表示写入完毕。</p>
+<p><strong>Within the <u>then</u> and <u>expect</u> blocks, assertions are implicit</strong>.</p>
 
-<p>4. 当 Memstore 满时，从 Memstore 刷新到 HFile，磁盘的顺序写速度非常快，并记录下最后一次最高的 sequence 号。这样系统能知道哪些记录已经持久化，哪些没有。</p>
+<p>Mostly, every statement is evaluated and then fails if it is not <u>true</u>. When coupling this with various Groovy features, it does a good job of removing the need for an assertion library. Let’s try a <a href="https://docs.oracle.com/javase/8/docs/api/java/util/List.html">_list_</a> assertion to demonstrate this:</p>
 
-<p><strong>读流程</strong>：</p>
+<pre><code class="language-groovy">def &quot;Should be able to remove from list&quot;() {
+    given:
+        def list = [1, 2, 3, 4]
+ 
+    when:
+        list.remove(0)
+ 
+    then:
+        list == [2, 3, 4]
+}
+</code></pre>
 
-<p>1. 首先到读缓存 BlockCache 中查找可能被缓存的数据</p>
+<p>While we’re only touching briefly on Groovy in this article, it’s worth explaining what is happening here.</p>
 
-<p>2. 如果未找到，到写缓存查找已提交但是未落 HFile 的数据</p>
+<p>First, Groovy gives us simpler ways of creating lists. We can just able to declare our elements with square brackets, and internally a <u>list</u> will be instantiated.</p>
 
-<p>3. 如果还未找到， 到 HFile 中继续查找数据</p>
+<p>Secondly, as Groovy is dynamic, we can use <u>def</u> which just means we aren’t declaring a type for our variables.</p>
 
-<p><img src="https://img-blog.csdn.net/20171008110233034?watermark/2/text/aHR0cDovL2Jsb2cuY3Nkbi5uZXQvbGl3ZWlzbmFrZQ==/font/5a6L5L2T/fontsize/400/fill/I0JBQkFCMA==/dissolve/70/gravity/Center" alt=""/></p>
+<p>Finally, in the context of simplifying our test, the most useful feature demonstrated is operator overloading. This means that internally, rather than making a reference comparison like in Java, the <u>equals()</u> method will be invoked to compare the two lists.</p>
 
-<p><strong>数据紧凑</strong>：</p>
+<p>It’s also worth demonstrating what happens when our test fails. Let’s make it break and then view what’s output to the console:</p>
 
-<p>数据从 memStore 刷新到 HFile 时，为了保持简单，都是每个 memStore 放一个 HFile，这会带来大量小 HFile 文件，使得查询时效率相对较低，于是，采用数据紧凑的方式将多个小文件压缩为几个大文件。其中，minor compaction 是自动将相关的小文件做一些适当的紧凑，但不彻底；而 major compaction 则是放在午夜跑的定时任务，将文件做最大化的紧凑。</p>
+<pre><code class="language-log">Condition not satisfied:
+ 
+list == [1, 3, 4]
+|    |
+|    false
+[2, 3, 4]
+ &lt;Click to see difference&gt;
+ 
+at FirstSpecification.Should be able to remove from list(FirstSpecification.groovy:30)
+</code></pre>
 
-<p><img src="https://img-blog.csdn.net/20171008114505743?watermark/2/text/aHR0cDovL2Jsb2cuY3Nkbi5uZXQvbGl3ZWlzbmFrZQ==/font/5a6L5L2T/fontsize/400/fill/I0JBQkFCMA==/dissolve/70/gravity/Center" alt=""/></p>
+<p>While all that’s going on is calling <u>equals()</u> on two lists, Spock is intelligent enough to perform a breakdown of the failing assertion, giving us useful information for debugging.</p>
 
-<p><img src="https://img-blog.csdn.net/20171008114703447?watermark/2/text/aHR0cDovL2Jsb2cuY3Nkbi5uZXQvbGl3ZWlzbmFrZQ==/font/5a6L5L2T/fontsize/400/fill/I0JBQkFCMA==/dissolve/70/gravity/Center" alt=""/></p>
+<h3 id="toc_6"><strong>3.4. Asserting Exceptions</strong></h3>
 
-<p><strong>数据恢复流程</strong>：</p>
+<p>Spock also provides us with an expressive way of checking for exceptions. In JUnit, some our options might be using a <u>try-catch</u> block, declare <u>expected</u> at the top of our test, or making use of a third party library. Spock’s native assertions come with a way of dealing with exceptions out of the box:</p>
 
-<p>当 RegionServer 挂了，zookeeper 很快就能检测到，于是将其下的 region 状态设置为不可用。Hmaster 随即开始恢复的流程。</p>
+<pre><code class="language-groovy">def &quot;Should get an index out of bounds when removing a non-existent item&quot;() {
+    given:
+        def list = [1, 2, 3, 4]
+  
+    when:
+        list.remove(20)
+ 
+    then:
+        thrown(IndexOutOfBoundsException)
+        list.size() == 4
+}
+</code></pre>
 
-<p>1. HFile 本身有 2 个备份，而且有专门的 HDFS 来管理其下的文件。因此对 HFile 来说并不需要恢复。</p>
+<p>Here, we’ve not had to introduce an additional library. Another advantage is that the <u>thrown()</u> method will assert the type of the exception, but not halt execution of the test.</p>
 
-<p>2. Hmaster 重置 region 到新的 regionServer</p>
+<h2 id="toc_7"><strong>4. Data Driven Testing</strong></h2>
 
-<p>3. 之前在 MemStore 中丢失的数据，通过 WAL 分裂先将 WAL 按照 region 切分。切分的原因是 WAL 并不区分 region，而是所有 region 的 log 都写入同一个 WAL。</p>
+<h3 id="toc_8"><strong>4.1. What is a Data Driven Testing?</strong></h3>
 
-<p>4. 根据 WAL 回放并恢复数据。回放的过程实际上先进 MemStore，再 flush 到 HFile</p>
+<p>Essentially, <strong>data driven testing is when we test the same behavior multiple times with different parameters and assertions</strong>. A classic example of this would be testing a mathematical operation such as squaring a number. Depending on the various permutations of operands, the result will be different. In Java, the term we may be more familiar with is parameterized testing.</p>
 
-<p><img src="https://img-blog.csdn.net/20171008154723461?watermark/2/text/aHR0cDovL2Jsb2cuY3Nkbi5uZXQvbGl3ZWlzbmFrZQ==/font/5a6L5L2T/fontsize/400/fill/I0JBQkFCMA==/dissolve/70/gravity/Center" alt=""/></p>
+<h3 id="toc_9"><strong>4.2. Implementing a Parameterized Test in Java</strong></h3>
 
-<p><img src="https://img-blog.csdn.net/20171008154745990?watermark/2/text/aHR0cDovL2Jsb2cuY3Nkbi5uZXQvbGl3ZWlzbmFrZQ==/font/5a6L5L2T/fontsize/400/fill/I0JBQkFCMA==/dissolve/70/gravity/Center" alt=""/></p>
+<p>For some context, it’s worth implementing a parameterized test using JUnit:</p>
 
-<h2 id="toc_0">参考资料</h2>
+<pre><code class="language-java">@RunWith(Parameterized.class)
+public class FibonacciTest {
+    @Parameters
+    public static Collection&lt;Object[]&gt; data() {
+        return Arrays.asList(new Object[][] {     
+          { 1, 1 }, { 2, 4 }, { 3, 9 }  
+        });
+    }
+ 
+    private int input;
+ 
+    private int expected;
+ 
+    public ToThePowerOfTwo(int input, int expected) {
+        this.input = input;
+        this.expected = expected;
+    }
+ 
+    @Test
+    public void test() {
+        assertEquals(fExpected, Math.pow(3, 2));
+    }
+}
+</code></pre>
 
-<ul>
-<li><a href="https://yq.aliyun.com/articles/54410">我们为什么选择 hbase</a></li>
-<li><a href="https://mapr.com/blog/in-depth-look-hbase-architecture/">hbase 架构</a></li>
-<li><a href="http://hbasefly.com/2016/10/29/hbase-regionserver-recovering/">HBase 原理－RegionServer 宕机数据恢复</a></li>
-<li><a href="http://hbasefly.com/2016/03/25/hbase-hfile/">HBase – 存储文件 HFile 结构解析</a></li>
-<li><a href="http://blog.cloudera.com/blog/2012/06/hbase-io-hfile-input-output/">Apache HBase I/O – HFile</a></li>
-</ul>
+<p>As we can see there’s quite a lot of verbosity, and the code isn’t very readable. We’ve had to create a two-dimensional object array that lives outside of the test, and even a wrapper object for injecting the various test values.</p>
+
+<h3 id="toc_10"><strong>4.3. Using Datatables in Spock</strong></h3>
+
+<p>One easy win for Spock when compared to JUnit is how it cleanly it implements parameterized tests. Again, in Spock, this is known as <strong>Data Driven Testing.</strong> Now, let’s implement the same test again, only this time we’ll use Spock with <strong>Data Tables</strong>, which provides a far more convenient way of performing a parameterized test:</p>
+
+<pre><code class="language-groovy">def &quot;numbers to the power of two&quot;(int a, int b, int c) {
+  expect:
+      Math.pow(a, b) == c
+ 
+  where:
+      a | b | c
+      1 | 2 | 1
+      2 | 2 | 4
+      3 | 2 | 9
+}  
+</code></pre>
+
+<p>As we can see, we just have a straightforward and expressive Data table containing all our parameters.</p>
+
+<p>Also, it belongs where it should do, alongside the test, and there is no boilerplate. The test is expressive, with a human-readable name, and pure <u>expect</u> and <u>where</u> block to break up the logical sections.</p>
+
+<h3 id="toc_11"><strong>4.4. When a Datatable Fails</strong></h3>
+
+<p>It’s also worth seeing what happens when our test fails:</p>
+
+<pre><code class="language-log">Condition not satisfied:
+ 
+Math.pow(a, b) == c
+     |   |  |  |  |
+     4.0 2  2  |  1
+               false
+ 
+Expected :1
+ 
+Actual   :4.0
+</code></pre>
+
+<p>Again, Spock gives us a very informative error message. We can see exactly what row of our Datatable caused a failure and why.</p>
+
+<h2 id="toc_12"><strong>5. Mocking</strong></h2>
+
+<h3 id="toc_13"><strong>5.1. What is Mocking?</strong></h3>
+
+<p>Mocking is a way of changing the behavior of a class which our service under test collaborates with. It’s a helpful way of being able to test business logic in isolation of its dependencies.</p>
+
+<p>A classic example of this would be replacing a class which makes a network call with something which simply pretends to. For a more in-depth explanation, it’s worth reading <a href="/mockito-vs-easymock-vs-jmockit">this article</a>.</p>
+
+<h3 id="toc_14"><strong>5.2. Mocking using Spock</strong></h3>
+
+<p>Spock has it’s own mocking framework, making use of interesting concepts brought to the JVM by Groovy. First, let’s instantiate a <u>Mock:</u></p>
+
+<pre><code class="language-java">PaymentGateway paymentGateway = Mock()
+</code></pre>
+
+<p>In this case, the type of our mock is inferred by the variable type. As Groovy is a dynamic language, we can also provide a type argument, allow us to not have to assign our mock to any particular type:</p>
+
+<pre><code class="language-groovy">def paymentGateway = Mock(PaymentGateway)
+</code></pre>
+
+<p>Now, whenever we call a method on our <u>PaymentGateway</u> mock_,_ a default response will be given, without a real instance being invoked:</p>
+
+<pre><code class="language-groovy">when:
+    def result = paymentGateway.makePayment(12.99)
+ 
+then:
+    result == false
+</code></pre>
+
+<p>The term for this is <u>lenient mocking</u>. This means that mock methods which have not been defined will return sensible defaults, as opposed to throwing an exception. This is by design in Spock, in order to make mocks and thus tests less brittle.</p>
+
+<h3 id="toc_15"><strong>5.3. Stubbing Method calls on <u>Mocks</u></strong></h3>
+
+<p>We can also configure methods called on our mock to respond in a certain way to different arguments. Let’s try getting our <u>PaymentGateway</u> mock to return <u>true</u> when we make a payment of <u>20:</u></p>
+
+<pre><code class="language-groovy">given:
+    paymentGateway.makePayment(20) &gt;&gt; true
+ 
+when:
+    def result = paymentGateway.makePayment(20)
+ 
+then:
+    result == true
+</code></pre>
+
+<p>What’s interesting here, is how Spock makes use of Groovy’s operator overloading in order to stub method calls. With Java, we have to call real methods, which arguably means that the resulting code is more verbose and potentially less expressive.</p>
+
+<p>Now, let’s try a few more types of stubbing.</p>
+
+<p>If we stopped caring about our method argument and always wanted to return <u>true,</u> we could just use an underscore:</p>
+
+<pre><code class="language-groovy">paymentGateway.makePayment(_) &gt;&gt; true
+</code></pre>
+
+<p>If we wanted to alternate between different responses, we could provide a list, for which each element will be returned in sequence:</p>
+
+<pre><code class="language-groovy">paymentGateway.makePayment(_) &gt;&gt;&gt; [true, true, false, true]
+</code></pre>
+
+<p>There are more possibilities, and these may be covered in a more advanced future article on mocking.</p>
+
+<h3 id="toc_16"><strong>5.4. Verification</strong></h3>
+
+<p>Another thing we might want to do with mocks is assert that various methods were called on them with expected parameters. In other words, we ought to verify interactions with our mocks.</p>
+
+<p>A typical use case for verification would be if a method on our mock had a <u>void</u> return type. In this case, by there being no result for us to operate on, there’s no inferred behavior for us to test via the method under test. Generally, if something was returned, then the method under test could operate on it, and it’s the result of that operation would be what we assert.</p>
+
+<p>Let’s try verifying that a method with a void return type is called:</p>
+
+<pre><code class="language-groovy">def &quot;Should verify notify was called&quot;() {
+    given:
+        def notifier = Mock(Notifier)
+ 
+    when:
+        notifier.notify(&#39;foo&#39;)
+ 
+    then:
+        1 * notifier.notify(&#39;foo&#39;)
+}
+</code></pre>
+
+<p>Spock is leveraging Groovy operator overloading again. By multiplying our mocks method call by one, we are saying how many times we expect it to have been called.</p>
+
+<p>If our method had not been called at all or alternatively had not been called as many times as we specified, then our test would have failed to give us an informative Spock error message. Let’s prove this by expecting it to have been called twice:</p>
+
+<pre><code class="language-groovy">2 * notifier.notify(&#39;foo&#39;)
+</code></pre>
+
+<p>Following this, let’s see what the error message looks like. We’ll that as usual; it’s quite informative:</p>
+
+<pre><code class="language-log">Too few invocations for:
+ 
+2 * notifier.notify(&#39;foo&#39;)   (1 invocation)
+</code></pre>
+
+<p>Just like stubbing, we can also perform looser verification matching. If we didn’t care what our method parameter was, we could use an underscore:</p>
+
+<pre><code class="language-groovy">2 * notifier.notify(_)
+</code></pre>
+
+<p>Or if we wanted to make sure it wasn’t called with a particular argument, we could use the not operator:</p>
+
+<pre><code class="language-groovy">2 * notifier.notify(!&#39;foo&#39;)
+</code></pre>
+
+<p>Again, there are more possibilities, which may be covered in a future more advanced article.</p>
+
+<h2 id="toc_17"><strong>6. Conclusion</strong></h2>
+
+<p>In this article, we’ve given a quick slice through testing with Spock.</p>
+
+<p>We’ve demonstrated how, by leveraging Groovy, we can make our tests more expressive than the typical JUnit stack. We’ve explained the structure of <u>specifications</u> and <u>features</u>.</p>
+
+<p>And we’ve shown how easy it is to perform data-driven testing, and also how mocking and assertions are easy via native Spock functionality.</p>
+
+<p>The implementation of these examples can be found <a href="https://github.com/eugenp/tutorials/tree/master/testing-modules/groovy-spock">over on GitHub</a>. This is a Maven-based project, so should be easy to run as is.</p>
 
                         
                       </div>
@@ -233,10 +496,10 @@
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/6/25</span>
+                    <span class="date">2018/8/8</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Persistence.html'>Persistence</a></span>
+          					    <span class="posted-in"><a href='Java.html'>Java</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -326,31 +589,31 @@
 	      
 		      
 			      <li class="post">
-			        <a href="15459058392039.html">Reliable Domain Events</a>
+			        <a href="15517999043443.html">The Art of Crafting Architectural Diagrams</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
+			        <a href="15517997955971.html">为什么说我们需要软件架构图？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
+			        <a href="15516128677869.html">DNS Servers That Offer Privacy and Filtering</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
+			        <a href="15516123108194.html">Airbnb's Migration from Monolith to Services</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
+			        <a href="15516097487470.html">Events As First-Class Citizens</a>
 			      </li>
 		     
 		  

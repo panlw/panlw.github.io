@@ -105,319 +105,357 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15244030785891.html">
+                <a class="clearlink" href="15281293926383.html">
                 
-                  <h1>Advanced Node.js Project Structure Tutorial</h1>
+                  <h1>在 Spring Boot 中集成 SOFABoot 类隔离能力</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://blog.codeship.com/advanced-node-js-project-structure-tutorial/">https://blog.codeship.com/advanced-node-js-project-structure-tutorial/</a></p>
+<p>张奇龙 <a href="https://zhuanlan.zhihu.com/p/36909393">https://zhuanlan.zhihu.com/p/36909393</a></p>
 
-<p><u>This article was originally published on <a href="https://blog.risingstack.com/node-js-project-structure-tutorial-node-js-at-scale/">the RisingStack blog</a> by <a href="https://twitter.com/@tthndrs">András Tóth</a>. With their kind permission, we’re sharing it here for Codeship readers.</u></p>
+<h2 id="toc_0">SOFABoot 类隔离能力简介</h2>
 </blockquote>
 
-<p>Project structuring is an important topic because the way you bootstrap your application can determine the whole development experience throughout the life of the project.</p>
+<p>SOFABoot 是蚂蚁金服中间件团队开源的基于 Spring Boot 的一个开发框架，其在 Spring Boot 基础能力之上，增加了类隔离能力。蚂蚁金服内部丰富的实践场景表明，类隔离能力对解决类冲突、版本管控有其特殊的优势。</p>
 
-<p>In this Node.js project structure tutorial I’ll answer some of the most common questions we receive at <a href="https://trace.risingstack.com/">RisingStack</a> about structuring advanced Node applications, and help you with structuring a complex project.</p>
+<p>SOFABoot 的类隔离能力由单独的组件 SOFAArk 实现，相比业界遵循 OSGi（<a href="https://link.zhihu.com/?target=https%3A//www.osgi.org/">https://www.osgi.org</a>） 规范的 Equinox 或者 Felix，SOFAArk 专注于类隔离，简化了类加载模型，是一款更加轻量的类隔离框架。</p>
 
-<p><strong>These are the goals that we are aiming for:</strong></p>
+<p>本文将介绍 SOFABoot 类隔离能力的背景及其使用方式。</p>
 
-<ul>
-<li>  Writing an application that is easy to scale and maintain.</li>
-<li>  The config is well separated from the business logic.</li>
-<li>  Our application can consist of multiple process types.</li>
-</ul>
+<h2 id="toc_1">1. 背景</h2>
 
-<blockquote>
-<p><strong>Node.js at Scale</strong> is <a href="http://chapters">a collection of articles</a> focusing on the needs of companies with bigger Node.js installations and advanced Node developers.</p>
-</blockquote>
+<p>在 Java 世界中，依赖的 JAR 包之间相互冲突永远是一个痛，Spring Boot 采用统一的依赖管理机制规避了大部分依赖冲突问题。理想很美好，现实却很骨感，作为蚂蚁金服这类大体量的公司，各业务线纷繁复杂、基础服务组件繁多，很难做到对所有 JAR 包做统一管控，尤其涉及到多个跨团队模块组件相互依赖时，因为各自技术栈历史包袱的存在，难以有效统一冲突包版本。</p>
 
-<h2 id="toc_0">The Node.js Project Structure</h2>
+<p>假设如下场景，工程需要引入两个三方组件：A 和 B，组件 A 需要依赖 Hessian 3，组件 B 需要依赖 Hessian 4，因为 Hessian 3 和 Hessian 4 是不兼容的。作为开发者，遇到这种包冲突问题，如果不借助类隔离框架，只能耗费精力升级到统一版本。</p>
 
-<p>Our example application is listening on Twitter tweets and tracks certain keywords. In case of a keyword match, the tweet will be sent to a RabbitMQ queue, which will be processed and saved to Redis. We will also have a REST API exposing the tweets we have saved.</p>
+<p><img src="https://pic2.zhimg.com/v2-523ebc71ae694f6bbe1196b458711c38_b.jpg" alt=""/><img src="https://pic2.zhimg.com/v2-523ebc71ae694f6bbe1196b458711c38_r.jpg" alt=""/></p>
 
-<p>You can take a look at the code on <a href="https://github.com/RisingStack/multi-process-nodejs-example">GitHub</a>. The file structure for this project looks like the following:</p>
+<p>为了彻底解决类似的包冲突问题，我们需要借助类隔离机制，使用不同的类加载器加载冲突的三方依赖包，进而做到在同一个应用运行时共存。</p>
 
-<pre><code>.
-|-- config
-|   |-- components
-|   |   |-- common.js
-|   |   |-- logger.js
-|   |   |-- rabbitmq.js
-|   |   |-- redis.js
-|   |   |-- server.js
-|   |   `-- twitter.js
-|   |-- index.js
-|   |-- social-preprocessor-worker.js
-|   |-- twitter-stream-worker.js
-|   `-- web.js
-|-- models
-|   |-- redis
-|   |   |-- index.js
-|   |   `-- redis.js
-|   |-- tortoise
-|   |   |-- index.js
-|   |   `-- tortoise.js
-|   `-- twitter
-|       |-- index.js
-|       `-- twitter.js
-|-- scripts
-|-- test
-|   `-- setup.js
-|-- web
-|   |-- middleware
-|   |   |-- index.js
-|   |   `-- parseQuery.js
-|   |-- router
-|   |   |-- api
-|   |   |   |-- tweets
-|   |   |   |   |-- get.js
-|   |   |   |   |-- get.spec.js
-|   |   |   |   `-- index.js
-|   |   |   `-- index.js
-|   |   `-- index.js
-|   |-- index.js
-|   `-- server.js
-|-- worker
-|   |-- social-preprocessor
-|   |   |-- index.js
-|   |   `-- worker.js
-|   `-- twitter-stream
-|       |-- index.js
-|       `-- worker.js
-|-- index.js
-`-- package.json
-</code></pre>
+<p>基于此背景，SOFABoot 提供了一个轻量级的类隔离框架，也是本文的主角，SOFAArk。</p>
 
-<p>In this example we have 3 processes:</p>
+<h2 id="toc_2">2. 基本原理</h2>
+
+<p>在介绍 SOFAArk 类隔离框架使用之前，我们简单了解下其背后的实现原理。正如前文中描述，SOFAArk 是通过独立的类加载器加载相互冲突的三方依赖包，从而做到隔离包冲突。那么我们不禁要问，SOFAArk 是如何区分应用中哪些依赖包是需要单独的类加载器加载呢？原因是 Ark Plugin，它是 SOFAArk 框架定义的一种特殊的 JAR 包文件格式，SOFAArk 框架会自动识别 Ark Plugin 这种特殊依赖。</p>
+
+<p>何为 Ark Plugin ? Ark Plugin 本质上是一个 FatJar，借助 SOFABoot 官方提供的 maven 打包插件，开发者可以把若干普通的 JAR 包打包成 Ark Plugin 供应用依赖或者把普通的 Java 模块改造成 Ark Plugin。通常来说，如果把一个普通 JAR 打包成 Ark Plugin，那么该 JAR 包依赖的其他三方包也会被打入同一个 Ark Plugin，默认情况下 SOFABoot 官方打包插件会自动把间接依赖也打入到 Ark Plugin。</p>
+
+<p>应用使用添加 maven 依赖的方式引入 Ark Plugin，运行时，SOFAArk 框架会自动识别应用的三方依赖包中是否含有 Ark Plugin，进而使用单独的类加载器加载。为了更加直观，下图是应用运行时逻辑分层图：</p>
+
+<p><img src="https://pic3.zhimg.com/v2-af38a66b654feefe65e91996a60a2700_b.jpg" alt=""/><img src="https://pic3.zhimg.com/v2-af38a66b654feefe65e91996a60a2700_r.jpg" alt=""/></p>
+
+<p>可以看到，在应用运行时，SOFAArk 容器处于最底层，负责启动应用。应用依赖的所有 Ark Plugin 处于中间层，每个 Ark Plugin 都由 SOFAArk 容器使用独立的类加载器加载，相互隔离。应用业务代码及其他非 Ark Plugin 的普通三方依赖包，为了描述简单，统称为 Ark Biz，它运行在最上层，需要依赖中间层的 Ark Plugin。</p>
+
+<p>一个标准 Ark Plugin 会包含一些配置文件，主要包含导出类和导入类配置。导出类即把 Ark Plugin 中的类导出给 Ark Biz 和其他 Ark Plugin 可见。默认情况下，所有 Ark Plugin 的导出类对于 Ark Biz 来说都是可见的，即 Ark Biz 可以使用 Ark Plugin 的导出类。对于 Ark Plugin 来说，如果需要使用其他 Ark Plugin 的导出类，必须声明为自身的导入类。关于 Ark Plugin 详细说明可以参考文末相关链接。</p>
+
+<p>下面我们来演示如何开发一个简单的 Ark Plugin。</p>
+
+<h2 id="toc_3">3. Java 模块改造成 Ark Plugin</h2>
+
+<h2 id="toc_4">3.1 新建工程</h2>
+
+<p>Demo <a href="https://link.zhihu.com/?target=https%3A//github.com/QilongZhang/ark-plugin-demo">工程地址</a></p>
+
+<p>运行需要 JDK 6 及以上、 Maven 3.2.5 以上。</p>
+
+<p>首先我们在 IDE 里新建一个普通 Maven 工程，并创建三个普通的 Java 模块。以前文描述的 Hessian 冲突为例，在演示工程中定义了三个模快：</p>
 
 <ul>
-<li>  <code>twitter-stream-worker</code>: The process is listening on Twitter for keywords and sends the tweets to a RabbitMQ queue.</li>
-<li>  <code>social-preprocessor-worker</code>: The process is listening on the RabbitMQ queue and saves the tweets to Redis and removes old ones.</li>
-<li>  <code>web</code>: The process is serving a REST API with a single endpoint: <code>GET /api/v1/tweets?limit&amp;offset</code>.</li>
+<li>  pojo-module: 定义了一个简单的 PoJo 类 SamplePoJo，并设置为导出类，打包成 <code>pojo-ark-plugin</code> 。</li>
+<li>  hessian3-module：定义了一个服务类 Hessian3Service，实现了简单的序列化和反序列逻辑，使用的版本是 Hessian 3，并导入了 SamplePoJo，打包成 <code>hessian3-ark-plugin</code> 。</li>
+<li>  hessian4-module：定义了一个服务类 Hessian4Service，和 Hessian3Service 功能类似，使用的版本是 Hessian 4，并导入了 SamplePoJo，打包成 <code>hessian4-ark-plugin</code> 。</li>
 </ul>
 
-<p>We will get to what differentiates a <code>web</code> and a <code>worker</code> process, but let’s start with the config.</p>
+<p>该用例是为了演示如何将普通的 Java 模块及其三方依赖包打包成 Ark Plugin，以 <code>hessian3-module</code> 模块为例来讲解打包流程。</p>
 
-<h3 id="toc_1">How to handle different environments and configurations</h3>
+<h2 id="toc_5">3.2 编写服务类</h2>
 
-<p>Load your deployment specific configurations from environment variables and never add them to the codebase as constants. These are the configurations that can vary between deployments and runtime environments, like CI, staging or production. Basically, you can have the same code running everywhere.</p>
+<p>在 <code>hessian3-module</code>中，提供了一个简单的序列化和反序列化功能类 Hessian3Service：</p>
 
-<p>A good test for whether the config is correctly separated from the application internals is that the codebase could be made public at any moment. This means that you can be protected from accidentally leaking secrets or compromising credentials on version control.</p>
+<pre><code>package com.alipay.sofa.demo.hessian3;
 
-<p><a href="https://twitter.com/share?text=A+config+is+properly+separated+from+an+app%27s+internals+if+the+code+could+go+public+at+any+moment.&amp;url=https://blog.codeship.com/advanced-node-js-project-structure-tutorial/">A config is properly separated from an app’s internals if the code could go public at any moment.</a></p>
+import com.caucho.hessian.io.HessianInput;
+import com.caucho.hessian.io.HessianOutput;
 
-<p><a href="https://twitter.com/share?text=A+config+is+properly+separated+from+an+app%27s+internals+if+the+code+could+go+public+at+any+moment.&amp;url=https://blog.codeship.com/advanced-node-js-project-structure-tutorial/">Click To Tweet</a></p>
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 
-<p>The environment variables can be accessed via the <code>process.env</code> object. Keep in mind that all the values have a type of <code>String</code>, so you might need to use type conversions.</p>
+/**
+ * @author qilong.zql
+ */
+public class Hessian3Service {
+    public byte[] serialize(Object obj) throws IOException {
+        if(obj==null) throw new NullPointerException();
 
-<pre><code>// config/config.js
-&#39;use strict&#39;
+        ByteArrayOutputStream os = new ByteArrayOutputStream();
+        HessianOutput ho = new HessianOutput(os);
+        ho.writeObject(obj);
+        return os.toByteArray();
+    }
 
-// required environment variables
-[
-  &#39;NODE_ENV&#39;,
-  &#39;PORT&#39;
-].forEach((name) =&gt; {
-  if (!process.env[name]) {
-    throw new Error(`Environment variable ${name} is missing`)
-  }
-})
+    public Object deserialize(byte[] by) throws IOException {
+        if(by==null) throw new NullPointerException();
 
-const config = {
-  env: process.env.NODE_ENV,
-  logger: {
-    level: process.env.LOG_LEVEL || &#39;info&#39;,
-    enabled: process.env.BOOLEAN ? process.env.BOOLEAN.toLowerCase() === &#39;true&#39; : false
-  },
-  server: {
-    port: Number(process.env.PORT)
-  }
-  // ...
+        ByteArrayInputStream is = new ByteArrayInputStream(by);
+        HessianInput hi = new HessianInput(is);
+        return hi.readObject();
+    }
 }
 
-module.exports = config
 </code></pre>
 
-<h3 id="toc_2">Config validation</h3>
+<p>该功能类非常简单，提供了两个方法调用，分别实现对象的序列化和发序列化。</p>
 
-<p>Validating environment variables is also a quite useful technique. It can help you catching configuration errors on startup before your application does anything else. You can read more about the benefits of early error detection of configurations by <a href="https://blog.acolyer.org/2016/11/29/early-detection-of-configuration-errors-to-reduce-failure-damage/">Adrian Colyer in this blog post</a>.</p>
+<h2 id="toc_6">3.3 Ark Plugin 配置</h2>
 
-<p>This is how our improved config file looks like with schema validation using the <code>joi</code> validator:</p>
+<p>因为 Ark Plugin 的配置大同小异，在这里以普通的 Java 模块 <code>hessian3-module</code> 打包成 <code>hessian3-ark-plugin</code> 为例，介绍 Ark Plugin 的一般配置。</p>
 
-<pre><code>// config/config.js
-&#39;use strict&#39;
+<p>首先，我们需要添加 SOFABoot 官方提供的 maven 打包插件：</p>
 
-const joi = require(&#39;joi&#39;)
+<pre><code>&lt;plugin&gt;
+    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
+    &lt;artifactId&gt;sofa-ark-plugin-maven-plugin&lt;/artifactId&gt;
+    &lt;version&gt;0.2.0&lt;version&gt;
+&lt;/plugin&gt;
 
-const envVarsSchema = joi.object({
-  NODE_ENV: joi.string()
-    .allow([&#39;development&#39;, &#39;production&#39;, &#39;test&#39;, &#39;provision&#39;])
-    .required(),
-  PORT: joi.number()
-    .required(),
-  LOGGER_LEVEL: joi.string()
-    .allow([&#39;error&#39;, &#39;warn&#39;, &#39;info&#39;, &#39;verbose&#39;, &#39;debug&#39;, &#39;silly&#39;])
-    .default(&#39;info&#39;),
-  LOGGER_ENABLED: joi.boolean()
-    .truthy(&#39;TRUE&#39;)
-    .truthy(&#39;true&#39;)
-    .falsy(&#39;FALSE&#39;)
-    .falsy(&#39;false&#39;)
-    .default(true)
-}).unknown()
-  .required()
-
-const { error, value: envVars } = joi.validate(process.env, envVarsSchema)
-if (error) {
-  throw new Error(`Config validation error: ${error.message}`)
-}
-
-const config = {
-  env: envVars.NODE_ENV,
-  isTest: envVars.NODE_ENV === &#39;test&#39;,
-  isDevelopment: envVars.NODE_ENV === &#39;development&#39;,
-  logger: {
-    level: envVars.LOGGER_LEVEL,
-    enabled: envVars.LOGGER_ENABLED
-  },
-  server: {
-    port: envVars.PORT
-  }
-  // ...
-}
-
-module.exports = config
 </code></pre>
 
-<h3 id="toc_3">Config splitting</h3>
+<p>然后在<code>hessian3-module</code> 演示用例中，只需要在模块 <code>pom.xml</code> 文件中添加一个导出类和一个导入类配置，配置如下：</p>
 
-<p>Splitting the configuration by components can be a good solution to forego a single, growing config file.</p>
+<pre><code>&lt;build&gt;
+    &lt;plugins&gt;
+        &lt;plugin&gt;
+            &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
+            &lt;artifactId&gt;sofa-ark-plugin-maven-plugin&lt;/artifactId&gt;
+            &lt;version&gt;0.2.0&lt;/version&gt;
+            &lt;executions&gt;
+                &lt;execution&gt;
+                    &lt;id&gt;default-cli&lt;/id&gt;
+                    &lt;goals&gt;
+                        &lt;goal&gt;ark-plugin&lt;/goal&gt;
+                    &lt;/goals&gt;
 
-<pre><code>// config/components/logger.js
-&#39;use strict&#39;
+                    &lt;configuration&gt;
+                        &lt;!-- configure imported class --&gt;
+                        &lt;imported&gt;
+                            &lt;!-- configure class-level imported class --&gt;
+                            &lt;classes&gt;
+                                &lt;class&gt;com.alipay.sofa.demo.pojo.SamplePoJo&lt;/class&gt;
+                            &lt;/classes&gt;
+                        &lt;/imported&gt;
 
-const joi = require(&#39;joi&#39;)
+                        &lt;!-- configure exported class --&gt;
+                        &lt;exported&gt;
+                            &lt;!-- configure class-level exported class --&gt;
+                            &lt;classes&gt;
+                                &lt;class&gt;com.alipay.sofa.demo.hessian3.Hessian3Service&lt;/class&gt;
+                            &lt;/classes&gt;
+                        &lt;/exported&gt;
+                    &lt;/configuration&gt;
+                &lt;/execution&gt;
+            &lt;/executions&gt;
+        &lt;/plugin&gt;
+    &lt;/plugins&gt;
+&lt;/build&gt;
 
-const envVarsSchema = joi.object({
-  LOGGER_LEVEL: joi.string()
-    .allow([&#39;error&#39;, &#39;warn&#39;, &#39;info&#39;, &#39;verbose&#39;, &#39;debug&#39;, &#39;silly&#39;])
-    .default(&#39;info&#39;),
-  LOGGER_ENABLED: joi.boolean()
-    .truthy(&#39;TRUE&#39;)
-    .truthy(&#39;true&#39;)
-    .falsy(&#39;FALSE&#39;)
-    .falsy(&#39;false&#39;)
-    .default(true)
-}).unknown()
-  .required()
-
-const { error, value: envVars } = joi.validate(process.env, envVarsSchema)
-if (error) {
-  throw new Error(`Config validation error: ${error.message}`)
-}
-
-const config = {
-  logger: {
-    level: envVars.LOGGER_LEVEL,
-    enabled: envVars.LOGGER_ENABLED
-  }
-}
-
-module.exports = config
 </code></pre>
 
-<p>Then in the <code>config.js</code> file, we only need to combine the components.</p>
+<p>可以看到，<code>hessian3-ark-plugin</code> 导入基础实体类 <code>com.alipay.sofa.demo.pojo.SamplePoJo</code>，导出服务类 <code>com.alipay.sofa.demo.hessian3.Hessian3Service</code> 供 Ark Biz 使用。</p>
 
-<pre><code>// config/config.js
-&#39;use strict&#39;
+<p>使用 maven 打包命令 <code>maven package</code> 即可将 <code>hessian3-module</code> 打包成 Ark Plugin，该插件包含模块代码及其依赖包，其 maven 坐标为：</p>
 
-const common = require(&#39;./components/common&#39;)
-const logger = require(&#39;./components/logger&#39;)
-const redis = require(&#39;./components/redis&#39;)
-const server = require(&#39;./components/server&#39;)
+<pre><code>&lt;dependency&gt;
+    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
+    &lt;artifactId&gt;hessian3-ark-plugin&lt;/artifactId&gt;
+    &lt;classifier&gt;ark-plugin&lt;/classifier&gt;
+    &lt;version&gt;1.0.0&lt;/version&gt;
+&lt;/dependency&gt;
 
-module.exports = Object.assign({}, common, logger, redis, server)
 </code></pre>
 
-<p>You should never group your config together into “environment” specific files, like config/production.js for production. It doesn’t scale well as your app expands into more deployments over time.</p>
+<p>关于 Ark Plugin 的导入、导出类，这里强调一下，在实际开发中，和业务本身无关的实体类或者基础服务类，如果多个 Ark Plugin 和 Ark Biz 都需要统一版本时，可以把这类基础 Jar 统一打包成 Ark Plugin 设置为导出类。在该演示用例中，我们假设 <code>SamplePoJo</code> 是一个基础实体类，和业务逻辑无关，而 <code>hessian3-ark-plugin</code> 和 <code>hessian4-ark-plugin</code> 都需要使用，于是单独打包成了一个 Ark Plugin。</p>
 
-<p><a href="https://twitter.com/share?text=Never+group+your+config+together+into+environment+specific+files.+It+doesn%E2%80%99t+scale+well%21&amp;url=https://blog.codeship.com/advanced-node-js-project-structure-tutorial/">Never group your config together into environment specific files. It doesn’t scale well!</a></p>
+<p>到此为止，这就是一个简单的 Ark Plugin 从开发的步骤，看起来是不是很简单呢？</p>
 
-<p><a href="https://twitter.com/share?text=Never+group+your+config+together+into+environment+specific+files.+It+doesn%E2%80%99t+scale+well%21&amp;url=https://blog.codeship.com/advanced-node-js-project-structure-tutorial/">Click To Tweet</a></p>
+<p>下面，我们演示下如何在 Spring Boot 工程中，快速集成 SOFABoot 的类隔离能力，并使用这三个 Ark Plugin。</p>
 
-<h3 id="toc_4">How to organize a multi-process application</h3>
+<h2 id="toc_7">4. Spring Boot 工程集成 SOFAArk 组件</h2>
 
-<p>The process is the main building block of a modern application. An app can have multiple stateless processes, just like in our example. HTTP requests can be handled by a web process and long-running or scheduled background tasks by a worker. They are stateless, because any data that needs to be persisted is stored in a stateful database. For this reason, adding more concurrent processes are very simple. These processes can be independently scaled based on the load or other metrics.</p>
+<p>Demo <a href="https://link.zhihu.com/?target=https%3A//github.com/QilongZhang/springboot-ark-demo">工程地址</a></p>
 
-<p>In the previous section, we saw how to break down the config into components. This comes very handy when having different process types. Each type can have its own config only requiring the components it needs, without expecting unused environment variables.</p>
+<p>运行需要 JDK 6 及以上、 Maven 3.2.5 以上。Spring Boot 版本要求 1.4.2.RELEASE 以上，目前还不兼容 2.0.0 及以上版本。</p>
 
-<p>In the <code>config/index.j</code>s file:</p>
+<p>该用例工程主要为了演示如何在 Spring Boot 工程中集成 SOFABoot 类隔离能力并使用 Ark Plugin。这里以前文提到的 Ark Plugin 为例，示例工程将会引入三个 Ark Plugin:<code>pojo-ark-plugin</code>，<code>hessian3-ark-plugin</code> 和 <code>hessian4-ark-plugin</code>，并使用后两者的导出类 <code>Hessian3Service</code> 和 <code>Hessian4Service</code>。</p>
 
-<pre><code>// config/index.js
-&#39;use strict&#39;
+<h2 id="toc_8">4.1 新建工程</h2>
 
-const processType = process.env.PROCESS_TYPE
+<p>在 Spring Boot 官网 <a href="https://link.zhihu.com/?target=https%3A//start.spring.io/">https://start.spring.io</a> 新建一个 web 工程，并设置 Spring Boot 版本号为 1.4.2.RELEASE。在 Spring Boot 工程中集成 SOFABoot 类隔离能力，只需要添加 SOFABoot 提供的类隔离框架 starter。修改 maven 项目的配置文件 <code>pom.xml</code>，将</p>
 
-let config
-try {
-  config = require(`./${processType}`)
-} catch (ex) {
-  if (ex.code === &#39;MODULE_NOT_FOUND&#39;) {
-    throw new Error(`No config for process type: ${processType}`)
-  }
+<pre><code>&lt;parent&gt;
+    &lt;groupId&gt;org.springframework.boot&lt;/groupId&gt;
+    &lt;artifactId&gt;spring-boot-starter-parent&lt;/artifactId&gt;
+    &lt;version&gt;1.4.2.RELEASE&lt;/version&gt;
+    &lt;relativePath/&gt; 
+&lt;/parent&gt;
 
-  throw ex
+</code></pre>
+
+<p>替换为：</p>
+
+<pre><code>&lt;parent&gt;
+    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
+    &lt;artifactId&gt;sofaboot-dependencies&lt;/artifactId&gt;
+    &lt;version&gt;2.3.1&lt;/version&gt;
+&lt;/parent&gt;
+
+</code></pre>
+
+<p>并添加如下 SOFAArk Starter 依赖：</p>
+
+<pre><code>&lt;!--ark spring boot starter--&gt;
+&lt;dependency&gt;
+    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
+    &lt;artifactId&gt;sofa-ark-springboot-starter&lt;/artifactId&gt;
+&lt;/dependency&gt;
+
+</code></pre>
+
+<p>如此，一个 Spring Boot 工程便集成了 SOFABoot 提供的类隔离能力。</p>
+
+<h2 id="toc_9">4.2 添加 Ark Plugin 依赖</h2>
+
+<p>前文中提到，将普通 Java 模块打包成 Ark Plugin，其 maven 坐标不会发生变化，但是需要添加 <code>classifier=ark-plugin</code> 标志，因此如下添加三个 Ark Plugin 的依赖：</p>
+
+<pre><code>&lt;!--ark plugin--&gt;
+&lt;dependency&gt;
+    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
+    &lt;artifactId&gt;pojo-ark-plugin&lt;/artifactId&gt;
+    &lt;classifier&gt;ark-plugin&lt;/classifier&gt;
+    &lt;version&gt;1.0.0&lt;/version&gt;
+&lt;/dependency&gt;
+
+&lt;dependency&gt;
+    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
+    &lt;artifactId&gt;hessian3-ark-plugin&lt;/artifactId&gt;
+    &lt;classifier&gt;ark-plugin&lt;/classifier&gt;
+    &lt;version&gt;1.0.0&lt;/version&gt;
+&lt;/dependency&gt;
+
+&lt;dependency&gt;
+    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
+    &lt;artifactId&gt;hessian4-ark-plugin&lt;/artifactId&gt;
+    &lt;classifier&gt;ark-plugin&lt;/classifier&gt;
+    &lt;version&gt;1.0.0&lt;/version&gt;
+&lt;/dependency&gt;
+
+</code></pre>
+
+<p>需要指出的是，因为 ark plugin 是一个 FatJar，为了让应用编译期通过，需要在工程主 <code>pom.xml</code> 中增加如下依赖：</p>
+
+<pre><code>&lt;!--just for compile success--&gt;
+&lt;dependency&gt;
+    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
+    &lt;artifactId&gt;pojo-ark-plugin&lt;/artifactId&gt;
+    &lt;version&gt;1.0.0&lt;/version&gt;
+    &lt;scope&gt;provided&lt;/scope&gt;
+&lt;/dependency&gt;
+
+&lt;dependency&gt;
+    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
+    &lt;artifactId&gt;hessian3-ark-plugin&lt;/artifactId&gt;
+    &lt;version&gt;1.0.0&lt;/version&gt;
+    &lt;scope&gt;provided&lt;/scope&gt;
+&lt;/dependency&gt;
+
+&lt;dependency&gt;
+    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
+    &lt;artifactId&gt;hessian4-ark-plugin&lt;/artifactId&gt;
+    &lt;version&gt;1.0.0&lt;/version&gt;
+    &lt;scope&gt;provided&lt;/scope&gt;
+&lt;/dependency&gt;
+
+</code></pre>
+
+<p>4.3 编写 Rest 接口</p>
+
+<p>为了演示更加直观，编写如下 Rest 接口：</p>
+
+<pre><code>package com.alipay.sofa.springbootarkdemo.controller;
+
+import com.alipay.sofa.demo.hessian3.Hessian3Service;
+import com.alipay.sofa.demo.hessian4.Hessian4Service;
+import com.alipay.sofa.demo.pojo.SamplePoJo;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+import java.io.IOException;
+
+/**
+ * @author qilong.zql
+ */
+@RestController
+public class HelloController {
+
+    @RequestMapping(&quot;/hello-hessian3&quot;)
+    public String hessian3() throws IOException {
+        SamplePoJo samplePoJo = new SamplePoJo(&quot;Hello, hessian3.&quot;);
+        Hessian3Service hessian3Service = new Hessian3Service();
+        byte[] bytes = hessian3Service.serialize(samplePoJo);
+        Object pojo = hessian3Service.deserialize(bytes);
+        return pojo.toString();
+    }
+
+    @RequestMapping(&quot;/hello-hessian4&quot;)
+    public String hessian4() throws IOException {
+        SamplePoJo samplePoJo = new SamplePoJo(&quot;Hello, hessian4.&quot;);
+        Hessian4Service hessian4Service = new Hessian4Service();
+        byte[] bytes = hessian4Service.serialize(samplePoJo);
+        Object pojo = hessian4Service.deserialize(bytes);
+        return pojo.toString();
+    }
+
 }
 
-module.exports = config
 </code></pre>
 
-<p>In the root <code>index.js</code> file, we start the process selected with the <code>PROCESS_TYPE</code> environment variable:</p>
+<p>该 Rest 接口主要为了本地启动应用后，能够直观演示 Ark Plugin 使用结果。启动该 Web Spring 工程，可以看到控制台打印结果：</p>
 
-<pre><code>// index.js
-&#39;use strict&#39;
+<pre><code>...
+2018-05-14 10:04:06.573  INFO 85393 --- [           main] s.b.c.e.t.TomcatEmbeddedServletContainer : Tomcat started on port(s): 8080 (http)
+2018-05-14 10:04:06.577  INFO 85393 --- [           main] c.a.s.s.SpringbootArkDemoApplication     : Started SpringbootArkDemoApplication in 2.111 seconds (JVM running for 3.562)
+2018-05-14 10:04:06,578 INFO  main                             - Finish to start biz: Startup In IDE
+2018-05-14 10:04:06,578 INFO  main                             - Finish to process pipeline stage: com.alipay.sofa.ark.container.pipeline.DeployBizStage
+Ark container started in 2720 ms.
 
-const processType = process.env.PROCESS_TYPE
-
-if (processType === &#39;web&#39;) {
-  require(&#39;./web&#39;)
-} else if (processType === &#39;twitter-stream-worker&#39;) {
-  require(&#39;./worker/twitter-stream&#39;)
-} else if (processType === &#39;social-preprocessor-worker&#39;) {
-  require(&#39;./worker/social-preprocessor&#39;)
-} else {
-  throw new Error(`${processType} is an unsupported process type. Use one of: &#39;web&#39;, &#39;twitter-stream-worker&#39;, &#39;social-preprocessor-worker&#39;!`)
-}
 </code></pre>
 
-<p>The nice thing about this is that we still got one application, but we have managed to split it into multiple, independent processes. Each of them can be started and scaled individually, without influencing the other parts. You can achieve this without sacrificing your DRY codebase, because parts of the code, like the models, can be shared between the different processes.</p>
+<p>可以看到类似 <code>Ark container started in XXXXms</code> 字样，即表示该工程运行在 SOFABoot 类隔离框架之上。访问如下两个请求即可看到工程调用 <code>Hessian3Service</code> 和 <code>Hessian4Service</code> 的调用结果</p>
 
-<h3 id="toc_5">How to organize your test files</h3>
+<ul>
+<li>  <code>http://localhost:8080/hello-hessian3</code></li>
+<li>  <code>http://localhost:8080/hello-hessian4</code></li>
+</ul>
 
-<p>Place your test files next to the tested modules using some kind of naming convention, like <code>&lt;module_name&gt;.spec.js</code> and <code>&lt;/module_name&gt;&lt;module_name&gt;.e2e.spec.js</code>. Your tests should live together with the tested modules, keeping them in sync. It would be really hard to find and maintain the tests and the corresponding functionality when the test files are completely separated from the business logic.</p>
+<p>以上就是 Spring Boot 集成 SOFABoot 类隔离框架的一般步骤。可以看到，作为开发者，基本上无需过多关心自身应用是否使用类隔离框架，只需要引入 SOFABoot 提供的类隔离框架 Starter，即可快速完成类隔离能力的集成。</p>
 
-<p><a href="https://twitter.com/share?text=Place+your+test+files+next+to+the+tested+modules+using+some+kind+of+naming+convention.&amp;url=https://blog.codeship.com/advanced-node-js-project-structure-tutorial/">Place your test files next to the tested modules using some kind of naming convention.</a></p>
+<h2 id="toc_10">5. 总结</h2>
 
-<p><a href="https://twitter.com/share?text=Place+your+test+files+next+to+the+tested+modules+using+some+kind+of+naming+convention.&amp;url=https://blog.codeship.com/advanced-node-js-project-structure-tutorial/">Click To Tweet</a></p>
+<p>本文主要介绍了 SOFABoot 基于 Spring Boot 开发的类隔离框架组件 SOFAArk。通过两个简单的用例工程，分别介绍了如何开发一个自己的 Ark Plugin 以及在 Spring Boot 快速集成 SOFABoot 的类隔离能力。SOFABoot 官方提供了 SOFARPC 打包的 Ark Plugin，开发者可以按需隔离 SOFARPC 和自身应用。另外，在 SOFAArk 类隔离容器之上，SOFABoot 提供了一整套兼容 JUnit 和 TestNG 测试框架的方案，感兴趣的读者可以下载文末给出的 Demo 工程，并按照官方文档学习。</p>
 
-<p>A separated <code>/test</code> folder can hold all the additional test setup and utilities not used by the application itself.</p>
+<h2 id="toc_11">6. 相关资源</h2>
 
-<h3 id="toc_6">Where to put your build and script files</h3>
-
-<p>We tend to create a <code>/scripts</code> folder where we put our bash and node scripts for database synchronization, front-end builds and so on. This folder separates them from your application code and prevents you from putting too many script files into the root directory. List them in your <a href="https://docs.npmjs.com/misc/scripts">npm scripts</a> for easier usage.</p>
-
-<h3 id="toc_7">Conclusion</h3>
-
-<p>I hope you enjoyed this article on project structuring. I highly recommend to check out our previous article on the subject, where we laid out the <a href="https://blog.risingstack.com/node-hero-node-js-project-structure-tutorial/">5 fundamentals of Node.js project structuring</a>.</p>
-
-<p>If you have any questions, please let me know in the comments. In the next chapter of the Node.js at Scale series, we’re going to dive deep into <a href="https://blog.risingstack.com/javascript-clean-coding-best-practices-node-js-at-scale/">JavaScript clean coding</a>.</p>
-
-<p><a href="https://twitter.com/share?text=%22Advanced+Node.js+Project+Structure+Tutorial%22+via+%40tthndrs&amp;url=https://blog.codeship.com/advanced-node-js-project-structure-tutorial/">“Advanced Node.js Project Structure Tutorial” via @tthndrs</a></p>
-
-<p><a href="https://twitter.com/share?text=%22Advanced+Node.js+Project+Structure+Tutorial%22+via+%40tthndrs&amp;url=https://blog.codeship.com/advanced-node-js-project-structure-tutorial/">Click To Tweet</a></summery></p>
+<ul>
+<li>  <a href="https://link.zhihu.com/?target=https%3A//github.com/QilongZhang/ark-plugin-demo">ark-plugin-demo</a></li>
+<li>  <a href="https://link.zhihu.com/?target=https%3A//github.com/QilongZhang/springboot-ark-demo">springboot-ark-demo</a></li>
+<li>  <a href="https://link.zhihu.com/?target=https%3A//github.com/alipay/sofa-boot">SOFABoot 源码</a></li>
+<li>  <a href="https://link.zhihu.com/?target=https%3A//github.com/alipay/sofa-rpc">SOFARPC 源码</a></li>
+<li>  <a href="https://link.zhihu.com/?target=https%3A//github.com/alipay/sofa-rpc-boot-projects">SOFARPC Ark Plugin</a></li>
+<li>  <a href="https://link.zhihu.com/?target=https%3A//github.com/alipay/sofa-ark">SOFAArk 源码</a></li>
+<li>  <a href="https://link.zhihu.com/?target=https%3A//alipay.github.io/sofastack.github.io/docs/ark-plugin.html">Ark Plugin 文档</a></li>
+</ul>
 
                         
                       </div>
@@ -426,10 +464,10 @@ if (processType === &#39;web&#39;) {
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/4/22</span>
+                    <span class="date">2018/6/5</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Node.js.html'>Node.js</a></span>
+          					    <span class="posted-in"><a href='Microservice.html'>Microservice</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -519,31 +557,31 @@ if (processType === &#39;web&#39;) {
 	      
 		      
 			      <li class="post">
-			        <a href="15459058392039.html">Reliable Domain Events</a>
+			        <a href="15517999043443.html">The Art of Crafting Architectural Diagrams</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
+			        <a href="15517997955971.html">为什么说我们需要软件架构图？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
+			        <a href="15516128677869.html">DNS Servers That Offer Privacy and Filtering</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
+			        <a href="15516123108194.html">Airbnb's Migration from Monolith to Services</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
+			        <a href="15516097487470.html">Events As First-Class Citizens</a>
 			      </li>
 		     
 		  

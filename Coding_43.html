@@ -105,131 +105,361 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15288672533707.html">
+                <a class="clearlink" href="15322166489736.html">
                 
-                  <h1>WebAssembly：系统编程语言的逆袭</h1>
+                  <h1>React JS: what is a PureComponent?</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p>2018年6月12日 李好<br/>
-<a href="https://insights.thoughtworks.cn/webassembly-system-programming-language/">https://insights.thoughtworks.cn/webassembly-system-programming-language/</a></p>
+<p><a href="http://lucybain.com/blog/2018/react-js-pure-component/">http://lucybain.com/blog/2018/react-js-pure-component/</a></p>
+
+<p>Published on: January 14, 2018</p>
+
+<p>Tags: <a href="/blog/tags/react/">react</a>, <a href="/blog/tags/js/">js</a>, and <a href="/blog/tags/performance/">performance</a></p>
 </blockquote>
 
-<h3 id="toc_0">引子</h3>
+<p>Early on, React developers had the idea of “pure” components. This concept went by a variety of names (stateful/pure, smart/dumb, container/presentational, etc.) but were all fairly similar. These components still used the <code>React.Component</code> class, but the idea provided a useful mental model for developers to work with.</p>
+
+<p>But then on June 29, 2016 React 15.3 was released a new <code>PureComponent</code> class. The <code>PureComponent</code> kind of summed up the previous concept of “pure” components, and put a large speed boost in as well. This article is about the <code>PureComponent</code> class, and only touches on the “pure” component mental model. I’ve added some links in the references section to cover why the idea of “pure” components is useful. Because of <code>PureComponent</code>’s emphasis on performance, this is also a continuation from my previous article about <a href="/blog/2017/react-js-when-to-rerender/">when React re-renders</a> (I recommend reading that one first if you haven’t already).</p>
+
+<h3 id="toc_0">What problem does it solve?</h3>
+
+<p>By default, a plain <code>React.Component</code> has <code>shouldComponentUpdate</code> set to always return <code>true</code>. This is good because it means React errs on the side of always updating the component in case there’s any new data to show. However, it’s bad because it means React might trigger unnecessary re-renders. One way to deal with these extra re-renders is to change the <code>shouldComponentUpdate</code> function to check when your component needs to update (see my <a href="/blog/2017/react-js-when-to-rerender/">previous post</a> for more information).</p>
+
+<p>Another way to stop extra re-renders is to use a <code>PureComponent</code>. Let’s build out the example from the previous performance post...</p>
+
+<h3 id="toc_1">Example setup</h3>
+
+<p><strong>Note:</strong> I’ve written intentionally bad code in the <code>componentDidMount</code> methods throughout. This is to keep the examples small and to show some gotchas along the way. Please do not write this kind of code for reals!</p>
+
+<pre><code class="language-js">class Todos extends React.PureComponent {
+
+    constructor(props) {
+        super(props);
+        this.state = { 
+            todos: [
+                { title: &#39;take out the trash&#39;, done: false, notes: [&#39;boring&#39;] },
+                { title: &#39;walk dog&#39;, done: true, notes: [&#39;exercise&#39;] },
+                { title: &#39;read about React&#39;, done: false, notes: [&#39;fun!&#39;] },
+            ]
+        };
+    }
+
+    componentDidMount() {
+        setInterval(() =&gt; {
+            this.setState((oldState) =&gt; {
+                return { todos: [...oldState.todos] }
+            });
+        }, 1000);
+    }
+
+    render() {
+        console.log(&#39;Todos render called&#39;);
+        return (&lt;div&gt;
+            {this.state.todos.map((todo, i) =&gt; {
+              return (&lt;TodoItem
+                key={i}
+                title={todo.title}
+                done={todo.done}
+                notes={todo.notes}
+              /&gt;);
+            })}
+          &lt;/div&gt;);
+    }
+}
+
+class TodoItem extends React.Component {
+
+    render() {
+        console.log(&#39;TodoItem render called&#39;);
+        return (&lt;div&gt;
+                {this.props.done ? &#39;✓&#39;: &#39;▢&#39;} {this.props.title}
+                ({this.props.notes.join(&#39;, &#39;)})
+            &lt;/div&gt;);
+    }
+}
+
+ReactDOM.render(&lt;Todos /&gt;, document.getElementById(&#39;app&#39;));
+</code></pre>
+
+<p>It’s bigger than most of the examples I write, but it’s all relevant - promise! We’ll break it down (feel free to skip down to the next section if the above is clear to you already):</p>
+
+<h4 id="toc_2"><code>Todos</code></h4>
+
+<p>First we have a React component, this is the one that <code>ReactDOM</code> will render (see the last line in the example).</p>
+
+<p>We have the constructor method so we can set the initial state - in this case an array of <code>todos</code>, each of which has <code>title</code>, <code>done</code>, and <code>notes</code> attributes. (Typically this kind of state would be passed in through <code>props</code> but I’ve written it in the <code>state</code> to keep the example smaller and self contained.)</p>
+
+<pre><code class="language-js">constructor(props) {
+    super(props);
+    this.state = { 
+        todos: [
+            { title: &#39;take out the trash&#39;, done: false, notes: [&#39;boring&#39;] },
+            { title: &#39;walk dog&#39;, done: true, notes: [&#39;exercise&#39;] },
+            { title: &#39;read about React&#39;, done: false, notes: [&#39;fun!&#39;] },
+        ]
+    };
+}
+</code></pre>
+
+<p>Then there’s the <code>componentDidMount</code> method. Its only purpose is to change the state every second so we can see how React deals with those changes. Right now it updates <code>state.todos</code> to be the same as the previous <code>state.todos</code>.</p>
+
+<pre><code class="language-js">componentDidMount() {
+    setInterval(() =&gt; {
+        this.setState((oldState) =&gt; {
+            return { todos: [...oldState.todos] }
+        });
+    }, 1000);
+}
+</code></pre>
+
+<p>Finally <code>Todos</code> has the render method. It renders a list of the <code>TodoItem</code> components, and passes in their respective <code>title</code>, <code>done</code>, and <code>notes</code> attributes. The main thing we’re interested in here is seeing when this component is rendered.</p>
+
+<pre><code class="language-js">render() {
+    console.log(&#39;Todos render called&#39;);
+    return (&lt;div&gt;
+        {this.state.todos.map((todo, i) =&gt; {
+            return (&lt;TodoItem
+            key={i}
+            title={todo.title}
+            done={todo.done}
+            notes={todo.notes}
+            /&gt;);
+        })}
+        &lt;/div&gt;);
+}
+</code></pre>
+
+<h4 id="toc_3"><code>TodoItem</code></h4>
+
+<p><u>It’s a lot simpler than <code>Todos</code></u></p>
+
+<p>Yes, that’s right <code>TodoItem</code> inherits from <code>React.Component</code> just like <code>Todos</code>, but it only implements the <code>render</code> function (which is required) to display the <code>title</code>, <code>done</code>, and <code>notes</code> values. Here again we’re mostly interested in knowing <u>when</u> the <code>render</code> method is called, not really what is displayed (yet!).</p>
+
+<pre><code class="language-js">render() {
+    console.log(&#39;TodoItem render called&#39;);
+    return (&lt;div&gt;
+            {this.props.done ? &#39;✓&#39;: &#39;▢&#39;} {this.props.title}
+            ({this.props.notes.join(&#39;, &#39;)})
+        &lt;/div&gt;);
+}
+</code></pre>
+
+<h3 id="toc_4">What’s the problem?</h3>
+
+<p>Well, if you <a href="https://codepen.io/lbain/pen/GyOXye">look at it yourself</a> you’ll see the console spits out:</p>
+
+<pre><code class="language-log">Todos render called
+TodoItem render called
+TodoItem render called
+TodoItem render called
+Todos render called
+TodoItem render called
+TodoItem render called
+TodoItem render called
+</code></pre>
+
+<p>Over and over, every second.</p>
+
+<p><u>That seems silly, the data isn’t even changing!</u></p>
+
+<p>You’re right - there’s no need to re-render any of these components because the data doesn’t change. But React doesn’t know this - the <code>setState</code> method from the <code>onComponentDidmount</code> triggers a re-render every second for the <code>Todos</code> component and its children.</p>
+
+<h3 id="toc_5">How do we re-render less?</h3>
+
+<p>Let’s focus on <code>TodoItem</code> for now. It’s rendering three times for each <code>Todos</code> render so we can optimise it first. We’ll talk about <code>Todos</code> later on.</p>
+
+<p><u>How can we fix <code>TodoItem</code> re-rendering too much?</u></p>
+
+<p>That brings us nicely to the <code>React.PureComponent</code> this post is supposed to be all about. The <code>TodoItem</code> doesn’t need to re-render since none of its data changes. The <code>props</code> coming in each time are the same, and there’s no internal <code>state</code>. Let’s try converting <code>TodoItem</code> to a <code>React.PureComponent</code>:</p>
+
+<pre><code class="language-js">class TodoItem extends React.PureComponent { // This line changed
+
+    render() {
+        console.log(&#39;TodoItem render called&#39;);
+        return (&lt;div&gt;
+                {this.props.done ? &#39;✓&#39;: &#39;▢&#39;} {this.props.title}
+                ({this.props.notes.join(&#39;, &#39;)})
+            &lt;/div&gt;);
+    }
+}
+</code></pre>
+
+<p>If you make that change in the <a href="https://codepen.io/lbain/pen/GyOXye">CodePen</a> you’ll see the following in the console:</p>
+
+<pre><code class="language-log">Todos render called
+TodoItem render called
+TodoItem render called
+TodoItem render called
+Todos render called
+Todos render called
+Todos render called
+Todos render called
+...
+</code></pre>
+
+<p>After the initial <code>TodoItem</code>s render, they never render again <u>even though their parent renders multiple times.</u></p>
+
+<p><strong>Boom.</strong></p>
+
+<p>Did you catch that? We just saved ourselves a <u>bunch</u> of unnecessary <code>TodoItem</code> renders simply by converting it to a <code>PureComponent</code>. Aw yeah.</p>
+
+<h3 id="toc_6">How does <code>PureComponent</code> work?</h3>
+
+<p><u>Ok, you’ve had your big reveal. How does it actually work?</u></p>
+
+<p>You know how we’d normally need to write our own <code>shouldComponentUpdate</code> to check if the component should re-render or not? Well, React has written that check for us in <code>PureComponent</code>. The <a href="https://github.com/facebook/react/blob/9d310e0bc7b9d5ce39d82536dfcb67f98462a346/packages/react-test-renderer/src/ReactShallowRenderer.js#L170-L173">relevant shouldComponentUpdate code</a> is:</p>
+
+<pre><code class="language-js">if (type.prototype &amp;&amp; type.prototype.isPureReactComponent) {
+    shouldUpdate = !shallowEqual(oldProps, props) ||
+                   !shallowEqual(oldState, state);
+}
+</code></pre>
+
+<p><strong>Note:</strong> React checks both <code>props</code> and <code>state</code>. Throughout this article I focus on <code>state</code> because it makes the examples easier and self contained, however it’s important to note that everything we talk about here equally applies to <code>props</code>.</p>
+
+<p><a href="https://github.com/facebook/fbjs/blob/c69904a511b900266935168223063dd8772dfc40/packages/fbjs/src/core/shallowEqual.js">Here</a> is the code for that <code>shallowEqual</code> function. Of particular interest is the <a href="https://github.com/facebook/fbjs/blob/c69904a511b900266935168223063dd8772dfc40/packages/fbjs/src/core/shallowEqual.js#L35-L37">method documentation</a>:</p>
 
 <blockquote>
-<p>Any application that can be written in JavaScript, will eventually be written in JavaScript. ——<a href="https://en.wikipedia.org/wiki/Jeff_Atwood">Atwood</a>‘s Law</p>
+<p>Performs equality by iterating through keys on an object and returning false when any key has values which are not strictly equal between the arguments. Returns true when the values of all keys are strictly equal.</p>
 </blockquote>
 
-<p>有人用 JavaScript 做<a href="https://pegjs.org/">语法词法解析</a>，有人写了 <a href="https://github.com/copy/v86">x86 模拟器</a>, 还有人用 JavaScript 写了可自举的 <a href="https://github.com/copy/v86">JavaScript 引擎</a>。JavaScript 早已经在” 重新发明一切” 的路上一骑绝尘了，JavaScript 的流行也使它始终位于各大语言排行榜上的前列，这无疑是属于 JavaScript 程序 yuan 们最好的时代。</p>
+<p><u>But wait, what does “strictly equal” mean?</u></p>
 
-<p>这并非是因为 JavaScript 是门优秀的语言 (恰恰相反)，而是因为当今的世界是 Web 的世界，Web 的载体浏览器只会说 JavaScript。这难免使人眼红，王侯将相，世人无数次想要取代 JavaScript 的地位，目前为止的历史我们都看到了，无一不铩羽而归。求上不得，得其中，最新成果是大家 (伙儿) 齐心协力把 JavaScript 变成了新一代的汇编语言。请移步<a href="https://github.com/copy/v86">这里</a>看大家的最新成果。</p>
+<p>That is a <strong>very</strong> good question, so we’ll dedicate a whole section to it.</p>
 
-<h3 id="toc_1">WebAssembly</h3>
+<h3 id="toc_7">Side note: shallow equality</h3>
 
-<p>去年 11 月 13 日，Mozilla 在其官方博客上发表了一篇文章，<a href="https://blog.mozilla.org/blog/2017/11/13/webassembly-in-browsers">WebAssembly support now shipping in all major browsers</a>，指出当今世界四大主流浏览器 Firefox，Chrome，Safari，Edge(排名分先后)，都已经支持了名为 WebAssembly 的新技术，并回顾了一路走来的艰难历程。最后指出这是新时代的开端，大家一起欢呼吧。那么，WebAssembly 到底是啥？让我们发出发聋振聩的三连问：</p>
+<p>Feel free to skip if this isn’t new for you.</p>
 
-<h4 id="toc_2">可以吃吗？</h4>
+<p>A <u>shallow</u> equality check means that JS only checks that the value’s object <u>ids</u> (as in, the memory address for where JS stores the information for that particular object) are the same, not that their <u>content</u> is the same. So here’s an example where shallow equality is what you and I would usually think of as “equal”:</p>
 
-<p>请移步 <a href="https://webassembly.org/">WebAssembly 官网</a>。官网解释如下：</p>
+<pre><code class="language-js">const value = &#39;cat&#39;;
 
-<blockquote>
-<p>WebAssembly or wasm is a new portable, size- and load-time-efficient format suitable for compilation to the web.</p>
-</blockquote>
+const item1 = value;
+const item2 = value;
 
-<p><strong>关键词：</strong></p>
+console.log(item1 === item2); // true
+</code></pre>
 
-<ol>
-<li> <strong>可移植：</strong> WebAssembly 是一种可移植的二进制格式，它不依赖于具体的浏览器平台。</li>
-<li> <strong>高效：</strong>WebAssembly 被设计为针对 Size 和 Load Time 进行优化的格式，可以在各个硬件平台上以 native speed 运行。</li>
-<li> <strong>安全：</strong>WebAssembly 是运行在沙盒内的，甚至可以和当前的 JavaScript 虚拟机共享一套环境，并且也遵守浏览器各种跨域不跨域的规章制度。</li>
-<li> <strong>开放：</strong>WebAssembly 是开放标准，不受某一家厂商控制 (Oracle 你听到了吗)。并且被设计为可以和 JavaScript API 和 Context 交互。</li>
-</ol>
+<p>And here’s an example where JS’s definition of “equal” and our definition might differ:</p>
 
-<p>简而言之，WebAssembly 可以被看做是通过浏览器运行的某种高效的开放的二进制格式，并且可以和 JavaScript 环境互通。</p>
+<pre><code class="language-js">const value = &#39;cat&#39;;
 
-<p><a href="https://insights.thoughtworks.cn/wp-content/uploads/2018/06/2-2.png"><img src="https://insights.thoughtworks.cn/wp-content/uploads/2018/06/2-2.png" alt=""/></a></p>
+const array1 = [value];
+const array2 = [value];
 
-<p>WebAssembly 的目的是取代 JavaScript 吗？<a href="https://webassembly.org/docs/faq/">FAQ</a> 这样回答：不，WebAssembly 是被设计来补充而不是替代 JavaScript。随着时间推移，越来越多的语言可以被编译为 WebAssembly，但是 JavaScript 还是作为 Web 唯一的动态语言而存在。</p>
+console.log(array1 === array2); // false
+</code></pre>
 
-<p>这样看来老二的位置摆得很正嘛。对于 WebAssembly， 笔者最看重的一点是作为开放标准的同时有粗大腿的支持 (M$ Google Apple Mozilla)，这才是它有可能活下来的原因。问题是可以吃吗，答案当然是可以吃（佛系码农也可以不吃）。</p>
+<p>Even though we can clearly see the <u>content</u> of <code>array2</code> is the same as <code>array1</code> JS registers them as different since their <u>ids</u> are different. In this case we created two completely separate arrays, that just happened to have the same data in them.</p>
 
-<h4 id="toc_3">怎么吃？</h4>
+<p><u>What’s the alternative?</u></p>
 
-<p>WebAssembly 同时存在一个二进制格式和一个文本的描述格式，这很像是机器语言和汇编语言的关系。这里我们用一个例子解释一下。</p>
+<p>We can check inside each item and see if all the values are the same - this is called a “deep” equality check. Something like this:</p>
 
-<p><a href="https://insights.thoughtworks.cn/wp-content/uploads/2018/06/%E5%B1%8F%E5%B9%95%E5%BF%AB%E7%85%A7-2018-06-11-18.59.49.png"><img src="https://insights.thoughtworks.cn/wp-content/uploads/2018/06/%E5%B1%8F%E5%B9%95%E5%BF%AB%E7%85%A7-2018-06-11-18.59.49.png" alt=""/></a></p>
+<pre><code class="language-js">const value = &#39;cat&#39;;
 
-<p>事实上，WebAssembly 可以被看作是运行在一个 structured stack virtual machine 里，懂行的朋友一眼就可以看出这和 Java bytecode 非常的像。所以大家不要以为 WebAssembly 是在重新发明 Flash 了，这货明明是在重新发明 Java Applet 啊，好吧 Silverlight 也有点像…。顺带一提，Android 的 Dalvik 为了效率，使用的是 register-based virtual machine。对 WebAssembly spec 感兴趣的朋友可以移步<a href="https://github.com/WebAssembly/spec">这里</a>。</p>
+const array1 = [value];
+const array2 = [value];
 
-<p>作为 WebAssembly 的 MVP，C/C++ 及其类库的支持是首当其冲的。因为基于 LLVM 的平台，所以理论 LLVM 支持的语言都可以编译为 WebAssembly，C/C++，rust，甚至 .net 和 Java 也可以编译到 WebAssembly，只不过托管语言都需要附带一个巨大的 runtime。</p>
+let equal = true;
+array1.forEach((item, index) =&gt; {
+    equal = equal &amp;&amp; array1[index] === array2[index];
+});
 
-<p>下面我们以 C/C++ 为例，我们写一个函数给 JavaScript 使用。</p>
+console.log(equal); // true
+</code></pre>
 
-<p><strong>步骤：</strong></p>
+<p><u>Why would shallow equality ever be useful?</u></p>
+
+<p>Well, it’s <u>really</u> fast. In the previous example we have to loop through every single item in the array to find that the arrays are equal. Assuming you’ve got more than one thing in your array that gets slow quickly.</p>
+
+<h3 id="toc_8">Warning: PureComponent does a shallow equality check</h3>
+
+<p>React uses a shallow equality check because it is is <u>way</u> more performant than doing a deep equal. In fact, React doesn’t even offer doing a deep equality check. You can do a shallow check (with <code>PureComponent</code>), write your own check (with <code>shouldComponentUpdate</code>), or not check at all and just always re-render (the default). It’s too risky for React to do a deep equality check since you might have really deeply nested data. Instead React errs on the side of not checking and doing the re-render automatically.</p>
+
+<p>All if this is generally good news if your component is working with shallow-equality-friendly data. If the <code>state</code> and <code>prop</code> value ids change when their content changes then the components re-render when the should - yay! However, if you don’t handle your data properly, then you can accidentally not re-render when you should - boo!</p>
+
+<p><u>Could you give an example?</u></p>
+
+<p>As it happens, we already have one ready to go! Let’s leave <code>TodoItem</code> as a <code>PureComponent</code>, and change <code>Todo</code>&#39;s <code>componentDidMount</code> to mess with some data:</p>
+
+<pre><code class="language-js">componentDidMount() {
+    setInterval(() =&gt; {
+        this.setState((oldState) =&gt; {
+            oldState.todos[0].done = !oldState.todos[0].done; // new line
+            return { todos: [...oldState.todos] }
+        });
+    }, 1000);
+}
+</code></pre>
+
+<p>If you run this you’ll see the “done” state for the first todo item flash on and off every second. This is good news - we’re updating the data and it’s displaying properly.</p>
+
+<p>But... let’s try this one:</p>
+
+<pre><code class="language-js">componentDidMount() {
+    setInterval(() =&gt; {
+        this.setState((oldState) =&gt; {
+            oldState.todos[0].notes.push(&#39;smelly&#39;); // new line
+            return { todos: [...oldState.todos] }
+        });
+    }, 1000);
+}
+</code></pre>
+
+<p>The first todo item <u>should</u> re-render every second with a new “smelly” note displaying. But it doesn’t, there’s just the initial render (without the “smelly” note), and that’s it.</p>
+
+<p><u>Why doesn’t React re-render?</u></p>
+
+<p>Because doing a <code>push</code> on an array <a href="http://gunnariauvinen.com/difference-between-concat-and-push-in-javascript/">does <u>not</u> create a <u>new</u> array.</a> When React does the shallow equality check for the <code>PureComponent</code> it only checks <code>oldState.notes === newState.notes</code>, which is <code>true</code> <u>even though</u> the data in <code>notes</code> has changed. In order to render this properly we need to change <code>TodoItem</code> back to a <code>React.Component</code>, <strong>or</strong> we can use <code>forceUpdate</code> to tell React that the data actually has changed. However using <code>forceUpdate</code> is kind of a code smell, so I won’t cover it here.</p>
+
+<h3 id="toc_9">Warning: think of the children!</h3>
+
+<p>A common pitfall when converting from <code>Component</code> to <code>PureComponent</code> is to forget that the children need to re-render too. As with all React - if the parent doesn’t re-render the children won’t either. So if you have a <code>PureComponent</code> with children, those children can only update if the parent’s <code>state</code> or <code>props</code> are shallowly different (causing the parent to re-render).</p>
+
+<p>You can only have a <code>PureComponent</code> parent if you know none of the children should re-render if the parent doesn’t re-render. Let’s see an example of this pitfall by converting the <code>Todos</code> component from a <code>Component</code> to a <code>PureComponent</code> :</p>
+
+<pre><code class="language-js">class Todos extends React.PureComponent { // new line
+    // ...
+
+    componentDidMount() {
+        setInterval(() =&gt; {
+            this.setState((oldState) =&gt; {
+                oldState.todos[0].done = !oldState.todos[0].done; // new line
+                return oldState; // new line
+            });
+        }, 1000);
+    }
+
+    // ...
+}
+</code></pre>
+
+<p>As you can see, most of the code is the same. We’ve changed <code>Todos</code> to be a <code>PureComponent</code> and the <code>componentDidMount</code> to return the original <code>oldState</code> object rather than creating a new object (as before).</p>
+
+<p>Now we <u>should</u> see the first todo item flashing its <code>done</code> state on and off. But it doesn’t, again there is only the initial render and that’s it. This happens because <code>Todos</code> is now a <code>PureComponent</code>, when the shallow equal check happens with <code>oldState === newState</code> we find exactly the same object (again, even though the content of that object has changed). So <code>Todos</code> never re-renders, so its <u>children</u> also never re-render. We can fix this really easily by simply changing <code>Todos</code> back to a <code>Component</code>.</p>
+
+<hr/>
+
+<h3 id="toc_10">Wrapping up</h3>
+
+<p><code>PureComponent</code> is very powerful in that it can help you limit the number of unnecessary re-renders that occur. However, it can also cause surprising gotchas. The key thing to keep in mind is that <code>PureComponent</code> only does a shallow equality check on <code>props</code> and <code>state</code> before deciding if it should re-render or not. And that has a cascade effect on if its children re-render or not. So use <code>PureComponent</code> and love the performance gains, but be sure to check that it is always re-rendering when it should. When in doubt fall back to a <code>Component</code> instead.</p>
+
+<h3 id="toc_11">Resources</h3>
+
+<p>I read a <u>lot</u> of posts and questions about <code>PureComponent</code>, <code>Component</code>, and <code>shouldComponentUpdate</code> for this, so the below is not a complete list of resources. Hopefully they’re the most useful though!</p>
 
 <ul>
-<li>  安装 WebAssembly 构建工具链 emscripten，针对 macOS，请参考这里</li>
-<li>  安装后，执行 <code>emcc --version</code> 判断是否成功</li>
-<li>  创建 C++ source：<code>cat random.cc</code></li>
+<li>  <a href="https://reactjs.org/docs/react-api.html#reactpurecomponent">React docs</a></li>
+<li>  <a href="https://stackoverflow.com/questions/41340697/react-component-vs-react-purecomponent">StackOverflow</a></li>
+<li>  <a href="https://blog.shakacode.com/react-purecomponent-pitfalls-d057882f4b6e">Rob Wise</a> lists more pitfalls of using <code>PureComponent</code> - a good one to check if your <code>PureComponents</code> are rendering <u>more</u> than you’d expect (whereas I focused on not triggering re-renders enough)</li>
+<li>  <a href="https://medium.com/modus-create-front-end-development/component-rendering-performance-in-react-df859b474adc">Grgur Grisogono</a> did some performance testing on <code>PureComponent</code></li>
+<li>  <a href="https://medium.com/@dan_abramov/smart-and-dumb-components-7ca2f9a7c7d0">Dan Abramov</a> and <a href="https://jaketrent.com/post/smart-dumb-components-react/">Jake Trent</a> discuss what “pure” components are</li>
 </ul>
-
-<pre><code>#include &lt;random&gt;
-#include &lt;cmath&gt;
-
-extern &quot;C&quot; {
-
-long normal_rand() {
-    static std::random_device rd{};
-    static std::mt19937 gen{rd()};
-
-    return std::lround(std::normal_distribution&lt;&gt;(0, 100)(gen));
-}
-
-}
-
-</code></pre>
-
-<p>这里用 C++ 产生一个正态分布，期望为<code>0</code>，方差<code>100</code>的随机数，然后导出为一个 C 函数 <code>normal_rand</code></p>
-
-<p>执行 <code>emcc --bind -std=c++14 --emrun -s WASM=1 -s EXPORTED_FUNCTIONS=&#39;[&quot;_normal_rand&quot;]&#39; -O3 -o random.html random.cc</code> 顺利的话会在当前目录生成如下文件</p>
-
-<pre><code>$ ls -l
-total 496
--rw-r--r--  1 haoli  staff     810 Dec 24 21:44 random.cc
--rw-r--r--  1 haoli  staff  102728 Dec 24 22:17 random.html
--rw-r--r--  1 haoli  staff  120624 Dec 24 22:17 random.js
--rw-r--r--  1 haoli  staff   20130 Dec 24 22:17 random.wasm
-
-</code></pre>
-
-<p><code>random.wasm</code> 就是我们的 WebAssembly，<code>random.js</code> 和 <code>random.html</code> 是模板代码，帮助我们加载 WebAssembly。</p>
-
-<p>执行 <code>emrun --no_browser --port 8821 random.html</code> 启动一个 WebServer</p>
-
-<p>用支持 WebAssembly 的浏览器访问 <a href="http://localhost:8821/random.html">http://localhost:8821/random.html</a>，然后在 console 里面执行 <code>Module._normal_rand()</code> 即可看到结果</p>
-
-<h4 id="toc_4">怎么做好吃？</h4>
-
-<p>古往今来，在浏览器里面尝试改善 JavaScript 性能和增强功能的尝试大约都失败了吧，前有 ActiveX，Java Applet，Flash，后有 Silverlight，Flex，NaCl。WebAssembly 应该是各个浏览器大佬的最新尝试。不过这次大家都学乖了，没人指 (xi) 望一个私有标准会成功，于是联合起来开发一个开放的标准。</p>
-
-<p>至少目前看来，结果还是很让人欣喜的。因为开放标准的缘故，除了上面的 emscripten，还有大量的工具开始支持 WebAssembly，甚至 clang 可以直接指定 target 为 WebAssembly。加上浏览器把诸如 DOM API 以及 WebGL API 都暴露给了 WebAssembly，应用场景相当可观。首当其冲的就是游戏厂商，<a href="https://blog.mozilla.org/blog/2014/03/12/mozilla-and-epic-preview-unreal-engine-4-running-in-firefox/">Epic</a> 和 <a href="https://blogs.unity3d.com/2017/03/31/5-6-is-now-available-and-completes-the-unity-5-cycle/">Unity</a> 都是 WebAssembly 的早期尝试者，他们已经把自己的游戏引擎移植到 Web 平台而不用重写代码。不仅如此， WebAssembly 还支持 non-web 的场景，比如 NodeJs 也开始支持 WebAssembly。WebAssembly 官网有个 <a href="https://webassembly.org/docs/use-cases/">use case</a> 清单，列举了可能的应用场景。图形图像的处理，计算机辅助设计，AR/VR，VPN，加解密等等。到那时，前端可以玩出的花样，想象空间实在太大。</p>
-
-<p>有点过于美好了哈，我们还是就此打住，拭目以待吧。</p>
-
-<h3 id="toc_5">Reference</h3>
-
-<p>这里列举一些 WebAssembly 相关的资源，各位随喜：</p>
-
-<ol>
-<li> <a href="https://www.funkykarts.rocks/demo.html">Funky Karts</a>, 移植到 WebAssembly 的网页游戏，作者在网站记录了学习 WebAssembly 到移植成功的全过程。</li>
-<li> <a href="https://www.funkykarts.rocks/demo.html">WasmExplorer</a>，在线的 C/C++ to WebAssembly 编辑器，同时也可以查看 Assembly 内容。</li>
-<li> <a href="https://wasdk.github.io/WasmFiddle/">WasmFiddle</a>，另一个在线编辑 WebAssembly 的工具</li>
-<li> <a href="https://wasdk.github.io/WasmFiddle/">WasmRocks WebAssembly 新闻站</a>。</li>
-<li> <a href="https://kripken.github.io/emscripten-site/">emscripten 官网</a>。</li>
-</ol>
 
                         
                       </div>
@@ -238,7 +468,7 @@ total 496
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/6/13</span>
+                    <span class="date">2018/7/22</span>
                     <span>posted in&nbsp;</span> 
           				  
           					    <span class="posted-in"><a href='Node.js.html'>Node.js</a></span>
@@ -331,31 +561,31 @@ total 496
 	      
 		      
 			      <li class="post">
-			        <a href="15459058392039.html">Reliable Domain Events</a>
+			        <a href="15517999043443.html">The Art of Crafting Architectural Diagrams</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
+			        <a href="15517997955971.html">为什么说我们需要软件架构图？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
+			        <a href="15516128677869.html">DNS Servers That Offer Privacy and Filtering</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
+			        <a href="15516123108194.html">Airbnb's Migration from Monolith to Services</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
+			        <a href="15516097487470.html">Events As First-Class Citizens</a>
 			      </li>
 		     
 		  

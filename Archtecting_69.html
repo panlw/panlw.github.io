@@ -105,753 +105,603 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15274391142573.html">
+                <a class="clearlink" href="15293283879436.html">
                 
-                  <h1>RPC 原理及 RPC 实例分析 - God is a Coder..</h1>
+                  <h1>精讲 Redis 内存模型</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://my.oschina.net/hosee/blog/711632">原文地址</a></p>
+<p><a href="https://my.oschina.net/u/3779583/blog/1829617?origin=wechat">https://my.oschina.net/u/3779583/blog/1829617?origin=wechat</a></p>
 </blockquote>
 
-<p>在学校期间大家都写过不少程序，比如写个 hello world 服务类，然后本地调用下，如下所示。这些程序的特点是服务消费方和服务提供方是本地调用关系。</p>
+<h2 id="toc_0">前言</h2>
 
-<pre><code>public class Test {
-     public static void main(String[] args) {
-         HelloWorldService helloWorldService = new HelloWorldServiceImpl();
-         helloWorldService.sayHello(&quot;test&quot;);
-     }
+<p>Redis 是目前最火爆的内存数据库之一，通过在内存中读写数据，大大提高了读写速度，可以说 Redis 是实现网站高并发不可或缺的一部分。</p>
+
+<p>我们使用 Redis 时，会接触 Redis 的 5 种对象类型（字符串、哈希、列表、集合、有序集合），丰富的类型是 Redis 相对于 Memcached 等的一大优势。在了解 Redis 的 5 种对象类型的用法和特点的基础上，进一步了解 Redis 的内存模型，对 Redis 的使用有很大帮助，例如：</p>
+
+<p>1、估算 Redis 内存使用量。目前为止，内存的使用成本仍然相对较高，使用内存不能无所顾忌；根据需求合理的评估 Redis 的内存使用量，选择合适的机器配置，可以在满足需求的情况下节约成本。</p>
+
+<p>2、优化内存占用。了解 Redis 内存模型可以选择更合适的数据类型和编码，更好的利用 Redis 内存。</p>
+
+<p>3、分析解决问题。当 Redis 出现阻塞、内存占用等问题时，尽快发现导致问题的原因，便于分析解决问题。</p>
+
+<p>这篇文章主要介绍 Redis 的内存模型（以 3.0 为例），包括 Redis 占用内存的情况及如何查询、不同的对象类型在内存中的编码方式、内存分配器 (jemalloc)、简单动态字符串 (SDS)、RedisObject 等；然后在此基础上介绍几个 Redis 内存模型的应用。</p>
+
+<p>在后面的文章中，会陆续介绍关于 Redis 高可用的内容，包括主从复制、哨兵、集群等等，欢迎关注。</p>
+
+<h2 id="toc_1">一、Redis 内存统计</h2>
+
+<p>工欲善其事必先利其器，在说明 Redis 内存之前首先说明如何统计 Redis 使用内存的情况。</p>
+
+<p>在客户端通过 redis-cli 连接服务器后（后面如无特殊说明，客户端一律使用 redis-cli），通过 info 命令可以查看内存使用情况：</p>
+
+<pre><code>info memory
+</code></pre>
+
+<p><img src="https://images2018.cnblogs.com/blog/1174710/201803/1174710-20180327000947752-2103814952.png" alt=""/></p>
+
+<p>其中，info 命令可以显示 redis 服务器的许多信息，包括服务器基本信息、CPU、内存、持久化、客户端连接信息等等；memory 是参数，表示只显示内存相关的信息。</p>
+
+<p>返回结果中比较重要的几个说明如下：</p>
+
+<p>（1）<strong>used_memory</strong><strong>：</strong>Redis 分配器分配的内存总量（单位是字节），包括使用的虚拟内存（即 swap）；Redis 分配器后面会介绍。used_memory_human 只是显示更友好。</p>
+
+<p>（2）<strong>used_memory_rss</strong><strong>：</strong>Redis 进程占据操作系统的内存（单位是字节），与 top 及 ps 命令看到的值是一致的；除了分配器分配的内存之外，used_memory_rss 还包括进程运行本身需要的内存、内存碎片等，但是不包括虚拟内存。</p>
+
+<p>因此，used_memory 和 used_memory_rss，前者是从 Redis 角度得到的量，后者是从操作系统角度得到的量。二者之所以有所不同，一方面是因为内存碎片和 Redis 进程运行需要占用内存，使得前者可能比后者小，另一方面虚拟内存的存在，使得前者可能比后者大。</p>
+
+<p>由于在实际应用中，Redis 的数据量会比较大，此时进程运行占用的内存与 Redis 数据量和内存碎片相比，都会小得多；因此 used_memory_rss 和 used_memory 的比例，便成了衡量 Redis 内存碎片率的参数；这个参数就是 mem_fragmentation_ratio。</p>
+
+<p>（3）<strong>mem_fragmentation_ratio</strong><strong>：</strong>内存碎片比率，该值是 used_memory_rss / used_memory 的比值。</p>
+
+<p>mem_fragmentation_ratio 一般大于 1，且该值越大，内存碎片比例越大。mem_fragmentation_ratio&lt;1，说明 Redis 使用了虚拟内存，由于虚拟内存的媒介是磁盘，比内存速度要慢很多，当这种情况出现时，应该及时排查，如果内存不足应该及时处理，如增加 Redis 节点、增加 Redis 服务器的内存、优化应用等。</p>
+
+<p>一般来说，mem_fragmentation_ratio 在 1.03 左右是比较健康的状态（对于 jemalloc 来说）；上面截图中的 mem_fragmentation_ratio 值很大，是因为还没有向 Redis 中存入数据，Redis 进程本身运行的内存使得 used_memory_rss 比 used_memory 大得多。</p>
+
+<p>（4）<strong>mem_allocator</strong><strong>：</strong>Redis 使用的内存分配器，在编译时指定；可以是 libc 、jemalloc 或者 tcmalloc，默认是 jemalloc；截图中使用的便是默认的 jemalloc。</p>
+
+<h1 id="toc_2">二、Redis 内存划分</h1>
+
+<p>Redis 作为内存数据库，在内存中存储的内容主要是数据（键值对）；通过前面的叙述可以知道，除了数据以外，Redis 的其他部分也会占用内存。</p>
+
+<p>Redis 的内存占用主要可以划分为以下几个部分：</p>
+
+<h2 id="toc_3">1、数据</h2>
+
+<p>作为数据库，数据是最主要的部分；这部分占用的内存会统计在 used_memory 中。</p>
+
+<p>Redis 使用键值对存储数据，其中的值（对象）包括 5 种类型，即字符串、哈希、列表、集合、有序集合。这 5 种类型是 Redis 对外提供的，实际上，在 Redis 内部，每种类型可能有 2 种或更多的内部编码实现；此外，Redis 在存储对象时，并不是直接将数据扔进内存，而是会对对象进行各种包装：如 redisObject、SDS 等；这篇文章后面将重点介绍 Redis 中数据存储的细节。</p>
+
+<h2 id="toc_4">2、进程本身运行需要的内存</h2>
+
+<p>Redis 主进程本身运行肯定需要占用内存，如代码、常量池等等；这部分内存大约几兆，在大多数生产环境中与 Redis 数据占用的内存相比可以忽略。这部分内存不是由 jemalloc 分配，因此不会统计在 used_memory 中。</p>
+
+<p>补充说明：除了主进程外，Redis 创建的子进程运行也会占用内存，如 Redis 执行 AOF、RDB 重写时创建的子进程。当然，这部分内存不属于 Redis 进程，也不会统计在 used_memory 和 used_memory_rss 中。</p>
+
+<h2 id="toc_5">3、缓冲内存</h2>
+
+<p>缓冲内存包括客户端缓冲区、复制积压缓冲区、AOF 缓冲区等；其中，客户端缓冲存储客户端连接的输入输出缓冲；复制积压缓冲用于部分复制功能；AOF 缓冲区用于在进行 AOF 重写时，保存最近的写入命令。在了解相应功能之前，不需要知道这些缓冲的细节；这部分内存由 jemalloc 分配，因此会统计在 used_memory 中。</p>
+
+<h2 id="toc_6">4、内存碎片</h2>
+
+<p>内存碎片是 Redis 在分配、回收物理内存过程中产生的。例如，如果对数据的更改频繁，而且数据之间的大小相差很大，可能导致 redis 释放的空间在物理内存中并没有释放，但 redis 又无法有效利用，这就形成了内存碎片。内存碎片不会统计在 used_memory 中。</p>
+
+<p>内存碎片的产生与对数据进行的操作、数据的特点等都有关；此外，与使用的内存分配器也有关系：如果内存分配器设计合理，可以尽可能的减少内存碎片的产生。后面将要说到的 jemalloc 便在控制内存碎片方面做的很好。</p>
+
+<p>如果 Redis 服务器中的内存碎片已经很大，可以通过安全重启的方式减小内存碎片：因为重启之后，Redis 重新从备份文件中读取数据，在内存中进行重排，为每个数据重新选择合适的内存单元，减小内存碎片。</p>
+
+<h1 id="toc_7">三、Redis 数据存储的细节</h1>
+
+<h2 id="toc_8">1、概述</h2>
+
+<p>关于 Redis 数据存储的细节，涉及到内存分配器（如 jemalloc）、简单动态字符串（SDS）、5 种对象类型及内部编码、redisObject。在讲述具体内容之前，先说明一下这几个概念之间的关系。</p>
+
+<p>下图是执行 set hello world 时，所涉及到的数据模型。</p>
+
+<p> <img src="https://images2018.cnblogs.com/blog/1174710/201803/1174710-20180327001055927-1896197804.png" alt=""/></p>
+
+<p>图片来源：<a href="https://searchdatabase.techtarget.com.cn/7-20218/">https://searchdatabase.techtarget.com.cn/7-20218/</a></p>
+
+<p>（1）dictEntry：Redis 是 Key-Value 数据库，因此对每个键值对都会有一个 dictEntry，里面存储了指向 Key 和 Value 的指针；next 指向下一个 dictEntry，与本 Key-Value 无关。</p>
+
+<p>（2）Key：图中右上角可见，Key（”hello”）并不是直接以字符串存储，而是存储在 SDS 结构中。</p>
+
+<p>（3）redisObject：Value(“world”) 既不是直接以字符串存储，也不是像 Key 一样直接存储在 SDS 中，而是存储在 redisObject 中。实际上，不论 Value 是 5 种类型的哪一种，都是通过 redisObject 来存储的；而 redisObject 中的 type 字段指明了 Value 对象的类型，ptr 字段则指向对象所在的地址。不过可以看出，字符串对象虽然经过了 redisObject 的包装，但仍然需要通过 SDS 存储。</p>
+
+<p>实际上，redisObject 除了 type 和 ptr 字段以外，还有其他字段图中没有给出，如用于指定对象内部编码的字段；后面会详细介绍。</p>
+
+<p>（4）jemalloc：无论是 DictEntry 对象，还是 redisObject、SDS 对象，都需要内存分配器（如 jemalloc）分配内存进行存储。以 DictEntry 对象为例，有 3 个指针组成，在 64 位机器下占 24 个字节，jemalloc 会为它分配 32 字节大小的内存单元。</p>
+
+<p>下面来分别介绍 jemalloc、redisObject、SDS、对象类型及内部编码。</p>
+
+<h2 id="toc_9">2、jemalloc</h2>
+
+<p>Redis 在编译时便会指定内存分配器；内存分配器可以是 libc 、jemalloc 或者 tcmalloc，默认是 jemalloc。</p>
+
+<p>jemalloc 作为 Redis 的默认内存分配器，在减小内存碎片方面做的相对比较好。jemalloc 在 64 位系统中，将内存空间划分为小、大、巨大三个范围；每个范围内又划分了许多小的内存块单位；当 Redis 存储数据时，会选择大小最合适的内存块进行存储。</p>
+
+<p>jemalloc 划分的内存单元如下图所示：</p>
+
+<p> <img src="https://images2018.cnblogs.com/blog/1174710/201803/1174710-20180327001126509-2023165562.png" alt=""/></p>
+
+<p>图片来源：<a href="http://blog.csdn.net/zhengpeitao/article/details/76573053">http://blog.csdn.net/zhengpeitao/article/details/76573053</a></p>
+
+<p>例如，如果需要存储大小为 130 字节的对象，jemalloc 会将其放入 160 字节的内存单元中。</p>
+
+<h2 id="toc_10">3、redisObject</h2>
+
+<p>前面说到，Redis 对象有 5 种类型；无论是哪种类型，Redis 都不会直接存储，而是通过 redisObject 对象进行存储。</p>
+
+<p>redisObject 对象非常重要，Redis 对象的类型、内部编码、内存回收、共享对象等功能，都需要 redisObject 支持，下面将通过 redisObject 的结构来说明它是如何起作用的。</p>
+
+<p>redisObject 的定义如下（不同版本的 Redis 可能稍稍有所不同）：</p>
+
+<pre><code class="language-c">typedef struct redisObject {
+　　unsigned type:4;
+　　unsigned encoding:4;
+　　unsigned lru:REDIS_LRU_BITS; /* lru time (relative to server.lruclock) */
+　　int refcount;
+　　void *ptr;
+} robj;
+</code></pre>
+
+<p>redisObject 的每个字段的含义和作用如下：</p>
+
+<h3 id="toc_11">（1）type</h3>
+
+<p>type 字段表示对象的类型，占 4 个比特；目前包括 REDIS_STRING(字符串)、REDIS_LIST (列表)、REDIS_HASH(哈希)、REDIS_SET(集合)、REDIS_ZSET(有序集合)。</p>
+
+<p>当我们执行 type 命令时，便是通过读取 RedisObject 的 type 字段获得对象的类型；如下图所示：</p>
+
+<p><img src="https://images2018.cnblogs.com/blog/1174710/201803/1174710-20180327001214189-1733420705.png" alt=""/></p>
+
+<h3 id="toc_12">（2）encoding</h3>
+
+<p>encoding 表示对象的内部编码，占 4 个比特。</p>
+
+<p>对于 Redis 支持的每种类型，都有至少两种内部编码，例如对于字符串，有 int、embstr、raw 三种编码。通过 encoding 属性，Redis 可以根据不同的使用场景来为对象设置不同的编码，大大提高了 Redis 的灵活性和效率。以列表对象为例，有压缩列表和双端链表两种编码方式；如果列表中的元素较少，Redis 倾向于使用压缩列表进行存储，因为压缩列表占用内存更少，而且比双端链表可以更快载入；当列表对象元素较多时，压缩列表就会转化为更适合存储大量元素的双端链表。</p>
+
+<p>通过 object encoding 命令，可以查看对象采用的编码方式，如下图所示：</p>
+
+<p><img src="https://images2018.cnblogs.com/blog/1174710/201803/1174710-20180327001228807-998910409.png" alt=""/></p>
+
+<p>5 种对象类型对应的编码方式以及使用条件，将在后面介绍。</p>
+
+<h3 id="toc_13">（3）lru</h3>
+
+<p>lru 记录的是对象最后一次被命令程序访问的时间，占据的比特数不同的版本有所不同（如 4.0 版本占 24 比特，2.6 版本占 22 比特）。</p>
+
+<p>通过对比 lru 时间与当前时间，可以计算某个对象的空转时间；object idletime 命令可以显示该空转时间（单位是秒）。object idletime 命令的一个特殊之处在于它不改变对象的 lru 值。</p>
+
+<p><img src="https://images2018.cnblogs.com/blog/1174710/201803/1174710-20180327001239788-1325383307.png" alt=""/></p>
+
+<p>lru 值除了通过 object idletime 命令打印之外，还与 Redis 的内存回收有关系：如果 Redis 打开了 maxmemory 选项，且内存回收算法选择的是 volatile-lru 或 allkeys—lru，那么当 Redis 内存占用超过 maxmemory 指定的值时，Redis 会优先选择空转时间最长的对象进行释放。</p>
+
+<h3 id="toc_14">（4）refcount</h3>
+
+<p><strong>refcount</strong> <strong>与共享对象</strong></p>
+
+<p>refcount 记录的是该对象被引用的次数，类型为整型。refcount 的作用，主要在于对象的引用计数和内存回收。当创建新对象时，refcount 初始化为 1；当有新程序使用该对象时，refcount 加 1；当对象不再被一个新程序使用时，refcount 减 1；当 refcount 变为 0 时，对象占用的内存会被释放。</p>
+
+<p>Redis 中被多次使用的对象 (refcount&gt;1)，称为共享对象。Redis 为了节省内存，当有一些对象重复出现时，新的程序不会创建新的对象，而是仍然使用原来的对象。这个被重复使用的对象，就是共享对象。目前共享对象仅支持整数值的字符串对象。</p>
+
+<p><strong>共享对象的具体实现</strong></p>
+
+<p>Redis 的共享对象目前只支持整数值的字符串对象。之所以如此，实际上是对内存和 CPU（时间）的平衡：共享对象虽然会降低内存消耗，但是判断两个对象是否相等却需要消耗额外的时间。对于整数值，判断操作复杂度为 O(1)；对于普通字符串，判断复杂度为 O(n)；而对于哈希、列表、集合和有序集合，判断的复杂度为 O(n<sup>2)。进群</sup> 619881427 可以免费获取文中知识点的视频资料。</p>
+
+<p>虽然共享对象只能是整数值的字符串对象，但是 5 种类型都可能使用共享对象（如哈希、列表等的元素可以使用）。</p>
+
+<p>就目前的实现来说，Redis 服务器在初始化时，会创建 10000 个字符串对象，值分别是 0~9999 的整数值；当 Redis 需要使用值为 0~9999 的字符串对象时，可以直接使用这些共享对象。10000 这个数字可以通过调整参数 REDIS_SHARED_INTEGERS（4.0 中是 OBJ_SHARED_INTEGERS）的值进行改变。</p>
+
+<p>共享对象的引用次数可以通过 object refcount 命令查看，如下图所示。命令执行的结果页佐证了只有 0~9999 之间的整数会作为共享对象。</p>
+
+<p><img src="https://images2018.cnblogs.com/blog/1174710/201803/1174710-20180327001256958-1309209644.png" alt=""/></p>
+
+<h3 id="toc_15">（5）ptr</h3>
+
+<p>ptr 指针指向具体的数据，如前面的例子中，set hello world，ptr 指向包含字符串 world 的 SDS。</p>
+
+<h3 id="toc_16">（6）总结</h3>
+
+<p>综上所述，redisObject 的结构与对象类型、编码、内存回收、共享对象都有关系；一个 redisObject 对象的大小为 16 字节：</p>
+
+<p>4bit+4bit+24bit+4Byte+8Byte=16Byte。</p>
+
+<h2 id="toc_17">4、SDS</h2>
+
+<p>Redis 没有直接使用 C 字符串 (即以空字符’\0’结尾的字符数组) 作为默认的字符串表示，而是使用了 SDS。SDS 是简单动态字符串 (Simple Dynamic String) 的缩写。</p>
+
+<h3 id="toc_18">（1）SDS 结构</h3>
+
+<p>sds 的结构如下：</p>
+
+<pre><code class="language-c">struct sdshdr {
+    int len;
+    int free;
+    char buf[];
+};
+</code></pre>
+
+<p>其中，buf 表示字节数组，用来存储字符串；len 表示 buf 已使用的长度，free 表示 buf 未使用的长度。下面是两个例子。</p>
+
+<p><img src="https://images2018.cnblogs.com/blog/1174710/201803/1174710-20180327001321434-1043595793.png" alt=""/></p>
+
+<p><img src="https://images2018.cnblogs.com/blog/1174710/201803/1174710-20180327001325561-890602831.png" alt=""/></p>
+
+<p>图片来源：《Redis 设计与实现》</p>
+
+<p>通过 SDS 的结构可以看出，buf 数组的长度 = free+len+1（其中 1 表示字符串结尾的空字符）；所以，一个 SDS 结构占据的空间为：free 所占长度 + len 所占长度 + buf 数组的长度 = 4+4+free+len+1=free+len+9。</p>
+
+<h3 id="toc_19">（2）SDS 与 C 字符串的比较</h3>
+
+<p>SDS 在 C 字符串的基础上加入了 free 和 len 字段，带来了很多好处：</p>
+
+<ul>
+<li>  获取字符串长度：SDS 是 O(1)，C 字符串是 O(n)</li>
+<li>  缓冲区溢出：使用 C 字符串的 API 时，如果字符串长度增加（如 strcat 操作）而忘记重新分配内存，很容易造成缓冲区的溢出；而 SDS 由于记录了长度，相应的 API 在可能造成缓冲区溢出时会自动重新分配内存，杜绝了缓冲区溢出。</li>
+<li>  修改字符串时内存的重分配：对于 C 字符串，如果要修改字符串，必须要重新分配内存（先释放再申请），因为如果没有重新分配，字符串长度增大时会造成内存缓冲区溢出，字符串长度减小时会造成内存泄露。而对于 SDS，由于可以记录 len 和 free，因此解除了字符串长度和空间数组长度之间的关联，可以在此基础上进行优化：空间预分配策略（即分配内存时比实际需要的多）使得字符串长度增大时重新分配内存的概率大大减小；惰性空间释放策略使得字符串长度减小时重新分配内存的概率大大减小。</li>
+<li>  存取二进制数据：SDS 可以，C 字符串不可以。因为 C 字符串以空字符作为字符串结束的标识，而对于一些二进制文件（如图片等），内容可能包括空字符串，因此 C 字符串无法正确存取；而 SDS 以字符串长度 len 来作为字符串结束标识，因此没有这个问题。</li>
+</ul>
+
+<p>此外，由于 SDS 中的 buf 仍然使用了 C 字符串（即以’\0’结尾），因此 SDS 可以使用 C 字符串库中的部分函数；但是需要注意的是，只有当 SDS 用来存储文本数据时才可以这样使用，在存储二进制数据时则不行（’\0’不一定是结尾）。</p>
+
+<h3 id="toc_20">（3）SDS 与 C 字符串的应用</h3>
+
+<p>Redis 在存储对象时，一律使用 SDS 代替 C 字符串。例如 set hello world 命令，hello 和 world 都是以 SDS 的形式存储的。而 sadd myset member1 member2 member3 命令，不论是键（”myset”），还是集合中的元素（”member1”、 ”member2” 和”member3”），都是以 SDS 的形式存储。除了存储对象，SDS 还用于存储各种缓冲区。</p>
+
+<p>只有在字符串不会改变的情况下，如打印日志时，才会使用 C 字符串。</p>
+
+<h1 id="toc_21">四、Redis 的对象类型与内部编码</h1>
+
+<p>前面已经说过，Redis 支持 5 种对象类型，而每种结构都有至少两种编码；这样做的好处在于：一方面接口与实现分离，当需要增加或改变内部编码时，用户使用不受影响，另一方面可以根据不同的应用场景切换内部编码，提高效率。</p>
+
+<p>Redis 各种对象类型支持的内部编码如下图所示 (图中版本是 Redis3.0，Redis 后面版本中又增加了内部编码，略过不提；本章所介绍的内部编码都是基于 3.0 的)：</p>
+
+<p><img src="https://images2018.cnblogs.com/blog/1174710/201803/1174710-20180327001358239-1304238510.png" alt=""/></p>
+
+<p>图片来源：《Redis 设计与实现》</p>
+
+<p>关于 Redis 内部编码的转换，都符合以下规律：<strong>编码转换在</strong> <strong>Redis</strong> <strong>写入数据时完成，且转换过程不可逆，只能从小内存编码向大内存编码转换。</strong></p>
+
+<h2 id="toc_22">1、字符串</h2>
+
+<h3 id="toc_23">（1）概况</h3>
+
+<p>字符串是最基础的类型，因为所有的键都是字符串类型，且字符串之外的其他几种复杂类型的元素也是字符串。</p>
+
+<p>字符串长度不能超过 512MB。</p>
+
+<h3 id="toc_24">（2）内部编码</h3>
+
+<p>字符串类型的内部编码有 3 种，它们的应用场景如下：</p>
+
+<ul>
+<li>  int：8 个字节的长整型。字符串值是整型时，这个值使用 long 整型表示。</li>
+<li>  embstr：&lt;=39 字节的字符串。embstr 与 raw 都使用 redisObject 和 sds 保存数据，区别在于，embstr 的使用只分配一次内存空间（因此 redisObject 和 sds 是连续的），而 raw 需要分配两次内存空间（分别为 redisObject 和 sds 分配空间）。因此与 raw 相比，embstr 的好处在于创建时少分配一次空间，删除时少释放一次空间，以及对象的所有数据连在一起，寻找方便。而 embstr 的坏处也很明显，如果字符串的长度增加需要重新分配内存时，整个 redisObject 和 sds 都需要重新分配空间，因此 redis 中的 embstr 实现为只读。</li>
+<li>  raw：大于 39 个字节的字符串</li>
+</ul>
+
+<p>示例如下图所示：</p>
+
+<p><img src="https://images2018.cnblogs.com/blog/1174710/201803/1174710-20180327001417703-15851809.png" alt=""/></p>
+
+<p>embstr 和 raw 进行区分的长度，是 39；是因为 redisObject 的长度是 16 字节，sds 的长度是 9 + 字符串长度；因此当字符串长度是 39 时，embstr 的长度正好是 16+9+39=64，jemalloc 正好可以分配 64 字节的内存单元。</p>
+
+<h3 id="toc_25">（3）编码转换</h3>
+
+<p>当 int 数据不再是整数，或大小超过了 long 的范围时，自动转化为 raw。</p>
+
+<p>而对于 embstr，由于其实现是只读的，因此在对 embstr 对象进行修改时，都会先转化为 raw 再进行修改，因此，只要是修改 embstr 对象，修改后的对象一定是 raw 的，无论是否达到了 39 个字节。示例如下图所示：</p>
+
+<p><img src="https://images2018.cnblogs.com/blog/1174710/201803/1174710-20180327001426651-1225081171.png" alt=""/></p>
+
+<h2 id="toc_26">2、列表</h2>
+
+<h3 id="toc_27">（1）概况</h3>
+
+<p>列表（list）用来存储多个有序的字符串，每个字符串称为元素；一个列表可以存储 2<sup>32-1</sup> 个元素。Redis 中的列表支持两端插入和弹出，并可以获得指定位置（或范围）的元素，可以充当数组、队列、栈等。</p>
+
+<h3 id="toc_28">（2）内部编码</h3>
+
+<p>列表的内部编码可以是压缩列表（ziplist）或双端链表（linkedlist）。</p>
+
+<p>双端链表：由一个 list 结构和多个 listNode 结构组成；典型结构如下图所示：</p>
+
+<p><img src="https://images2018.cnblogs.com/blog/1174710/201803/1174710-20180327001435577-242733744.png" alt=""/></p>
+
+<p>图片来源：《Redis 设计与实现》</p>
+
+<p>通过图中可以看出，双端链表同时保存了表头指针和表尾指针，并且每个节点都有指向前和指向后的指针；链表中保存了列表的长度；dup、free 和 match 为节点值设置类型特定函数，所以链表可以用于保存各种不同类型的值。而链表中每个节点指向的是 type 为字符串的 redisObject。</p>
+
+<p>压缩列表：压缩列表是 Redis 为了节约内存而开发的，是由一系列特殊编码的<strong>连续内存块</strong> (而不是像双端链表一样每个节点是指针) 组成的顺序型数据结构；具体结构相对比较复杂，略。与双端链表相比，压缩列表可以节省内存空间，但是进行修改或增删操作时，复杂度较高；因此当节点数量较少时，可以使用压缩列表；但是节点数量多时，还是使用双端链表划算。</p>
+
+<p>压缩列表不仅用于实现列表，也用于实现哈希、有序列表；使用非常广泛。</p>
+
+<h3 id="toc_29">（3）编码转换</h3>
+
+<p>只有同时满足下面两个条件时，才会使用压缩列表：列表中元素数量小于 512 个；列表中所有字符串对象都不足 64 字节。如果有一个条件不满足，则使用双端列表；且编码只可能由压缩列表转化为双端链表，反方向则不可能。</p>
+
+<p>下图展示了列表编码转换的特点：</p>
+
+<p><img src="https://images2018.cnblogs.com/blog/1174710/201803/1174710-20180327001457636-673470263.png" alt=""/></p>
+
+<p>其中，单个字符串不能超过 64 字节，是为了便于统一分配每个节点的长度；这里的 64 字节是指字符串的长度，不包括 SDS 结构，因为压缩列表使用连续、定长内存块存储字符串，不需要 SDS 结构指明长度。后面提到压缩列表，也会强调长度不超过 64 字节，原理与这里类似。</p>
+
+<h2 id="toc_30">3、哈希</h2>
+
+<h3 id="toc_31">（1）概况</h3>
+
+<p>哈希（作为一种数据结构），不仅是 redis 对外提供的 5 种对象类型的一种（与字符串、列表、集合、有序结合并列），也是 Redis 作为 Key-Value 数据库所使用的数据结构。为了说明的方便，在本文后面当使用 “内层的哈希” 时，代表的是 redis 对外提供的 5 种对象类型的一种；使用 “外层的哈希” 代指 Redis 作为 Key-Value 数据库所使用的数据结构。</p>
+
+<h3 id="toc_32">（2）内部编码</h3>
+
+<p>内层的哈希使用的内部编码可以是压缩列表（ziplist）和哈希表（hashtable）两种；Redis 的外层的哈希则只使用了 hashtable。</p>
+
+<p>压缩列表前面已介绍。与哈希表相比，压缩列表用于元素个数少、元素长度小的场景；其优势在于集中存储，节省空间；同时，虽然对于元素的操作复杂度也由 O(n) 变为了 O(1)，但由于哈希中元素数量较少，因此操作的时间并没有明显劣势。进群 619881427 可以免费获取文中知识点的视频资料。</p>
+
+<p>hashtable：一个 hashtable 由 1 个 dict 结构、2 个 dictht 结构、1 个 dictEntry 指针数组（称为 bucket）和多个 dictEntry 结构组成。</p>
+
+<p>正常情况下（即 hashtable 没有进行 rehash 时）各部分关系如下图所示：</p>
+
+<p><img src="https://images2018.cnblogs.com/blog/1174710/201803/1174710-20180327001627028-325473621.png" alt=""/> </p>
+
+<p>图片改编自：《Redis 设计与实现》</p>
+
+<p>下面从底层向上依次介绍各个部分：</p>
+
+<p><strong>dictEntry</strong></p>
+
+<p>dictEntry 结构用于保存键值对，结构定义如下：</p>
+
+<pre><code class="language-c">typedef struct dictEntry{
+    void *key;
+    union{
+        void *val;
+        uint64_tu64;
+        int64_ts64;
+    }v;
+    struct dictEntry *next;
+}dictEntry;
+</code></pre>
+
+<p>其中，各个属性的功能如下：</p>
+
+<ul>
+<li>  key：键值对中的键；</li>
+<li>  val：键值对中的值，使用 union(即共用体) 实现，存储的内容既可能是一个指向值的指针，也可能是 64 位整型，或无符号 64 位整型；</li>
+<li>  next：指向下一个 dictEntry，用于解决哈希冲突问题</li>
+</ul>
+
+<p>在 64 位系统中，一个 dictEntry 对象占 24 字节（key/val/next 各占 8 字节）。</p>
+
+<p><strong>bucket</strong></p>
+
+<p>bucket 是一个数组，数组的每个元素都是指向 dictEntry 结构的指针。redis 中 bucket 数组的大小计算规则如下：大于 dictEntry 的、最小的 2<sup>n；例如，如果有</sup> 1000 个 dictEntry，那么 bucket 大小为 1024；如果有 1500 个 dictEntry，则 bucket 大小为 2048。</p>
+
+<p><strong>dictht</strong></p>
+
+<p>dictht 结构如下：</p>
+
+<pre><code class="language-c">typedef struct dictht{
+    dictEntry **table;
+    unsigned long size;
+    unsigned long sizemask;
+    unsigned long used;
+}dictht;
+</code></pre>
+
+<p>其中，各个属性的功能说明如下：</p>
+
+<ul>
+<li>  table 属性是一个指针，指向 bucket；</li>
+<li>  size 属性记录了哈希表的大小，即 bucket 的大小；</li>
+<li>  used 记录了已使用的 dictEntry 的数量；</li>
+<li>  sizemask 属性的值总是为 size-1，这个属性和哈希值一起决定一个键在 table 中存储的位置。</li>
+</ul>
+
+<p><strong>dict</strong></p>
+
+<p>一般来说，通过使用 dictht 和 dictEntry 结构，便可以实现普通哈希表的功能；但是 Redis 的实现中，在 dictht 结构的上层，还有一个 dict 结构。下面说明 dict 结构的定义及作用。</p>
+
+<p>dict 结构如下：</p>
+
+<pre><code class="language-c">typedef struct dict{
+    dictType *type;
+    void *privdata;
+    dictht ht[2];
+    int trehashidx;
+} dict;
+</code></pre>
+
+<p>其中，type 属性和 privdata 属性是为了适应不同类型的键值对，用于创建多态字典。</p>
+
+<p>ht 属性和 trehashidx 属性则用于 rehash，即当哈希表需要扩展或收缩时使用。ht 是一个包含两个项的数组，每项都指向一个 dictht 结构，这也是 Redis 的哈希会有 1 个 dict、2 个 dictht 结构的原因。通常情况下，所有的数据都是存在放 dict 的 ht[0] 中，ht[1] 只在 rehash 的时候使用。dict 进行 rehash 操作的时候，将 ht[0] 中的所有数据 rehash 到 ht[1] 中。然后将 ht[1] 赋值给 ht[0]，并清空 ht[1]。</p>
+
+<p>因此，Redis 中的哈希之所以在 dictht 和 dictEntry 结构之外还有一个 dict 结构，一方面是为了适应不同类型的键值对，另一方面是为了 rehash。</p>
+
+<h3 id="toc_33">（3）编码转换</h3>
+
+<p>如前所述，Redis 中内层的哈希既可能使用哈希表，也可能使用压缩列表。</p>
+
+<p>只有同时满足下面两个条件时，才会使用压缩列表：哈希中元素数量小于 512 个；哈希中所有键值对的键和值字符串长度都小于 64 字节。如果有一个条件不满足，则使用哈希表；且编码只可能由压缩列表转化为哈希表，反方向则不可能。</p>
+
+<p>下图展示了 Redis 内层的哈希编码转换的特点：</p>
+
+<p><img src="https://images2018.cnblogs.com/blog/1174710/201803/1174710-20180327001855681-1566128865.png" alt=""/></p>
+
+<h2 id="toc_34">4、集合</h2>
+
+<h3 id="toc_35">（1）概况</h3>
+
+<p>集合（set）与列表类似，都是用来保存多个字符串，但集合与列表有两点不同：集合中的元素是无序的，因此不能通过索引来操作元素；集合中的元素不能有重复。</p>
+
+<p>一个集合中最多可以存储 2<sup>32-1</sup> 个元素；除了支持常规的增删改查，Redis 还支持多个集合取交集、并集、差集。</p>
+
+<h3 id="toc_36">（2）内部编码</h3>
+
+<p>集合的内部编码可以是整数集合（intset）或哈希表（hashtable）。</p>
+
+<p>哈希表前面已经讲过，这里略过不提；需要注意的是，集合在使用哈希表时，值全部被置为 null。</p>
+
+<p>整数集合的结构定义如下：</p>
+
+<pre><code class="language-c">typedef struct intset{
+    uint32_t encoding;
+    uint32_t length;
+    int8_t contents[];
+} intset;
+</code></pre>
+
+<p>其中，encoding 代表 contents 中存储内容的类型，虽然 contents（存储集合中的元素）是 int8_t 类型，但实际上其存储的值是 int16_t、int32_t 或 int64_t，具体的类型便是由 encoding 决定的；length 表示元素个数。</p>
+
+<p>整数集合适用于集合所有元素都是整数且集合元素数量较小的时候，与哈希表相比，整数集合的优势在于集中存储，节省空间；同时，虽然对于元素的操作复杂度也由 O(n) 变为了 O(1)，但由于集合数量较少，因此操作的时间并没有明显劣势。</p>
+
+<h3 id="toc_37">（3）编码转换</h3>
+
+<p>只有同时满足下面两个条件时，集合才会使用整数集合：集合中元素数量小于 512 个；集合中所有元素都是整数值。如果有一个条件不满足，则使用哈希表；且编码只可能由整数集合转化为哈希表，反方向则不可能。</p>
+
+<p>下图展示了集合编码转换的特点：</p>
+
+<p><img src="https://images2018.cnblogs.com/blog/1174710/201803/1174710-20180327001926146-2105183556.png" alt=""/></p>
+
+<h2 id="toc_38">5、有序集合</h2>
+
+<h3 id="toc_39">（1）概况</h3>
+
+<p>有序集合与集合一样，元素都不能重复；但与集合不同的是，有序集合中的元素是有顺序的。与列表使用索引下标作为排序依据不同，有序集合为每个元素设置一个分数（score）作为排序依据。</p>
+
+<h3 id="toc_40">（2）内部编码</h3>
+
+<p>有序集合的内部编码可以是压缩列表（ziplist）或跳跃表（skiplist）。ziplist 在列表和哈希中都有使用，前面已经讲过，这里略过不提。</p>
+
+<p>跳跃表是一种有序数据结构，通过在每个节点中维持多个指向其他节点的指针，从而达到快速访问节点的目的。除了跳跃表，实现有序数据结构的另一种典型实现是平衡树；大多数情况下，跳跃表的效率可以和平衡树媲美，且跳跃表实现比平衡树简单很多，因此 redis 中选用跳跃表代替平衡树。跳跃表支持平均 O(logN)、最坏 O(N) 的复杂点进行节点查找，并支持顺序操作。Redis 的跳跃表实现由 zskiplist 和 zskiplistNode 两个结构组成：前者用于保存跳跃表信息（如头结点、尾节点、长度等），后者用于表示跳跃表节点。具体结构相对比较复杂，略。</p>
+
+<h3 id="toc_41">（3）编码转换</h3>
+
+<p>只有同时满足下面两个条件时，才会使用压缩列表：有序集合中元素数量小于 128 个；有序集合中所有成员长度都不足 64 字节。如果有一个条件不满足，则使用跳跃表；且编码只可能由压缩列表转化为跳跃表，反方向则不可能。</p>
+
+<p>下图展示了有序集合编码转换的特点：</p>
+
+<p><img src="https://images2018.cnblogs.com/blog/1174710/201803/1174710-20180327001936290-955216194.png" alt=""/></p>
+
+<h1 id="toc_42">五、应用举例</h1>
+
+<p>了解 Redis 的内存模型之后，下面通过几个例子说明其应用。</p>
+
+<h2 id="toc_43">1、估算 Redis 内存使用量</h2>
+
+<p>要估算 redis 中的数据占据的内存大小，需要对 redis 的内存模型有比较全面的了解，包括前面介绍的 hashtable、sds、redisobject、各种对象类型的编码方式等。</p>
+
+<p>下面以最简单的字符串类型来进行说明。</p>
+
+<p>假设有 90000 个键值对，每个 key 的长度是 7 个字节，每个 value 的长度也是 7 个字节（且 key 和 value 都不是整数）；下面来估算这 90000 个键值对所占用的空间。在估算占据空间之前，首先可以判定字符串类型使用的编码方式：embstr。</p>
+
+<p>90000 个键值对占据的内存空间主要可以分为两部分：一部分是 90000 个 dictEntry 占据的空间；一部分是键值对所需要的 bucket 空间。</p>
+
+<p>每个 dictEntry 占据的空间包括：</p>
+
+<p>1)       一个 dictEntry，24 字节，jemalloc 会分配 32 字节的内存块</p>
+
+<p>2)       一个 key，7 字节，所以 SDS(key) 需要 7+9=16 个字节，jemalloc 会分配 16 字节的内存块</p>
+
+<p>3)       一个 redisObject，16 字节，jemalloc 会分配 16 字节的内存块</p>
+
+<p>4)       一个 value，7 字节，所以 SDS(value) 需要 7+9=16 个字节，jemalloc 会分配 16 字节的内存块</p>
+
+<p>5)       综上，一个 dictEntry 需要 32+16+16+16=80 个字节。</p>
+
+<p>bucket 空间：bucket 数组的大小为大于 90000 的最小的 2<sup>n，是</sup> 131072；每个 bucket 元素为 8 字节（因为 64 位系统中指针大小为 8 字节）。</p>
+
+<p>因此，可以估算出这 90000 个键值对占据的内存大小为：90000<em>80 + 131072</em>8 = 8248576。</p>
+
+<p>进群 619881427 可以免费获取文中知识点的视频资料。</p>
+
+<p>下面写个程序在 redis 中验证一下：</p>
+
+<pre><code class="language-java">public class RedisTest {
+
+　　public static Jedis jedis = new Jedis(&quot;localhost&quot;, 6379);
+　　
+　　public static void main(String[] args) throws Exception{
+　　　　Long m1 = Long.valueOf(getMemory());
+　　　　insertData();
+　　　　Long m2 = Long.valueOf(getMemory());
+　　　　System.out.println(m2 - m1);
+　　}
+
+　　public static void insertData(){
+　　　　for(int i = 10000; i &lt; 100000; i++){
+　　　　　　jedis.set(&quot;aa&quot; + i, &quot;aa&quot; + i); //key和value长度都是7字节，且不是整数
+　　　　}
+　　}
+　　
+　　public static String getMemory(){
+　　　　String memoryAllLine = jedis.info(&quot;memory&quot;);
+　　　　String usedMemoryLine = memoryAllLine.split(&quot;\r\n&quot;)[1];
+　　　　String memory = usedMemoryLine.substring(usedMemoryLine.indexOf(&#39;:&#39;) + 1);
+　　　　return memory;
+　　}
+
 }
 </code></pre>
 
-<p>而一旦踏入公司尤其是大型互联网公司就会发现，公司的系统都由成千上万大大小小的服务组成，各服务部署在不同的机器上，由不同的团队负责。</p>
+<p>运行结果：8247552</p>
 
-<p>这时就会遇到两个问题：</p>
+<p>理论值与结果值误差在万分之 1.2，对于计算需要多少内存来说，这个精度已经足够了。之所以会存在误差，是因为在我们插入 90000 条数据之前 redis 已分配了一定的 bucket 空间，而这些 bucket 空间尚未使用。</p>
 
-<ol>
-<li> 要搭建一个新服务，免不了需要依赖他人的服务，而现在他人的服务都在远端，怎么调用？</li>
-<li> 其它团队要使用我们的新服务，我们的服务该怎么发布以便他人调用？下文将对这两个问题展开探讨。</li>
-</ol>
+<p>作为对比将 key 和 value 的长度由 7 字节增加到 8 字节，则对应的 SDS 变为 17 个字节，jemalloc 会分配 32 个字节，因此每个 dictEntry 占用的字节数也由 80 字节变为 112 字节。此时估算这 90000 个键值对占据内存大小为：90000<em>112 + 131072</em>8 = 11128576。</p>
 
-<h2 id="toc_0">1.  如何调用他人的远程服务？</h2>
+<p>在 redis 中验证代码如下（只修改插入数据的代码）：</p>
 
-<p>由于各服务部署在不同机器，服务间的调用免不了网络通信过程，服务消费方每调用一个服务都要写一坨网络通信相关的代码，不仅复杂而且极易出错。</p>
-
-<p>如果有一种方式能让我们像调用本地服务一样调用远程服务，而让调用者对网络通信这些细节透明，那么将大大提高生产力，比如服务消费方在执行 helloWorldService.sayHello(&quot;test&quot;) 时，实质上调用的是远端的服务。这种方式其实就是 RPC（Remote Procedure Call Protocol），在各大互联网公司中被广泛使用，如阿里巴巴的 hsf、dubbo（开源）、Facebook 的 thrift（开源）、Google grpc（开源）、Twitter 的 finagle（开源）等。</p>
-
-<p>要让网络通信细节对使用者透明，我们需要对通信细节进行封装，我们先看下一个 RPC 调用的流程涉及到哪些通信细节：</p>
-
-<p><img src="http://static.oschina.net/uploads/space/2016/0714/102634_AAIe_2243330.png" alt=""/></p>
-
-<ol>
-<li> 服务消费方（client）调用以本地调用方式调用服务；</li>
-<li> client stub 接收到调用后负责将方法、参数等组装成能够进行网络传输的消息体；</li>
-<li> client stub 找到服务地址，并将消息发送到服务端；</li>
-<li> server stub 收到消息后进行解码；</li>
-<li> server stub 根据解码结果调用本地的服务；</li>
-<li> 本地服务执行并将结果返回给 server stub；</li>
-<li> server stub 将返回结果打包成消息并发送至消费方；</li>
-<li> client stub 接收到消息，并进行解码；</li>
-<li> 服务消费方得到最终结果。</li>
-</ol>
-
-<p>RPC 的目标就是要 2~8 这些步骤都封装起来，让用户对这些细节透明。</p>
-
-<h3 id="toc_1">1.1 怎么做到透明化远程服务调用？</h3>
-
-<p>怎么封装通信细节才能让用户像以本地调用方式调用远程服务呢？对 java 来说就是使用代理！java 代理有两种方式：</p>
-
-<ol>
-<li> jdk 动态代理</li>
-<li> 字节码生成</li>
-</ol>
-
-<p>尽管字节码生成方式实现的代理更为强大和高效，但代码维护不易，大部分公司实现 RPC 框架时还是选择动态代理方式。</p>
-
-<p>下面简单介绍下动态代理怎么实现我们的需求。我们需要实现 RPCProxyClient 代理类，代理类的 invoke 方法中封装了与远端服务通信的细节，消费方首先从 RPCProxyClient 获得服务提供方的接口，当执行 helloWorldService.sayHello(&quot;test&quot;) 方法时就会调用 invoke 方法。</p>
-
-<pre><code>public class RPCProxyClient implements java.lang.reflect.InvocationHandler{
-    private Object obj;
-
-    public RPCProxyClient(Object obj){
-        this.obj=obj;
-    }
-
-    /**
-     * 得到被代理对象;
-     */
-    public static Object getProxy(Object obj){
-        return java.lang.reflect.Proxy.newProxyInstance(obj.getClass().getClassLoader(),
-                obj.getClass().getInterfaces(), new RPCProxyClient(obj));
-    }
-
-    /**
-     * 调用此方法执行
-     */
-    public Object invoke(Object proxy, Method method, Object[] args)
-            throws Throwable {
-        //结果参数;
-        Object result = new Object();
-        // ...执行通信相关逻辑
-        // ...
-        return result;
-    }
+<pre><code class="language-java">public static void insertData(){
+　　for(int i = 10000; i &lt; 100000; i++){
+　　　　jedis.set(&quot;aaa&quot; + i, &quot;aaa&quot; + i); //key和value长度都是8字节，且不是整数
+　　}
 }
 </code></pre>
 
-<pre><code>public class Test {
-     public static void main(String[] args) {
-         HelloWorldService helloWorldService = (HelloWorldService)RPCProxyClient.getProxy(HelloWorldService.class);
-         helloWorldService.sayHello(&quot;test&quot;);
-     }
- }
-</code></pre>
+<p>运行结果：11128576；估算准确。</p>
 
-<h3 id="toc_2">1.2  怎么对消息进行编码和解码？</h3>
+<p>对于字符串类型之外的其他类型，对内存占用的估算方法是类似的，需要结合具体类型的编码方式来确定。</p>
 
-<h4 id="toc_3">1.2.1 确定消息数据结构</h4>
+<h2 id="toc_44">2、优化内存占用</h2>
 
-<p>　　上节讲了 invoke 里需要封装通信细节（通信细节再后面几章详细探讨），而通信的第一步就是要确定客户端和服务端相互通信的消息结构。客户端的请求消息结构一般需要包括以下内容：</p>
+<p>了解 redis 的内存模型，对优化 redis 内存占用有很大帮助。下面介绍几种优化场景。</p>
 
-<p>1）接口名称</p>
+<p>（1）利用 jemalloc 特性进行优化</p>
 
-<p>　　在我们的例子里接口名是 “HelloWorldService”，如果不传，服务端就不知道调用哪个接口了；</p>
+<p>上一小节所讲述的 90000 个键值便是一个例子。由于 jemalloc 分配内存时数值是不连续的，因此 key/value 字符串变化一个字节，可能会引起占用内存很大的变动；在设计时可以利用这一点。</p>
 
-<p>2）方法名</p>
+<p>例如，如果 key 的长度如果是 8 个字节，则 SDS 为 17 字节，jemalloc 分配 32 字节；此时将 key 长度缩减为 7 个字节，则 SDS 为 16 字节，jemalloc 分配 16 字节；则每个 key 所占用的空间都可以缩小一半。</p>
 
-<p>　　一个接口内可能有很多方法，如果不传方法名服务端也就不知道调用哪个方法；</p>
+<p>（2）使用整型 / 长整型</p>
 
-<p>3）参数类型 &amp; 参数值</p>
+<p>如果是整型 / 长整型，Redis 会使用 int 类型（8 字节）存储来代替字符串，可以节省更多空间。因此在可以使用长整型 / 整型代替字符串的场景下，尽量使用长整型 / 整型。</p>
 
-<p>　　参数类型有很多，比如有 bool、int、long、double、string、map、list，甚至如 struct（class）；以及相应的参数值；</p>
+<p>（3）共享对象</p>
 
-<p>4）超时时间</p>
+<p>利用共享对象，可以减少对象的创建（同时减少了 redisObject 的创建），节省内存空间。目前 redis 中的共享对象只包括 10000 个整数（0-9999）；可以通过调整 REDIS_SHARED_INTEGERS 参数提高共享对象的个数；例如将 REDIS_SHARED_INTEGERS 调整到 20000，则 0-19999 之间的对象都可以共享。</p>
 
-<p>5）requestID，标识唯一请求 id，在下面一节会详细描述 requestID 的用处。</p>
+<p>考虑这样一种场景：论坛网站在 redis 中存储了每个帖子的浏览数，而这些浏览数绝大多数分布在 0-20000 之间，这时候通过适当增大 REDIS_SHARED_INTEGERS 参数，便可以利用共享对象节省内存空间。</p>
 
-<p>　　同理服务端返回的消息结构一般包括以下内容。</p>
+<p>（4）避免过度设计</p>
 
-<p>1）返回值</p>
+<p>然而需要注意的是，不论是哪种优化场景，都要考虑内存空间与设计复杂度的权衡；而设计复杂度会影响到代码的复杂度、可维护性。</p>
 
-<p>2）状态 code</p>
+<p>如果数据量较小，那么为了节省内存而使得代码的开发、维护变得更加困难并不划算；还是以前面讲到的 90000 个键值对为例，实际上节省的内存空间只有几 MB。但是如果数据量有几千万甚至上亿，考虑内存的优化就比较必要了。</p>
 
-<p>3）requestID </p>
+<h2 id="toc_45">3、关注内存碎片率</h2>
 
-<h4 id="toc_4">1.2.2 序列化</h4>
+<p>内存碎片率是一个重要的参数，对 redis 内存的优化有重要意义。</p>
 
-<p>一旦确定了消息的数据结构后，下一步就是要考虑序列化与反序列化了。</p>
+<p>如果内存碎片率过高（jemalloc 在 1.03 左右比较正常），说明内存碎片多，内存浪费严重；这时便可以考虑重启 redis 服务，在内存中对数据进行重排，减少内存碎片。</p>
 
-<p>什么是序列化？序列化就是将数据结构或对象转换成二进制串的过程，也就是编码的过程。</p>
+<p>如果内存碎片率小于 1，说明 redis 内存不足，部分数据使用了虚拟内存（即 swap）；由于虚拟内存的存取速度比物理内存差很多（2-3 个数量级），此时 redis 的访问速度可能会变得很慢。因此必须设法增大物理内存（可以增加服务器节点数量，或提高单机内存），或减少 redis 中的数据。</p>
 
-<p>什么是反序列化？将在序列化过程中所生成的二进制串转换成数据结构或者对象的过程。</p>
-
-<p>为什么需要序列化？转换为二进制串后才好进行网络传输嘛！</p>
-
-<p>为什么需要反序列化？将二进制转换为对象才好进行后续处理！</p>
-
-<p>现如今序列化的方案越来越多，每种序列化方案都有优点和缺点，它们在设计之初有自己独特的应用场景，那到底选择哪种呢？从 RPC 的角度上看，主要看三点：</p>
-
-<ol>
-<li> 通用性，比如是否能支持 Map 等复杂的数据结构；</li>
-<li> 性能，包括时间复杂度和空间复杂度，由于 RPC 框架将会被公司几乎所有服务使用，如果序列化上能节约一点时间，对整个公司的收益都将非常可观，同理如果序列化上能节约一点内存，网络带宽也能省下不少；</li>
-<li> 可扩展性，对互联网公司而言，业务变化飞快，如果序列化协议具有良好的可扩展性，支持自动增加新的业务字段，而不影响老的服务，这将大大提供系统的灵活度。</li>
-</ol>
-
-<p>目前互联网公司广泛使用 Protobuf、Thrift、Avro 等成熟的序列化解决方案来搭建 RPC 框架，这些都是久经考验的解决方案。</p>
-
-<h3 id="toc_5">1.3  通信</h3>
-
-<p>消息数据结构被序列化为二进制串后，下一步就要进行网络通信了。目前有两种常用 IO 通信模型：1）BIO；2）<a href="http://my.oschina.net/hosee/blog/615269">NIO</a>。一般 RPC 框架需要支持这两种 IO 模型。</p>
-
-<p>如何实现 RPC 的 IO 通信框架呢？</p>
-
-<ol>
-<li> 使用 java nio 方式自研，这种方式较为复杂，而且很有可能出现隐藏 bug，但也见过一些互联网公司使用这种方式；</li>
-<li> 基于 mina，mina 在早几年比较火热，不过这些年版本更新缓慢；</li>
-<li> 基于 netty，现在很多 RPC 框架都直接基于 netty 这一 IO 通信框架，省力又省心，比如阿里巴巴的 HSF、dubbo，Twitter 的 finagle 等。</li>
-</ol>
-
-<h3 id="toc_6">1.4  <strong>消息里为什么要有 requestID？</strong></h3>
-
-<p>如果使用 netty 的话，一般会用 channel.writeAndFlush()方法来发送消息二进制串，这个方法调用后对于整个远程调用 (从发出请求到接收到结果) 来说是一个异步的，即对于当前线程来说，将请求发送出来后，线程就可以往后执行了，至于服务端的结果，是服务端处理完成后，再以消息的形式发送给客户端的。于是这里出现以下两个问题：</p>
-
-<ol>
-<li> 怎么让当前线程 “暂停”，等结果回来后，再向后执行？</li>
-<li> 如果有多个线程同时进行远程方法调用，这时建立在 client server 之间的 socket 连接上会有很多双方发送的消息传递，前后顺序也可能是随机的，server 处理完结果后，将结果消息发送给 client，client 收到很多消息，怎么知道哪个消息结果是原先哪个线程调用的？</li>
-</ol>
-
-<p>如下图所示，线程 A 和线程 B 同时向 client socket 发送请求 requestA 和 requestB，socket 先后将 requestB 和 requestA 发送至 server，而 server 可能将 responseA 先返回，尽管 requestA 请求到达时间更晚。我们需要一种机制保证 responseA 丢给 ThreadA，responseB 丢给 ThreadB。</p>
-
-<p><img src="http://static.oschina.net/uploads/space/2016/0714/104316_FAgB_2243330.png" alt=""/></p>
-
-<p>怎么解决呢？</p>
-
-<ol>
-<li> client 线程每次通过 socket 调用一次远程接口前，生成一个唯一的 ID，即 requestID（requestID 必需保证在一个 Socket 连接里面是唯一的），一般常常使用 AtomicLong 从 0 开始累计数字生成唯一 ID；</li>
-<li> 将处理结果的回调对象 callback，存放到全局 ConcurrentHashMap 里面 put(requestID, callback)；</li>
-<li> 当线程调用 channel.writeAndFlush() 发送消息后，紧接着执行 callback 的 get() 方法试图获取远程返回的结果。在 get() 内部，则使用 synchronized 获取回调对象 callback 的锁，再先检测是否已经获取到结果，如果没有，然后调用 callback 的 wait() 方法，释放 callback 上的锁，让当前线程处于等待状态。</li>
-<li> 服务端接收到请求并处理后，将 response 结果（此结果中包含了前面的 requestID）发送给客户端，客户端 socket 连接上专门监听消息的线程收到消息，分析结果，取到 requestID，再从前面的 ConcurrentHashMap 里面 get(requestID)，从而找到 callback 对象，再用 synchronized 获取 callback 上的锁，将方法调用结果设置到 callback 对象里，再调用 callback.notifyAll() 唤醒前面处于等待状态的线程。</li>
-</ol>
-
-<pre><code>public Object get() {
-        synchronized (this) { // 旋锁
-            while (!isDone) { // 是否有结果了
-                wait(); //没结果是释放锁，让当前线程处于等待状态
-            }
-        }
-}
-</code></pre>
-
-<pre><code>private void setDone(Response res) {
-        this.res = res;
-        isDone = true;
-        synchronized (this) { //获取锁，因为前面wait()已经释放了callback的锁了
-            notifyAll(); // 唤醒处于等待的线程
-        }
-    }
-</code></pre>
-
-<h2 id="toc_7">2 如何发布自己的服务？</h2>
-
-<p>如何让别人使用我们的服务呢？有同学说很简单嘛，告诉使用者服务的 IP 以及端口就可以了啊。确实是这样，这里问题的关键在于是自动告知还是人肉告知。</p>
-
-<p>人肉告知的方式：如果你发现你的服务一台机器不够，要再添加一台，这个时候就要告诉调用者我现在有两个 ip 了，你们要轮询调用来实现负载均衡；调用者咬咬牙改了，结果某天一台机器挂了，调用者发现服务有一半不可用，他又只能手动修改代码来删除挂掉那台机器的 ip。现实生产环境当然不会使用人肉方式。</p>
-
-<p>有没有一种方法能实现自动告知，即机器的增添、剔除对调用方透明，调用者不再需要写死服务提供方地址？当然可以，现如今 zookeeper 被广泛用于实现服务自动注册与发现功能！</p>
-
-<p>简单来讲，zookeeper 可以充当一个<code>服务注册表</code>（Service Registry），让多个<code>服务提供者</code>形成一个集群，让<code>服务消费者</code>通过服务注册表获取具体的服务访问地址（ip + 端口）去访问具体的服务提供者。如下图所示：</p>
-
-<p><img src="http://static.oschina.net/uploads/space/2016/0714/105148_gSi2_2243330.png" alt=""/></p>
-
-<p>具体来说，zookeeper 就是个分布式文件系统，每当一个服务提供者部署后都要将自己的服务注册到 zookeeper 的某一路径上: /{service}/{version}/{ip:port}, 比如我们的 HelloWorldService 部署到两台机器，那么 zookeeper 上就会创建两条目录：分别为 / HelloWorldService/1.0.0/100.19.20.01:16888  /HelloWorldService/1.0.0/100.19.20.02:16888。</p>
-
-<p>zookeeper 提供了 “心跳检测” 功能，它会定时向各个服务提供者发送一个请求（实际上建立的是一个 Socket 长连接），如果长期没有响应，服务中心就认为该服务提供者已经“挂了”，并将其剔除，比如 100.19.20.02 这台机器如果宕机了，那么 zookeeper 上的路径就会只剩 / HelloWorldService/1.0.0/100.19.20.01:16888。</p>
-
-<p>服务消费者会去监听相应路径（/HelloWorldService/1.0.0），一旦路径上的数据有任务变化（增加或减少），zookeeper 都会通知服务消费方服务提供者地址列表已经发生改变，从而进行更新。</p>
-
-<p>更为重要的是 zookeeper 与生俱来的容错容灾能力（比如 leader 选举），可以确保服务注册表的高可用性。</p>
-
-<h2 id="toc_8">3.Hadoop 中 <strong>RPC</strong> 实例分析</h2>
-
-<p>ipc.RPC 类中有一些内部类，为了大家对 RPC 类有个初步的印象，就先罗列几个我们感兴趣的分析一下吧：</p>
-
-<p><strong>Invocation</strong> ：用于封装方法名和参数，作为数据传输层。<br/>
-<strong>ClientCache</strong> ：用于存储 client 对象，用 socket factory 作为 hash key, 存储结构为 hashMap <SocketFactory, Client>。<br/>
-<strong>Invoker</strong> ：是动态代理中的调用实现类，继承了 InvocationHandler.<br/>
-<strong>Server</strong> ：是 ipc.Server 的实现类。</p>
-
-<pre><code>    public Object invoke(Object proxy, Method method, Object[] args)
-      throws Throwable {
-      •••
-      ObjectWritable value = (ObjectWritable)
-        client.call(new Invocation(method, args), remoteId);
-      •••
-      return value.get();
-    }
-
-</code></pre>
-
-<p>如果你发现这个 invoke() 方法实现的有些奇怪的话，那你就对了。一般我们看到的<a href="http://my.oschina.net/hosee/blog/656945">动态代理</a>的 invoke() 方法中总会有 method.invoke(ac, arg);  这句代码。而上面代码中却没有，这是为什么呢？其实使用 method.invoke(ac, arg); 是在本地 JVM 中调用；而在 hadoop 中，是将数据发送给服务端，服务端将处理的结果再返回给客户端，所以这里的 invoke() 方法必然需要进行网络通信。而网络通信就是下面的这段代码实现的：</p>
-
-<pre><code>ObjectWritable value = (ObjectWritable)
-client.call(new Invocation(method, args), remoteId);
-
-</code></pre>
-
-<p>Invocation 类在这里封装了方法名和参数。其实这里网络通信只是调用了 Client 类的 call() 方法。那我们接下来分析一下 ipc.Client 源码吧。和第一章一样，同样是 3 个问题</p>
-
-<ol>
-<li> 客户端和服务端的连接是怎样建立的？</li>
-<li> 客户端是怎样给服务端发送数据的？</li>
-<li> 客户端是怎样获取服务端的返回数据的？</li>
-</ol>
-
-<h3 id="toc_9">3.1 客户端和服务端的连接是怎样建立的？</h3>
-
-<pre><code>public Writable call(Writable param, ConnectionId remoteId)  
-                       throws InterruptedException, IOException {
-    Call call = new Call(param);       //将传入的数据封装成call对象
-    Connection connection = getConnection(remoteId, call);   //获得一个连接
-    connection.sendParam(call);     // 向服务端发送call对象
-    boolean interrupted = false;
-    synchronized (call) {
-      while (!call.done) {
-        try {
-          call.wait(); // 等待结果的返回，在Call类的callComplete()方法里有notify()方法用于唤醒线程
-        } catch (InterruptedException ie) {
-          // 因中断异常而终止，设置标志interrupted为true
-          interrupted = true;
-        }
-      }
-      if (interrupted) {
-        Thread.currentThread().interrupt();
-      }
-
-      if (call.error != null) {
-        if (call.error instanceof RemoteException) {
-          call.error.fillInStackTrace();
-          throw call.error;
-        } else { // 本地异常
-          throw wrapException(remoteId.getAddress(), call.error);
-        }
-      } else {
-        return call.value; //返回结果数据
-      }
-    }
-  }
-
-</code></pre>
-
-<p>具体代码的作用我已做了注释，所以这里不再赘述。但到目前为止，你依然不知道 RPC 机制底层的网络连接是怎么建立的。分析代码后，我们会发现和网络通信有关的代码只会是下面的两句了：</p>
-
-<pre><code>  Connection connection = getConnection(remoteId, call);   //获得一个连接
-  connection.sendParam(call);      // 向服务端发送call对象
-
-</code></pre>
-
-<p>先看看是怎么获得一个到服务端的连接吧，下面贴出 ipc.Client 类中的 getConnection() 方法。</p>
-
-<pre><code>private Connection getConnection(ConnectionId remoteId,
-                                   Call call)
-                                   throws IOException, InterruptedException {
-    if (!running.get()) {
-      // 如果client关闭了
-      throw new IOException(&quot;The client is stopped&quot;);
-    }
-    Connection connection;
-//如果connections连接池中有对应的连接对象，就不需重新创建了；如果没有就需重新创建一个连接对象。
-//但请注意，该//连接对象只是存储了remoteId的信息，其实还并没有和服务端建立连接。
-    do {
-      synchronized (connections) {
-        connection = connections.get(remoteId);
-        if (connection == null) {
-          connection = new Connection(remoteId);
-          connections.put(remoteId, connection);
-        }
-      }
-    } while (!connection.addCall(call)); //将call对象放入对应连接中的calls池，就不贴出源码了
-   //这句代码才是真正的完成了和服务端建立连接哦~
-    connection.setupIOstreams();
-    return connection;
-  }
-
-</code></pre>
-
-<p>下面贴出 Client.Connection 类中的 setupIOstreams() 方法：</p>
-
-<pre><code>  private synchronized void setupIOstreams() throws InterruptedException {
-   •••
-      try {
-       •••
-        while (true) {
-          setupConnection();  //建立连接
-          InputStream inStream = NetUtils.getInputStream(socket);     //获得输入流
-          OutputStream outStream = NetUtils.getOutputStream(socket);  //获得输出流
-          writeRpcHeader(outStream);
-          •••
-          this.in = new DataInputStream(new BufferedInputStream
-              (new PingInputStream(inStream)));   //将输入流装饰成DataInputStream
-          this.out = new DataOutputStream
-          (new BufferedOutputStream(outStream));   //将输出流装饰成DataOutputStream
-          writeHeader();
-          // 跟新活动时间
-          touch();
-          //当连接建立时，启动接受线程等待服务端传回数据，注意：Connection继承了Tread
-          start();
-          return;
-        }
-      } catch (IOException e) {
-        markClosed(e);
-        close();
-      }
-    }
-
-</code></pre>
-
-<p>再有一步我们就知道客户端的连接是怎么建立的啦，下面贴出 Client.Connection 类中的 setupConnection() 方法：</p>
-
-<pre><code>  private synchronized void setupConnection() throws IOException {
-      short ioFailures = 0;
-      short timeoutFailures = 0;
-      while (true) {
-        try {
-          this.socket = socketFactory.createSocket(); //终于看到创建socket的方法了
-          this.socket.setTcpNoDelay(tcpNoDelay);
-         •••
-          // 设置连接超时为20s
-          NetUtils.connect(this.socket, remoteId.getAddress(), 20000);
-          this.socket.setSoTimeout(pingInterval);
-          return;
-        } catch (SocketTimeoutException toe) {
-          /* 设置最多连接重试为45次。
-           * 总共有20s*45 = 15 分钟的重试时间。
-           */
-          handleConnectionFailure(timeoutFailures++, 45, toe);
-        } catch (IOException ie) {
-          handleConnectionFailure(ioFailures++, maxRetries, ie);
-        }
-      }
-    }
-
-</code></pre>
-
-<p>终于，我们知道了客户端的连接是怎样建立的了，其实就是创建一个普通的 socket 进行通信。</p>
-
-<h3 id="toc_10">3.2 客户端是怎样给服务端发送数据的？ </h3>
-
-<p>下面贴出 Client.Connection 类的 sendParam() 方法吧：</p>
-
-<pre><code>public void sendParam(Call call) {
-      if (shouldCloseConnection.get()) {
-        return;
-      }
-      DataOutputBuffer d=null;
-      try {
-        synchronized (this.out) {
-          if (LOG.isDebugEnabled())
-            LOG.debug(getName() + &quot; sending #&quot; + call.id);
-          //创建一个缓冲区
-          d = new DataOutputBuffer();
-          d.writeInt(call.id);
-          call.param.write(d);
-          byte[] data = d.getData();
-          int dataLength = d.getLength();
-          out.writeInt(dataLength);        //首先写出数据的长度
-          out.write(data, 0, dataLength); //向服务端写数据
-          out.flush();
-        }
-      } catch(IOException e) {
-        markClosed(e);
-      } finally {
-        IOUtils.closeStream(d);
-      }
-    }  
-
-</code></pre>
-
-<h3 id="toc_11">3.3 客户端是怎样获取服务端的返回数据的？ </h3>
-
-<p>下面贴出 Client.Connection 类和 Client.Call 类中的相关方法：</p>
-
-<pre><code>方法一：  
-  public void run() {
-      •••
-      while (waitForWork()) {
-        receiveResponse();  //具体的处理方法
-      }
-      close();
-     •••
-}
-
-方法二：
-private void receiveResponse() {
-      if (shouldCloseConnection.get()) {
-        return;
-      }
-      touch();
-      try {
-        int id = in.readInt();                    // 阻塞读取id
-        if (LOG.isDebugEnabled())
-          LOG.debug(getName() + &quot; got value #&quot; + id);
-          Call call = calls.get(id);    //在calls池中找到发送时的那个对象
-        int state = in.readInt();     // 阻塞读取call对象的状态
-        if (state == Status.SUCCESS.state) {
-          Writable value = ReflectionUtils.newInstance(valueClass, conf);
-          value.readFields(in);           // 读取数据
-        //将读取到的值赋给call对象，同时唤醒Client等待线程，贴出setValue()代码方法三
-          call.setValue(value);              
-          calls.remove(id);               //删除已处理的call    
-        } else if (state == Status.ERROR.state) {
-        •••
-        } else if (state == Status.FATAL.state) {
-        •••
-        }
-      } catch (IOException e) {
-        markClosed(e);
-      }
-}
-
-方法三：
-public synchronized void setValue(Writable value) {
-      this.value = value;
-      callComplete();   //具体实现
-}
-protected synchronized void callComplete() {
-      this.done = true;
-      notify();         // 唤醒client等待线程
-    }
-
-</code></pre>
-
-<p>完成的功能主要是：启动一个处理线程，读取从服务端传来的 call 对象，将 call 对象读取完毕后，唤醒 client 处理线程。就这么简单，客户端就获取了服务端返回的数据了哦~。客户端的源码分析就到这里了哦，下面我们来分析 Server 端的源码吧。</p>
-
-<h3 id="toc_12">3.4 ipc.Server 源码分析</h3>
-
-<p>为了让大家对 ipc.Server 有个初步的了解，我们先分析一下它的几个内部类吧：</p>
-
-<p><strong>Call</strong> ：用于存储客户端发来的请求<br/>
-<strong>Listener</strong> ： 监听类，用于监听客户端发来的请求，同时 Listener 内部还有一个静态类，Listener.Reader，当监听器监听到用户请求，便让 Reader 读取用户请求。<br/>
-<strong>Responder</strong> ：响应 RPC 请求类，请求处理完毕，由 Responder 发送给请求客户端。<br/>
-<strong>Connection</strong> ：连接类，真正的客户端请求读取逻辑在这个类中。<br/>
-<strong>Handler</strong> ：请求处理类，会循环阻塞读取 callQueue 中的 call 对象，并对其进行操作。</p>
-
-<pre><code>private void initialize(Configuration conf) throws IOException {
-   •••
-    // 创建 rpc server
-    InetSocketAddress dnSocketAddr = getServiceRpcServerAddress(conf);
-    if (dnSocketAddr != null) {
-      int serviceHandlerCount =
-        conf.getInt(DFSConfigKeys.DFS_NAMENODE_SERVICE_HANDLER_COUNT_KEY,
-                    DFSConfigKeys.DFS_NAMENODE_SERVICE_HANDLER_COUNT_DEFAULT);
-      //获得serviceRpcServer
-      this.serviceRpcServer = RPC.getServer(this, dnSocketAddr.getHostName(), 
-          dnSocketAddr.getPort(), serviceHandlerCount,
-          false, conf, namesystem.getDelegationTokenSecretManager());
-      this.serviceRPCAddress = this.serviceRpcServer.getListenerAddress();
-      setRpcServiceServerAddress(conf);
-}
-//获得server
-    this.server = RPC.getServer(this, socAddr.getHostName(),
-        socAddr.getPort(), handlerCount, false, conf, namesystem
-        .getDelegationTokenSecretManager());
-
-   •••
-    this.server.start();  //启动 RPC server   Clients只允许连接该server
-    if (serviceRpcServer != null) {
-      serviceRpcServer.start();  //启动 RPC serviceRpcServer 为HDFS服务的server
-    }
-    startTrashEmptier(conf);
-  }
-
-</code></pre>
-
-<p>查看 Namenode 初始化源码得知：RPC 的 server 对象是通过 ipc.RPC 类的 getServer() 方法获得的。下面咱们去看看 ipc.RPC 类中的 getServer() 源码吧：</p>
-
-<pre><code>public static Server getServer(final Object instance, final String bindAddress, final int port,
-                                 final int numHandlers,
-                                 final boolean verbose, Configuration conf,
-                                 SecretManager&lt;? extends TokenIdentifier&gt; secretManager) 
-    throws IOException {
-    return new Server(instance, conf, bindAddress, port, numHandlers, verbose, secretManager);
-  }
-
-</code></pre>
-
-<p>这时我们发现 getServer()是一个创建 Server 对象的工厂方法，但创建的却是 RPC.Server 类的对象。哈哈，现在你明白了我前面说的 “RPC.Server 是 ipc.Server 的实现类” 了吧。不过 RPC.Server 的构造函数还是调用了 ipc.Server 类的构造函数的，因篇幅所限，就不贴出相关源码了。</p>
-
-<p>初始化 Server 后，Server 端就运行起来了，看看 ipc.Server 的 start() 源码吧：</p>
-
-<pre><code>  /** 启动服务 */
-  public synchronized void start() {
-    responder.start();  //启动responder
-    listener.start();   //启动listener
-    handlers = new Handler[handlerCount];
-
-    for (int i = 0; i &lt; handlerCount; i++) {
-      handlers[i] = new Handler(i);
-      handlers[i].start();   //逐个启动Handler
-    }
-  }
-
-</code></pre>
-
-<p>分析过 ipc.Client 源码后，我们知道 Client 端的底层通信直接采用了阻塞式 IO 编程，当时我们曾做出猜测：Server 端是不是也采用了阻塞式 IO。现在我们仔细地分析一下吧，如果 Server 端也采用阻塞式 IO，当连接进来的 Client 端很多时，势必会影响 Server 端的性能。hadoop 的实现者们考虑到了这点，所以他们采用了 java  NIO 来实现 Server 端，那 Server 端采用 java NIO 是怎么建立连接的呢？分析源码得知，Server 端采用 Listener 监听客户端的连接，下面先分析一下 Listener 的构造函数吧：</p>
-
-<pre><code>    public Listener() throws IOException {
-      address = new InetSocketAddress(bindAddress, port);
-      // 创建ServerSocketChannel,并设置成非阻塞式
-      acceptChannel = ServerSocketChannel.open();
-      acceptChannel.configureBlocking(false);
-
-      // 将server socket绑定到本地端口
-      bind(acceptChannel.socket(), address, backlogLength);
-      port = acceptChannel.socket().getLocalPort(); 
-      // 获得一个selector
-      selector= Selector.open();
-      readers = new Reader[readThreads];
-      readPool = Executors.newFixedThreadPool(readThreads);
-      //启动多个reader线程，为了防止请求多时服务端响应延时的问题
-      for (int i = 0; i &lt; readThreads; i++) {       
-        Selector readSelector = Selector.open();
-        Reader reader = new Reader(readSelector);
-        readers[i] = reader;
-        readPool.execute(reader);
-      }
-      // 注册连接事件
-      acceptChannel.register(selector, SelectionKey.OP_ACCEPT);
-      this.setName(&quot;IPC Server listener on &quot; + port);
-      this.setDaemon(true);
-    }
-
-</code></pre>
-
-<p>在启动 Listener 线程时，服务端会一直等待客户端的连接，下面贴出 Server.Listener 类的 run() 方法：</p>
-
-<pre><code>  public void run() {
-     •••
-      while (running) {
-        SelectionKey key = null;
-        try {
-          selector.select();
-          Iterator&lt;SelectionKey&gt; iter = selector.selectedKeys().iterator();
-          while (iter.hasNext()) {
-            key = iter.next();
-            iter.remove();
-            try {
-              if (key.isValid()) {
-                if (key.isAcceptable())
-                  doAccept(key);     //具体的连接方法
-              }
-            } catch (IOException e) {
-            }
-            key = null;
-          }
-        } catch (OutOfMemoryError e) {
-       •••         
-    }
-
-</code></pre>
-
-<p>下面贴出 Server.Listener 类中 doAccept() 方法中的关键源码吧：</p>
-
-<pre><code>    void doAccept(SelectionKey key) throws IOException,  OutOfMemoryError {
-      Connection c = null;
-      ServerSocketChannel server = (ServerSocketChannel) key.channel();
-      SocketChannel channel;
-      while ((channel = server.accept()) != null) { //建立连接
-        channel.configureBlocking(false);
-        channel.socket().setTcpNoDelay(tcpNoDelay);
-        Reader reader = getReader();  //从readers池中获得一个reader
-        try {
-          reader.startAdd(); // 激活readSelector，设置adding为true
-          SelectionKey readKey = reader.registerChannel(channel);//将读事件设置成兴趣事件
-          c = new Connection(readKey, channel, System.currentTimeMillis());//创建一个连接对象
-          readKey.attach(c);   //将connection对象注入readKey
-          synchronized (connectionList) {
-            connectionList.add(numConnections, c);
-            numConnections++;
-          }
-        ••• 
-        } finally {
-//设置adding为false，采用notify()唤醒一个reader,其实代码十三中启动的每个reader都使
-//用了wait()方法等待。因篇幅有限，就不贴出源码了。
-          reader.finishAdd();
-        }
-      }
-    }
-
-</code></pre>
-
-<p>当 reader 被唤醒，reader 接着执行 doRead() 方法。</p>
-
-<p>下面贴出 Server.Listener.Reader 类中的 doRead() 方法和 Server.Connection 类中的 readAndProcess() 方法源码：</p>
-
-<pre><code>方法一：   
- void doRead(SelectionKey key) throws InterruptedException {
-      int count = 0;
-      Connection c = (Connection)key.attachment();  //获得connection对象
-      if (c == null) {
-        return;  
-      }
-      c.setLastContact(System.currentTimeMillis());
-      try {
-        count = c.readAndProcess();    // 接受并处理请求  
-      } catch (InterruptedException ieo) {
-       •••
-      }
-     •••    
-}
-
-方法二：
-public int readAndProcess() throws IOException, InterruptedException {
-      while (true) {
-        •••
-        if (!rpcHeaderRead) {
-          if (rpcHeaderBuffer == null) {
-            rpcHeaderBuffer = ByteBuffer.allocate(2);
-          }
-         //读取请求头
-          count = channelRead(channel, rpcHeaderBuffer);
-          if (count &lt; 0 || rpcHeaderBuffer.remaining() &gt; 0) {
-            return count;
-          }
-        // 读取请求版本号  
-          int version = rpcHeaderBuffer.get(0);
-          byte[] method = new byte[] {rpcHeaderBuffer.get(1)};
-        •••  
-
-          data = ByteBuffer.allocate(dataLength);
-        }
-        // 读取请求  
-        count = channelRead(channel, data);
-
-        if (data.remaining() == 0) {
-         •••
-          if (useSasl) {
-         •••
-          } else {
-            processOneRpc(data.array());//处理请求
-          }
-        •••
-          }
-        } 
-        return count;
-      }
-    }
-
-</code></pre>
-
-<p>下面贴出 Server.Connection 类中的 processOneRpc() 方法和 processData() 方法的源码。</p>
-
-<pre><code>方法一：   
- private void processOneRpc(byte[] buf) throws IOException,
-        InterruptedException {
-      if (headerRead) {
-        processData(buf);
-      } else {
-        processHeader(buf);
-        headerRead = true;
-        if (!authorizeConnection()) {
-          throw new AccessControlException(&quot;Connection from &quot; + this
-              + &quot; for protocol &quot; + header.getProtocol()
-              + &quot; is unauthorized for user &quot; + user);
-        }
-      }
-}
-方法二：
-    private void processData(byte[] buf) throws  IOException, InterruptedException {
-      DataInputStream dis =
-        new DataInputStream(new ByteArrayInputStream(buf));
-      int id = dis.readInt();      // 尝试读取id
-      Writable param = ReflectionUtils.newInstance(paramClass, conf);//读取参数
-      param.readFields(dis);        
-
-      Call call = new Call(id, param, this);  //封装成call
-      callQueue.put(call);   // 将call存入callQueue
-      incRpcCount();  // 增加rpc请求的计数
-    }
-
-</code></pre>
-
-<h2 id="toc_13">4. RPC 与 web service</h2>
-
-<p>RPC：</p>
-
-<p><img src="http://static.oschina.net/uploads/space/2016/0714/114103_HQGm_2243330.png" alt=""/></p>
-
-<p>Web service<img src="http://static.oschina.net/uploads/space/2016/0714/114022_sKwT_2243330.png" alt=""/></p>
-
-<p>web service 接口就是 RPC 中的 stub 组件，规定了 server 能够提供的服务（web service），这在 server 和 client 上是一致的，但是也是跨语言跨平台的。同时，由于 web service 规范中的 WSDL 文件的存在，现在各平台的 web service 框架，都可以基于 WSDL 文件，自动生成 web service 接口 。</p>
-
-<p>其实两者差不多，只是传输的协议不同。</p>
-
-<h2 id="toc_14">Reference：</h2>
-
-<p>1. <a href="http://www.cnblogs.com/LBSer/p/4853234.html">http://www.cnblogs.com/LBSer/p/4853234.html</a><br/>
-2. <a href="http://weixiaolu.iteye.com/blog/1504898">http://weixiaolu.iteye.com/blog/1504898</a><br/>
-3. <a href="http://kyfxbl.iteye.com/blog/1745550">http://kyfxbl.iteye.com/blog/1745550</a></p>
+<p>要减少 redis 中的数据，除了选用合适的数据类型、利用共享对象等，还有一点是要设置合理的数据回收策略（maxmemory-policy），当内存达到一定量后，根据不同的优先级对内存进行回收。</p>
 
                         
                       </div>
@@ -860,10 +710,10 @@ public int readAndProcess() throws IOException, InterruptedException {
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/5/28</span>
+                    <span class="date">2018/6/18</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Microservice.html'>Microservice</a></span>
+          					    <span class="posted-in"><a href='Middleware.html'>Middleware</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -953,31 +803,31 @@ public int readAndProcess() throws IOException, InterruptedException {
 	      
 		      
 			      <li class="post">
-			        <a href="15459058392039.html">Reliable Domain Events</a>
+			        <a href="15517999043443.html">The Art of Crafting Architectural Diagrams</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
+			        <a href="15517997955971.html">为什么说我们需要软件架构图？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
+			        <a href="15516128677869.html">DNS Servers That Offer Privacy and Filtering</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
+			        <a href="15516123108194.html">Airbnb's Migration from Monolith to Services</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
+			        <a href="15516097487470.html">Events As First-Class Citizens</a>
 			      </li>
 		     
 		  

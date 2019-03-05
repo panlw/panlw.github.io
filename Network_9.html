@@ -105,397 +105,452 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15301794059091.html">
+                <a class="clearlink" href="15301811361753.html">
                 
-                  <h1>架构设计：负载均衡层设计方案（2）——Nginx 安装</h1>
+                  <h1>架构设计：负载均衡层设计方案（5）——LVS单节点安装</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://blog.csdn.net/yinwenjie/article/details/46620711">https://blog.csdn.net/yinwenjie/article/details/46620711</a></p>
+<p><a href="https://blog.csdn.net/yinwenjie/article/details/47010569">https://blog.csdn.net/yinwenjie/article/details/47010569</a></p>
 </blockquote>
 
-<p>前一篇文章<a href="http://blog.csdn.net/yinwenjie/article/details/46605451">《架构设计：负载均衡层设计方案（1）——负载场景和解决方式》</a>中我们描述了要搭设负载均衡层的业务场景和负载均衡层搭建和扩展思路。从这篇文章开始的后几篇文章，我们将详细介绍 Nginx、LVS 和 Nginx+Keepalived、LVS+Keepalived 和 LVS+Nginx+Keepalived 的安装细节，以及它们的性能优化方式。</p>
+<h1 id="toc_0"><a></a>1、概述</h1>
 
-<p>Nginx 和 LVS 都是可以独立工作的，Keepalived 作为检测机制，不但可以和 Nginx、LVS 集成也可以和其他软件集成形成高可用方案（例如可以和 MySQL 数据库集成、可以和 Jetty 服务器集成、还可以和自己写的程序集成）。所以首先我们先来详细讲述 Nginx 和 LVS 的核心工作原理、安装过程和优化方式，再分别讲解他们和 Keepalived 的集成方式。这样的方式应该可以使您更快的掌握其中的核心，并能最快的融会贯通。</p>
+<p>上篇文章《架构设计：负载均衡层设计方案（4）——LVS 原理》（<a href="http://blog.csdn.net/yinwenjie/article/details/46845997">http://blog.csdn.net/yinwenjie/article/details/46845997</a>），我们介绍了 LVS 的工作模式，和每一种模式的具体工作过程。这篇文章中，我们将介绍单一 LVS 节点的安装方式。比起上一篇文章，这一片要提到的安装和配置就是非常简单的了，只要您了解原理，实践就是从容的事情。</p>
 
-<h1 id="toc_0"><a></a>1、Nginx 重要算法介绍</h1>
+<p>您可以在您的电脑上使用 VMware 虚拟机，按照下面介绍的过程一步一步实践。我们将采用两台虚拟机，一台作为 LVS 节点，另外一台安装了 Nginx 的服务器作为 Real Server 节点。</p>
 
-<p>Nginx 是什么，请自行百度。我们先介绍几个关键的算法，如果您还不了解这些算法在 Nginx 中所起的作用，请不要着急，本文后半部分将说明它们的作用。</p>
+<h1 id="toc_1"><a></a>2、LVS-NAT 模式安装</h1>
 
-<h2 id="toc_1"><a></a>1.1、一致性 Hash 算法</h2>
+<h2 id="toc_2"><a></a>2.1、准备工作——LVS Server：</h2>
 
-<p><img src="https://img-blog.csdn.net/20150703172857890" alt=""/></p>
-
-<p>一致性 Hash 算法是现代系统架构中的最关键算法之一，在分布式计算系统、分布式存储系统、数据分析等众多领域中广泛应用。针对这个系列的博文，在负载均衡层、业务通信层、数据存储层都会有他的身影。</p>
+<p>LVS Server：LSV Server 有两张网卡。</p>
 
 <ul>
-<li><p>hash 算法的关键在于它能够根据不同的属性数据，生成一串不相同的 hash 值，并且能够将这个 hash 值转换为</p>
+<li>  eth0：192.168.100.10：这张网卡对应一个封闭的内网，不能访问外网资源，外网也不能直接通过这个 IP 访问这台主机</li>
+<li><p>eth1：192.168.220.100：这张网卡设置的 IP 可以访问外网，也可以被外网访问。eth1 的网关：192.168.220.1。</p>
 
-<p><span class="MathJax" id="MathJax-Element-1-Frame" tabindex="0" style="text-align: center; position: relative;" data-mathml="<math xmlns=&quot;http://www.w3.org/1998/Math/MathML&quot; display=&quot;block&quot;><nobr aria-hidden="true">0—232−1</nobr><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><mn>0</mn><mo>—</mo><msup><mn>2</mn><mrow class="MJX-TeXAtom-ORD"><mn>32</mn></mrow></msup><mo>−</mo><mn>1</mn></math><script type="math/tex; mode=display" id="MathJax-Element-1">0 — 2<sup>{32}-1</script>范围整数（即上图中的圆环）<mn>0</mn><mo>&amp;#x2014;</mo><msup><mn>2</mn>&lt;mrow</sup> class=&quot;MJX-TeXAtom-ORD&quot;&gt;<mn>32</mn></mrow></msup><mo>&amp;#x2212;</mo><mn>1</mn></math>&quot; role=&quot;presentation&quot;&gt;</span></p></li>
-<li><p>一台服务器的某个或者某一些属性当然也可以进行 hash 计算（通常是这个服务器的 IP 地址和开放端口），并且根据计算分布在这个圆环上的某一个点。也就是图中圆环上的蓝色点。</p></li>
-<li><p>一个处理请求当然也可以根据这个请求的某一个或者某一些属性进行 hash 计算（可以是这个请求的 IP、端口、cookie 值、URL 值或者请求时间等等），并且根据计算记过分布在这个圆环上的某一个点上。也就是上图圆环上的黄色点。</p></li>
-<li><p>我们约定落在某一个蓝点 A 左侧和蓝点 B 右侧的黄色点所代表的请求，都有蓝点 A 所代表的服务器进行处理，这样就完成解决了 “谁来处理” 的问题。在蓝色点稳定存在的前提下，来自于同一个 Hash 约定的请求所落在的位置都是一样的，这就保证了服务处理映射的稳定性。</p></li>
-<li><p>当某一个蓝色点由于某种原因下线，其所影响到的黄色点也是有限的。即下一次客户端的请求将由其他的蓝色点所代表的服务器进行处理。</p></li>
+<pre><code>以下是设置的eth0    ip信息，
+[root@lvs1 ~]# cat /etc/sysconfig/network-scripts/ifcfg-eth0
+DEVICE=&quot;eth0&quot;
+BOOTPROTO=&quot;static&quot;
+HWADDR=&quot;00:0C:29:3E:4A:4F&quot;
+ONBOOT=&quot;yes&quot;
+TYPE=&quot;Ethernet&quot;
+IPADDR=&quot;192.168.100.10&quot;
+NETMASK=&quot;255.255.255.0&quot;
+====================================
+以下是设置的eth1  ip信息
+[root@lvs1 ~]# cat /etc/sysconfig/network-scripts/ifcfg-eth1
+DEVICE=&quot;eth1&quot;
+BOOTPROTO=&quot;static&quot;
+HWADDR=&quot;00:0C:29:3E:4A:59&quot;
+ONBOOT=&quot;yes&quot;
+TYPE=&quot;Ethernet&quot;
+IPADDR=&quot;192.168.220.100&quot;
+NETMASK=&quot;255.255.255.0&quot;
+GATEWAY=&quot;192.168.220.1&quot;
+
+</code></pre></li>
 </ul>
 
-<h2 id="toc_2"><a></a>1.2、轮询与加权轮询</h2>
+<p>记得设置完成后，要重启 network 服务：</p>
 
-<p><img src="https://img-blog.csdn.net/20150705093244323" alt=""/></p>
-
-<ul>
-<li><p>当有任务需要传递到下层节点进行处理时，任务来源点会按照一个固定的顺序，将任务依次分配到下层节点，如果下层可用的节点数量为 X，那么第 N 个任务的分配规则为：</p>
-
-<p><span class="MathJax" id="MathJax-Element-2-Frame" tabindex="0" style="text-align: center; position: relative;" data-mathml="<math xmlns=&quot;http://www.w3.org/1998/Math/MathML&quot; display=&quot;block&quot;><nobr aria-hidden="true">目标节点 =(NmodX)+1</nobr> <math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><mrow class="MJX-TeXAtom-ORD"><mo>目</mo></mrow><mrow class="MJX-TeXAtom-ORD"><mo>标</mo></mrow><mrow class="MJX-TeXAtom-ORD"><mo>节</mo></mrow><mrow class="MJX-TeXAtom-ORD"><mo>点</mo></mrow> <mo>=</mo><mo stretchy="false">(</mo><mi>N</mi><mi>m</mi><mi>o</mi><mi>d</mi><mi>X</mi><mo stretchy="false">)</mo><mo>+</mo><mn>1</mn></math> <script type="math/tex; mode=display" id="MathJax-Element-2">目标节点 = (N mod X) + 1</script><mrow class=&quot;MJX-TeXAtom-ORD&quot;><mo>&amp;#x76EE;</mo></mrow><mrow class=&quot;MJX-TeXAtom-ORD&quot;><mo>&amp;#x6807;</mo></mrow><mrow class=&quot;MJX-TeXAtom-ORD&quot;><mo>&amp;#x8282;</mo></mrow><mrow class=&quot;MJX-TeXAtom-ORD&quot;><mo>&amp;#x70B9;</mo></mrow><mo>=</mo><mo stretchy=&quot;false&quot;>(</mo><mi>N</mi><mi>m</mi><mi>o</mi><mi>d</mi><mi>X</mi><mo stretchy=&quot;false&quot;>)</mo><mo>+</mo><mn>1</mn></math>&quot; role=&quot;presentation&quot;&gt;</span></p></li>
-<li><p>轮询处理在很多架构思想中都有体现：DNS 解析多 IP 时、LVS 向下转发消息时、Nginx 向下转发消息时、Zookeeper 向计算节点分配任务时。了解基本的轮询过程有助于我们在进行软件架构设计时进行思想借鉴。</p></li>
-<li><p>但是上面的轮询方式是有缺陷的，由于各种客观原因我们可能无法保证任务处理节点的处理能力都是一样的（CPU、IO、内存频率等不同）。所以 A 节点业务能同时处理 100 个任务，但是 B 节点可能同时只能处理 50 个任务。</p></li>
-<li><p>在这种情况下我们需要依据下层节点某个或者多个属性设置权值。这个属性可能是网络带宽、CPU 繁忙程度或者就是各一个固定的权值。</p></li>
-</ul>
-
-<p>那么加权轮询的分配依据是什么呢？有很多分配依据，例如：概率算法（此算法中包括蒙特卡罗算法，拉斯维加斯算法和舍伍德算法，在网络上有很多介绍资料）、最大公约数法。这里我们对最大公约数算法进行介绍，因为该方法简单实用：</p>
-
-<p><img src="https://img-blog.csdn.net/20150705113306874" alt=""/></p>
-
-<ul>
-<li><p>首先按照某种规则计算得到每个处理节点的权值，上文已经说到计算规则可能是这个服务节点的 CPU 利用率、网络占用情况或者在配置文件中的固定权重。</p></li>
-<li><p>求这些权值的最大公约数，在上图中三个节点的权值分别是 100、80、60. 那么求得的最大公约数就是 20（如果您忘记了最大公约数的定义，请自行复习）。那么这三个节点的被除结果分别是 5、4、3，求和值为 12。</p></li>
-<li><p>得到以上的计算结果，就可以开始进行请求分配了，公式同样为：</p>
-
-<p><span class="MathJax" id="MathJax-Element-3-Frame" tabindex="0" style="text-align: center; position: relative;" data-mathml="<math xmlns=&quot;http://www.w3.org/1998/Math/MathML&quot; display=&quot;block&quot;><nobr aria-hidden="true">(NmodX)+1=Y</nobr><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><mo stretchy="false">(</mo><mi>N</mi><mi>m</mi><mi>o</mi><mi>d</mi><mi>X</mi><mo stretchy="false">)</mo><mo>+</mo><mn>1</mn><mo>=</mo><mi>Y</mi></math><script type="math/tex; mode=display" id="MathJax-Element-3">(N mod X) + 1 = Y</script><br/>
-其中 N 表示当前的第 N 次任务；X 表示整除后的求和结果；Y 为处理节点。<mo stretchy=&quot;false&quot;>(</mo><mi>N</mi><mi>m</mi><mi>o</mi><mi>d</mi><mi>X</mi><mo stretchy=&quot;false&quot;>)</mo><mo>+</mo><mn>1</mn><mo>=</mo><mi>Y</mi></math>&quot; role=&quot;presentation&quot;&gt;</span></p></li>
-</ul>
-
-<blockquote>
-<p>总结一下：加权轮询是轮询方案的补充，通过将处理节点的属性转换成权值可以有效的描述处理节点的处理能力，实现更科学的处理任务分配。加权轮询的关键在于加权算法，最大公约数算法简单实用，定位效率高。</p>
-</blockquote>
-
-<h1 id="toc_3"><a></a>2、Nginx 的安装</h1>
-
-<h2 id="toc_4"><a></a>2.1、准备工作</h2>
-
-<p>操作系统：centOS 6.5。</p>
-
-<p>Nginx 的下载地址：<a href="http://nginx.org/en/download.html">http://nginx.org/en/download.html</a>。请下载 stable 的版本 1.8.0。后续 Nginx 肯定还会有升级，官网上面会持续更新 stable version。</p>
-
-<p>最小必备组件：<br/>
-yum -y install make zlib zlib-devel gcc gcc-c++ ssh libtool</p>
-
-<h2 id="toc_5"><a></a>2.2、正式安装</h2>
-
-<ul>
-<li><p>下载 nginx1.8.0 版本<br/>
-<img src="https://img-blog.csdn.net/20150705120030369" alt=""/></p></li>
-<li><p>解压 nginx 的 tar 文件<br/>
-<img src="https://img-blog.csdn.net/20150705120225553" alt=""/></p></li>
-<li><p>进行源码编译<br/>
-<img src="https://img-blog.csdn.net/20150705120707338" alt=""/></p></li>
-</ul>
-
-<p>我们看到这时编译检查报错，报错写得很清楚，为了支持 HTTP 重写模块，Nginx 需要 PCRElib 的支持。那我们到 <a href="http://ncu.dl.sourceforge.net/project/pcre/pcre/8.37/pcre-8.37.tar.gz">http://ncu.dl.sourceforge.net/project/pcre/pcre/8.37/pcre-8.37.tar.gz</a> 下载一个稳定的 pcre 版本编译安装即可（不一定是 8.37 版本）。</p>
-
-<ul>
-<li><p>再进行源码编译安装<br/>
-./configure –prefix=/usr/nginx-1.8.0<br/>
-make &amp;&amp; make install<br/>
-<img src="https://img-blog.csdn.net/20150705130214392" alt=""/></p></li>
-<li><p>整个验证、编译、安装过程不应该报任何错误。如果您使用 prefix 设置了安装目标目录，那么可能您还需要在 / etc/profix 文件中设置环境变量：<br/>
-<img src="https://img-blog.csdn.net/20150705130747519" alt=""/></p></li>
-</ul>
-
-<h2 id="toc_6"><a></a>2.3、安装验证和启动</h2>
-
-<p>下面介绍几个 nginx 常用的命令，如果您可以正常使用这些命令，那么说明 nginx 已经安装成功了。</p>
-
-<p>nginx：直接在命令行键入 nginx，就可以启动 nginx。</p>
-
-<p>nginx -t：检查配置文件是否正确。这个命令可以检查 nginx.conf 配置文件其格式、语法是否正确。如果配置文件存在错误，则会出现相应提示；如果 nginx.conf 文件正确，也会出现相应的成功提示。</p>
-
-<p>nginx -s reload：重加载 / 重启 nginx——以新的 nginx.conf 配置文件中的定义。</p>
-
-<p>nginx -s stop：停止 nginx。</p>
-
-<h1 id="toc_7"><a></a>3、进阶</h1>
-
-<p>Nginx 在安装完成后，不用更改任何配置信息就可以直接运行。但是很显然这不会满足我们生产环境的要求。所以我们要重点介绍 Nginx 的配置文件，以及其中重要的配置项的含义。</p>
-
-<h2 id="toc_8"><a></a>3.1、重要配置项</h2>
-
-<p>如果您是按照本文的描述方式安装的 Nginx，那么 Nginx 的主配置文件在：/usr/nginx-1.8.0/conf/nginx.conf 的位置，如果您在编译安装的时候并没有指定安装目录，那么 Nginx 的主配置文件在：/usr/local/nginx/conf/nginx.conf 的位置。当然您还可以在启动 Nginx 的时候使用 -c 的参数人为指定 Nginx 的配置文件位置（但是这种方式不建议）。</p>
-
-<p>我们重新整理了 Nginx 的配置文件，将其分块，以便于讲解：</p>
-
-<pre><code>#================================以下是全局配置项
-#指定运行nginx的用户和用户组，默认情况下该选项关闭（关闭的情况就是nobody）
-#user  nobody nobody;     
-#运行nginx的进程数量，后文详细讲解
-worker_processes  1;      
-#nginx运行错误的日志存放位置。当然您还可以指定错误级别
-#error_log  logs/error.log;    
-#error_log  logs/error.log  notice;
-#error_log  logs/error.log  info;
-#指定主进程id文件的存放位置，虽然worker_processes != 1的情况下，会有很多进程，管理进程只有一个
-#pid        logs/nginx.pid;    
-
-events {
-    #每一个进程可同时建立的连接数量，后问详细讲解
-    worker_connections  1024;   
-    #连接规则，可以采用[kqueue rtsig epoll select poll eventport ]，后文详细讲解
-    use   epoll;    
-}
-#================================以上是全局配置项
-
-http {
-    #================================以下是Nginx后端服务配置项
-    upstream backendserver1 {
-        #nginx向后端服务器分配请求任务的方式，默认为轮询；如果指定了ip_hash，就是hash算法（上文介绍的算法内容）
-        #ip_hash    
-        #后端服务器 ip:port ，如果有多个服务节点，这里就配置多个
-        server 192.168.220.131:8080; 
-        server 192.168.220.132:8080;    
-        #backup表示，这个是一个备份节点，只有当所有节点失效后，nginx才会往这个节点分配请求任务
-        #server 192.168.220.133:8080 backup;        
-        #weight，固定权重，还记得我们上文提到的加权轮询方式吧。
-        #server 192.168.220.134:8080 weight=100;    
-    }
-    #================================以上是Nginx后端服务配置项
-
-    #=================================================以下是 http 协议主配置
-    #安装nginx后，在conf目录下除了nginx.conf主配置文件以外，有很多模板配置文件，这里就是导入这些模板文件
-    include       mime.types;
-    #HTTP核心模块指令，这里设定默认类型为二进制流，也就是当文件类型未定义时使用这种方式
-    default_type  application/octet-stream;     
-    #日志格式
-    #log_format  main  &#39;$remote_addr - $remote_user [$time_local] &quot;$request&quot; &#39;   
-                      &#39;$status $body_bytes_sent &quot;$http_referer&quot; &#39;
-                      &#39;&quot;$http_user_agent&quot; &quot;$http_x_forwarded_for&quot;&#39;;
-
-    #日志文件存放的位置
-    #access_log  logs/access.log  main;         
-
-    #sendfile 规则开启
-    sendfile        on;
-    #指定一个连接的等待时间（单位秒），如果超过等待时间，连接就会断掉。注意一定要设置，否则高并发情况下会产生性能问题。
-    keepalive_timeout  65;                      
-
-    #开启数据压缩，后文详细介绍
-    gzip  on;                                   
-    #=================================================以上是 http 协议主配置
-
-    #=================================================以下是一个服务实例的配置
-    server {
-        #这个代理实例的监听端口
-        listen       80;
-        #server_name 取个唯一的实例名都要想半天？
-        server_name  localhost; 
-        #文字格式
-        charset utf-8;  
-        #access_log  logs/host.access.log  main;    
-
-        #location将按照规则分流满足条件的URL。&quot;location /&quot;您可以理解为“默认分流位置”。
-        location / {
-            #root目录，这个html表示nginx主安装目录下的“html”目录。
-            root   html;   
-            #目录中的默认展示页面
-            index  index.html index.htm;        
-        }
-
-        #location支持正则表达式，“~” 表示匹配正则表达式。
-        location ~ ^/business/ {   
-            #方向代理。后文详细讲解。
-            proxy_pass http://backendserver1;   
-        }
-
-        #redirect server error pages to the static page /50x.html
-        #error_page  404              /404.html;
-        error_page   500 502 503 504  /50x.html;
-        location = /50x.html {
-            root   html;
-        }
-    }
-    #=================================================以上是一个服务实例的配置
-}
+<pre><code>[root@lvs1 ~]# service network restart
 
 </code></pre>
 
-<p>以上是一个完整的 nginx 配置信息，可以直接粘贴使用，但不建议您这样做。因为上文中很多关键的配置属性都还没有讲解。这样粘贴复制不利于您的工作和学习。</p>
+<p>ping ping 更健康（说明到外网的网管工作是正常的）：</p>
 
-<h3 id="toc_9"><a></a>3.1.1、use [kqueue | rtsig | epoll | select | poll]</h3>
+<pre><code>[root@lvs1 ~]# ping 192.168.220.1
+PING 192.168.220.1 (192.168.220.1) 56(84) bytes of data.
+64 bytes from 192.168.220.1: icmp_seq=1 ttl=128 time=0.447 ms
+64 bytes from 192.168.220.1: icmp_seq=2 ttl=128 time=0.154 ms
 
-<p>科技在发展，社会在进步，满足摩尔定义的 IT 行业更是这样。以前所有的连接都是阻断式的（blocking I/O）也就是说一个 TCP 连接线程在发出 Request 后，代码就不会再往下执行了，直到得到远端的 Response 为止；服务器端也一样的，在处理完某一个客户端的 Request 之前，其他客户端的请求都会等待。这种处理方式使客户端和服务器端的通讯性能大打折扣。</p>
+</code></pre>
 
-<p>很明显多线程貌似能够解决这个问题：一个线程处理不了，我可以再开线程来处理啊。但是多线程是有局限性的：</p>
+<p>另外还可以通过 route 命令检查：</p>
 
-<ul>
-<li><p>创建一个线程会消耗有限的资源。以 JAVA JVM 为例，创建一个新的线程 JVM 会单独开放 1MB 的栈内存空间（通过 - Xss 参数可设置），虽然栈内存不受 - Xmx 和 - Xms 两个参数影响，但是可以说明线程的创建是需要消耗额外资源的。</p></li>
-<li><p>多线程工作时，计算机的 CPU 会耗费大量的资源让多线程在不同的状态下进行切换。在后续的文章中本书还会介绍依据这样的原理让计算机的 CPU 呈波形变化的编程方式。</p></li>
-<li><p>在 Linux 操作系统下，单个用户能够创建的线程和进程总数、整个操作系统能够创建的线程总数都是有限的。通过 limit -a 命令，您可以查看相关的内核参数。</p></li>
-<li><p>所以依靠线程来解决 bio 的问题是不靠谱的，只能起到缓解处理并行请求的作用。您可以想象一次并发 10 万个处理请求的问题，是不可能在计算机上同时创建 10 万个线程来解决的。</p></li>
-</ul>
+<pre><code>[root@lvs1 ~]# route
+Kernel IP routing table
+Destination     Gateway         Genmask         Flags Metric Ref    Use Iface
+192.168.100.0   *               255.255.255.0   U     1      0        0 eth0
+192.168.220.0   *               255.255.255.0   U     1      0        0 eth1
+default         192.168.220.1   0.0.0.0         UG    0      0        0 eth1
 
-<p>基于上面的描述，NIO（no blocking I/O）技术就这样诞生了。依靠 event loop 机制（想看这个机制的详细分析，请持续关注我的博客 <sup>_<sup>），单个线程可以同时处理多个</sup></sup> request 请求，并在处理完产生 response 的时候，回调相关的远程事件。根据 NIO 实现机制的不同，技术名称也就不同了。我要说什么，您，应该懂了。</p>
+</code></pre>
 
-<p>epoll、kqueue 等这些组件都是对多路复用网络 I/O 模型的实现，其中 epoll 是 poll 的升级版本，在 linux 环境下可以使用但限于 linux2.6 及以上版本。kqueue 用在 bsd 上使用。</p>
+<p>注意，route 表中有一项 eth1 的 default 的信息，指向 192.168.220.1。说明路由配置是正确的。</p>
 
-<h3 id="toc_10"><a></a>3.1.2、worker_processes 和 worker_connections</h3>
+<h2 id="toc_3"><a></a>2.2、准备工作——Real Server：</h2>
 
-<p><strong>worker_processes</strong>：操作系统启动多少个工作进程运行 Nginx。注意是工作进程，不是有多少个 nginx 工程。在 Nginx 运行的时候，会启动两种进程，一种是主进程 master process；一种是工作进程 worker process。例如我在配置文件中将 worker_processes 设置为 4，启动 Nginx 后，使用进程查看命令观察名字叫做 nginx 的进程信息，我会看到如下结果：</p>
-
-<p><img src="https://img-blog.csdn.net/20150707193821782" alt=""/></p>
-
-<p>图中可以看到 1 个 nginx 主进程，master process；还有四个工作进程，worker process。主进程负责监控端口，协调工作进程的工作状态，分配工作任务，工作进程负责进行任务处理。一般这个参数要和操作系统的 CPU 内核数成倍数。</p>
-
-<p><strong>worker_connections</strong>：这个属性是指单个工作进程可以允许同时建立外部连接的数量。无论这个连接是外部主动建立的，还是内部建立的。这里需要注意的是，一个工作进程建立一个连接后，进程将打开一个文件副本。所以这个数量还受<strong>操作系统设定的，进程最大可打开的文件数有关</strong>。网上 50% 的文章告诉了您这个事实，并要求您修改 worker_connections 属性的时候，一定要使用 ulimit -n 修改操作系统对进程最大文件数的限制，但是这样更改只能在当次用户的当次 shell 回话中起作用，并不是永久了。接着您继续 Google / 百度，发现 30% 的文章还告诉您，要想使 “进程最大可打开的文件数” 永久有效，还需要修改 / etc/security/limits.conf 这个主配置文件，但是您应该如何正确检查 “进程的最大可打开文件” 的方式，却没有说。</p>
-
-<p>下面本文告诉您全面的、正确的设置方式:</p>
+<p>Real Server：Real Server 有一张网卡，在一个封闭的内网环境中。</p>
 
 <ul>
-<li><p><strong>更改操作系统级别的 “进程最大可打开文件数” 的设置</strong>：<br/>
-首先您需要操作系统的 root 权限：</p>
+<li><p>eth0:192.168.100.11：这样 LVS Server 和 Real Server 就组成了一个相对封闭的局域网络。注意按照我们介绍的 NAT 原理，Real Server 的 eth0 的默认网关要设置成 Lvs Server：192.168.100.10.</p></li>
+<li><p>在 Real Server 上运行了一个 Nginx 程序，在 80 端口上。这样以便在后续的过程中，测试 LVS-NAT 的工作是否正常。</p></li>
+</ul>
 
-<blockquote>
-<p>叫您的操作系统管理员给您。</p>
-</blockquote>
+<p>以下是设置的 Real Server eth0 的 IP 信息：</p>
 
-<p>修改 limits.conf 主配置文件</p>
+<pre><code>[root@vm1 ~]# cat /etc/sysconfig/network-scripts/ifcfg-eth0 
+DEVICE=&quot;eth0&quot;
+BOOTPROTO=&quot;static&quot;
+HWADDR=&quot;00:0C:29:45:04:32&quot;
+ONBOOT=&quot;yes&quot;
+TYPE=&quot;Ethernet&quot;
+IPADDR=192.168.100.11
+NETMASK=255.255.255.0
+GATEWAY=&quot;192.168.100.10&quot;
 
-<blockquote>
-<p>vim /etc/security/limits.conf</p>
-</blockquote>
+</code></pre>
 
-<p>在主配置文件最后加入下面两句：</p>
+<p>一定注意 Real Server 的网管要设置到 LVS 的 IP：192.168.100.10。接着，看看 Nginx 是不是工作正常的：</p>
 
-<blockquote>
+<p><img src="https://img-blog.csdn.net/20150725111742203" alt=""/></p>
+
+<p>当然，同样的 ping ping 更健康：</p>
+
+<pre><code>[root@vm1 ~]# ping 192.168.100.10
+PING 192.168.100.10 (192.168.100.10) 56(84) bytes of data.
+64 bytes from 192.168.100.10: icmp_seq=1 ttl=64 time=0.259 ms
+64 bytes from 192.168.100.10: icmp_seq=2 ttl=64 time=0.215 ms
+64 bytes from 192.168.100.10: icmp_seq=3 ttl=64 time=0.227 ms
+
+</code></pre>
+
+<p>另外一个检查方式，也可以通过 route 命令：</p>
+
+<pre><code>[root@vm1 ~]# route
+Kernel IP routing table
+Destination     Gateway         Genmask         Flags Metric Ref    Use Iface
+192.168.100.0   *               255.255.255.0   U     1      0        0 eth0
+default         192.168.100.10  0.0.0.0         UG    0      0        0 eth0
+
+</code></pre>
+
+<p>注意，默认的路由指向 192.168.100.10。<br/>
+<strong>完成准备工作后，我们可以开始安装和配置 LVS 了。</strong></p>
+
+<h2 id="toc_4"><a></a>2.3、开始安装和配置 LVS-NAT 模式：</h2>
+
+<p>ipvsadm 是一个 LVS 的管理程序。我们队 LVS 的配置都是通过这个管理程序进行实现的。首先我们要安装 ipvsadm：</p>
+
+<pre><code>yum -y install ipvsadm
+
+</code></pre>
+
+<p>然后开始配置。首先我们要设置 LVS 机器支持 IP 转发功能。注意默认 IP 转发功能是关闭的，重启机器后，又会关闭：</p>
+
+<pre><code>[root@lvs1 ~]# echo 1 &gt;&gt; /proc/sys/net/ipv4/ip_forward
+
+</code></pre>
+
+<p>然后我们查看一下，是否改写成功：</p>
+
+<pre><code>[root@lvs1 ~]# cat /proc/sys/net/ipv4/ip_forward 
+1
+
+</code></pre>
+
+<p>注意，如果您使用 vim 或者 vi 命令，改写文件，是不会成功的。因为这个文件存在于内存。不在硬盘上。所以只能通过 echo 这样的命令改写。</p>
+
+<p>接下来执行如下的命令：</p>
+
+<pre><code>[root@lvs1 ~]# ipvsadm -At 192.168.220.100:80 -s rr
+[root@lvs1 ~]# ipvsadm -at 192.168.220.100:80 -r 192.168.100.11 -m
+
+</code></pre>
+
+<p>我们来解释一下其中的参数：</p>
+
+<pre><code>-A --add-service 在内核的虚拟服务器表中添加一条新的虚拟服务器记录。也就是增加一台新的虚拟服务器。
+-t --tcp-service service-address 说明虚拟服务器提供的是tcp 的服务。
+-s --scheduler scheduler 使用的调度算法，可选项包括：rr|wrr|lc|wlc|lblc|lblcr|dh|sh|sed|nq（关于调度算法我们在上篇文章中已经详细介绍了）
+-r --real-server server-address 真实的服务器[Real-Server:port]。
+-m --masquerading 指定LVS 的工作模式为NAT 模式。
+
+</code></pre>
+
+<p>当然 ipvsadm 还包括很多参数，后面慢慢讲，然后再本文章的最后部分，会给出一个比较完整的参数汇总。最后我们测试一下：</p>
+
+<p><img src="https://img-blog.csdn.net/20150725115900158" alt=""/></p>
+
+<p>我们在相对于 Real Server 的外网，通过 192.168.220.100 的 LVS Server IP 访问到了 Real Server 上的 Nginx 服务。安装和配置成功。</p>
+
+<h2 id="toc_5"><a></a>2.4、关于 iptables 和重启服务的说明</h2>
+
+<p>在配置 LVA-NAT 过程中，建议关闭 LVS 和 Real Server 的防火墙服务。这样可以避免不必要的错误发生，增加一次配置成功的几率。但是正常生产环境中，LVS 的防火墙根据实际情况最好还是要打开。</p>
+
+<p><strong>请注意，刚才使用 ipvsadm 配置的信息，在 LVS 服务器重启后，就会失效。包括 ip_forward 的配置</strong>。所以，最好制作一个脚本文件，并加入到 / etc/profile 中：</p>
+
+<pre><code>vim /usr/lvsshell.sh
+
+#!/bin/bash
+echo 1 &gt; /proc/sys/net/ipv4/ip_forward 
+ipvsadm -C
+ipvsadm -At 192.168.220.100:80 -s rr
+ipvsadm -at 192.168.220.100:80 -r 192.168.100.11 -m
+
+</code></pre>
+
+<h1 id="toc_6"><a></a>3、LVS-DR 模式安装</h1>
+
+<h2 id="toc_7"><a></a>3.1、准备工作——LVS Server</h2>
+
+<p>为了让您了解 LVS 的另外设置方式，本次我们使用 VIP 的方式，而不是两张网卡的方式（当然您也可以用两张网卡的方式）。VIP 的方式是后面我们将讲到的 LVS + Keepalived 组合工作模式的常用方式。所谓 VIP 就死虚拟 IP，是指这个 IP 不会固定捆绑到某一个网卡设备，而是通过 ifconfig 命令绑定，并在 “适当时候” 这种绑定关系会随之变化：</p>
+
+<p>DIP：192.168.220.137<br/>
+VIP：192.168.220.100</p>
+
+<p>首先我们看看在没有设置 VIP 之前，LVS 主机上的 IP 信息：</p>
+
+<pre><code>[root@lvs1 ~]# ifconfig 
+eth1      Link encap:Ethernet  HWaddr 00:0C:29:3E:4A:59  
+          inet addr:192.168.220.137  Bcast:192.168.220.255  Mask:255.255.255.0
+          inet6 addr: fe80::20c:29ff:fe3e:4a59/64 Scope:Link
+          UP BROADCAST RUNNING MULTICAST  MTU:1500  Metric:1
+          RX packets:2612 errors:0 dropped:0 overruns:0 frame:0
+          TX packets:117 errors:0 dropped:0 overruns:0 carrier:0
+          collisions:0 txqueuelen:1000 
+          RX bytes:159165 (155.4 KiB)  TX bytes:8761 (8.5 KiB)
+
+lo        Link encap:Local Loopback  
+          inet addr:127.0.0.1  Mask:255.0.0.0
+          inet6 addr: ::1/128 Scope:Host
+          UP LOOPBACK RUNNING  MTU:16436  Metric:1
+          RX packets:210 errors:0 dropped:0 overruns:0 frame:0
+          TX packets:210 errors:0 dropped:0 overruns:0 carrier:0 
+          collisions:0 txqueuelen:0 
+          RX bytes:16944 (16.5 KiB)  TX bytes:16944 (16.5 KiB)
+
+</code></pre>
+
+<p>然后我们来设置 VIP 信息：</p>
+
+<pre><code>[root@lvs1 ~]# ifconfig eth1:0 192.168.220.100 broadcast 192.168.220.100 netmask 255.255.255.255 up
+[root@lvs1 ~]# route add -host 192.168.220.100 dev eth1:0
+
+</code></pre>
+
+<p>路由表会有新的路由信息：</p>
+
+<pre><code>[root@lvs1 ~]# route
+Kernel IP routing table
+Destination     Gateway         Genmask         Flags Metric Ref    Use Iface
+192.168.220.100 *               255.255.255.255 UH    0      0        0 eth1
+192.168.100.0   *               255.255.255.0   U     1      0        0 eth0
+192.168.220.0   *               255.255.255.0   U     1      0        0 eth1
+default         192.168.220.1   0.0.0.0         UG    0      0        0 eth1
+
+</code></pre>
+
+<p>这时，通过一个外网 IP，可以 ping 通这个 VIP（下面这个 DOS 系统是 VM 的母机）：</p>
+
+<pre><code>C:\Users\yinwenjie&gt;  ping 192.168.220.100
+正在 Ping 192.168.220.100 具有 32 字节的数据:
+来自 192.168.220.100 的回复: 字节=32 时间&lt;1ms TTL=64
+来自 192.168.220.100 的回复: 字节=32 时间&lt;1ms TTL=64
+
+</code></pre>
+
+<p>以上，我们完成了 LVS 主机设置 LVS-DR 工作模式的准备工作。注意：</p>
+
 <ul>
-<li>soft nofile 65535</li>
-<li>hard nofile 65535</li>
-</ul>
-</blockquote>
-
-<p>注意 “_” 是要加到文件里面的。这两句话的含义是 soft（应用软件）级别限制的最大可打开文件数的限制，hard 表示操作系统级别限制的最大可打开文件数的限制，“_” 表示所有用户都生效。保存这个文件（只有 root 用户能够有权限）。</p>
-
-<p>保存这个文件后，配置是不会马上生效的，为了保证本次 shell 会话中的配置马上有效，我们需要通过 ulimit 命令更改本次的 shell 会话设置（当然您如果要重启系统，我也不能说什么）。</p>
-
-<blockquote>
-<p>ulimit -n 65535</p>
-</blockquote>
-
-<p>执行命令后，配置马上生效。您可以用 ulimit -a 查看目前会话中的所有核心配置：</p>
-
-<blockquote>
-<p>ulimit -a<br/>
-core file size (blocks, -c) 0<br/>
-data seg size (kbytes, -d) unlimited<br/>
-scheduling priority (-e) 0<br/>
-file size (blocks, -f) unlimited<br/>
-pending signals (-i) 7746<br/>
-max locked memory (kbytes, -l) 64<br/>
-max memory size (kbytes, -m) unlimited<br/>
-open files (-n) 65535<br/>
-pipe size (512 bytes, -p) 8<br/>
-POSIX message queues (bytes, -q) 819200<br/>
-real-time priority (-r) 0<br/>
-stack size (kbytes, -s) 10240<br/>
-cpu time (seconds, -t) unlimited<br/>
-max user processes (-u) 7746<br/>
-virtual memory (kbytes, -v) unlimited<br/>
-file locks (-x) unlimited</p>
-</blockquote>
-
-<p>请注意 open files 这一项。</p></li>
-<li><p><strong>更改 Nginx 软件级别的 “进程最大可打开文件数” 的设置：</strong><br/>
-刚才更改的只是操作系统级别的 “进程最大可打开文件” 的限制，作为 Nginx 来说，我们还要对这个软件进行更改。打开 nginx.conf 主陪文件。您需要配合 worker_rlimit_nofile 属性。如下：</p>
-
-<blockquote>
-<p>user root root;<br/>
-worker_processes 4;<br/>
-<strong>worker_rlimit_nofile 65535;</strong></p>
-
-<h1 id="toc_11">error_log logs/error.log;</h1>
-
-<h1 id="toc_12">error_log logs/error.log notice;</h1>
-
-<h1 id="toc_13">error_log logs/error.log info;</h1>
-
-<h1 id="toc_14">pid logs/nginx.pid;</h1>
-
-<p>events {<br/>
-use epoll;<br/>
-<strong>worker_connections 65535;</strong><br/>
-}</p>
-</blockquote>
-
-<p>这里只粘贴了部分代码，其他的配置代码和主题无关，也就不需要粘贴了。请注意代码行中加粗的两个配置项，请一定两个属性全部配置。配置完成后，请通过 nginx -s reload 命令重新启动 Nginx。</p></li>
-<li><p><strong>验证 Nginx 的 “进程最大可打开文件数” 是否起作用：</strong></p>
-
-<p>那么我们如何来验证配置是否起作用了呢？在 linux 系统中，所有的进程都会有一个临时的核心配置文件描述，存放路径在 / pro / 进程号 / limit。</p>
-
-<p>首先我们来看一下，没有进行参数优化前的进程配置信息：</p>
-
-<blockquote>
-<p>ps -elf | grep nginx<br/>
-1 S root 1594 1 0 80 0 - 6070 rt_sig 05:06 ? 00:00:00 nginx: master process /usr/nginx-1.8.0/sbin/nginx<br/>
-5 S root 1596 1594 0 80 0 - 6176 ep_pol 05:06 ? 00:00:00 nginx: worker process<br/>
-5 S root 1597 1594 0 80 0 - 6176 ep_pol 05:06 ? 00:00:00 nginx: worker process<br/>
-5 S root 1598 1594 0 80 0 - 6176 ep_pol 05:06 ? 00:00:00 nginx: worker process<br/>
-5 S root 1599 1594 0 80 0 - 6176 ep_pol 05:06 ? 00:00:00 nginx: worker process</p>
-</blockquote>
-
-<p>可以看到，nginx 工作进程的进程号是：1596 1597 1598 1599。我们选择一个进程，查看其核心配置信息：</p>
-
-<blockquote>
-<p>cat /proc/1598/limits</p>
-</blockquote>
-
-<p><img src="https://img-blog.csdn.net/20150707204548230" alt=""/></p>
-
-<p>请注意其中的 Max open files ，分别是 1024 和 4096。那么更改配置信息，并重启 Nginx 后，配置信息就是下图所示了：</p>
-
-<p><img src="https://img-blog.csdn.net/20150707204756789" alt=""/></p></li>
+<li>  <strong>在您设置过程中，防火前最好关闭，但在正式生产环境中，LVS 的防火强最好打开。</strong></li>
+<li>  <strong>VIP 信息在 LVS 主机重启后，会消失。所以您最好将设置 VIP 的命令做成一个脚本。</strong></li>
 </ul>
 
-<h3 id="toc_15"><a></a>3.1.3、max client 的计算方式：</h3>
+<h2 id="toc_8"><a></a>3.2、准备工作——Real Server</h2>
 
-<p>这个小结我们主要来说明两个在网上经常说的公式：</p>
+<p>RIP：192.168.220.132</p>
+
+<p>真实服务器的准备工作，需要保证真实服务器能够访问外网网关，并且保证由 LVS 改写的报文能够被 Real Server 处理（请参见我的上一篇介绍 LVS 原理的博文），这就需要做一个回环 IP。首先我们看看没有开始设置之前的 IP 信息：</p>
+
+<pre><code>[root@localhost ~]# ifconfig 
+eth0      Link encap:Ethernet  HWaddr 00:0C:29:FC:91:FC  
+          inet addr:192.168.220.132  Bcast:192.168.220.255  Mask:255.255.255.0
+          inet6 addr: fe80::20c:29ff:fefc:91fc/64 Scope:Link
+          UP BROADCAST RUNNING MULTICAST  MTU:1500  Metric:1
+          RX packets:2384 errors:0 dropped:0 overruns:0 frame:0
+          TX packets:1564 errors:0 dropped:0 overruns:0 carrier:0
+          collisions:0 txqueuelen:1000 
+          RX bytes:1551652 (1.4 MiB)  TX bytes:144642 (141.2 KiB)
+
+lo        Link encap:Local Loopback  
+          inet addr:127.0.0.1  Mask:255.0.0.0
+          inet6 addr: ::1/128 Scope:Host
+          UP LOOPBACK RUNNING  MTU:65536  Metric:1
+          RX packets:44 errors:0 dropped:0 overruns:0 frame:0
+          TX packets:44 errors:0 dropped:0 overruns:0 carrier:0
+          collisions:0 txqueuelen:0 
+          RX bytes:3361 (3.2 KiB)  TX bytes:3361 (3.2 KiB)
+
+</code></pre>
+
+<p>使用 route 命令，查看原始 route 信息：</p>
+
+<pre><code>[root@localhost ~]# route
+Kernel IP routing table
+Destination     Gateway         Genmask         Flags Metric Ref    Use Iface
+192.168.220.0   *               255.255.255.0   U     1      0        0 eth0
+default         192.168.220.1   0.0.0.0         UG    0      0        0 eth0
+
+</code></pre>
+
+<p>另外，这台 Real Server 上有一个 Nginx，以保证我们观测 LVS-DR 的运行情况。我们在外网使用 192.168.220.132 这个 IP，能够访问到 Nginx 的页面：</p>
+
+<p><img src="https://img-blog.csdn.net/20150726085859705" alt=""/></p>
+
+<p>接下来，我们开始设置 Real Server 上的回环 IP，首先关闭这台机器进行 ARP 查询的功能，否则，Real Server 会在路由器或者交换机上去查询 192.168.220.100 这个 IP 对应的 MAC 地址（注意，以下的信息都会被还原）：</p>
+
+<pre><code>echo &quot;1&quot; &gt;/proc/sys/net/ipv4/conf/lo/arp_ignore
+echo &quot;2&quot; &gt;/proc/sys/net/ipv4/conf/lo/arp_announce
+echo &quot;1&quot; &gt;/proc/sys/net/ipv4/conf/all/arp_ignore
+echo &quot;2&quot; &gt;/proc/sys/net/ipv4/conf/all/arp_announce
+
+</code></pre>
+
+<p>然后可以设置回环 IP 了：</p>
+
+<pre><code>[root@vm3 ~]# ifconfig lo:0 192.168.220.100 broadcast 192.168.220.100 netmask 255.255.255.255 up
+[root@vm3 ~]# route add -host 192.168.220.100 dev lo:0
+
+</code></pre>
+
+<p>检查新的路由信息：</p>
+
+<pre><code>[root@vm3 ~]# route 
+Kernel IP routing table
+Destination     Gateway         Genmask         Flags Metric Ref    Use Iface
+192.168.220.100 *               255.255.255.255 UH    0      0        0 lo
+192.168.220.0   *               255.255.255.0   U     1      0        0 eth0
+default         192.168.220.1   0.0.0.0         UG    0      0        0 eth0
+
+</code></pre>
+
+<p>以上设置完成。<strong>完成后，您需要通过 ping 命令，检查一下网关是否可用（最好可以瓶 ping 一下外网的某个地址，例如 163.com）。LVS-DR 模式下，Real Server 是直接向请求方返回结果，所以一定要保证网关时可用的。</strong></p>
+
+<h2 id="toc_9"><a></a>3.3、开始安装和配置 LVS-DR 模式</h2>
+
+<p>在验证了 LVS Server 和 Real Server 都准备好以后，就可以进行 LVS-DR 模式的设置了。LVS 管理软件 ipvsadm 的安装我们就不敷述了，在 LVS-NAT 的小结中有关于 LVS 管理软件安装的介绍。</p>
+
+<pre><code>[root@lvs1 ~]# echo 1 &gt; /proc/sys/net/ipv4/ip_forward
+[root@lvs1 ~]# cat /proc/sys/net/ipv4/ip_forward
+1
+[root@lvs1 ~]# ipvsadm -C
+[root@lvs1 ~]# ipvsadm -At 192.168.220.100:81 -s rr 
+[root@lvs1 ~]# ipvsadm -at 192.168.220.100:81 -r 192.168.220.132 -g
+
+</code></pre>
+
+<p>介绍一下新出现的参数：</p>
 
 <ul>
-<li><p>max_client = worker_processes * worker_connections</p></li>
-<li><p>max_client = worker_processes * worker_connections / 4</p></li>
+<li>  -g –gatewaying 指定 LVS 的工作模式为直接路由模式 DR 模式（也是 LVS 默认的模式）</li>
 </ul>
 
-<p>这两个公式分别说明，在 Nginx 充当服务器（例如 nginx 上面装载 PHP）的时候，Nginx 可同时承载的连接数量是最大工作线程 * 每个线程允许的连接数量；当 Nginx 充当反向代理服务的时候，其可同时承载的连接数量是最大工作线程 * 每个线程允许的连接数量 / 4。</p>
+<p>配置完成，是不是很简单。接下来，我们就可以在外网，通过 192.168.220.100 这个 IP 访问 132 这台 Real Server 上的 Nginx 服务了：</p>
 
-<p>第一个问题很好理解，关键是第二个问题：为什么会除以 4。网上的帖子给出的答案是。浏览器 -&gt;Nginx、Nginx-&gt; 后端服务器、后端服务器 -&gt;Nginx、Nginx-&gt; 浏览器，所以需要除以四，我想说 TCP 协议是双向全双工协议，为什么需要这样建立连接呢？所以这个说法肯定是错误的。</p>
+<p><img src="https://img-blog.csdn.net/20150726091844324" alt=""/></p>
 
-<p>在 nginx 官方文档上有这样一句话：</p>
+<h1 id="toc_10"><a></a>4、LVS-TUN 模式安装</h1>
 
-<blockquote>
-<p>Since a browser opens 2 connections by default to a server and nginx uses the fds (file descriptors) from the same pool to connect to the upstream backend。</p>
-</blockquote>
+<p>LVS-TUN 模式的安装我不打算再花很大的篇幅讲了，在您通过上一篇文章了解了 DR 和 TUN 的不同以后，其配置的过程都是差不多的，只不过一个可以跨越子网，一个不能。所以 LVS-TUN 模式的安装和配置请首先参考 LVS-DR 模式。</p>
 
-<p>翻译成中文的描述就是，浏览器会建立两条连接到 Nginx（注意两条连接都是浏览器建立的），Nginx 也会建立对应的两条连接到后端服务器。这样就是四条连接了。</p>
+<h1 id="toc_11"><a></a>5、IPVSADM 参数汇总</h1>
 
-<h3 id="toc_16"><a></a>3.1.4、gzip</h3>
+<p>-A –add-service 在内核的虚拟服务器表中添加一条新的虚拟服务器记录。也就是增加一台新的虚拟服务器。</p>
 
-<p>后文补讲，放在这里算是一个扣子 <sup>_^</sup></p>
+<p>-E –edit-service 编辑内核虚拟服务器表中的一条虚拟服务器记录。</p>
 
-<h2 id="toc_17"><a></a>3.2、健康检查模块</h2>
+<p>-D –delete-service 删除内核虚拟服务器表中的一条虚拟服务器记录。</p>
 
-<p>后文补讲，放在这里算是一个扣子 <sup>_^</sup></p>
+<p>-C –clear 清除内核虚拟服务器表中的所有记录。</p>
 
-<h2 id="toc_18"><a></a>3.3、图片处理模块</h2>
+<p>-R –restore 恢复虚拟服务器规则</p>
 
-<p>后文补讲，放在这里算是一个扣子 <sup>_^</sup></p>
+<p>-S –save 保存虚拟服务器规则，输出为 - R 选项可读的格式</p>
 
-<h2 id="toc_19"><a></a>3.4、Nginx 的 Rewrite 功能</h2>
+<p>-a –add-server 在内核虚拟服务器表的一条记录里添加一条新的真实服务器记录。也就是在一个虚拟服务器中增加一台新的真实服务器</p>
 
-<p>后文补讲，放在这里算是一个扣子 <sup>_^</sup></p>
+<p>-e –edit-server 编辑一条虚拟服务器记录中的某条真实服务器记录</p>
 
-<h1 id="toc_20"><a></a>4、后文介绍</h1>
+<p>-d –delete-server 删除一条虚拟服务器记录中的某条真实服务器记录</p>
 
-<p>我原本计划一篇文章就把 Nginx 的主要特性都进行介绍，奈何 Nginx 的强大功能确实太多了。为了保证您对知识的全面消化，这边文章就写到这里了。LVS 的讲解再往后拖一周左右吧，下篇文章我们继续讲解 Nginx 的强大功能，包括 gzip 功能、强大的 rewrite 功能，以及两个扩展模块：健康检查模块和图片处理模块，至于 Nginx 集成 PHP 作为服务器的特性，为了保证这个系列文章的中心线络就不再讲了，那又是一套完整的知识体系。敬请期待我的下一篇博客，谢谢。另外，目前一周一篇文章的频率我觉得是比较合适的，后面的文章我争取保持这个速度。</p>
+<p>-L –list 显示内核虚拟服务器表</p>
 
-<p><link rel="stylesheet" href="https://csdnimg.cn/release/phoenix/template/css/markdown_views-ea0013b516.css"></p>
+<p>-Z –zero 虚拟服务表计数器清零（清空当前的连接数量等）</p>
+
+<p>–set tcp tcpfin udp 设置连接超时值</p>
+
+<p>–start-daemon 启动同步守护进程。他后面可以是 master 或 backup，用来说明 LVS Router 是 master 或是 backup。在这个功能上也可以采用 keepalived 的 VRRP 功能。</p>
+
+<p>–stop-daemon 停止同步守护进程</p>
+
+<p>-t –tcp-service service-address 说明虚拟服务器提供的是 tcp 的服务 [vip:port] or [real-server-ip:port]</p>
+
+<p>-u –udp-service service-address 说明虚拟服务器提供的是 udp 的服务 [vip:port] or [real-server-ip:port]</p>
+
+<p>-f –fwmark-service fwmark 说明是经过 iptables 标记过的服务类型。</p>
+
+<p>-s –scheduler scheduler 使用的调度算法，选项：rr|wrr|lc|wlc|lblc|lblcr|dh|sh|sed|nq, 默认的调度算法是： wlc.</p>
+
+<p>-p –persistent [timeout] 持久稳固的服务。这个选项的意思是来自同一个客户的多次请求，将被同一台真实的服务器处理。timeout 的默认值为 300 秒。</p>
+
+<p>-M –netmask netmask persistent granularity mask</p>
+
+<p>-r –real-server server-address 真实的服务器 [Real-Server:port]</p>
+
+<p>-g –gatewaying 指定 LVS 的工作模式为直接路由模式 DR 模式（也是 LVS 默认的模式）</p>
+
+<p>-i –ipip 指定 LVS 的工作模式为隧道模式</p>
+
+<p>-m –masquerading 指定 LVS 的工作模式为 NAT 模式</p>
+
+<p>-w –weight weight 真实服务器的权值</p>
+
+<p>–mcast-interface interface 指定组播的同步接口</p>
+
+<p>-c</p>
+
+<p>–connection 显示 LVS 目前的连接 如：ipvsadm -L -c</p>
+
+<p>–timeout 显示 tcp tcpfin udp 的 timeout 值 如：ipvsadm -L –timeout</p>
+
+<p>–daemon 显示同步守护进程状态</p>
+
+<p>–stats 显示统计信息</p>
+
+<p>–rate 显示速率信息</p>
+
+<p>–sort 对虚拟服务器和真实服务器排序输出</p>
+
+<p>–numeric -n 输出 IP 地址和端口的数字形式</p>
+
+<p>好吧，这个就是我网上抄的。</p>
+
+<h1 id="toc_12"><a></a>6、后文介绍</h1>
+
+<p><strong>LVS 的设置实际上没有什么难度，充其量是一个高级玩意儿，是解决特定问题的特定方法</strong>。您需要的基础知识涉及到 IP 协议、子网分割、IP 映射、Linux 脚本等基本知识。打通任督二脉才是您的根本。</p>
+
+<p>LVS 的设置过程中肯定会遇到实际问题，特别是您头几次配置。别慌，别怕，透过现象猜测本质，一个一个的解决问题。就我的经验总结，无非几种问题分类：</p>
+
+<ul>
+<li>  网关不通</li>
+<li>  回环 IP 设置问题</li>
+<li>  防火墙问题</li>
+<li>  VIP 设置问题</li>
+<li>  网段或者子网问题</li>
+</ul>
+
+<p>通过包括这篇博客在内的这几篇文章，您已经分别了解了 Nginx、LVS 的功能、原理、特 点和工作模式。后面一篇文章，我们将把这些负载层的技术混合在一起，介绍 Nginx + Keepalived、LVS + Keepalived、LVS + Keepalived + Nginx 的安装和配置方式。</p>
+
+<p>（本人这个月 “持之以恒” 奖已经拿到了，笑一个：哈哈哈）</p>
+
+<p>补充一下：由于工作的原因，期间可能还会推出一篇关于 Apache Camel 的文章，就算提前进入业务通信层的讨论吧。不过这个看当时的时间安排。目前情况下还是以负载均衡层的讨论为主线。</p>
 
                         
                       </div>
@@ -597,31 +652,31 @@ use epoll;<br/>
 	      
 		      
 			      <li class="post">
-			        <a href="15459058392039.html">Reliable Domain Events</a>
+			        <a href="15517999043443.html">The Art of Crafting Architectural Diagrams</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
+			        <a href="15517997955971.html">为什么说我们需要软件架构图？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
+			        <a href="15516128677869.html">DNS Servers That Offer Privacy and Filtering</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
+			        <a href="15516123108194.html">Airbnb's Migration from Monolith to Services</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
+			        <a href="15516097487470.html">Events As First-Class Citizens</a>
 			      </li>
 		     
 		  

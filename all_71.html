@@ -105,88 +105,90 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15340923334107.html">
+                <a class="clearlink" href="15390119272775.html">
                 
-                  <h1>Java 性能优化指南，及唯品会的实战</h1>
+                  <h1>透彻理解Spring事务设计思想之手写实现</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p>原文出处： <a href="http://calvin1978.blogcn.com/articles/javatuning.html">江南白衣</a></p>
+<p>本文由 <a href="http://ksria.com/simpread/">简悦 SimpRead</a> 转码， 原文地址 <a href="https://www.jianshu.com/p/1becdc376f5d">https://www.jianshu.com/p/1becdc376f5d</a></p>
 </blockquote>
 
-<p>来了唯品会一年多，不少时间花在与服务化框架、业务应用的性能的缠斗上。</p>
+<h2 id="toc_0">前言</h2>
 
-<p>前几天正好趁着中生代社区的<a href="http://www.hdb.com/party/bajzu.html">十月十城技术沙龙</a>，把脑海中<strong>关于性能优化的记忆</strong>全部理了一遍…. 讲完回家，又本着认真严谨的态度再理了一遍，终于成为现在这份 <strong>66 页的 PPT</strong>。</p>
+<p>事务，是描述一组操作的抽象，比如对数据库的一组操作，要么全部成功，要么全部失败。事务具有 4 个特性：Atomicity（原子性），Consistency（一致性），Isolation（隔离性），Durability（持久性）。在实际开发中，我们对事务应用最多就是在数据库操作这一环，特别是 Spring 对数据库事务进行了封装管理。Spring 对事务的支持，确实很强大，但是从本质上来讲：<strong>事务是否生效取决数据库底层是否支持（比如 MySQL 的 MyISAM 引擎就不支持事务，Spring 能奈何！），同时一个事务的多个操作需要在同一个 Connection 上。事务也往往是在业务逻辑层来控制。</strong>本篇博客将通过手写一个 Demo 来分析 Spring 事务底层到底是如何帮助我们轻松完成事务管理的！</p>
 
-<p>各位客官，1.4 版的内容略有增减，超链接也已修好: <a href="http://files.blogcn.com/wp06/M00/00/ED/CpCCFVgRySAAAAAAAC42ozG7w4w912.pdf">《Java 性能优化指南 V1.4.pdf》</a></p>
+<h2 id="toc_1">透彻理解 Spring 事务设计思想之手写实现</h2>
 
-<p><a href="http://files.blogcn.com/wp04/M00/08/02/CoFCGVgHnLkAAAAAAAETKzIbY-c369.jpg" title="幻灯片01"><img src="http://files.blogcn.com/wp04/M00/08/02/CoFCGVgHnLkAAAAAAAETKzIbY-c369.jpg" alt=""/></a></p>
+<p>先来看一眼工程结构：</p>
 
-<h3 id="toc_0">范围</h3>
+<p><img src="https://upload-images.jianshu.io/upload_images/4943997-c1c738d59fe7485a.png" alt=""/></p>
 
-<p>应用性能，受操作系统参数，三方类库选择，数据库查询，甚至压测工具如 JMeter 本身调优的影响。</p>
+<p><strong>ConnectionHolder</strong></p>
 
-<p>本次分享只着重在三方面：</p>
+<p><img src="https://upload-images.jianshu.io/upload_images/4943997-e2342d24e2e84736.png" alt=""/></p>
 
-<ul>
-<li>  JVM 的调优</li>
-<li>  代码的调优</li>
-<li>  定位性能问题的工具</li>
-</ul>
+<blockquote>
+<p><strong>在 Spring 中，有时候我们是不是要配置多个数据源 DataSource？很显然，Spring 需要通过 DataSource 来得到操作数据库的管道 Connection，这有点类似于 JNDI 查找。</strong></p>
 
-<p><a href="http://files.blogcn.com/wp06/M00/00/ED/CpCCFVgHnPMAAAAAAADXW3vnM8I951.jpg" title="幻灯片03"><img src="http://files.blogcn.com/wp06/M00/00/ED/CpCCFVgHnPMAAAAAAADXW3vnM8I951.jpg" alt=""/></a></p>
+<p><strong>这里通过 ConnectionHolder 类来完成这个过程，需要思考的是在多线程下，这显然是存在问题的。为避免多线程问题，难道我们采用线程安全的 Map，比如 ConcurrentHashMap，其实我们真正的目的是什么？是保证一个线程下，一个事务的多个操作拿到的是一个 Connection，显然使用 ConcurrentHashMap 根本无法保证！</strong></p>
 
-<p><a href="http://files.blogcn.com/wp02/M00/08/EF/CpAZrVgHnSkAAAAAAACnv2fHcK0833.jpg" title="幻灯片04"><img src="http://files.blogcn.com/wp02/M00/08/EF/CpAZrVgHnSkAAAAAAACnv2fHcK0833.jpg" alt=""/></a></p>
+<p><strong>Spring 很聪明，她提供了一种思路，来解决，看下面的代码！</strong></p>
+</blockquote>
 
-<h3 id="toc_1">基本原则</h3>
+<p><strong>SingleThreadConnectionHolder</strong></p>
 
-<p>网上如此多新旧不一的资料，这么多肆意传播亦真亦错的观点，怎么办呢？</p>
+<p><img src="https://upload-images.jianshu.io/upload_images/4943997-fdec898f986f367d.png" alt=""/></p>
 
-<ol>
-<li> 多看一些靠谱的资料，问一些靠谱的人。</li>
-<li> 怀疑一切，微基准测试一切，诚意推荐 JMH。</li>
-<li> 看 JDK 代码，看一切代码。</li>
-</ol>
+<blockquote>
+<p><strong>本来线程不安全的，通过 ThreadLocal 这么封装一下，立刻就变成了线程的局部变量，不仅仅安全了，还保证了一个线程下面的操作拿到的 Connection 是同一个对象！这种思想，确实非常巧妙，这也是无锁编程思想的一种方式！</strong></p>
+</blockquote>
 
-<p><a href="http://files.blogcn.com/wp04/M00/00/D1/CpCCFVgHnewAAAAAAAC4WC08BEA045.jpg" title="幻灯片06"><img src="http://files.blogcn.com/wp04/M00/00/D1/CpCCFVgHnewAAAAAAAC4WC08BEA045.jpg" alt=""/></a></p>
+<p><strong>TransactionManager</strong></p>
 
-<p><a href="http://files.blogcn.com/wp06/M00/04/D0/CoFCGVgHnjEAAAAAAADZwUFf8O8583.jpg" title="幻灯片07"><img src="http://files.blogcn.com/wp06/M00/04/D0/CoFCGVgHnjEAAAAAAADZwUFf8O8583.jpg" alt=""/></a></p>
+<p><img src="https://upload-images.jianshu.io/upload_images/4943997-6b1d06cb6e4c36f4.png" alt=""/></p>
 
-<p><a href="http://files.blogcn.com/wp02/M00/08/EF/CpAZrVgHnokAAAAAAACCHhzO17w957.jpg" title="幻灯片08"><img src="http://files.blogcn.com/wp02/M00/08/EF/CpAZrVgHnokAAAAAAACCHhzO17w957.jpg" alt=""/></a></p>
+<blockquote>
+<p><strong>TransactionManager，这个我们经常在 Spring 里面进行配置吧，事务大管家！</strong></p>
+</blockquote>
 
-<p><a href="http://files.blogcn.com/wp04/M00/08/02/CoFCGVgHn6YAAAAAAADGggFLBi0755.jpg" title="幻灯片09"><img src="http://files.blogcn.com/wp04/M00/08/02/CoFCGVgHn6YAAAAAAADGggFLBi0755.jpg" alt=""/></a></p>
+<p><strong>UserAccountDao、UserOrderDao</strong></p>
 
-<h3 id="toc_2">JVM 优化</h3>
+<p><img src="https://upload-images.jianshu.io/upload_images/4943997-7a4c3d78b64b1b41.png" alt=""/><img src="https://upload-images.jianshu.io/upload_images/4943997-51bd4645e182465f.png" alt=""/></p>
 
-<p>首先，JIT 入门知识；然后，JVM 参数的简介；再然后，最头痛的 GC 问题的处理。</p>
+<blockquote>
+<p><strong>这里通过这 2 个 DAO，想模拟一个事务中账户购买、下单 2 个操作。</strong></p>
+</blockquote>
 
-<p><a href="http://files.blogcn.com/wp06/M00/00/ED/CpCCFVgHoB4AAAAAAACR8THhKLc792.jpg" title="幻灯片21"><img src="http://files.blogcn.com/wp06/M00/00/ED/CpCCFVgHoB4AAAAAAACR8THhKLc792.jpg" alt=""/></a></p>
+<p><strong>UserService</strong></p>
 
-<p><a href="http://files.blogcn.com/wp06/M00/00/ED/CpCCFVgHqVoAAAAAAADQAgCkMkE356.jpg" title="幻灯片30"><img src="http://files.blogcn.com/wp06/M00/00/ED/CpCCFVgHqVoAAAAAAADQAgCkMkE356.jpg" alt=""/></a></p>
+<p><img src="https://upload-images.jianshu.io/upload_images/4943997-cb641f0ea8e402fa.png" alt=""/></p>
 
-<h3 id="toc_3">代码优化</h3>
+<blockquote>
+<p><strong>到这里，可以清晰的看到 Spring 事务管理的一个缩影了吧！</strong></p>
+</blockquote>
 
-<p>代码优化，两大方向一是面向 GC 的编程，二是并发与锁，然后再来聊聊其他。</p>
+<p><strong>Test</strong></p>
 
-<p><a href="http://files.blogcn.com/wp02/M00/08/EF/CpAZrVgHoGwAAAAAAADk5iKpsPw033.jpg" title="幻灯片34"><img src="http://files.blogcn.com/wp02/M00/08/EF/CpAZrVgHoGwAAAAAAADk5iKpsPw033.jpg" alt=""/></a></p>
+<p><img src="https://upload-images.jianshu.io/upload_images/4943997-b701b107dc2c24db.png" alt=""/></p>
 
-<h3 id="toc_4">问题定位工具集</h3>
+<blockquote>
+<p><strong>这里，主要是模拟 Spring 的注入以及多用户并发请求。</strong></p>
+</blockquote>
 
-<p>黑盒调优是最不可靠的，推荐线下用 JMC，线上用 Btrace 定位问题。</p>
+<p><strong>运行结果</strong></p>
 
-<p><a href="http://files.blogcn.com/wp04/M00/00/D1/CpCCFVgHoZMAAAAAAAC3Llc-Yyw623.jpg" title="幻灯片51"><img src="http://files.blogcn.com/wp04/M00/00/D1/CpCCFVgHoZMAAAAAAAC3Llc-Yyw623.jpg" alt=""/></a></p>
+<p><img src="https://upload-images.jianshu.io/upload_images/4943997-e11ff5aea23d1ffb.png" alt=""/></p>
 
-<h3 id="toc_5">特别鸣谢</h3>
+<blockquote>
+<p><strong>你可以发现，一个线程中的一个事务的多个操作，使用的是同一个 Connection！</strong></p>
+</blockquote>
 
-<p>感谢 R 大 ， 日常三更半夜跨洋热心解答各种 JVM 问题。</p>
+<p><strong>好了，到这里，你是否能对 Spring 实现事务的思想有所了解呢？</strong></p>
 
-<p>感谢 Chembo(国钦)，对 PPT 的美化。</p>
-
-<h3 id="toc_6">完整 PPT 下载</h3>
-
-<p><a href="http://files.blogcn.com/wp06/M00/00/ED/CpCCFVgRySAAAAAAAC42ozG7w4w912.pdf">《Java 性能优化指南 V1.4.pdf》</a>, by 江南白衣, 超链接修正版。</p>
+<p><strong>晚安，早点睡觉，明天继续，O(∩_∩)O 哈哈~</strong></p>
 
                         
                       </div>
@@ -195,10 +197,10 @@
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/8/13</span>
+                    <span class="date">2018/10/8</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Java.html'>Java</a></span>
+          					    <span class="posted-in"><a href='Spring.html'>Spring</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -288,31 +290,31 @@
 	      
 		      
 			      <li class="post">
-			        <a href="15459058392039.html">Reliable Domain Events</a>
+			        <a href="15517999043443.html">The Art of Crafting Architectural Diagrams</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
+			        <a href="15517997955971.html">为什么说我们需要软件架构图？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
+			        <a href="15516128677869.html">DNS Servers That Offer Privacy and Filtering</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
+			        <a href="15516123108194.html">Airbnb's Migration from Monolith to Services</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
+			        <a href="15516097487470.html">Events As First-Class Citizens</a>
 			      </li>
 		     
 		  

@@ -105,101 +105,267 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15290745541526.html">
+                <a class="clearlink" href="15316420362215.html">
                 
-                  <h1>蚂蚁金服RPC框架结构分析</h1>
+                  <h1>研究consul的service mesh功能</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://juejin.im/post/5b0573046fb9a07aa542ad58">https://juejin.im/post/5b0573046fb9a07aa542ad58</a></p>
+<p><a href="https://jeremy-xu.oschina.io/2018/07/%E7%A0%94%E7%A9%B6consul%E7%9A%84service-mesh%E5%8A%9F%E8%83%BD/">https://jeremy-xu.oschina.io/2018/07/%E7%A0%94%E7%A9%B6consul%E7%9A%84service-mesh%E5%8A%9F%E8%83%BD/</a></p>
 </blockquote>
 
-<p>蚂蚁金服近期开源了研发多年的SOFA一篮子框架，其中就有一个非常核心的RPC框架，它叫SOFA-BOLT。小编今天花了近一天的时间仔细阅读研究它的源码，阅读过程中遇到了不少问题，蚂蚁金服的相关技术人员都非常耐心的及时解答了我的疑难。这里将我从中学到的知识点一并分享给大家。</p>
-
-<p>SOFA-BOLT基于开源的Netty框架，同时提供了服务器和客户端的实现。它的源码非常值得一读，结构简单，考虑周全，绝不是一个普通的玩具。它没有滥用设计模式，源码阅读起来比较直接，没有太多绕来绕去的复杂结构。</p>
-
-<p><img src="media/15290745541526/15290751810439.jpg" alt=""/></p>
-
-<p>一个节点既可以同时既是RPC服务器又是客户端，作为客户端该节点需要其它节点提供服务，作为服务器它可以为其它节点提供服务。不过上面这张图并不是合理的结构，因为两个服务相互耦合了，我需要你，你也需要我，就成了鸡蛋问题。比较合理的结构一般如下图所示，它们之间不构成环。<br/>
-<img src="media/15290745541526/15290751964181.jpg" alt=""/></p>
-
-<h2 id="toc_0">通讯协议</h2>
-
-<p>通讯协议是客户端和服务器之间交流的语言，SOFA定义了自己的一套通讯协议，它的编码解码分为二层，第一层是消息体对象的二进制序列化，这部分默认由开源的Hession协议库序列化完成，第二层是负责给序列化的消息体增加一系列包装字段，形成一个完整的消息。包括请求ID、消息体的长度、协议版本号和CRC32校验位等等<br/>
-如果希望进一步优化网络性能，SOFA还提供了Snappy压缩协议，可以在现有的两层协议基础上增加第三层，能显著降低网络传输负担。压缩是时间换空间，提升网络性能的同时，它也会加重CPU计算，所以在使用时需要适当进行权衡。</p>
-
-<p><img src="media/15290745541526/15290752045597.jpg" alt=""/></p>
-
-<h2 id="toc_1">连接池</h2>
-
-<p>客户端和服务器之间一般需要建立多个连接，但是也不能每个请求都建立一个连接。一般是通过维护一个连接池，限定最大连接数。客户端通过有限的连接来和服务器进行通信。</p>
-
-<p>我们在使用Jedis客户端和Redis服务器进行通信时，也是通过连接池来获取连接的。Jedis的连接必须是线程独占的，因为它不是线程安全的。从连接池中获取连接时，其它线程就暂时拿不到这个连接了，待当前线程处理完毕后，要将连接归还给线程池，这样其它线程才可以继续使用这个连接。</p>
-
-<p><img src="media/15290745541526/15290752153060.jpg" alt=""/></p>
-
-<p>Redis的客户端请求和应答是顺序性的，一问一答，所以请求和应答不需要唯一ID就可以建立起关联。</p>
-
-<p>Bolt不一样，它的问答是乱序的，问和答之间是必须通过请求的唯一ID来建立起关联。Bolt的客户端是线程安全的，它可以同时传递多个请求，连接对象会维护一个正在处理的RPC请求对象字典。当客户端想要发起RPC请求时，它不是从连接池中摘出一个独占连接，而是随意选择一个连接来传递自己的请求，这个连接也可以被其它线程同时使用。</p>
-
-<h2 id="toc_2">负载均衡</h2>
-
-<p>客户端提供了多种复杂均衡的实现，阿里默认使用带权重的随机算法(RandomLoadBalancer)，此外还有</p>
-
-<ol>
-<li>ConsistentHashLoaderBalancer 一致性hash，客户端和服务器之间的连接关系(谁跟谁连)比较稳定</li>
-<li>LocalPreferenceLoadBalancer 本地环回地址优先，提升本机调用性能</li>
-<li>RoundRobinLoadBalancer 循环依次来</li>
-<li>WeightedRoundRobinLoadBalancer 带权重的循环依次来</li>
-<li>RandomLoadBalancer 这个是带权重的随机，阿里的默认使用</li>
-</ol>
-
-<h2 id="toc_3">服务器线程模型</h2>
-
-<p>服务器采用传统netty多线程模型，一个acceptor线程专门用来接收连接，然后扔给io线程处理读消息并解码成请求对象，最后扔给业务线程池进行处理。<br/>
-<img src="media/15290745541526/15290752347331.jpg" alt=""/></p>
-
-<h2 id="toc_4">心跳</h2>
-
-<p>客户端和服务器之间会有定时心跳检测连接的存活，默认30s来一次。tcp的关闭是通过FIN包来通知对方的，如果因为网络问题，对方连FIN包都收不到，那么即使一边关闭了套接字，另一边可能还以为连接正常。所以心跳检测存活机制在长连接应用里非常普遍。如果客户端连续发了三次心跳都没有收到服务器的回复，那么就认为连接已经关闭。服务器也会有连接存活检测，如果一个客户端连接90s内没有任何消息进来，那么也认为该连接已经断开。服务器不会主动发送心跳消息。</p>
-
-<h2 id="toc_5">双工通信</h2>
-
-<p>RPC一般是由客户端向服务器发起一个请求，然后收到服务器的应答。Bolt的RPC是双工通信，服务器也可以向客户端主动发起请求，它们共享一个TCP连接。TCP连接本身就是双工的，所以这也不算什么奇迹。只是服务器在什么业务场景需要向客户端主动发起请求，这个蚂蚁并没有进行详细说明。<br/>
-<img src="media/15290745541526/15290752519556.jpg" alt=""/></p>
-
-<p>客户端作为主动连接方，它要负责重连和发起心跳消息。服务器作为被动方，它不需要处理重连，如果连接断开，它就直接将连接从集合中移除就行，不需要做特殊的处理，但是它会检测心跳消息，如果在一定时间内连接通道没有任何消息到来，它就会主动关闭。</p>
-
-<h2 id="toc_6">重连</h2>
-
-<p>客户端的重连策略是一个单独的模块，有两个地方会成为重连的入口。一个是正常连接断开触发channelInActive回调，另一个就是重连连接不能建立成功时需要进行重试。Bolt有一个单独的重连线程，所有需要重连的连接会被包装成一个任务塞进这个线程的任务队列，该线程不断地从队列里拿任务进行重连处理，如果重连失败会尝试再将任务重新包装进队列延后继续处理。默认是1s钟处理一个重连任务。<br/>
-<img src="media/15290745541526/15290752597075.jpg" alt=""/></p>
-
-<p>RPC连接是延迟建立的，它在第一次客户端发送RPC请求时尝试进行连接，如果连接失败，它会立即继续重连最多默认两次。如果三次尝试连接后还是没有建立成功，就向上层爆出异常。它不需要包装一个重连任务塞进ReconnectManager，因为后续客户端请求会继续触发连接。</p>
-
-<h2 id="toc_7">单向消息</h2>
-
-<p>RPC通常是一应一答，客户端可以同步等待响应，也可以提供回调接口等待结果通知。Bolt除了提供应答模式之外，还提供了oneway单向消息，这种消息服务器收到后不用回复，客户端发送请求之后就立即返回了也不需要等待结果。<br/>
-oneway消息一般用于不那么重要的日志类消息，它不能保证服务器一定能收到，所以此种业务消息应该是那种允许丢失的消息，形式上类似于UDP，它在牺牲可靠性的前提下能大幅提升消息的吞吐量。</p>
-
-<h2 id="toc_8">消息追踪</h2>
-
-<p>Bolt提供了回调接口，方便监控系统可以对请求的调用状况进行分析。监控的客户端可以通过实现该接口，注册进RPC的客户端和服务器进行打点收集日志，然后发送到日志分析系统。</p>
-
-<pre><code>`interface Tracer {
-    void startRpc(SofaRequest request);
-    void serverReceived(SofaRequest request);
-    void serverSend(SofaRequest request, SofaResponse response, Throwable throwable);
-    void clientReceived(SofaRequest request, SofaResponse response, Throwable throwable);
-    ...
-}`
+<pre><code>2018-07-06
 </code></pre>
 
-<h2 id="toc_9">总结</h2>
+<p>之前一直是将 consul 当成一个服务发现、分布式 KV 服务、服务健康检查服务等，不过前几天 <a href="https://www.hashicorp.com/blog/consul-1-2-service-mesh">consul 发布了 1.2 版本</a>，宣称其实现了 Service Mesh 方案，最近在做 Service Mesh 相关的工作，正好有一点时间，就花时间研究一下。</p>
 
-<p>Bolt是一个成熟的比较复杂的RPC系统，这篇小文章只讲解了其中一部分，内部还有大量的实现细节有待去挖掘。</p>
+<h2 id="toc_0"><a href="#%E8%AF%95%E7%94%A8consul%E7%9A%84service-mesh"></a>试用 consul 的 service mesh</h2>
+
+<h3 id="toc_1"><a href="#%E5%8D%87%E7%BA%A7consul%E8%87%B31-2%E7%89%88%E6%9C%AC"></a>升级 consul 至 1.2 版本</h3>
+
+<p>macOS 下升级 consul 很简单，简单用 brew 命令就好</p>
+
+<pre><code class="language-bash">brew update consul
+</code></pre>
+
+<p>为了方便后面修改 consul 的配置文件，添加一个<code>-config-dir</code>参数</p>
+
+<p><code>/usr/local/opt/consul/homebrew.mxcl.consul.plist</code></p>
+
+<pre><code class="language-xml">&lt;?xml version=&quot;1.0&quot; encoding=&quot;UTF-8&quot;?&gt;
+&lt;!DOCTYPE plist PUBLIC &quot;-//Apple//DTD PLIST 1.0//EN&quot; &quot;http://www.apple.com/DTDs/PropertyList-1.0.dtd&quot;&gt;
+&lt;plist version=&quot;1.0&quot;&gt;
+  &lt;dict&gt;
+    &lt;key&gt;KeepAlive&lt;/key&gt;
+    &lt;dict&gt;
+      &lt;key&gt;SuccessfulExit&lt;/key&gt;
+      &lt;false/&gt;
+    &lt;/dict&gt;
+    &lt;key&gt;Label&lt;/key&gt;
+    &lt;string&gt;homebrew.mxcl.consul&lt;/string&gt;
+    &lt;key&gt;ProgramArguments&lt;/key&gt;
+    &lt;array&gt;
+      &lt;string&gt;/usr/local/opt/consul/bin/consul&lt;/string&gt;
+      &lt;string&gt;agent&lt;/string&gt;
+      &lt;string&gt;-dev&lt;/string&gt;
+      &lt;string&gt;-advertise&lt;/string&gt;
+      &lt;string&gt;127.0.0.1&lt;/string&gt;
+      &lt;string&gt;-config-dir&lt;/string&gt;
+      &lt;string&gt;/usr/local/etc/consul.d&lt;/string&gt;
+    &lt;/array&gt;
+    &lt;key&gt;RunAtLoad&lt;/key&gt;
+    &lt;true/&gt;
+    &lt;key&gt;WorkingDirectory&lt;/key&gt;
+    &lt;string&gt;/usr/local/var&lt;/string&gt;
+    &lt;key&gt;StandardErrorPath&lt;/key&gt;
+    &lt;string&gt;/usr/local/var/log/consul.log&lt;/string&gt;
+    &lt;key&gt;StandardOutPath&lt;/key&gt;
+    &lt;string&gt;/usr/local/var/log/consul.log&lt;/string&gt;
+  &lt;/dict&gt;
+&lt;/plist&gt;
+</code></pre>
+
+<p>这个配置文件中，我添加了以下两行：</p>
+
+<pre><code class="language-xml">&lt;string&gt;-config-dir&lt;/string&gt;
+&lt;string&gt;/usr/local/etc/consul.d&lt;/string&gt;
+</code></pre>
+
+<h3 id="toc_2"><a href="#%E5%86%99%E4%B8%A4%E4%B8%AA%E6%A8%A1%E6%8B%9F%E7%9A%84%E5%BE%AE%E6%9C%8D%E5%8A%A1"></a>写两个模拟的微服务</h3>
+
+<p>用 golang 写两个小程序，用以模拟两个微服务。</p>
+
+<p><code>service1.go</code></p>
+
+<pre><code class="language-go">package main
+import (
+    &quot;net/http&quot;
+    &quot;log&quot;
+    &quot;io&quot;
+)
+func TestServer(w http.ResponseWriter, req *http.Request) {
+    resp, err := http.Get(&quot;http://127.0.0.1:8082/test2&quot;)
+    if resp != nil &amp;&amp; resp.Body != nil {
+        defer resp.Body.Close()
+    }
+    if err != nil {
+        w.Write([]byte(&quot;make request failed\n&quot;))
+        return
+    }
+    io.Copy(w, resp.Body)
+}
+func main() {
+    http.HandleFunc(&quot;/test1&quot;, TestServer)
+    err := http.ListenAndServe(&quot;:8081&quot;, nil)
+    if err != nil {
+        log.Fatal(&quot;ListenAndServe: &quot;, err)
+    }
+}
+</code></pre>
+
+<p><code>service2.go</code></p>
+
+<pre><code class="language-go">package main
+import (
+    &quot;io&quot;
+    &quot;net/http&quot;
+    &quot;log&quot;
+)
+func TestServer(w http.ResponseWriter, req *http.Request) {
+    io.WriteString(w, &quot;hello, world!\n&quot;)
+}
+func main() {
+    http.HandleFunc(&quot;/test2&quot;, TestServer)
+    err := http.ListenAndServe(&quot;:8082&quot;, nil)
+    if err != nil {
+        log.Fatal(&quot;ListenAndServe: &quot;, err)
+    }
+}
+</code></pre>
+
+<p>这里模拟微服务<code>service1</code>调用<code>service2</code>。</p>
+
+<h3 id="toc_3"><a href="#%E5%9C%A8consul%E9%87%8C%E9%85%8D%E7%BD%AE%E4%B8%A4%E4%B8%AA%E6%9C%8D%E5%8A%A1"></a>在 consul 里配置两个服务</h3>
+
+<p>在 consul 的配置文件目录下新建两个 json 文件，用来配置上述两个服务。</p>
+
+<p><code>/usr/local/etc/consul.d/01_service1.json</code>:</p>
+
+<pre><code class="language-json">{
+  &quot;service&quot;: {
+    &quot;name&quot;: &quot;service1&quot;,
+    &quot;port&quot;: 8081,
+    &quot;connect&quot;: {
+      &quot;proxy&quot;: {
+        &quot;config&quot;: {
+          &quot;upstreams&quot;: [{
+             &quot;destination_name&quot;: &quot;service2&quot;,
+             &quot;local_bind_port&quot;: 38082
+          }]
+        }
+      }
+    }
+  }
+}
+</code></pre>
+
+<p><code>/usr/local/etc/consul.d/01_service2.json</code>:</p>
+
+<pre><code class="language-json">{
+  &quot;service&quot;: {
+    &quot;name&quot;: &quot;service2&quot;,
+    &quot;port&quot;: 8082,
+    &quot;connect&quot;: {
+      &quot;proxy&quot;: {
+      }
+    }
+  }
+}
+</code></pre>
+
+<p>然后执行命令重新加载 consul 的配置</p>
+
+<pre><code class="language-bash">consul reload
+</code></pre>
+
+<p>修改 service1 中引用 service2 的代码：</p>
+
+<pre><code class="language-go">......
+func TestServer(w http.ResponseWriter, req *http.Request) {
+    //resp, err := http.Get(&quot;http://127.0.0.1:8082/test2&quot;)
+    resp, err := http.Get(&quot;http://127.0.0.1:38082/test2&quot;)
+    if resp != nil &amp;&amp; resp.Body != nil {
+        defer resp.Body.Close()
+    }
+    if err != nil {
+        w.Write([]byte(&quot;make request failed\n&quot;))
+        return
+    }
+    io.Copy(w, resp.Body)
+}
+......
+</code></pre>
+
+<h3 id="toc_4"><a href="#%E8%B7%91%E8%B5%B7%E6%9D%A5"></a>跑起来</h3>
+
+<p>将 service1、service2 跑起来，然后用 curl 命令访问 service1</p>
+
+<pre><code class="language-bash">&gt; go run service1.go &amp;&gt; /dev/null
+&gt; go run service2.go &amp;&gt; /dev/null
+&gt; curl http://127.0.0.1:8081/test1
+# 如果出现以下输出，则说明一切正常，Bingo!
+hello, world!
+</code></pre>
+
+<h3 id="toc_5"><a href="#%E5%85%B6%E5%AE%83%E4%BD%BF%E7%94%A8%E6%96%B9%E6%B3%95"></a>其它使用方法</h3>
+
+<p>除了 Service Mesh 的玩法，consul 1.2 还提供了 SDK 的用法。简单来说就是 Go 语言开发的微服务按照它的规范修改服务提供方、服务消费方的代码，服务间的调用将会自动使用底层的 connect 隧道。这个使用方法不太符合 service mesh 的初衷，做过微服务框架 sdk 的我不是太喜欢，这里就不详细讲了，可以参考官方给出的文档。</p>
+
+<p><a href="https://www.consul.io/docs/connect/native.html">Connect Native 原理</a></p>
+
+<p><a href="https://www.consul.io/docs/connect/native/go.html">Connect Native Go 语言项目改造指引</a></p>
+
+<h2 id="toc_6"><a href="#consul%E7%9A%84service-mesh%E5%8E%9F%E7%90%86%E5%88%86%E6%9E%90"></a>consul 的 service mesh 原理分析</h2>
+
+<p>其实 consul 的文档本身说的比较明白，这里结合 consul-ui 及代码大概分析一下。</p>
+
+<p>当给 consul 的服务配置里添加了<code>&quot;connect&quot;: { &quot;proxy&quot;: { } }</code>后，consul 将会为每个服务实例创建一个专门的隧道代理，如下图所示：</p>
+
+<p><a href="https://jeremy-xu.oschina.io/images/20180708/image-20180708231726604.png"><img src="https://jeremy-xu.oschina.io/images/20180708/image-20180708231726604.png" alt=""/></a></p>
+
+<p>隧道代理的作用是当以 connect 模式连入时，会自动建立一条到原服务实例的 tcp 隧道，后面 tcp 层以上的应用协议数据流将在这条 tcp 隧道上传输，具体代码在<code>https://github.com/hashicorp/consul/blob/master/connect/proxy/listener.go#NewPublicListener</code>。</p>
+
+<p>而涉及服务间调用时，在 consul 服务配置里添加服务<code>UpstreamListener</code>声明，服务消费方访问服务时需使用<code>UpstreamListener</code>的地址。<code>UpstreamListener</code>实际上是一个反向代理，当访问它时，它会以 connect 模式连接对应的服务实例<code>Connect Proxy</code>，具体代码在<code>https://github.com/hashicorp/consul/blob/master/connect/proxy/listener.go#NewUpstreamListener</code>。</p>
+
+<p>结合上述两条规则，整个数据链路就通了。</p>
+
+<p>这里有一个问题，为啥一定要 connect 模式的隧道代理呢？反向代理服务不能直接连接原来的目标服务地址吗？</p>
+
+<p>看了下<code>https://github.com/hashicorp/consul/blob/master/connect/service.go#Dial</code>，大概知道原因了。因为 connect 模式的隧道代理是使用 TLS 加密的，这样物理服务器节点之间的网络流量就走 TLS 安全连接了，再加上 <a href="https://www.consul.io/docs/connect/intentions.html">intentions</a> 机制，服务间的调用安全性上有了很大保障。还有一个原因，如果采用 <a href="https://www.consul.io/docs/connect/native/go.html">Connect-Native</a> 的方式集成 consul 的 service mesh 功能，底层连接是 TLS，上层就可以很方便地走 HTTP/2.0 协议了。</p>
+
+<h2 id="toc_7"><a href="#consul%E7%9A%84service-mesh%E4%BC%98%E7%BC%BA%E7%82%B9%E5%88%86%E6%9E%90"></a>consul 的 service mesh 优缺点分析</h2>
+
+<p>优点：</p>
+
+<ol>
+<li><p>直接使用 tcp 隧道，因此直接支持各类基于 tcp 的协议代理，如 HTTP/1.1、HTTP/2.0、GRPC。</p></li>
+<li><p>实现原理简单，<code>https://github.com/hashicorp/consul/blob/master/connect/</code>、<code>https://github.com/hashicorp/consul/tree/master/api/connect*.go</code>、<code>https://github.com/hashicorp/consul/tree/master/agent/connect/</code>下的关键文件不超过 20 个，逻辑很容易就看清了。</p></li>
+<li><p>直接结合 consul 做服务注册与服务发现，集成度高。</p></li>
+</ol>
+
+<p>缺点：</p>
+
+<ol>
+<li> 目前的负载均衡算法还很简单，就是随机，见下面：</li>
+</ol>
+
+<p><a href="https://jeremy-xu.oschina.io/images/20180708/image-20180708231828625.png"><img src="https://jeremy-xu.oschina.io/images/20180708/image-20180708231828625.png" alt=""/></a></p>
+
+<ol>
+<li><p>一些微服务框架的基本功能还不具备，如超时、重试、熔断、流量分配等，可以从<code>https://github.com/hashicorp/consul/blob/master/connect/proxy/listener.go#handleConn</code>这里开始扩展。</p></li>
+<li><p>需要手动修改 consul 的服务配置；服务消费方要根据 consul 里的服务配置，修改调用其它服务的地址（这里跟 service mesh 的初衷有些不符）。</p></li>
+</ol>
+
+<h2 id="toc_8"><a href="#%E6%80%BB%E7%BB%93"></a>总结</h2>
+
+<p>目前来看 consul 的 service mesh 方案还比较简单，功能很基本，但具备进一步扩展的空间，可以好好研究学习它的代码。</p>
+
+<h2 id="toc_9"><a href="#%E5%8F%82%E8%80%83"></a>参考</h2>
+
+<ol>
+<li> <a href="https://www.hashicorp.com/blog/consul-1-2-service-mesh">https://www.hashicorp.com/blog/consul-1-2-service-mesh</a></li>
+<li> <a href="https://www.consul.io/intro/getting-started/connect.html">https://www.consul.io/intro/getting-started/connect.html</a></li>
+<li> <a href="https://www.consul.io/docs/agent/options.html">https://www.consul.io/docs/agent/options.html</a></li>
+<li> <a href="https://www.consul.io/docs/connect/intentions.html">https://www.consul.io/docs/connect/intentions.html</a></li>
+<li> <a href="https://www.consul.io/docs/connect/native.html">https://www.consul.io/docs/connect/native.html</a></li>
+<li> <a href="https://www.consul.io/docs/connect/native/go.html">https://www.consul.io/docs/connect/native/go.html</a></li>
+<li> <a href="https://www.consul.io/docs/connect/configuration.html">https://www.consul.io/docs/connect/configuration.html</a></li>
+<li> <a href="https://www.consul.io/docs/connect/proxies.html">https://www.consul.io/docs/connect/proxies.html</a></li>
+<li> <a href="https://www.consul.io/docs/connect/dev.html">https://www.consul.io/docs/connect/dev.html</a></li>
+<li> <a href="https://www.consul.io/docs/connect/ca/consul.html">https://www.consul.io/docs/connect/ca/consul.html</a></li>
+</ol>
 
                         
                       </div>
@@ -208,7 +374,7 @@ oneway消息一般用于不那么重要的日志类消息，它不能保证服�
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/6/15</span>
+                    <span class="date">2018/7/15</span>
                     <span>posted in&nbsp;</span> 
           				  
           					    <span class="posted-in"><a href='Microservice.html'>Microservice</a></span>
@@ -301,31 +467,31 @@ oneway消息一般用于不那么重要的日志类消息，它不能保证服�
 	      
 		      
 			      <li class="post">
-			        <a href="15459058392039.html">Reliable Domain Events</a>
+			        <a href="15517999043443.html">The Art of Crafting Architectural Diagrams</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
+			        <a href="15517997955971.html">为什么说我们需要软件架构图？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
+			        <a href="15516128677869.html">DNS Servers That Offer Privacy and Filtering</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
+			        <a href="15516123108194.html">Airbnb's Migration from Monolith to Services</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
+			        <a href="15516097487470.html">Events As First-Class Citizens</a>
 			      </li>
 		     
 		  

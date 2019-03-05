@@ -105,669 +105,183 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15407346259853.html">
+                <a class="clearlink" href="15503695043576.html">
                 
-                  <h1>Spring 整合 Shiro 使用 EL 表达式</h1>
+                  <h1>Netty 的资源泄露探测机制</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
-                        	<blockquote>
-<p><a href="http://elim.iteye.com/blog/2411557">http://elim.iteye.com/blog/2411557</a></p>
-</blockquote>
-
-<p>Shiro 是一个轻量级的权限控制框架，应用非常广泛。本文的重点是介绍 Spring 整合 Shiro，并通过扩展使用 Spring 的 EL 表达式，使 @RequiresRoles 等支持动态的参数。对 Shiro 的介绍则不在本文的讨论范围之内，读者如果有对 shiro 不是很了解的，可以通过其<a href="http://shiro.apache.org/index.html">官方网站</a>了解相应的信息。infoq 上也有一篇文章对 shiro 介绍比较全面的，也是官方推荐的，其地址是 <a href="https://www.infoq.com/articles/apache-shiro">https://www.infoq.com/articles/apache-shiro</a>。</p>
-
-<h2 id="toc_0">Shiro 整合 Spring</h2>
-
-<p>首先需要在你的工程中加入 shiro-spring-xxx.jar，如果是使用 Maven 管理你的工程，则可以在你的依赖中加入以下依赖，笔者这里是选择的当前最新的 1.4.0 版本。</p>
-
-<pre><code class="language-xml">&lt;dependency&gt;
-    &lt;groupId&gt;org.apache.shiro&lt;/groupId&gt;
-    &lt;artifactId&gt;shiro-spring&lt;/artifactId&gt;
-    &lt;version&gt;1.4.0&lt;/version&gt;
-&lt;/dependency&gt;
-</code></pre>
-
-<p>接下来需要在你的 web.xml 中定义一个 shiroFilter，应用它来拦截所有的需要权限控制的请求，通常是配置为<code>/*</code>。另外该 Filter 需要加入最前面，以确保请求进来后最先通过 shiro 的权限控制。这里的 Filter 对应的 class 配置的是 DelegatingFilterProxy，这是 Spring 提供的一个 Filter 的代理，可以使用 Spring bean 容器中的一个 bean 来作为当前的 Filter 实例，对应的 bean 就会取<code>filter-name</code>对应的那个 bean。所以下面的配置会到 bean 容器中寻找一个名为 shiroFilter 的 bean。</p>
-
-<pre><code class="language-xml">&lt;filter&gt;
-    &lt;filter-name&gt;shiroFilter&lt;/filter-name&gt;
-    &lt;filter-class&gt;org.springframework.web.filter.DelegatingFilterProxy&lt;/filter-class&gt;
-    &lt;init-param&gt;
-        &lt;param-name&gt;targetFilterLifecycle&lt;/param-name&gt;
-        &lt;param-value&gt;true&lt;/param-value&gt;
-    &lt;/init-param&gt;
-&lt;/filter&gt;
-
-&lt;filter-mapping&gt;
-    &lt;filter-name&gt;shiroFilter&lt;/filter-name&gt;
-    &lt;url-pattern&gt;/*&lt;/url-pattern&gt;
-&lt;/filter-mapping&gt;
+                        	<pre><code>2017/11/11
 </code></pre>
 
 <blockquote>
-<p>独立使用 Shiro 时通常会定义一个<code>org.apache.shiro.web.servlet.ShiroFilter</code>来做类似的事。</p>
+<p>原文地址 <a href="https://ylgrgyq.github.io/2017/11/11/netty-resource-leack-detector/">https://ylgrgyq.github.io/2017/11/11/netty-resource-leack-detector/</a></p>
 </blockquote>
 
-<p>接下来就是在 bean 容器中定义我们的 shiroFilter 了。如下我们定义了一个 ShiroFilterFactoryBean，其会产生一个 AbstractShiroFilter 类型的 bean。通过 ShiroFilterFactoryBean 我们可以指定一个 SecurityManager，这里使用的 DefaultWebSecurityManager 需要指定一个 Realm，如果需要指定多个 Realm 则通过 realms 指定。这里简单起见就直接使用基于文本定义的 TextConfigurationRealm。通过 loginUrl 指定登录地址、successUrl 指定登录成功后需要跳转的地址，unauthorizedUrl 指定权限不足时的提示页面。filterChainDefinitions 则定义 URL 与需要使用的 Filter 之间的关系，等号右边的是 filter 的别名，默认的别名都定义在<code>org.apache.shiro.web.filter.mgt.DefaultFilter</code>这个枚举类中。</p>
+<p>这里资源泄露主要是指某个对象占用有某些资源，比如连接、内存等，在这个对象被 GC 之前，必须主动执行一个方法，如 close、release 之类的，将其占用的资源释放出来，该对象才能被安全的 GC。否则就会出现资源泄露，比如连接没有关闭，内存没有释放。随着服务的运行，泄露的资源由于无法被释放，整个服务占用的资源就会越来越多，最终让服务无法分配新资源，导致服务异常。</p>
 
-<pre><code class="language-xml">&lt;bean id=&quot;shiroFilter&quot; class=&quot;org.apache.shiro.spring.web.ShiroFilterFactoryBean&quot;&gt;
-    &lt;property /&gt;
-    &lt;property /&gt;
-    &lt;property /&gt;
-    &lt;property /&gt;
-    &lt;property &gt;
-        &lt;value&gt;
-            /admin/** = authc, roles[admin]
-            /logout = logout
-            # 其它地址都要求用户已经登录了
-            /** = authc,logger
-        &lt;/value&gt;
-    &lt;/property&gt;
-&lt;/bean&gt;
+<p>Netty 中有个 ResourceLeakDetector，能对占用资源的对象进行监控，如果对象被 GC 之前没有主动释放资源，则 ResourceLeakDetector 会发现这个泄露，并会以打印日志的方式告知给开发者。ResourceLeakDetector 可以保护任何一个可能出现泄露的资源，不过在 Netty 中 ResourceLeakDetector 最主要的使用场所还是去保护、记录 Netty 使用的各种 ByteBuf。无论是 Pooled 还是 Unpooled，无论是 Direct 还是 Heap，所有的 ByteBuf 都要被 ResourceLeakDetector 记录起来，从而在开发者出现忘记为 ByteBuf 调用 release 的时候，通过日志告知开发者有泄露，要求开发者来排查问题。如果出现泄露，就可能会出现比如 Pooled ByteBuf 对象没有放入 Pool 中就被 GC，或者 Direct ByteBuf 没有执行释放内存的方法就被 GC 的情况。因为 Netty 大量使用 ByteBuf，如果 ByteBuf 出现泄露，则服务很容易出现 OOM。</p>
 
-&lt;bean id=&quot;securityManager&quot; class=&quot;org.apache.shiro.web.mgt.DefaultWebSecurityManager&quot;&gt;
-    &lt;property /&gt;
-&lt;/bean&gt;
-&lt;bean id=&quot;lifecycleBeanPostProcessor&quot; class=&quot;org.apache.shiro.spring.LifecycleBeanPostProcessor&quot;/&gt;
+<h2 id="toc_0">老版本的 ResourceLeakDetector 的使用</h2>
 
-&lt;!-- 简单起见，这里就使用基于文本的Realm实现 --&gt;
-&lt;bean id=&quot;realm&quot; class=&quot;org.apache.shiro.realm.text.TextConfigurationRealm&quot;&gt;
-    &lt;property &gt;
-        &lt;value&gt;
-            user1=pass1,role1,role2
-            user2=pass2,role2,role3
-            admin=admin,admin
-        &lt;/value&gt;
-    &lt;/property&gt;
-&lt;/bean&gt;
+<p>在大概 2016 年 12 月的时候，Netty 对 ResourceLeakDetector 做了改动，修复了一个隐藏很久的 Bug。对于这个稍后再说，新老版本在使用上差别不大，所以我们还是先看老版本的 ResourceLeakDetector，先看看它是怎么使用的，之后再说说这个 Bug 是怎么回事，怎么被修复的。</p>
+
+<p>首先，你需要有个待保护的 Resource，这个 Resource 可以有各种功能，但肯定要有个 close 或者 release 方法，需要在不再使用这个 Resource 的时候记得执行一下，释放资源。忘记释放就会造成资源泄露。</p>
+
+<pre><code class="language-java">interface Resource {
+  boolean close();
+}
 </code></pre>
 
-<p>如果需要在 filterChainDefinitions 定义中使用自定义的 Filter，则可以通过 ShiroFilterFactoryBean 的 filters 指定自定义的 Filter 及其别名映射关系。比如下面这样我们新增了一个别名为 logger 的 Filter，并在 filterChainDefinitions 中指定了<code>/**</code>需要应用别名为 logger 的 Filter。</p>
+<p>为了提醒我们要记得释放资源，我们用 ResourceLeakDetector 协助我们做检查。比如我们有个资源 DefaultResource:</p>
 
-<pre><code class="language-xml">&lt;bean id=&quot;shiroFilter&quot; class=&quot;org.apache.shiro.spring.web.ShiroFilterFactoryBean&quot;&gt;
-    &lt;property /&gt;
-    &lt;property /&gt;
-    &lt;property /&gt;
-    &lt;property /&gt;
-    &lt;property &gt;
-        &lt;util:map&gt;
-            &lt;entry key=&quot;logger&quot;&gt;
-                &lt;bean class=&quot;com.elim.chat.shiro.filter.LoggerFilter&quot;/&gt;
-            &lt;/entry&gt;
-        &lt;/util:map&gt;
-    &lt;/property&gt;
-    &lt;property &gt;
-        &lt;value&gt;
-            /admin/** = authc, roles[admin]
-            /logout = logout
-            # 其它地址都要求用户已经登录了
-            /** = authc,logger
-        &lt;/value&gt;
-    &lt;/property&gt;
-&lt;/bean&gt;
+<pre><code class="language-java">class DefaultResource implements Resource {
+  static final ResourceLeakDetector&lt;Resource&gt; leakDetector = new ResourceLeakDetector&lt;Resource&gt;(Resource.class);
+  public boolean close() {
+    // .... 有一堆释放资源的工作
+  }
+}
 </code></pre>
 
-<p>其实我们需要应用的 Filter 别名定义也可以不直接通过 ShiroFilterFactoryBean 的 setFilters() 来指定，而是直接在对应的 bean 容器中定义对应的 Filter 对应的 bean。因为默认情况下，ShiroFilterFactoryBean 会把 bean 容器中的所有的 Filter 类型的 bean 以其 id 为别名注册到 filters 中。所以上面的定义等价于下面这样。</p>
+<p>我们需要在申请出资源之后，将资源交给 DefaultResource 内的 leakDetector 做登记：</p>
 
-<pre><code class="language-xml">&lt;bean id=&quot;shiroFilter&quot; class=&quot;org.apache.shiro.spring.web.ShiroFilterFactoryBean&quot;&gt;
-    &lt;property /&gt;
-    &lt;property /&gt;
-    &lt;property /&gt;
-    &lt;property /&gt;
-    &lt;property &gt;
-        &lt;value&gt;
-            /admin/** = authc, roles[admin]
-            /logout = logout
-            # 其它地址都要求用户已经登录了
-            /** = authc,logger
-        &lt;/value&gt;
-    &lt;/property&gt;
-&lt;/bean&gt;
-
-&lt;bean id=&quot;logger&quot; class=&quot;com.elim.chat.shiro.filter.LoggerFilter&quot;/&gt;
+<pre><code class="language-java">// 比如我们就这么拿到一个资源
+DefaultResource rsc = ResourceFactory.get();
+// 交给 leakDetector 做登记
+ResourceLeak leak = DefaultResource.leakDetector.open(rsc)
 </code></pre>
 
-<p>经过以上几步，Shiro 和 Spring 的整合就完成了，这个时候我们请求工程的任意路径都会要求我们登录，且会自动跳转到<code>loginUrl</code>指定的路径让我们输入用户名 / 密码登录。这个时候我们应该提供一个表单，通过 username 获得用户名，通过 password 获得密码，然后提交登录请求的时候请求需要提交到<code>loginUrl</code>指定的地址，但是请求方式需要变为 POST。登录时使用的用户名 / 密码是我们在 TextConfigurationRealm 中定义的用户名 / 密码，基于我们上面的配置则可以使用 user1/pass1、admin/admin 等。登录成功后就会跳转到<code>successUrl</code>参数指定的地址了。如果我们是使用 user1/pass1 登录的，则我们还可以试着访问一下<code>/admin/index</code>，这个时候会因为权限不足跳转到<code>unauthorized.jsp</code>。</p>
+<p>相当于每申请一个资源后，就将资源交给 leakDetector 做登记，并且在释放资源的时候，不但要执行 rsc.close() 清理资源，还要执行 leak.close() 将 leakDetector 登记的记录销毁，所以最好是不直接使用 DefaultResource 而是对其用 Decorator 包装一下，从而将这两步 close 操作封装为一步操作，用户使用 Decorator 去执行 close 时就将 leak 和资源都 close，从而完成资源清理和 leakDetector 的注销。</p>
 
-<h2 id="toc_1">启用基于注解的支持</h2>
-
-<p>基本的整合需要我们把 URL 需要应用的权限控制都定义在 ShiroFilterFactoryBean 的 filterChainDefinitions 中。这有时候会没那么灵活。Shiro 为我们提供了整合 Spring 后可以使用的注解，它允许我们在需要进行权限控制的 Class 或 Method 上加上对应的注解以定义访问 Class 或 Method 需要的权限，如果是定义中 Class 上的，则表示调用该 Class 中所有的方法都需要对应的权限（注意需要是外部调用，这是动态代理的局限）。要使用这些注解我们需要在 Spring 的 bean 容器中添加下面两个 bean 定义，这样才能在运行时根据注解定义来判断用户是否拥有对应的权限。这是通过 Spring 的 AOP 机制来实现的，关于 Spring Aop 如果有不是特别了解的，可以参考笔者写在 iteye 的<a href="http://www.iteye.com/blogs/subjects/springaop">《Spring Aop 介绍专栏》</a>。下面的两个 bean 定义，<code>AuthorizationAttributeSourceAdvisor</code>是定义了一个 Advisor，其会基于 Shiro 提供的注解配置的方法进行拦截，校验权限。<code>DefaultAdvisorAutoProxyCreator</code>则是提供了为标注有 Shiro 提供的权限控制注解的 Class 创建代理对象，并在拦截到目标方法调用时应用<code>AuthorizationAttributeSourceAdvisor</code>的功能。当拦截到了用户的一个请求，而该用户没有对应方法或类上标注的权限时，将抛出<code>org.apache.shiro.authz.AuthorizationException</code>异常。</p>
-
-<pre><code class="language-xml">&lt;bean class=&quot;org.springframework.aop.framework.autoproxy.DefaultAdvisorAutoProxyCreator&quot; 
-    depends-on=&quot;lifecycleBeanPostProcessor&quot;/&gt;
-&lt;bean class=&quot;org.apache.shiro.spring.security.interceptor.AuthorizationAttributeSourceAdvisor&quot;&gt;
-    &lt;property /&gt;
-&lt;/bean&gt;
+<pre><code class="language-java">class LeakAwareResource implements Resource {
+  Resource rsc;
+  ResourceLeak leak;
+  LeakAwareResource(Resource rsc, ResourceLeak leak){
+    this.rsc = rsc;
+    this.leak = leak
+  }
+  @Override
+  public boolean close() {
+    boolean closed = this.rsc.close()
+    if (closed){
+      // 需要 rsc 释放完了之后再 close leak
+      this.leak.close();
+    }
+    return closed;
+  }
+}
 </code></pre>
 
-<blockquote>
-<p>如果我们的 bean 容器中已经定义了<code>&lt;aop:config/&gt;</code>或<code>&lt;aop:aspectj-autoproxy/&gt;</code>，则可以不再定义<code>DefaultAdvisorAutoProxyCreator</code>。因为前面两种情况都会自动添加与<code>DefaultAdvisorAutoProxyCreator</code>类似的 bean。关于<code>DefaultAdvisorAutoProxyCreator</code>的更多介绍也可以参考笔者的 <a href="/blog/2398725">Spring Aop 自动创建代理对象的原理</a>这篇博客。</p>
-</blockquote>
+<p>用户使用的时候直接使用 LeakAwareResource 即可，释放资源时执行它的 close 方法，将资源释放，也将 leakDetector 登记的记录清理。忘记执行 LeakAwareResource 的 close 的话，该对象在被 GC 的时候，leakDetector 会有一定概率能发现这个泄露并打印日志。一定概率是因为 ResourceLeakDetector 记录资源泄露是有开销的，所以是抽样的做记录，不是所有泄露都能被抓住，但基本上如果有泄露使用久了总能被发现。</p>
 
-<p>Shiro 提供的权限控制注解如下：</p>
+<h2 id="toc_1">老版本的 ResourceLeakDetector 实现</h2>
+
+<p>ResourceLeakDetector 使用虽然是有一些额外工作需要做，但总体来看不算太麻烦，再看看其实现方法。上面 <code>DefaultResource.leakDetector.open(rsc)</code> 返回的 ResourceLeak 是一个 PhantomReference，它指向被检查的资源 rsc，也就是一个 DefaultResource 对象。如下图：</p>
+
+<p><img src="media/15503695043576/15503753321677.jpg" alt=""/></p>
+
+<p>PhantomReference 不影响 DefaultResource 的 GC，DefaultResource 被 GC 后，指向它的 PhantomReference (即 ResourceLeak) 会被塞到一个指定队列里，消费这个队列就能拿到 PhantomReference 。如果按照上面 LeakAwareResource 的实现，DefaultResource 总是和 PhantomReference 一起创建，并且 DefaultResource close 时也会执行与其绑定的 PhantomReference 的 close。就能在这个 PhantomReference (ResourceLeak) 内记录有没有执行过 close 这个事情，等 DefaultResource 被 GC 后，从队列中依次读取所有 PhantomReference，并判断里面 close 标识是否置位，发现没置位的 close 就说明该 PhantomReference 曾经指向的 DefaultResource 没有执行 close 就被 GC 了，就存在泄漏，需要打日志报警。</p>
+
+<p>从 PhantomReference 拿不到 DefaultResource 状态，但是在 DefaultResource 被 GC 后，队列内取到 PhantomReference 内部状态是全的。为了在 DefaultResource 出现泄露时候报警打日志，可以在 PhantomReference 里记录所有操作 DefaultResource 的 Stack，从而在有泄露的时候将这些 Stack 打印出来，以追踪问题。</p>
+
+<p>打印堆栈开销很大，并且这个 Leak Detector 是即使服务工作正常，最好也开着以捕获意外的泄露，所以上面提到了 Netty 内部以采样的方式为 ByteBuf 设置 Detector，并提供了很多 Detection 级别，默认是 SIMPLE，还有 ADVANCE，PARANOID，级别越高采样比率越大，记录 Stack 的开销也越大。调整方法是调整 <code>io.netty.leakDetection.level</code> 这个参数，或者老版本 Netty 是这个 <code>-Dio.netty.leakDetectionLevel</code> 。这个参数一般没有泄露不会调整。</p>
+
+<p>每次操作 Resource 留下的 Stack 记录叫做 record，除了采样比率之外，Netty 还能调整 Record 数量。比如一个 ByteBuf 操作次数比较多，默认的最大 record 数量 4 个不够，就需要调整 record 数，从而排查问题。调整的参数是 <code>-Dio.netty.leakDetection.maxRecords</code> 。这个参数比 detection level 更少调整，只有在发现有泄露，并且提示说 record 数量不足，不足以定位问题的时候才需要调整，正常情况下完全不用动。</p>
+
+<h3 id="toc_2">保证 PhantomReference 不会提前被 GC</h3>
+
+<p>上面提到，DefaultReference 被 GC 后，Phantom Reference 队列能取到指向它的 PhantomReference，并且 PhantomReference 如果内部有其它字段、状态的话此时都是能读取到的。但这个保证是需要有前提的，前提就是有 GC Root 能指向这个 PhantomReference，不能出现 DefaultReference 还未被 GC 或者 DefaultResource 被 GC 还未来得及处理 Phantom Reference 队列时，PhantomReference 自己就因为没有 GC Root 指向而被 GC 掉。</p>
+
+<p>所以，ReferenceDetector 内是有个 static 的链表，每次执行 <code>DefaultResource.leakDetector.open(rsc)</code> 构造出新的 PhantomReference 的时候，会将这个 Reference 塞到这个 static 的链表当中，只有调用 leak.close() 时，才会将 PhantomReference 从链表上摘下，才能被 GC。从而保证了如果出现泄露忘记执行 LeakAwareResource 的 close，则 PhantomReference 不会在其指向的 DefaultResource 被 GC 前 GC。从而实现 ReferenceDetector 的功能。</p>
+
+<h2 id="toc_3">老版本 ResourceLeakDetector 的 Bug</h2>
+
+<p>这个 Bug 藏的非常隐晦，所以很多很多年都没有被发现。Bug 的现象是即使记得调用了 LeakAwareResource 的 close，释放了 Resource，但 Netty 的 ReferenceDetector 还是会错误报出发现内存泄露。也就是说 DefaultReference 执行了 close，但在 <code>leak.close()</code> 执行之前，DefaultResource 就被 GC 了，且指向它的 PhantomReference 被从队列中拿了出来，发现该 PhantomReference (其实是 ResourceLeak) 内的 closed 标识未置位，从而错误报出有内存泄露。</p>
+
+<p>来看看之前 LeakAwareResource 的实现。LeakAwareResource 是 Netty 内 SimpleLeakAwareByteBuf 的简化版本，和 Netty 的实现逻辑是一样的。</p>
+
+<pre><code class="language-java">class LeakAwareResource implements Resource {
+  // ..... 和前面一样
+  @Override
+  public boolean close() {
+    boolean closed = this.rsc.close()
+    if (closed){
+      // 需要 rsc 释放完了之后再 close leak
+      this.leak.close();
+    }
+    return closed;
+  }
+}
+</code></pre>
+
+<p>看上去只要 <code>this.rsc.close()</code> 成功，则一定会执行 this.leak.close()。但是由于 JIT/GC 的存在，在 <code>this.rsc.close()</code> 执行后，JVM 会推算出代码不再需要 this.rsc 所指的对象了，所以在执行 <code>this.leak.close()</code> 之前就将 <code>this.rsc</code> 指向的对象 DefaultResource 直接 GC 掉，此时如果有另外的线程在执行处理 PhantomReference 队列的逻辑，就会从队列中拿到指向刚被 GC 掉的 DefaultResource 的 PhantomReference。此时 <code>this.leak.close()</code> 还未执行，所以会报出内存泄露，而实际上 <code>this.leak.close()</code>终究是会被执行的。并且 DefaultReference 也已经成功执行过 <code>close()</code> 方法。</p>
+
+<p>这种 Bug 感觉就是传说中的 Heisenbug，如果你手工调试，或者在执行 <code>this.leak.close()</code>之前检查 this.rsc 的状态，你一定无法发现这个 Bug，因为会影响 JIT/GC 的工作。你的探测会导致程序行为变化，使 Bug 隐藏起来，不探测的时候 Bug 又会出现。想眼睁睁的看着 Bug 一步一步的复现是不可能的。这个 Bug 修复之后 Netty 也增加了测试，测试也只是调整线程数，调整 ReferenceDetector 探测级别，让一堆线程不断的重复构造 Resource 又释放，看看是否出现误报。</p>
+
+<h2 id="toc_4">新版本的 ResourceLeakDetector</h2>
+
+<p>该怎么修上面那个 Bug 呢？修复就是要保证 <code>this.rsc.close()</code> 执行完，还要骗过 JVM 让它误认为你还需要 <code>this.rsc</code> 指向的对象，不要将其 GC 掉。需要再说明一下，我这里所说的老版本代码基于 v4.0.28，新版本代码基于 v4.1.9。在 v4.1.9 后，ResourceLeakDetector 又做了很多性能上的优化，只是这里为了不引入太多东西看着复杂，所以不再说后来优化的事情了，在最下边参考里有列出性能优化的 PR，有兴趣的可以看看。</p>
+
+<p>老版本 ResourceLeakDetector 内 ResourceLeak 的 close 实现大致如下：</p>
+
+<pre><code class="language-java">public boolean close() {
+  if (markFreed()) {
+    synchronized (link) {
+      removeThisReferenceFromLink(link)
+    }
+    return true;
+  }
+  return false
+}
+</code></pre>
+
+<p>即先标记 ResourceLeak 为 free，再将其从 ResourceLeakDetector 内 static 的链表上移除。移除后 ResourceLeak 这个 PhantomReference 就能被安全 GC 了。</p>
+
+<p>新版本 ResourceLeakDetector 的实现大致是：</p>
+
+<pre><code class="language-java">public boolean close() {
+  allLeaks.remove(this, LeakEntry.INSTANCE);
+}
+public boolean close(T trackedObject) {
+  close() &amp;&amp; trackedObject != null;
+}
+</code></pre>
+
+<p>一方面 ResourceLeakDetector 内存放 PhantomReference 的不再是链表，而是一个 ConcurrentHashMap。并发时清理 PhantomReference 效率有所提升。</p>
+
+<p>再一个就是对使用者来说，都要使用带参数的 close，即需要将被保护的 Resource 传入 close。LeakAwareResource 需要改为：</p>
+
+<pre><code class="language-java">class LeakAwareResource implements Resource {
+  // .... 与之前一致
+  @Override
+  public boolean close() {
+    boolean closed = this.rsc.close()
+    if (closed){
+      // 只改了这里
+      this.leak.close(this.rsc);
+    }
+    return closed;
+  }
+}
+</code></pre>
+
+<p>从而保证在执行 <code>boolean closed = this.rsc.close()</code> 后，<code>this.rsc</code> 不能被清理，因为 <code>this.leak.close(this.rsc)</code> 还要用到 <code>this.rsc</code>。并且在 ResourceLeak 内， 执行完 <code>allLeaks.remove(this, LeakEntry.INSTANCE);</code> 后因为还要检查 <code>trackedObject != null</code> ，所以在 ResourceLeak 从 ResourceLeakDetector 的 static 的 ConcurrentHashMap 移除之前，被保护的 Resource 也就是 trackedObject 不能被 GC 掉。</p>
+
+<p>是不是有点感觉不可靠？因为这个修复最关键的点就是 <code>close() &amp;&amp; trackedObject != null;</code> 即 <code>close()</code> 之后通过再检查一下 trackedObject 是不是 null 来保证 trackedObject 不会在 <code>close()</code> 执行之前被 GC。有没有可能 JVM 一开始就判断 trackedObject != null 并将结果记录下来，再去执行 close() 从而又会出现 close() 执行之前就能判断出 trackedObject 再也用不上了，从而再次出现之前的 Bug。</p>
+
+<p>个人理解是因为 <code>close() &amp;&amp; trackedObject != null;</code> 这里用了 &amp;&amp;，JVM 不确定 &amp;&amp; 后面的计算到底有多复杂，按照短路执行原则，应该先执行 <code>close()</code> 从而根据 <code>close()</code> 执行结果判断要不要再执行 <code>trackedObject != null</code>。因为有短路执行机制存在，有可能执行完 <code>close()</code> 不用再执行 <code>trackedObject != null</code>，省一次操作，所以 JVM 会先执行 <code>close()</code> 再执行 <code>trackedObject != null</code>。</p>
+
+<p>但是 <code>trackedObject != null</code> 毕竟是个非常简单的语句，不知道未来 JVM 有没有可能发现这个语句很简单而直接先执行了，好处是能将 trackedObject 提前 GC 掉。</p>
+
+<h2 id="toc_5">参考</h2>
 
 <ul>
-<li>  RequiresAuthentication：需要用户在当前会话中是被认证过的，即需要通过用户名 / 密码登录过，不包括 RememberMe 自动登录。</li>
-<li>  RequiresUser：需要用户是被认证过的，可以是在本次会话中通过用户名 / 密码登录认证，也可以是通过 RememberMe 自动登录。</li>
-<li>  RequiresGuest：需要用户是未登录的。</li>
-<li>  RequiresRoles：需要用户拥有指定的角色。</li>
-<li>  RequiresPermissions：需要用户拥有指定的权限。</li>
+<li>修复 ResourceLeakDetector 问题的 PR：
+<a href="https://github.com/netty/netty/pull/6087">Fix false-positives when using ResourceLeakDetector. by normanmaurer · Pull Request #6087 · netty/netty · GitHub</a></li>
+<li>对 ResourceLeakDetector 性能优化的 PR，虽然本文没有说跟它相关的事情，但是确实挺值得看看的:
+<a href="https://github.com/netty/netty/pull/7217">Reduce performance overhead of ResourceLeakDetector by normanmaurer · Pull Request #7217 · netty/netty · GitHub</a></li>
 </ul>
-
-<p>前面三个都很好理解，而后面两个是类似的。笔者这里拿 @RequiresPermissions 来做个示例。首先我们把上面定义的 Realm 改一下，给 role 添加权限。这样我们的 user1 将拥有 perm1、perm2 和 perm3 的权限，而 user2 将拥有 perm1、perm3 和 perm4 的权限。</p>
-
-<pre><code class="language-xml">&lt;bean id=&quot;realm&quot; class=&quot;org.apache.shiro.realm.text.TextConfigurationRealm&quot;&gt;
-    &lt;property &gt;
-        &lt;value&gt;
-            user1=pass1,role1,role2
-            user2=pass2,role2,role3
-            admin=admin,admin
-        &lt;/value&gt;
-    &lt;/property&gt;
-    &lt;property &gt;
-        &lt;value&gt;
-            role1=perm1,perm2
-            role2=perm1,perm3
-            role3=perm3,perm4
-        &lt;/value&gt;
-    &lt;/property&gt;
-&lt;/bean&gt;
-</code></pre>
-
-<p><code>@RequiresPermissions</code>可以添加在方法上，用来指定调用该方法时需要拥有的权限。下面的代码我们就指定了在访问<code>/perm1</code>时必须拥有<code>perm1</code>这个权限。这个时候 user1 和 user2 都能访问。</p>
-
-<pre><code class="language-java">@RequestMapping(&quot;/perm1&quot;)
-@RequiresPermissions(&quot;perm1&quot;)
-public Object permission1() {
-    return &quot;permission1&quot;;
-}
-</code></pre>
-
-<p>如果需要指定必须同时拥有多个权限才能访问某个方法，可以把需要指定的权限以数组的形式指定（注解上的数组属性指定单个的时候可以不加大括号，需要指定多个时就需要加大括号）。比如下面这样我们就指定了在访问<code>/perm1AndPerm4</code>时用户必须同时拥有<code>perm1</code>和<code>perm4</code>这两个权限。这时候就只有 user2 可以访问，因为只有它才同时拥有<code>perm1</code>和<code>perm4</code>。</p>
-
-<pre><code class="language-java">@RequestMapping(&quot;/perm1AndPerm4&quot;)
-@RequiresPermissions({&quot;perm1&quot;, &quot;perm4&quot;})
-public Object perm1AndPerm4() {
-    return &quot;perm1AndPerm4&quot;;
-}
-</code></pre>
-
-<p>当同时指定了多个权限时，默认多个权限之间的关系是与的关系，即需要同时拥有指定的所有的权限。如果只需要拥有指定的多个权限中的一个就可以访问，则我们可以通过<code>logical=Logical.OR</code>指定多个权限之间是或的关系。比如下面这样我们就指定了在访问<code>/perm1OrPerm4</code>时只需要拥有<code>perm1</code>或<code>perm4</code>权限即可，这样 user1 和 user2 都可以访问该方法。</p>
-
-<pre><code class="language-java">@RequestMapping(&quot;/perm1OrPerm4&quot;)
-@RequiresPermissions(value={&quot;perm1&quot;, &quot;perm4&quot;}, logical=Logical.OR)
-public Object perm1OrPerm4() {
-    return &quot;perm1OrPerm4&quot;;
-}
-</code></pre>
-
-<p>@RequiresPermissions 也可以标注在 Class 上，表示在外部访问 Class 中的方法时都需要有对应的权限。比如下面这样我们在 Class 级别指定了需要拥有权限<code>perm2</code>，而在<code>index()</code>方法上则没有指定需要任何权限，但是我们在访问该方法时还是需要拥有 Class 级别指定的权限。此时将只有 user1 可以访问。</p>
-
-<pre><code class="language-java">@RestController
-@RequestMapping(&quot;/foo&quot;)
-@RequiresPermissions(&quot;perm2&quot;)
-public class FooController {
-
-    @RequestMapping(method=RequestMethod.GET)
-    public Object index() {
-        Map&lt;String, Object&gt; map = new HashMap&lt;&gt;();
-        map.put(&quot;abc&quot;, 123);
-        return map;
-    }
-
-}
-</code></pre>
-
-<p>当 Class 和方法级别都同时拥有 @RequiresPermissions 时，方法级别的拥有更高的优先级，而且此时将只会校验方法级别要求的权限。如下我们在 Class 级别指定了需要<code>perm2</code>权限，而在方法级别指定了需要<code>perm3</code>权限，那么在访问<code>/foo</code>时将只需要拥有<code>perm3</code>权限即可访问到<code>index()</code>方法。所以此时 user1 和 user2 都可以访问<code>/foo</code>。</p>
-
-<pre><code class="language-java">@RestController
-@RequestMapping(&quot;/foo&quot;)
-@RequiresPermissions(&quot;perm2&quot;)
-public class FooController {
-
-    @RequestMapping(method=RequestMethod.GET)
-    @RequiresPermissions(&quot;perm3&quot;)
-    public Object index() {
-        Map&lt;String, Object&gt; map = new HashMap&lt;&gt;();
-        map.put(&quot;abc&quot;, 123);
-        return map;
-    }
-
-}
-</code></pre>
-
-<p>但是如果此时我们在 Class 上新增<code>@RequiresRoles(&quot;role1&quot;)</code>指定需要拥有角色 role1, 那么此时访问<code>/foo</code>时需要拥有 Class 上的 role1 和<code>index()</code>方法上<code>@RequiresPermissions(&quot;perm3&quot;)</code>指定的<code>perm3</code>权限。因为<code>RequiresRoles</code>和<code>RequiresPermissions</code>属于不同维度的权限定义，Shiro 在校验的时候都将校验一遍，但是如果 Class 和方法上都拥有同类型的权限控制定义的注解时，则只会以方法上的定义为准。</p>
-
-<pre><code class="language-java">@RestController
-@RequestMapping(&quot;/foo&quot;)
-@RequiresPermissions(&quot;perm2&quot;)
-@RequiresRoles(&quot;role1&quot;)
-public class FooController {
-
-    @RequestMapping(method=RequestMethod.GET)
-    @RequiresPermissions(&quot;perm3&quot;)
-    public Object index() {
-        Map&lt;String, Object&gt; map = new HashMap&lt;&gt;();
-        map.put(&quot;abc&quot;, 123);
-        return map;
-    }
-
-}
-</code></pre>
-
-<blockquote>
-<p>虽然示例中使用的只是<code>RequiresPermissions</code>, 但是其它权限控制注解的用法也是类似的，其它注解的用法请感兴趣的朋友自己实践。</p>
-</blockquote>
-
-<h2 id="toc_2">基于注解控制权限的原理</h2>
-
-<p>上面使用<code>@RequiresPermissions</code>我们指定的权限都是静态的，写本文的一个主要目的是介绍一种方法，通过扩展实现来使指定的权限可以是动态的。但是在扩展前我们得知道它底层的工作方式，即实现原理，我们才能进行扩展。所以接下来我们先来看一下 Shiro 整合 Spring 后使用<code>@RequiresPermissions</code>的工作原理。在启用对<code>@RequiresPermissions</code>的支持时我们定义了如下 bean，这是一个 Advisor，其继承自 StaticMethodMatcherPointcutAdvisor，它的方法匹配逻辑是只要 Class 或 Method 上拥有 Shiro 的几个权限控制注解即可，而拦截以后的处理逻辑则是由相应的 Advice 指定。</p>
-
-<pre><code class="language-xml">&lt;bean class=&quot;org.apache.shiro.spring.security.interceptor.AuthorizationAttributeSourceAdvisor&quot;&gt;
-    &lt;property /&gt;
-&lt;/bean&gt;
-</code></pre>
-
-<p>以下是 AuthorizationAttributeSourceAdvisor 的源码。我们可以看到在其构造方法中通过<code>setAdvice()</code>指定了 AopAllianceAnnotationsAuthorizingMethodInterceptor 这个 Advice 实现类，这是基于 MethodInterceptor 的实现。</p>
-
-<pre><code class="language-java">public class AuthorizationAttributeSourceAdvisor extends StaticMethodMatcherPointcutAdvisor {
-
-    private static final Logger log = LoggerFactory.getLogger(AuthorizationAttributeSourceAdvisor.class);
-
-    private static final Class&lt;? extends Annotation&gt;[] AUTHZ_ANNOTATION_CLASSES =
-            new Class[] {
-                    RequiresPermissions.class, RequiresRoles.class,
-                    RequiresUser.class, RequiresGuest.class, RequiresAuthentication.class
-            };
-
-    protected SecurityManager securityManager = null;
-
-    public AuthorizationAttributeSourceAdvisor() {
-        setAdvice(new AopAllianceAnnotationsAuthorizingMethodInterceptor());
-    }
-
-    public SecurityManager getSecurityManager() {
-        return securityManager;
-    }
-
-    public void setSecurityManager(org.apache.shiro.mgt.SecurityManager securityManager) {
-        this.securityManager = securityManager;
-    }
-
-    public boolean matches(Method method, Class targetClass) {
-        Method m = method;
-
-        if ( isAuthzAnnotationPresent(m) ) {
-            return true;
-        }
-
-        //The &#39;method&#39; parameter could be from an interface that doesn&#39;t have the annotation.
-        //Check to see if the implementation has it.
-        if ( targetClass != null) {
-            try {
-                m = targetClass.getMethod(m.getName(), m.getParameterTypes());
-                return isAuthzAnnotationPresent(m) || isAuthzAnnotationPresent(targetClass);
-            } catch (NoSuchMethodException ignored) {
-                //default return value is false.  If we can&#39;t find the method, then obviously
-                //there is no annotation, so just use the default return value.
-            }
-        }
-
-        return false;
-    }
-
-    private boolean isAuthzAnnotationPresent(Class&lt;?&gt; targetClazz) {
-        for( Class&lt;? extends Annotation&gt; annClass : AUTHZ_ANNOTATION_CLASSES ) {
-            Annotation a = AnnotationUtils.findAnnotation(targetClazz, annClass);
-            if ( a != null ) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private boolean isAuthzAnnotationPresent(Method method) {
-        for( Class&lt;? extends Annotation&gt; annClass : AUTHZ_ANNOTATION_CLASSES ) {
-            Annotation a = AnnotationUtils.findAnnotation(method, annClass);
-            if ( a != null ) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-}
-</code></pre>
-
-<p>AopAllianceAnnotationsAuthorizingMethodInterceptor 的源码如下。其实现的 MethodInterceptor 接口的 invoke 方法又调用了父类的 invoke 方法。同时我们要看到在其构造方法中创建了一些 AuthorizingAnnotationMethodInterceptor 实现，这些实现才是实现权限控制的核心，待会我们会挑出 PermissionAnnotationMethodInterceptor 实现类来看其具体的实现逻辑。</p>
-
-<pre><code class="language-java">public class AopAllianceAnnotationsAuthorizingMethodInterceptor
-        extends AnnotationsAuthorizingMethodInterceptor implements MethodInterceptor {
-
-    public AopAllianceAnnotationsAuthorizingMethodInterceptor() {
-        List&lt;AuthorizingAnnotationMethodInterceptor&gt; interceptors =
-                new ArrayList&lt;AuthorizingAnnotationMethodInterceptor&gt;(5);
-
-        //use a Spring-specific Annotation resolver - Spring&#39;s AnnotationUtils is nicer than the
-        //raw JDK resolution process.
-        AnnotationResolver resolver = new SpringAnnotationResolver();
-        //we can re-use the same resolver instance - it does not retain state:
-        interceptors.add(new RoleAnnotationMethodInterceptor(resolver));
-        interceptors.add(new PermissionAnnotationMethodInterceptor(resolver));
-        interceptors.add(new AuthenticatedAnnotationMethodInterceptor(resolver));
-        interceptors.add(new UserAnnotationMethodInterceptor(resolver));
-        interceptors.add(new GuestAnnotationMethodInterceptor(resolver));
-
-        setMethodInterceptors(interceptors);
-    }
-
-    protected org.apache.shiro.aop.MethodInvocation createMethodInvocation(Object implSpecificMethodInvocation) {
-        final MethodInvocation mi = (MethodInvocation) implSpecificMethodInvocation;
-
-        return new org.apache.shiro.aop.MethodInvocation() {
-            public Method getMethod() {
-                return mi.getMethod();
-            }
-
-            public Object[] getArguments() {
-                return mi.getArguments();
-            }
-
-            public String toString() {
-                return &quot;Method invocation [&quot; + mi.getMethod() + &quot;]&quot;;
-            }
-
-            public Object proceed() throws Throwable {
-                return mi.proceed();
-            }
-
-            public Object getThis() {
-                return mi.getThis();
-            }
-        };
-    }
-
-    protected Object continueInvocation(Object aopAllianceMethodInvocation) throws Throwable {
-        MethodInvocation mi = (MethodInvocation) aopAllianceMethodInvocation;
-        return mi.proceed();
-    }
-
-    public Object invoke(MethodInvocation methodInvocation) throws Throwable {
-        org.apache.shiro.aop.MethodInvocation mi = createMethodInvocation(methodInvocation);
-        return super.invoke(mi);
-    }
-}
-</code></pre>
-
-<p>通过看父类的 invoke 方法实现，最终我们会看到核心逻辑是调用 assertAuthorized 方法，而该方法的实现（源码如下）又是依次判断配置的 AuthorizingAnnotationMethodInterceptor 是否支持当前方法进行权限校验（通过判断 Class 或 Method 上是否拥有其支持的注解），当支持时则会调用其 assertAuthorized 方法进行权限校验，而 AuthorizingAnnotationMethodInterceptor 又会调用 AuthorizingAnnotationHandler 的 assertAuthorized 方法。</p>
-
-<pre><code class="language-java">protected void assertAuthorized(MethodInvocation methodInvocation) throws AuthorizationException {
-    //default implementation just ensures no deny votes are cast:
-    Collection&lt;AuthorizingAnnotationMethodInterceptor&gt; aamis = getMethodInterceptors();
-    if (aamis != null &amp;&amp; !aamis.isEmpty()) {
-        for (AuthorizingAnnotationMethodInterceptor aami : aamis) {
-            if (aami.supports(methodInvocation)) {
-                aami.assertAuthorized(methodInvocation);
-            }
-        }
-    }
-}
-</code></pre>
-
-<p>接下来我们再回过头来看 AopAllianceAnnotationsAuthorizingMethodInterceptor 的定义的 PermissionAnnotationMethodInterceptor，其源码如下。结合 AopAllianceAnnotationsAuthorizingMethodInterceptor 的源码和 PermissionAnnotationMethodInterceptor 的源码，我们可以看到 PermissionAnnotationMethodInterceptor 中这时候指定了 PermissionAnnotationHandler 和 SpringAnnotationResolver。PermissionAnnotationHandler 是 AuthorizingAnnotationHandler 的一个子类。所以我们最终的权限控制由 PermissionAnnotationHandler 的 assertAuthorized 实现决定。</p>
-
-<pre><code class="language-java">public class PermissionAnnotationMethodInterceptor extends AuthorizingAnnotationMethodInterceptor {
-
-    public PermissionAnnotationMethodInterceptor() {
-        super( new PermissionAnnotationHandler() );
-    }
-
-    public PermissionAnnotationMethodInterceptor(AnnotationResolver resolver) {
-        super( new PermissionAnnotationHandler(), resolver);
-    }
-
-}
-</code></pre>
-
-<p>接下来我们来看 PermissionAnnotationHandler 的 assertAuthorized 方法实现，其完整代码如下。从实现上我们可以看到其会从 Annotation 中获取配置的权限值，而这里的 Annotation 就是 RequiresPermissions 注解。而且在进行权限校验时都是直接使用的我们定义注解时指定的文本值，待会我们进行扩展时就将从这里入手。</p>
-
-<pre><code class="language-java">public class PermissionAnnotationHandler extends AuthorizingAnnotationHandler {
-
-    public PermissionAnnotationHandler() {
-        super(RequiresPermissions.class);
-    }
-
-    protected String[] getAnnotationValue(Annotation a) {
-        RequiresPermissions rpAnnotation = (RequiresPermissions) a;
-        return rpAnnotation.value();
-    }
-
-    public void assertAuthorized(Annotation a) throws AuthorizationException {
-        if (!(a instanceof RequiresPermissions)) return;
-
-        RequiresPermissions rpAnnotation = (RequiresPermissions) a;
-        String[] perms = getAnnotationValue(a);
-        Subject subject = getSubject();
-
-        if (perms.length == 1) {
-            subject.checkPermission(perms[0]);
-            return;
-        }
-        if (Logical.AND.equals(rpAnnotation.logical())) {
-            getSubject().checkPermissions(perms);
-            return;
-        }
-        if (Logical.OR.equals(rpAnnotation.logical())) {
-            // Avoid processing exceptions unnecessarily - &quot;delay&quot; throwing the exception by calling hasRole first
-            boolean hasAtLeastOnePermission = false;
-            for (String permission : perms) if (getSubject().isPermitted(permission)) hasAtLeastOnePermission = true;
-            // Cause the exception if none of the role match, note that the exception message will be a bit misleading
-            if (!hasAtLeastOnePermission) getSubject().checkPermission(perms[0]);
-
-        }
-    }
-}
-</code></pre>
-
-<p>通过前面的介绍我们知道 PermissionAnnotationHandler 的 assertAuthorized 方法参数的 Annotation 是由 AuthorizingAnnotationMethodInterceptor 在调用 AuthorizingAnnotationHandler 的 assertAuthorized 方法时传递的。其源码如下，从源码中我们可以看到 Annotation 是通过 getAnnotation 方法获得的。</p>
-
-<pre><code class="language-java">public void assertAuthorized(MethodInvocation mi) throws AuthorizationException {
-    try {
-        ((AuthorizingAnnotationHandler)getHandler()).assertAuthorized(getAnnotation(mi));
-    }
-    catch(AuthorizationException ae) {
-        if (ae.getCause() == null) ae.initCause(new AuthorizationException(&quot;Not authorized to invoke method: &quot; + mi.getMethod()));
-        throw ae;
-    }         
-}
-</code></pre>
-
-<p>沿着这个方向走下去，最终我们会找到 SpringAnnotationResolver 的 getAnnotation 方法实现，其实现如下。从下面的代码可以看到，其在寻找注解时是优先寻找 Method 上的，如果在 Method 上没有找到会从当前方法调用的所属 Class 上寻找对应的注解。从这里也可以看到为什么我们之前在 Class 和 Method 上都定义了相同类型的权限控制注解时生效的是 Method 上的，而单独存在的时候就是单独定义的那个生效了。</p>
-
-<pre><code class="language-java">public class SpringAnnotationResolver implements AnnotationResolver {
-
-    public Annotation getAnnotation(MethodInvocation mi, Class&lt;? extends Annotation&gt; clazz) {
-        Method m = mi.getMethod();
-
-        Annotation a = AnnotationUtils.findAnnotation(m, clazz);
-        if (a != null) return a;
-
-        //The MethodInvocation&#39;s method object could be a method defined in an interface.
-        //However, if the annotation existed in the interface&#39;s implementation (and not
-        //the interface itself), it won&#39;t be on the above method object.  Instead, we need to
-        //acquire the method representation from the targetClass and check directly on the
-        //implementation itself:
-        Class&lt;?&gt; targetClass = mi.getThis().getClass();
-        m = ClassUtils.getMostSpecificMethod(m, targetClass);
-        a = AnnotationUtils.findAnnotation(m, clazz);
-        if (a != null) return a;
-        // See if the class has the same annotation
-        return AnnotationUtils.findAnnotation(mi.getThis().getClass(), clazz);
-    }
-}
-</code></pre>
-
-<blockquote>
-<p>通过以上的源码阅读，相信读者对于 Shiro 整合 Spring 后支持的权限控制注解的原理已经有了比较深入的理解。上面贴出的源码只是部分笔者认为比较核心的，有想详细了解完整内容的请读者自己沿着笔者提到的思路去阅读完整代码。 了解了这块基于注解进行权限控制的原理后，读者朋友们也可以根据实际的业务需要进行相应的扩展。</p>
-</blockquote>
-
-<h2 id="toc_3">使用 Spring EL 表达式</h2>
-
-<p>假设现在内部有下面这样一个接口，其中有一个 query 方法，接收一个参数 type。这里我们简化一点，假设只要接收这么一个参数，然后对应不同的取值时将返回不同的结果。</p>
-
-<pre><code class="language-java">public interface RealService {
-
-    Object query(int type);
-
-}
-</code></pre>
-
-<p>这个接口是对外开放的，通过对应的 URL 可以请求到该方法，我们定义了对应的 Controller 方法如下：</p>
-
-<pre><code class="language-java">@RequestMapping(&quot;/service/{type}&quot;)
-public Object query(@PathVariable(&quot;type&quot;) int type) {
-    return this.realService.query(type);
-}
-</code></pre>
-
-<p>上面的接口服务在进行查询的时候针对 type 是有权限的，不是每个用户都可以使用每种 type 进行查询的，需要拥有对应的权限才行。所以针对上面的处理器方法我们需要加上权限控制，而且在控制时需要的权限是随着参数 type 动态变的。假设关于 type 的每项权限的定义是 query:type 的形式，比如 type=1 时需要的权限是 query:1，type=2 时需要的权限是 query:2。在没有与 Spring 整合时，我们会如下这样做：</p>
-
-<pre><code class="language-java">@RequestMapping(&quot;/service/{type}&quot;)
-public Object query(@PathVariable(&quot;type&quot;) int type) {
-    SecurityUtils.getSubject().checkPermission(&quot;query:&quot; + type);
-    return this.realService.query(type);
-}
-</code></pre>
-
-<p>但是与 Spring 整合后，上面的做法耦合性强，我们会更希望通过整合后的注解来进行权限控制。对于上面的场景我们更希望通过<code>@RequiresPermissions</code>来指定需要的权限，但是<code>@RequiresPermissions</code>中定义的权限是静态文本，固定的。它没法满足我们动态的需求。这个时候可能你会想着我们可以把 Controller 处理方法拆分为多个，单独进行权限控制。比如下面这样：</p>
-
-<pre><code class="language-java">@RequestMapping(&quot;/service/1&quot;)
-@RequiresPermissions(&quot;query:1&quot;)
-public Object service1() {
-    return this.realService.query(1);
-}
-
-@RequiresPermissions(&quot;query:2&quot;)
-@RequestMapping(&quot;/service/2&quot;)
-public Object service2() {
-    return this.realService.query(2);
-}
-
-//...
-
-@RequestMapping(&quot;/service/200&quot;)
-@RequiresPermissions(&quot;query:200&quot;)
-public Object service200() {
-    return this.realService.query(200);
-}
-</code></pre>
-
-<p>这在 type 的取值范围比较小的时候还可以，但是如果像上面这样可能的取值有 200 种，把它们穷举出来定义单独的处理器方法并进行权限控制就显得有点麻烦了。另外就是如果将来 type 的取值有变动，我们还得添加新的处理器方法。所以最好的办法是让<code>@RequiresPermissions</code>支持动态的权限定义，同时又可以维持静态定义的支持。通过前面的分析我们知道，切入点是 PermissionAnnotationHandler，而它里面是没有提供对权限校验的扩展的。我们如果想对它扩展简单的办法就是把它整体的替换。但是我们需要动态处理的权限是跟方法参数相关的，而 PermissionAnnotationHandler 中是取不到方法参数的，为此我们不能直接替换掉 PermissionAnnotationHandler。PermissionAnnotationHandler 是由 PermissionAnnotationMethodInterceptor 调用的，在其父类 AuthorizingAnnotationMethodInterceptor 的 assertAuthorized 方法中调用 PermissionAnnotationHandler 时是可以获取到方法参数的。为此我们的扩展点就选在 PermissionAnnotationMethodInterceptor 类上，我们也需要把它整体的替换。Spring 的 EL 表达式可以支持解析方法参数值，这里我们选择引入 Spring 的 EL 表达式，在<code>@RequiresPermissions</code>定义权限时可以使用 Spring EL 表达式引入方法参数。同时为了兼顾静态的文本。这里引入 Spring 的 EL 表达式模板。关于 Spring 的 EL 表达式模板可以参考笔者的<a href="/blog/2393611">这篇博文</a>。我们定义自己的 PermissionAnnotationMethodInterceptor，把它继承自 PermissionAnnotationMethodInterceptor，重写 assertAuthoried 方法，方法的实现逻辑参考 PermissionAnnotationHandler 中的逻辑，但是所使用的<code>@RequiresPermissions</code>中的权限定义，是我们使用 Spring EL 表达式基于当前调用的方法作为 EvaluationContext 解析后的结果。以下是我们自己定义的 PermissionAnnotationMethodInterceptor 实现。</p>
-
-<pre><code class="language-java">public class SelfPermissionAnnotationMethodInterceptor extends PermissionAnnotationMethodInterceptor {
-
-    private final SpelExpressionParser parser = new SpelExpressionParser();
-    private final ParameterNameDiscoverer paramNameDiscoverer = new DefaultParameterNameDiscoverer();
-    private final TemplateParserContext templateParserContext = new TemplateParserContext();
-
-    public SelfPermissionAnnotationMethodInterceptor(AnnotationResolver resolver) {
-        super(resolver);
-    }
-
-    @Override
-    public void assertAuthorized(MethodInvocation mi) throws AuthorizationException {
-        Annotation annotation = super.getAnnotation(mi);
-        RequiresPermissions permAnnotation = (RequiresPermissions) annotation;
-        String[] perms = permAnnotation.value();
-        EvaluationContext evaluationContext = new MethodBasedEvaluationContext(null, mi.getMethod(), mi.getArguments(), paramNameDiscoverer);
-        for (int i=0; i&lt;perms.length; i++) {
-            Expression expression = this.parser.parseExpression(perms[i], templateParserContext);
-            //使用Spring EL表达式解析后的权限定义替换原来的权限定义
-            perms[i] = expression.getValue(evaluationContext, String.class);
-        }
-        Subject subject = getSubject();
-
-        if (perms.length == 1) {
-            subject.checkPermission(perms[0]);
-            return;
-        }
-        if (Logical.AND.equals(permAnnotation.logical())) {
-            getSubject().checkPermissions(perms);
-            return;
-        }
-        if (Logical.OR.equals(permAnnotation.logical())) {
-            // Avoid processing exceptions unnecessarily - &quot;delay&quot; throwing the exception by calling hasRole first
-            boolean hasAtLeastOnePermission = false;
-            for (String permission : perms) if (getSubject().isPermitted(permission)) hasAtLeastOnePermission = true;
-            // Cause the exception if none of the role match, note that the exception message will be a bit misleading
-            if (!hasAtLeastOnePermission) getSubject().checkPermission(perms[0]);
-
-        }
-    }
-
-}
-</code></pre>
-
-<p>定义了自己的 PermissionAnnotationMethodInterceptor 后，我们需要替换原来的 PermissionAnnotationMethodInterceptor 为我们自己的 PermissionAnnotationMethodInterceptor。根据前面介绍的 Shiro 整合 Spring 后使用<code>@RequiresPermissions</code>等注解的原理我们知道 PermissionAnnotationMethodInterceptor 是由 AopAllianceAnnotationsAuthorizingMethodInterceptor 指定的，而后者又是由 AuthorizationAttributeSourceAdvisor 指定的。为此我们需要在定义 AuthorizationAttributeSourceAdvisor 时通过显示定义 AopAllianceAnnotationsAuthorizingMethodInterceptor 的方式显示的定义其中的 AuthorizingAnnotationMethodInterceptor，然后把自带的 PermissionAnnotationMethodInterceptor 替换为我们自定义的 SelfAuthorizingAnnotationMethodInterceptor。替换后的定义如下：</p>
-
-<pre><code>&lt;bean class=&quot;org.apache.shiro.spring.security.interceptor.AuthorizationAttributeSourceAdvisor&quot;&gt;
-    &lt;property /&gt;
-    &lt;property &gt;
-        &lt;bean class=&quot;org.apache.shiro.spring.security.interceptor.AopAllianceAnnotationsAuthorizingMethodInterceptor&quot;&gt;
-            &lt;property &gt;
-                &lt;util:list&gt;
-                    &lt;bean class=&quot;org.apache.shiro.authz.aop.RoleAnnotationMethodInterceptor&quot;
-                        c:resolver-ref=&quot;springAnnotationResolver&quot;/&gt;
-                    &lt;!-- 使用自定义的PermissionAnnotationMethodInterceptor --&gt;
-                    &lt;bean class=&quot;com.elim.chat.shiro.SelfPermissionAnnotationMethodInterceptor&quot;
-                        c:resolver-ref=&quot;springAnnotationResolver&quot;/&gt;
-                    &lt;bean class=&quot;org.apache.shiro.authz.aop.AuthenticatedAnnotationMethodInterceptor&quot;
-                        c:resolver-ref=&quot;springAnnotationResolver&quot;/&gt;
-                    &lt;bean class=&quot;org.apache.shiro.authz.aop.UserAnnotationMethodInterceptor&quot;
-                        c:resolver-ref=&quot;springAnnotationResolver&quot;/&gt;
-                    &lt;bean class=&quot;org.apache.shiro.authz.aop.GuestAnnotationMethodInterceptor&quot;
-                        c:resolver-ref=&quot;springAnnotationResolver&quot;/&gt;
-                &lt;/util:list&gt;
-            &lt;/property&gt;
-        &lt;/bean&gt;
-    &lt;/property&gt;
-&lt;/bean&gt;
-
-&lt;bean id=&quot;springAnnotationResolver&quot; class=&quot;org.apache.shiro.spring.aop.SpringAnnotationResolver&quot;/&gt;
-</code></pre>
-
-<p>为了演示前面示例的动态的权限，我们把角色与权限的关系调整如下，让 role1、role2 和 role3 分别拥有 query:1、query:2 和 query:3 的权限。此时 user1 将拥有 query:1 和 query:2 的权限。</p>
-
-<pre><code class="language-xml">&lt;bean id=&quot;realm&quot; class=&quot;org.apache.shiro.realm.text.TextConfigurationRealm&quot;&gt;
-    &lt;property &gt;
-        &lt;value&gt;
-            user1=pass1,role1,role2
-            user2=pass2,role2,role3
-            admin=admin,admin
-        &lt;/value&gt;
-    &lt;/property&gt;
-    &lt;property &gt;
-        &lt;value&gt;
-            role1=perm1,perm2,query:1
-            role2=perm1,perm3,query:2
-            role3=perm3,perm4,query:3
-        &lt;/value&gt;
-    &lt;/property&gt;
-&lt;/bean&gt;
-</code></pre>
-
-<p>此时<code>@RequiresPermissions</code>中指定权限时就可以使用 Spring EL 表达式支持的语法了。因为我们在定义 SelfPermissionAnnotationMethodInterceptor 时已经指定了应用基于模板的表达式解析，此时权限中定义的文本都将作为文本解析，动态的部分默认需要使用<code>#{</code>前缀和<code>}</code>后缀包起来（这个前缀和后缀是可以指定的，但是默认就好）。在动态部分中可以使用<code>#</code>前缀引用变量，基于方法的表达式解析中可以使用参数名或<code>p参数索引</code>的形式引用方法参数。所以上面我们需要动态的权限的 query 方法的<code>@RequiresPermissions</code>定义如下。</p>
-
-<pre><code class="language-java">@RequestMapping(&quot;/service/{type}&quot;)
-@RequiresPermissions(&quot;query:#{#type}&quot;)
-public Object query(@PathVariable(&quot;type&quot;) int type) {
-    return this.realService.query(type);
-}
-</code></pre>
-
-<p>这样 user1 在访问<code>/service/1</code>和<code>/service/2</code>是 OK 的，但是在访问<code>/service/3</code>和<code>/service/300</code>时会提示没有权限，因为 user1 没有<code>query:3</code>和<code>query:300</code>的权限。</p>
 
                         
                       </div>
@@ -776,10 +290,10 @@ public Object query(@PathVariable(&quot;type&quot;) int type) {
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/10/28</span>
+                    <span class="date">2019/2/17</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Authn&Authz.html'>Authn&Authz</a></span>
+          					    <span class="posted-in"><a href='RPC&NIO.html'>RPC&NIO</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -869,31 +383,31 @@ public Object query(@PathVariable(&quot;type&quot;) int type) {
 	      
 		      
 			      <li class="post">
-			        <a href="15459058392039.html">Reliable Domain Events</a>
+			        <a href="15517999043443.html">The Art of Crafting Architectural Diagrams</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
+			        <a href="15517997955971.html">为什么说我们需要软件架构图？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
+			        <a href="15516128677869.html">DNS Servers That Offer Privacy and Filtering</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
+			        <a href="15516123108194.html">Airbnb's Migration from Monolith to Services</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
+			        <a href="15516097487470.html">Events As First-Class Citizens</a>
 			      </li>
 		     
 		  

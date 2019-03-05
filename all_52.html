@@ -105,224 +105,145 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15365441001781.html">
+                <a class="clearlink" href="15431218451169.html">
                 
-                  <h1>GitLab Architecture Overview</h1>
+                  <h1>DAGOR：微信微服务过载控制系统</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://docs.gitlab.com/ee/development/architecture.html">https://docs.gitlab.com/ee/development/architecture.html</a></p>
+<p><a href="https://www.infoq.cn/article/bAveV*B7GTH123tLwyDR">https://www.infoq.cn/article/bAveV*B7GTH123tLwyDR</a></p>
+
+<p>论文导读《Overload control for scaling WeChat microservices》</p>
 </blockquote>
 
-<h2 id="toc_0">Software delivery</h2>
+<p>喜欢这篇论文有两个理由。首先，我们对微信的后端已经有了一些见解，其次，作者分享了已经在微信生产环境中运行了五年的过载控制系统 DAGOR 的设计方案。这个系统的设计专门考虑到了微服务架构的特殊性。如果你希望为自己的微服务制定策略，那么你就很有必要看看这篇文章。</p>
 
-<p>There are two software distributions of GitLab: the open source <a href="https://gitlab.com/gitlab-org/gitlab-ce/">Community Edition</a> (CE), and the open core <a href="https://gitlab.com/gitlab-org/gitlab-ee/">Enterprise Edition</a> (EE). GitLab is available under <a href="https://about.gitlab.com/pricing/">different subscriptions</a>.</p>
+<h2 id="toc_0">微信</h2>
 
-<p>New versions of GitLab are released in stable branches and the master branch is for bleeding edge development.</p>
+<p>此时的微信后端由 3000 多个移动服务组成，包括即时消息、社交网络、移动支付和第三方授权。平台每天的外部请求达到了 10<sup>10</sup> 到 10<sup>11</sup> 个。每个这样的请求都可以触发更多内部的微服务请求，从整体来看，微信后端需要每秒处理数亿个请求。</p>
 
-<p>For information, see the <a href="https://gitlab.com/gitlab-org/release/docs/tree/master#gitlab-release-process">GitLab Release Process</a>.</p>
+<blockquote>
+<p>微信微服务系统的 3000 多项服务运行在 20,000 多台机器上，随着微信的广泛普及，这些数字在不断增加… 随着微信的不断发展，微服务系统一直在快速进行服务更新迭代。从 2018 年的 3 月到 5 月，微信微服务系统平均每天发生近千次的变更。</p>
+</blockquote>
 
-<p>Both EE and CE require some add-on components called gitlab-shell and Gitaly. These components are available from the <a href="https://gitlab.com/gitlab-org/gitlab-shell/tree/master">gitlab-shell</a> and <a href="https://gitlab.com/gitlab-org/gitaly/tree/master">gitaly</a> repositories respectively. New versions are usually tags but staying on the master branch will give you the latest stable version. New releases are generally around the same time as GitLab CE releases with exception for informal security updates deemed critical.</p>
+<p>微信将微服务分为 “入门跳板” 服务（接收外部请求的前端服务）、“共享跳板”服务（中间层协调服务）和“基本服务”（不再向其他服务发出请求的服务，也就是充当请求的接收器）。</p>
 
-<h2 id="toc_1">Physical office analogy</h2>
+<p><img src="https://static001.geekbang.org/resource/image/0a/cb/0a8bf3edf8d6522c66d8eaf8ecdaf5cb.jpeg" alt=""/></p>
 
-<p>You can imagine GitLab as a physical office.</p>
+<p>在典型的一天，峰值请求率约为日常平均值的 3 倍。在一年中的某些时候（例如中国农历新年期间），峰值工作负载可以上升到日常平均值的 10 倍。</p>
 
-<p><strong>The repositories</strong> are the goods GitLab handles. They can be stored in a warehouse. This can be either a hard disk, or something more complex, such as a NFS filesystem;</p>
+<h2 id="toc_1">基于大规模微服务平台的过载控制挑战</h2>
 
-<p><strong>Nginx</strong> acts like the front-desk. Users come to Nginx and request actions to be done by workers in the office;</p>
+<blockquote>
+<p>过载控制对于大规模在线应用程序来说至关重要，这些应用程序需要在不可预测的负载激增的情况下实现 24×7 服务可用性。</p>
+</blockquote>
 
-<p><strong>The database</strong> is a series of metal file cabinets with information on:</p>
+<p>传统的过载控制机制是为具有少量服务组件、相对狭窄的 “前门” 和普通依赖关系的系统而设计的。</p>
 
-<ul>
-<li>The goods in the warehouse (metadata, issues, merge requests etc);</li>
-<li>The users coming to the front desk (permissions)</li>
-</ul>
-
-<p><strong>Redis</strong> is a communication board with “cubby holes” that can contain tasks for office workers;</p>
-
-<p><strong>Sidekiq</strong> is a worker that primarily handles sending out emails. It takes tasks from the Redis communication board;</p>
-
-<p><strong>A Unicorn worker</strong> is a worker that handles quick/mundane tasks. They work with the communication board (Redis). Their job description:</p>
+<blockquote>
+<p>现代在线服务在架构和依赖性方面正变得越来越复杂，远远超出了传统过载控制的设计目标。</p>
+</blockquote>
 
 <ul>
-<li>check permissions by checking the user session stored in a Redis “cubby hole”;</li>
-<li>make tasks for Sidekiq;</li>
-<li>fetch stuff from the warehouse or move things around in there;</li>
+<li>  由于发送到微信后端的服务请求没有单一的入口点，因此传统的全局入口点（网关）集中负载监控方法并不适用。</li>
+<li>  特定请求的服务调用图可能依赖于特定于请求的数据和服务参数，即使对于相同类型的请求也是如此。因此，当特定服务出现过载时，很难确定应该限制哪些类型的请求以缓解这种情况。</li>
+<li>  过多的请求中止浪费了计算资源，并由于高延迟而影响了用户体验。</li>
+<li>  由于服务 DAG 极其复杂，而且在不断演化，导致有效的跨服务协调的维护成本和系统开销过高。</li>
 </ul>
 
-<p><strong>GitLab-shell</strong> is a third kind of worker that takes orders from a fax machine (SSH) instead of the front desk (HTTP). GitLab-shell communicates with Sidekiq via the “communication board” (Redis), and asks quick questions of the Unicorn workers either directly or via the front desk.</p>
+<p>由于一个服务可能会向它所依赖的服务发出多个请求，并且还可能向多个后端服务发出请求，因此我们必须特别注意过载控制。作者发明了一个术语，叫作后续过载，用于描述调用多个过载服务或多次调用单个过载服务的情况。</p>
 
-<p><strong>Gitaly</strong> is a back desk that is specialized on reaching the disks to perform git operations efficiently and keep a copy of the result of costly operations. All git operations go through Gitaly.</p>
+<blockquote>
+<p>后续过载给有效的过载控制带来了挑战。当服务过载时随机执行减载可以让系统维持饱和的吞吐量。但后续过载可能会超预期大大降低系统吞吐量…</p>
+</blockquote>
 
-<p><strong>GitLab Enterprise Edition (the application)</strong> is the collection of processes and business practices that the office is run by.</p>
+<p>试想一个简单的场景，其中服务 A 两次调用服务 B，如果 B 开始拒绝一半传入的请求，那么 A 的成功概率就降到了 0.25。</p>
 
-<h2 id="toc_2">System Layout</h2>
+<h2 id="toc_2">DAGOR 概览</h2>
 
-<p>When referring to <code>~git</code> in the pictures it means the home directory of the git user which is typically /home/git.</p>
+<p>微信的过载控制系统叫作 DAGOR。它旨在为所有服务提供过载控制，因此具有服务无关性。由于集中式全局协调成本过高，因此过载控制是以单台机器的粒度运行的。不过，它使用了一种用于处理后续过载所需的轻量级机器间协作协议。最后，当发生过载不得不进行减载时，DAGOR 应该尽可能维持服务的成功率，并尽量减少在失败的服务任务上花费过多的计算资源（例如 CPU、I/O）。</p>
 
-<p>GitLab is primarily installed within the <code>/home/git</code> user home directory as <code>git</code> user. Within the home directory is where the gitlabhq server software resides as well as the repositories (though the repository location is configurable).</p>
+<p>我们需要完成两个基本的任务：过载检测，并在检测到过载之后决定如何处理它。</p>
 
-<p>The bare repositories are located in <code>/home/git/repositories</code>. GitLab is a ruby on rails application so the particulars of the inner workings can be learned by studying how a ruby on rails application works.</p>
+<h3 id="toc_3">过载检测</h3>
 
-<p>To serve repositories over SSH there&#39;s an add-on application called gitlab-shell which is installed in <code>/home/git/gitlab-shell</code>.</p>
+<p>对于过载检测，DAGOR 使用了待处理队列中的请求的平均等待时间（即排队时间）。排队时间可以抵消调用图中较低的延迟所带来的影响（与请求处理时间相比）。即使本地服务器本身没有过载，请求处理时间也会增加。DAGOR 使用基于窗口的监控，每个窗口是一秒钟，或者 2000 个请求，以先达到者为准。</p>
 
-<h2 id="toc_3">Components</h2>
+<blockquote>
+<p>对于过载检测，假设 WeChat 中每个服务任务的默认超时为 500 毫秒，那么用于表示服务器过载的平均请求排队时间的阈值被设置为 20 毫秒。这种配置已经在微信业务系统中应用了五年多，微信业务活动的稳健性已经证实了这种配置的有效性。</p>
+</blockquote>
 
-<p><img src="media/15365441001781/15365454933648.jpg" alt=""/></p>
+<h3 id="toc_4">准入控制</h3>
 
-<p>A typical install of GitLab will be on GNU/Linux. It uses Nginx or Apache as a web front end to proxypass the Unicorn web server. By default, communication between Unicorn and the front end is via a Unix domain socket but forwarding requests via TCP is also supported. The web front end accesses <code>/home/git/gitlab/public</code>bypassing the Unicorn server to serve static pages, uploads (e.g. avatar images or attachments), and precompiled assets. GitLab serves web pages and a <a href="https://gitlab.com/gitlab-org/gitlab-ce/tree/master/doc/api">GitLab API</a> using the Unicorn web server. It uses Sidekiq as a job queue which, in turn, uses redis as a non-persistent database backend for job information, meta data, and incoming jobs.</p>
+<p>一旦检测到过载，我们就必须决定如何处理它，或者直接丢弃某些请求。我们发现，并非所有的请求都是平等的：</p>
 
-<p>The GitLab web app uses MySQL or PostgreSQL for persistent database information (e.g. users, permissions, issues, other meta data). GitLab stores the bare git repositories it serves in <code>/home/git/repositories</code> by default. It also keeps default branch and hook information with the bare repository.</p>
+<blockquote>
+<p>微信的操作日志显示，当微信支付和即时消息遇到服务不可用时，用户针对微信支付服务的投诉是针对即时消息服务的 100 倍。</p>
+</blockquote>
 
-<p>When serving repositories over HTTP/HTTPS GitLab utilizes the GitLab API to resolve authorization and access as well as serving git objects.</p>
+<p>为了以服务无关的方式处理这个问题，每个请求在首次进入系统时都会被赋予业务优先级。这个优先级会随所有下游请求一起流动。用户请求的业务优先级由请求的操作类型来决定。虽然有数百个入口点，但只有几十个具有显式优先级，其他入口点具有默认（较低）优先级。优先级保留在复制的哈希表中。</p>
 
-<p>The add-on component gitlab-shell serves repositories over SSH. It manages the SSH keys within <code>/home/git/.ssh/authorized_keys</code> which should not be manually edited. gitlab-shell accesses the bare repositories through Gitaly to serve git objects and communicates with redis to submit jobs to Sidekiq for GitLab to process. gitlab-shell queries the GitLab API to determine authorization and access.</p>
+<p><img src="https://static001.geekbang.org/resource/image/bc/4c/bc4b78e56b4a92639ce10fd396d4024c.jpeg" alt=""/></p>
 
-<p>Gitaly executes git operations from gitlab-shell and the GitLab web app, and provides an API to the GitLab web app to get attributes from git (e.g. title, branches, tags, other meta data), and to get blobs (e.g. diffs, commits, files).</p>
+<p>当过载控制被设置为业务优先级 n 时，将删除所有级别为 n + 1 的请求。这对于混合工作负载来说非常有效，但是假设我们有大量的付款请求，所有这些请求都具有相同的优先级（例如 p）。系统将出现过载，这个时候将过载阈值降至 p-1。一旦过载消失，过载阈值再次增加到 p，于是我们又处于过载状态。要在相同优先级的请求发生过载时避免这种翻转，我们需要比业务优先级更细粒度的控制级别。</p>
 
-<p>You may also be interested in the <a href="https://about.gitlab.com/handbook/engineering/infrastructure/production-architecture/">production architecture of GitLab.com</a>.</p>
+<p>微信提供了一个很好的解决方案，它增加了基于用户 ID 的第二层准入控制。</p>
 
-<h2 id="toc_4">Installation Folder Summary</h2>
+<blockquote>
+<p>入口服务通过以用户 ID 作为参数的哈希函数来动态生成用户优先级。每个入口服务每小时更改其哈希函数。因此，来自同一用户的请求很可能在一小时内被分配了相同的用户优先级，但在几小时内被分配了不同的用户优先级。</p>
+</blockquote>
 
-<p>To summarize here&#39;s the <a href="https://docs.gitlab.com/ee/install/structure.html">directory structure of the <code>git</code> user home directory</a>.</p>
+<p>这提供了一种公平性，同时还在相对长的时间段内为个人用户提供一致的体验。它还有助于解决后续过载问题，因为具有高优先级的用户请求更有可能在整个调用图中得到处理。</p>
 
-<h2 id="toc_5">Processes</h2>
+<p>通过组合业务优先级和用户优先级，可以为每个业务优先级提供 128 个用户优先级准入级别。</p>
 
-<pre><code>`ps aux | grep &#39;^git&#39;`
-</code></pre>
+<p><img src="https://static001.geekbang.org/resource/image/81/eb/81479fb13d05e85029328fa5c103c2eb.jpeg" alt=""/></p>
 
-<p>GitLab has several components to operate. As a system user (i.e. any user that is not the <code>git</code> user) it requires a persistent database (MySQL/PostreSQL) and redis database. It also uses Apache httpd or Nginx to proxypass Unicorn. As the <code>git</code> user it starts Sidekiq and Unicorn (a simple ruby HTTP server running on port <code>8080</code> by default). Under the GitLab user there are normally 4 processes: <code>unicorn_rails master</code> (1 process), <code>unicorn_rails worker</code> (2 processes), <code>sidekiq</code> (1 process).</p>
+<blockquote>
+<p>由于每个业务优先级的准入级别具有 128 个用户优先级，因此复合准入级别数量可以达到数万。复合准入级别的调整是按照用户优先级的颗粒进行的。</p>
+</blockquote>
 
-<h2 id="toc_6">Repository access</h2>
+<p>这里有个有趣的问题，为什么使用会话 ID 代替用户 ID 就不起作用：在遇到糟糕的服务时，这样会导致用户登录登出，那么在过载问题之上又会多出来一个用户登录问题！</p>
 
-<p>Repositories get accessed via HTTP or SSH. HTTP cloning/push/pull utilizes the GitLab API and SSH cloning is handled by gitlab-shell (previously explained).</p>
+<p>DAGOR 为每个服务器维护一个请求的直方图，用于跟踪超过准入优先级的请求的大致分布情况。当在窗口期间检测到过载时，DAGOR 移动到第一个桶，将使预期负载减少 5％。如果没有发生过载，它会移动到第一个桶，将使预期负载增加 1％。</p>
 
-<h2 id="toc_7">Troubleshooting</h2>
+<p>服务器将准入优先级嵌入到发送给上游服务器的每个响应消息中。通过这种方式，上游服务器获知下游服务的当前准入控制设置，可以在发送请求之前对请求执行本地准入控制。</p>
 
-<p>See the README for more information.</p>
+<p>DAGOR 过载控制系统的端到端视图如下所示：</p>
 
-<h2 id="toc_8">Init scripts of the services</h2>
+<p><img src="https://static001.geekbang.org/resource/image/f1/7d/f1a8fe2308f879035cc7fed07705497d.jpeg" alt=""/></p>
 
-<p>The GitLab init script starts and stops Unicorn and Sidekiq.</p>
+<h2 id="toc_5">实验</h2>
 
-<pre><code>`/etc/init.d/gitlab
-Usage: service gitlab {start|stop|restart|reload|status}`
-</code></pre>
+<p>DAGOR 在微信的生产环境已经运作五年了，这是对它的设计可行性的最好证明。但我们并没有为学术论文提供必要的图表，所以我们进行了一组模拟实验。下面的图表突出显示了基于排队时间而非响应时间的过载控制的好处。在发生后续过载的情况下，这些好处最为明显（图 (b)）。</p>
 
-<p>Redis (key-value store/non-persistent database)</p>
+<p><img src="https://static001.geekbang.org/resource/image/57/a8/578fd9b784abfe540ae573ea5c0f3ea8.jpeg" alt=""/></p>
 
-<pre><code>`/etc/init.d/redis
-Usage: /etc/init.d/redis {start|stop|status|restart|condrestart|try-restart}`
-</code></pre>
+<p>与 CoDel 和 SEDA 相比，在进行一次后续调用时，DAGOR 的请求成功率提高了 50％，随后出现过载。后续请求数量越多，好处就越大：</p>
 
-<p>SSH daemon</p>
+<p><img src="https://static001.geekbang.org/resource/image/0d/08/0d1dc62116c14ea4bcdc542319ee6308.jpeg" alt=""/></p>
 
-<pre><code>`/etc/init.d/sshd
-Usage: /etc/init.d/sshd {start|stop|restart|reload|force-reload|condrestart|try-restart|status}`
-</code></pre>
+<p>最后，在公平性方面，CoDel 在压力下更倾向于使用较小的扇出服务，而 DAGOR 在各种请求中表现出大致相同的成功率。</p>
 
-<p>Web server (one of the following)</p>
+<p><img src="https://static001.geekbang.org/resource/image/c1/ef/c10084f90897f17fdf95dbac3318d7ef.jpeg" alt=""/></p>
 
-<pre><code>`/etc/init.d/httpd
-Usage: httpd {start|stop|restart|condrestart|try-restart|force-reload|reload|status|fullstatus|graceful|help|configtest}
+<h2 id="toc_6">三个经验教训</h2>
 
-$ /etc/init.d/nginx
-Usage: nginx {start|stop|restart|reload|force-reload|status|configtest}`
-</code></pre>
-
-<p>Persistent database (one of the following)</p>
-
-<pre><code>`/etc/init.d/mysqld
-Usage: /etc/init.d/mysqld {start|stop|status|restart|condrestart|try-restart|reload|force-reload}
-
-$ /etc/init.d/postgresql
-Usage: /etc/init.d/postgresql {start|stop|restart|reload|force-reload|status} [version ..]`
-</code></pre>
-
-<h2 id="toc_9">Log locations of the services</h2>
-
-<p>gitlabhq (includes Unicorn and Sidekiq logs)</p>
+<p>即使你不使用 DAGOR，作者还是为你总结了三个宝贵的经验教训：</p>
 
 <ul>
-<li><code>/home/git/gitlab/log/</code> contains <code>application.log</code>, <code>production.log</code>, <code>sidekiq.log</code>, <code>unicorn.stdout.log</code>, <code>githost.log</code> and <code>unicorn.stderr.log</code> normally.</li>
+<li>  大规模微服务架构中的过载控制必须在每个服务中实现分散和自治；</li>
+<li>  过载控制应该要考虑到各种反馈机制（例如 DAGOR 的协作准入控制），而不是仅仅依赖于开环启发式；</li>
+<li>  应该通过分析实际工作负载来了解过载控制设计。</li>
 </ul>
 
-<p>gitlab-shell</p>
+<p>论文地址：<a href="https://www.cs.columbia.edu/%7Eruigu/papers/socc18-final100.pdf">https://www.cs.columbia.edu/~ruigu/papers/socc18-final100.pdf</a></p>
 
-<ul>
-<li><code>/home/git/gitlab-shell/gitlab-shell.log</code></li>
-</ul>
+<p>关于微信的微服务架构，微信后台基础架构负责人许家滔曾在 2016 年 ArchSummit 北京站做过分享，想要进一步了解可以查看我们整理的<a href="https://mp.weixin.qq.com/s?__biz=MjM5MDE0Mjc4MA==&amp;mid=2650997325&amp;idx=1&amp;sn=04bf17ba4ee4d506483b0ccda4a8d123&amp;chksm=bdbefa1e8ac97308a9ccb7b93ac4d479fc2b5e81518a95390374b7be42b9af9a082985f0cc5c&amp;scene=27#wechat_redirect">文章</a>。</p>
 
-<p>ssh</p>
-
-<ul>
-<li><code>/var/log/auth.log</code> auth log (on Ubuntu).</li>
-<li><code>/var/log/secure</code> auth log (on RHEL).</li>
-</ul>
-
-<p>nginx</p>
-
-<ul>
-<li><code>/var/log/nginx/</code> contains error and access logs.</li>
-</ul>
-
-<p>Apache httpd</p>
-
-<ul>
-<li><a href="https://httpd.apache.org/docs/2.2/logs.html">Explanation of Apache logs</a>.</li>
-<li><code>/var/log/apache2/</code> contains error and output logs (on Ubuntu).</li>
-<li><code>/var/log/httpd/</code> contains error and output logs (on RHEL).</li>
-</ul>
-
-<p>redis</p>
-
-<ul>
-<li><code>/var/log/redis/redis.log</code> there are also log-rotated logs there.</li>
-</ul>
-
-<p>PostgreSQL</p>
-
-<ul>
-<li><code>/var/log/postgresql/*</code></li>
-</ul>
-
-<p>MySQL</p>
-
-<ul>
-<li><code>/var/log/mysql/*</code></li>
-<li><code>/var/log/mysql.*</code></li>
-</ul>
-
-<h2 id="toc_10">GitLab specific config files</h2>
-
-<p>GitLab has configuration files located in <code>/home/git/gitlab/config/*</code>. Commonly referenced config files include:</p>
-
-<ul>
-<li><code>gitlab.yml</code> - GitLab configuration.</li>
-<li><code>unicorn.rb</code> - Unicorn web server settings.</li>
-<li><code>database.yml</code> - Database connection settings.</li>
-</ul>
-
-<p>gitlab-shell has a configuration file at <code>/home/git/gitlab-shell/config.yml</code>.</p>
-
-<h2 id="toc_11">Maintenance Tasks</h2>
-
-<p><a href="https://gitlab.com/gitlab-org/gitlab-ce/tree/master">GitLab</a> provides rake tasks with which you see version information and run a quick check on your configuration to ensure it is configured properly within the application. See <a href="https://gitlab.com/gitlab-org/gitlab-ce/blob/master/doc/raketasks/maintenance.md">maintenance rake tasks</a>. In a nutshell, do the following:</p>
-
-<pre><code>`sudo -i -u git
-cd gitlab
-bundle exec rake gitlab:env:info RAILS_ENV=production
-bundle exec rake gitlab:check RAILS_ENV=production`
-</code></pre>
-
-<p>Note: It is recommended to log into the <code>git</code> user using <code>sudo -i -u git</code> or <code>sudo su - git</code>. While the sudo commands provided by gitlabhq work in Ubuntu they do not always work in RHEL.</p>
-
-<h2 id="toc_12">GitLab.com</h2>
-
-<p>We&#39;ve also detailed <a href="https://about.gitlab.com/handbook/engineering/infrastructure/production-architecture/">our architecture of GitLab.com</a> but this is probably over the top unless you have millions of users.</p>
+<p>英文原文：<a href="https://blog.acolyer.org/2018/11/16/overload-control-for-scaling-wechat-microservices/">https://blog.acolyer.org/2018/11/16/overload-control-for-scaling-wechat-microservices/</a></p>
 
                         
                       </div>
@@ -331,10 +252,10 @@ bundle exec rake gitlab:check RAILS_ENV=production`
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/9/10</span>
+                    <span class="date">2018/11/25</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Git.html'>Git</a></span>
+          					    <span class="posted-in"><a href='Orchestrator-1.html'>Orchestrator</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -424,31 +345,31 @@ bundle exec rake gitlab:check RAILS_ENV=production`
 	      
 		      
 			      <li class="post">
-			        <a href="15459058392039.html">Reliable Domain Events</a>
+			        <a href="15517999043443.html">The Art of Crafting Architectural Diagrams</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
+			        <a href="15517997955971.html">为什么说我们需要软件架构图？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
+			        <a href="15516128677869.html">DNS Servers That Offer Privacy and Filtering</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
+			        <a href="15516123108194.html">Airbnb's Migration from Monolith to Services</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
+			        <a href="15516097487470.html">Events As First-Class Citizens</a>
 			      </li>
 		     
 		  

@@ -105,54 +105,321 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15348499248375.html">
+                <a class="clearlink" href="15412405379571.html">
                 
-                  <h1>MySQL8 Authentication plugin Change</h1>
+                  <h1>用 GitLab CI 进行持续集成</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
-                        	<blockquote>
-<p><a href="http://samchu.logdown.com/posts/7425945-mysql8-authentication-plugin-change">http://samchu.logdown.com/posts/7425945-mysql8-authentication-plugin-change</a></p>
+                        	<pre><code>2016.07.29 Scarletsky
+</code></pre>
 
-<p><img src="media/15348499248375/15348503868862.jpg" alt=""/></p>
+<blockquote>
+<p><a href="https://scarletsky.github.io/2016/07/29/use-gitlab-ci-for-continuous-integration/">https://scarletsky.github.io/2016/07/29/use-gitlab-ci-for-continuous-integration/</a></p>
 </blockquote>
 
-<p>這幾天 MySQL 出 8 的版本, 沒想到密碼儲存方式變更了, 頓時一堆人慘叫XD</p>
+<h2 id="toc_0"><a href="#%E7%AE%80%E4%BB%8B" title="简介"></a>简介</h2>
 
-<p>因為 之前 MySQL 預設儲存密碼的方式是<code>mysql_native_password</code>, 但 8.0 之後 預設的儲存方式為<code>caching_sha2_password</code>, 說是又快又安全啦, 但讓人措手不及, 一堆 SQL 工具 (Navicat) 可能還來不及更新支援 就...</p>
+<p>从 GitLab 8.0 开始，GitLab CI 就已经集成在 GitLab 中，我们只要在项目中添加一个 <code>.gitlab-ci.yml</code> 文件，然后添加一个 Runner，即可进行持续集成。 而且随着 GitLab 的升级，GitLab CI 变得越来越强大，本文将介绍如何使用 GitLab CI 进行持续集成。</p>
 
-<p>登入失敗!!</p>
+<h2 id="toc_1"><a href="#%E4%B8%80%E4%BA%9B%E6%A6%82%E5%BF%B5" title="一些概念"></a>一些概念</h2>
 
-<pre><code>Authentication plugin &#39;caching_sha2_password&#39; cannot be loaded: dlopen(/usr/local/mysql/lib/plugin/caching_sha2_password.so, 2): image not found
+<p>在介绍 GitLab CI 之前，我们先看看一些持续集成相关的概念。</p>
+
+<h3 id="toc_2"><a href="#Pipeline" title="Pipeline"></a>Pipeline</h3>
+
+<p>一次 Pipeline 其实相当于一次构建任务，里面可以包含多个流程，如安装依赖、运行测试、编译、部署测试服务器、部署生产服务器等流程。<br/>
+任何提交或者 Merge Request 的合并都可以触发 Pipeline，如下图所示：</p>
+
+<pre><code>+------------------+           +----------------+
+|                  |  trigger  |                |
+|   Commit / MR    +----------&gt;+    Pipeline    |
+|                  |           |                |
++------------------+           +----------------+
 </code></pre>
 
-<h2 id="toc_0">方法1 : 就升級上去吧, 變更 JDBC 連結方式</h2>
+<h3 id="toc_3"><a href="#Stages" title="Stages"></a>Stages</h3>
 
-<ol>
-<li>首先更新你的 JDBC 驅動 runtime &#39;mysql:mysql-connector-java:8.0.11&#39;</li>
-<li>修改你的 driver-class-name , 因為 Loading class `com.mysql.jdbc.Driver&#39;. This is deprecated. , 請你換成新版的 com.mysql.cj.jdbc.Driver</li>
-<li>JDBC URL 增加參數<code>allowPublicKeyRetrieval=true</code></li>
-</ol>
+<p>Stages 表示构建阶段，说白了就是上面提到的流程。<br/>
+我们可以在一次 Pipeline 中定义多个 Stages，这些 Stages 会有以下特点：</p>
 
-<p>完成, 這樣你的 JDBC 就可以搭配使用上<code>caching_sha2_password</code>的機制了</p>
+<ul>
+<li>  所有 Stages 会按照顺序运行，即当一个 Stage 完成后，下一个 Stage 才会开始</li>
+<li>  只有当所有 Stages 完成后，该构建任务 (Pipeline) 才会成功</li>
+<li>  如果任何一个 Stage 失败，那么后面的 Stages 不会执行，该构建任务 (Pipeline) 失败</li>
+</ul>
 
-<h2 id="toc_1">方法2 : 我要最新版但是不要用新的密碼機制</h2>
+<p>因此，Stages 和 Pipeline 的关系就是：</p>
 
-<p>我是用 Docker 啦, 多個參數就可以正常使用了<code>--default-authentication-plugin=mysql_native_password</code></p>
-
-<pre><code>docker run --name askask-mysql -e MYSQL_DATABASE=askask -e MYSQL_ROOT_PASSWORD=1qaz2wsx -p 3306:3306 -d mysql --default-authentication-plugin=mysql_native_password
+<pre><code>+--------------------------------------------------------+
+|                                                        |
+|  Pipeline                                              |
+|                                                        |
+|  +-----------+     +------------+      +------------+  |
+|  |  Stage 1  |----&gt;|   Stage 2  |-----&gt;|   Stage 3  |  |
+|  +-----------+     +------------+      +------------+  |
+|                                                        |
++--------------------------------------------------------+
 </code></pre>
 
-<p>收工</p>
+<h3 id="toc_4"><a href="#Jobs" title="Jobs"></a>Jobs</h3>
 
-<h2 id="toc_2">方法3 : 修改账户的密碼機制</h2>
+<p>Jobs 表示构建工作，表示某个 Stage 里面执行的工作。<br/>
+我们可以在 Stages 里面定义多个 Jobs，这些 Jobs 会有以下特点：</p>
 
-<pre><code class="language-sql">CREATE DATABASE rep2 CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-CREATE USER &#39;dev&#39;@&#39;%&#39; IDENTIFIED WITH mysql_native_password BY &#39;Dev.1234&#39;;
-ALTER USER &#39;dev&#39;@&#39;%&#39; IDENTIFIED WITH mysql_native_password BY &#39;password&#39;;
-GRANT ALL PRIVILEGES ON rep2.* TO &#39;dev&#39;@&#39;%&#39;;
+<ul>
+<li>  相同 Stage 中的 Jobs 会并行执行</li>
+<li>  相同 Stage 中的 Jobs 都执行成功时，该 Stage 才会成功</li>
+<li>  如果任何一个 Job 失败，那么该 Stage 失败，即该构建任务 (Pipeline) 失败</li>
+</ul>
+
+<p>所以，Jobs 和 Stage 的关系图就是：</p>
+
+<pre><code>+------------------------------------------+
+|                                          |
+|  Stage 1                                 |
+|                                          |
+|  +---------+  +---------+  +---------+   |
+|  |  Job 1  |  |  Job 2  |  |  Job 3  |   |
+|  +---------+  +---------+  +---------+   |
+|                                          |
++------------------------------------------+
 </code></pre>
+
+<h2 id="toc_5"><a href="#GitLab-Runner" title="GitLab Runner"></a>GitLab Runner</h2>
+
+<h3 id="toc_6"><a href="#%E7%AE%80%E4%BB%8B-1" title="简介"></a>简介</h3>
+
+<p>理解了上面的基本概念之后，有没有觉得少了些什么东西 —— 由谁来执行这些构建任务呢？<br/>
+答案就是 GitLab Runner 了！</p>
+
+<p>想问为什么不是 GitLab CI 来运行那些构建任务？<br/>
+一般来说，构建任务都会占用很多的系统资源 (譬如编译代码)，而 GitLab CI 又是 GitLab 的一部分，如果由 GitLab CI 来运行构建任务的话，在执行构建任务的时候，GitLab 的性能会大幅下降。</p>
+
+<p>GitLab CI 最大的作用是管理各个项目的构建状态，因此，运行构建任务这种浪费资源的事情就交给 GitLab Runner 来做拉！<br/>
+因为 GitLab Runner 可以安装到不同的机器上，所以在构建任务运行期间并不会影响到 GitLab 的性能~</p>
+
+<h3 id="toc_7"><a href="#%E5%AE%89%E8%A3%85" title="安装"></a>安装</h3>
+
+<p>安装 GitLab Runner 太简单了，按照着 <a href="https://gitlab.com/gitlab-org/gitlab-ci-multi-runner">官方文档</a> 的教程来就好拉！<br/>
+下面是 Debian/Ubuntu/CentOS 的安装方法，其他系统去参考官方文档：</p>
+
+<pre><code># For Debian/Ubuntu
+$ curl -L https://packages.gitlab.com/install/repositories/runner/gitlab-ci-multi-runner/script.deb.sh | sudo bash
+$ sudo apt-get install gitlab-ci-multi-runner
+# For CentOS
+$ curl -L https://packages.gitlab.com/install/repositories/runner/gitlab-ci-multi-runner/script.rpm.sh | sudo bash
+$ sudo yum install gitlab-ci-multi-runner
+</code></pre>
+
+<h3 id="toc_8"><a href="#%E6%B3%A8%E5%86%8C-Runner" title="注册 Runner"></a>注册 Runner</h3>
+
+<p>安装好 GitLab Runner 之后，我们只要启动 Runner 然后和 CI 绑定就可以了：</p>
+
+<ul>
+<li>  打开你 GitLab 中的项目页面，在项目设置中找到 runners</li>
+<li>  运行 <code>sudo gitlab-ci-multi-runner register</code></li>
+<li>  输入 CI URL</li>
+<li>  输入 Token</li>
+<li>  输入 Runner 的名字</li>
+<li>  选择 Runner 的类型，简单起见还是选 Shell 吧</li>
+<li>  完成</li>
+</ul>
+
+<p>当注册好 Runner 之后，可以用 <code>sudo gitlab-ci-multi-runner list</code> 命令来查看各个 Runner 的状态：</p>
+
+<pre><code>$ sudo gitlab-runner list
+Listing configured runners          ConfigFile=/etc/gitlab-runner/config.toml
+my-runner                           Executor=shell Token=cd1cd7cf243afb47094677855aacd3 URL=http://mygitlab.com/ci
+</code></pre>
+
+<h2 id="toc_9"><a href="#gitlab-ci-yml" title=".gitlab-ci.yml"></a>.gitlab-ci.yml</h2>
+
+<h3 id="toc_10"><a href="#%E7%AE%80%E4%BB%8B-2" title="简介"></a>简介</h3>
+
+<p>配置好 Runner 之后，我们要做的事情就是在项目根目录中添加 <code>.gitlab-ci.yml</code> 文件了。<br/>
+当我们添加了 <code>.gitlab-ci.yml</code> 文件后，每次提交代码或者合并 MR 都会自动运行构建任务了。</p>
+
+<p>还记得 Pipeline 是怎么触发的吗？Pipeline 也是通过提交代码或者合并 MR 来触发的！<br/>
+那么 Pipeline 和 <code>.gitlab-ci.yml</code> 有什么关系呢？<br/>
+其实 <code>.gitlab-ci.yml</code> 就是在定义 Pipeline 而已拉！</p>
+
+<h3 id="toc_11"><a href="#%E5%9F%BA%E6%9C%AC%E5%86%99%E6%B3%95" title="基本写法"></a>基本写法</h3>
+
+<p>我们先来看看 <code>.gitlab-ci.yml</code> 是怎么写的：</p>
+
+<pre><code class="language-yml"># 定义 stages
+stages:
+  - build
+  - test
+# 定义 job
+job1:
+  stage: test
+  script:
+    - echo &quot;I am job1&quot;
+    - echo &quot;I am in test stage&quot;
+# 定义 job
+job2:
+  stage: build
+  script:
+    - echo &quot;I am job2&quot;
+    - echo &quot;I am in build stage&quot;
+</code></pre>
+
+<p>写起来很简单吧！用 <code>stages</code> 关键字来定义 Pipeline 中的各个构建阶段，然后用一些非关键字来定义 jobs。<br/>
+每个 job 中可以可以再用 <code>stage</code> 关键字来指定该 job 对应哪个 stage。<br/>
+job 里面的 <code>script</code> 关键字是最关键的地方了，也是每个 job 中必须要包含的，它表示每个 job 要执行的命令。</p>
+
+<p>回想一下我们之前提到的 Stages 和 Jobs 的关系，然后猜猜上面例子的运行结果？</p>
+
+<pre><code>I am job2
+I am in build stage
+I am job1
+I am in test stage
+</code></pre>
+
+<p>根据我们在 <code>stages</code> 中的定义，<code>build</code> 阶段要在 <code>test</code> 阶段之前运行，所以 <code>stage:build</code> 的 jobs 会先运行，之后才会运行 <code>stage:test</code> 的 jobs。</p>
+
+<h3 id="toc_12"><a href="#%E5%B8%B8%E7%94%A8%E7%9A%84%E5%85%B3%E9%94%AE%E5%AD%97" title="常用的关键字"></a>常用的关键字</h3>
+
+<p>下面介绍一些常用的关键字，想要更加详尽的内容请前往 <a href="http://docs.gitlab.com/ce/ci/yaml/README.html">官方文档</a></p>
+
+<h4 id="toc_13"><a href="#stages" title="stages"></a>stages</h4>
+
+<p>定义 Stages，默认有三个 Stages，分别是 <code>build</code>, <code>test</code>, <code>deploy</code>。</p>
+
+<h4 id="toc_14"><a href="#types" title="types"></a>types</h4>
+
+<p><code>stages</code> 的别名。</p>
+
+<h4 id="toc_15"><a href="#before-script" title="before_script"></a>before_script</h4>
+
+<p>定义任何 Jobs 运行前都会执行的命令。</p>
+
+<h4 id="toc_16"><a href="#after-script" title="after_script"></a>after_script</h4>
+
+<blockquote>
+<p>要求 GitLab 8.7+ 和 GitLab Runner 1.2+</p>
+</blockquote>
+
+<p>定义任何 Jobs 运行完后都会执行的命令。</p>
+
+<h4 id="toc_17"><a href="#variables-amp-amp-Job-variables" title="variables &amp;&amp; Job.variables"></a>variables &amp;&amp; Job.variables</h4>
+
+<blockquote>
+<p>要求 GitLab Runner 0.5.0+</p>
+</blockquote>
+
+<p>定义环境变量。<br/>
+如果定义了 Job 级别的环境变量的话，该 Job 会优先使用 Job 级别的环境变量。</p>
+
+<h4 id="toc_18"><a href="#cache-amp-amp-Job-cache" title="cache &amp;&amp; Job.cache"></a>cache &amp;&amp; Job.cache</h4>
+
+<blockquote>
+<p>要求 GitLab Runner 0.7.0+</p>
+</blockquote>
+
+<p>定义需要缓存的文件。<br/>
+每个 Job 开始的时候，Runner 都会删掉 <code>.gitignore</code> 里面的文件。<br/>
+如果有些文件 (如 <code>node_modules/</code>) 需要多个 Jobs 共用的话，我们只能让每个 Job 都先执行一遍 <code>npm install</code>。<br/>
+这样很不方便，因此我们需要对这些文件进行缓存。缓存了的文件除了可以跨 Jobs 使用外，还可以跨 Pipeline 使用。</p>
+
+<p>具体用法请查看 <a href="http://docs.gitlab.com/ce/ci/yaml/README.html#cache">官方文档</a>。</p>
+
+<h4 id="toc_19"><a href="#Job-script" title="Job.script"></a>Job.script</h4>
+
+<p>定义 Job 要运行的命令，必填项。</p>
+
+<h4 id="toc_20"><a href="#Job-stage" title="Job.stage"></a>Job.stage</h4>
+
+<p>定义 Job 的 stage，默认为 <code>test</code>。</p>
+
+<h4 id="toc_21"><a href="#Job-artifacts" title="Job.artifacts"></a>Job.artifacts</h4>
+
+<p>定义 Job 中生成的附件。<br/>
+当该 Job 运行成功后，生成的文件可以作为附件 (如生成的二进制文件) 保留下来，打包发送到 GitLab，之后我们可以在 GitLab 的项目页面下下载该附件。<br/>
+注意，不要把 <code>artifacts</code> 和 <code>cache</code> 混淆了。</p>
+
+<h3 id="toc_22"><a href="#%E5%AE%9E%E7%94%A8%E4%BE%8B%E5%AD%90" title="实用例子"></a>实用例子</h3>
+
+<p>下面给出一个我自己在用的例子：</p>
+
+<pre><code class="language-yml">stages:
+  - install_deps
+  - test
+  - build
+  - deploy_test
+  - deploy_production
+cache:
+  key: ${CI_BUILD_REF_NAME}
+  paths:
+    - node_modules/
+    - dist/
+# 安装依赖
+install_deps:
+  stage: install_deps
+  only:
+    - develop
+    - master
+  script:
+    - npm install
+# 运行测试用例
+test:
+  stage: test
+  only:
+    - develop
+    - master
+  script:
+    - npm run test
+# 编译
+build:
+  stage: build
+  only:
+    - develop
+    - master
+  script:
+    - npm run clean
+    - npm run build:client
+    - npm run build:server
+# 部署测试服务器
+deploy_test:
+  stage: deploy_test
+  only:
+    - develop
+  script:
+    - pm2 delete app || true
+    - pm2 start app.js --name app
+# 部署生产服务器
+deploy_production:
+  stage: deploy_production
+  only:
+    - master
+  script:
+    - bash scripts/deploy/deploy.sh
+</code></pre>
+
+<p>上面的配置把一次 Pipeline 分成五个阶段：</p>
+
+<ul>
+<li>  安装依赖 (<code>install_deps</code>)</li>
+<li>  运行测试 (<code>test</code>)</li>
+<li>  编译 (<code>build</code>)</li>
+<li>  部署测试服务器 (<code>deploy_test</code>)</li>
+<li>  部署生产服务器 (<code>deploy_production</code>)</li>
+</ul>
+
+<p>设置 <code>Job.only</code> 后，只有当 develop 分支和 master 分支有提交的时候才会触发相关的 Jobs。<br/>
+注意，我这里用 GitLab Runner 所在的服务器作为测试服务器。</p>
+
+<h2 id="toc_23"><a href="#%E5%8F%82%E8%80%83%E8%B5%84%E6%96%99" title="参考资料"></a>参考资料</h2>
+
+<p><a href="https://about.gitlab.com/gitlab-ci/">https://about.gitlab.com/gitlab-ci/</a><br/>
+<a href="http://docs.gitlab.com/ce/ci/yaml/README.html">http://docs.gitlab.com/ce/ci/yaml/README.html</a><br/>
+<a href="http://docs.gitlab.com/ce/ci/variables/README.html">http://docs.gitlab.com/ce/ci/variables/README.html</a><br/>
+<a href="https://gitlab.com/gitlab-org/gitlab-ci-multi-runner">https://gitlab.com/gitlab-org/gitlab-ci-multi-runner</a><br/>
+<a href="https://gitlab.com/gitlab-org/gitlab-ci-multi-runner/issues/1232">https://gitlab.com/gitlab-org/gitlab-ci-multi-runner/issues/1232</a><br/>
+<a href="http://stackbox.cn/2016-02-gitlab-ci-conf/">http://stackbox.cn/2016-02-gitlab-ci-conf/</a></p>
 
                         
                       </div>
@@ -161,10 +428,10 @@ GRANT ALL PRIVILEGES ON rep2.* TO &#39;dev&#39;@&#39;%&#39;;
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/8/21</span>
+                    <span class="date">2018/11/3</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Database.html'>Database</a></span>
+          					    <span class="posted-in"><a href='Container.html'>Container</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -254,31 +521,31 @@ GRANT ALL PRIVILEGES ON rep2.* TO &#39;dev&#39;@&#39;%&#39;;
 	      
 		      
 			      <li class="post">
-			        <a href="15459058392039.html">Reliable Domain Events</a>
+			        <a href="15517999043443.html">The Art of Crafting Architectural Diagrams</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
+			        <a href="15517997955971.html">为什么说我们需要软件架构图？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
+			        <a href="15516128677869.html">DNS Servers That Offer Privacy and Filtering</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
+			        <a href="15516123108194.html">Airbnb's Migration from Monolith to Services</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
+			        <a href="15516097487470.html">Events As First-Class Citizens</a>
 			      </li>
 		     
 		  

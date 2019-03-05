@@ -105,284 +105,218 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15274384746652.html">
+                <a class="clearlink" href="15281970486767.html">
                 
-                  <h1>基于 Docker 搭建 MySQL 主从复制 - 秋田君</h1>
+                  <h1>最小权限的容器编排</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://my.oschina.net/u/3773384/blog/1810111">原文地址</a></p>
+<p>作者：Diogo Mónica[3] 译者：qhwdw 校对：wxy<br/>
+本文由 LCTT 原创编译，Linux 中国 荣誉推出 <a href="https://linux.cn/article-9712-1.html">https://linux.cn/article-9712-1.html</a><br/>
+via: <a href="https://blog.docker.com/2017/10/least-privilege-container-orchestration/">https://blog.docker.com/2017/10/least-privilege-container-orchestration/</a></p>
 </blockquote>
 
-<pre><code>本篇博文相对简单，因为是初次使用 Docker，MySQL 的主从复制之前也在 Centos 环境下搭建过，但是也忘的也差不多了，因此本次尝试在 Docker 中搭建。根据网上教程走还是踩了一些坑，不过所幸最终搭建成功，因此记录下来，避免以后踩了重复的坑。
-</code></pre>
+<p>Docker 平台和容器已经成为打包、部署、和管理应用程序的标准。为了在一个集群内协调跨节点的容器，必须有一个关键的能力：一个容器编排器。</p>
 
-<h2 id="toc_0">搭建环境</h2>
+<p><img src="https://dn-linuxcn.qbox.me/data/attachment/album/201806/03/215736pd1dhdoumu8ilhdi.jpg" alt=""/></p>
 
-<p>Centos 7.2 64 位</p>
+<p><u>container orchestrator</u></p>
 
-<p>MySQL 5.7.13</p>
+<p>对于关键的集群化以及计划的任务，编排器是起重大作用的，比如：</p>
 
-<p>Docker 1.13.1</p>
+<ul>
+<li>  管理容器计划和资源分配。</li>
+<li>  支持服务发现和无缝的应用程序部署。</li>
+<li>  分配应用程序运行必需的资源。</li>
+</ul>
 
-<p>接下来，我们将会在一台服务器上安装 docker，并使用 docker 运行三个 MySQL 容器，分别为一主两从。</p>
+<p>不幸的是，在这种环境下，编排器的分布式特性和资源的短暂性使得确保编排器的安全是一个极具挑战性的任务。在这篇文章中，我们将讨论容器编排器安全模型中没有考虑到的、但是很重要的这方面的详细情况，以及 Docker 企业版中如何使用内置的编排性能、Swarm 模式，去克服这些问题。</p>
 
-<h2 id="toc_1">安装 docker</h2>
+<p><a id="3_1089" class="target-fix ext" rel="external nofollow" target="_blank"></a></p>
 
-<p>执行命令</p>
+<h3 id="toc_0">诱因和威胁模型</h3>
 
-<pre><code>[root@VM_0_17_centos ~]# yum install docker
-</code></pre>
+<p>使用 swarm 模式的 Docker 企业版的其中一个主要目标是提供一个内置安全特性的编排器。为达到这个目标，我们部署了第一个在我们心目中认为的以最小权限原则设计的容器编排器。</p>
 
-<p>如果有提示，一路 y 下去</p>
+<p>在计算机科学中，一个分布式系统所要求的最小权限原则是，系统中的每个参与者仅仅能访问它正当目的所需要的信息和资源。不是更多，也不是更少。</p>
 
-<p>安装成功启动 Docker 后，查看版本</p>
+<blockquote>
+<p>“一个进程必须仅仅能去访问它的正当目的所需要的信息和资源”</p>
+</blockquote>
 
-<pre><code>[root@VM_0_17_centos ~]# docker version
-Client:
- Version:         1.13.1
- API version:     1.26
- Package version: &lt;unknown&gt;
- Go version:      go1.8.3
- Git commit:      774336d/1.13.1
- Built:           Wed Mar  7 17:06:16 2018
- OS/Arch:         linux/amd64
+<p><a id="4_1721" class="target-fix ext" rel="external nofollow" target="_blank"></a></p>
 
-Server:
- Version:         1.13.1
- API version:     1.26 (minimum version 1.12)
- Package version: &lt;unknown&gt;
- Go version:      go1.8.3
- Git commit:      774336d/1.13.1
- Built:           Wed Mar  7 17:06:16 2018
- OS/Arch:         linux/amd64
- Experimental:    false
-</code></pre>
+<h4 id="toc_1">最小权限原则</h4>
 
-<p>出现版本信息，则安装成功</p>
+<p>在一个 Docker 企业版集群中的每个节点分配的角色：既不是管理者（manager），也不是工人（worker）。这些角色为节点定义了一个很粗粒度的权限级别：分别进行管理和任务执行。尽管如此，不用理会它的角色，通过使用加密的方式，来保证一个节点仅仅有执行它的任务所需要的信息和资源。结果是，确保集群安全变得更容易了，甚至可以防止大多数的有经验的攻击者模式：攻击者控制了底层通讯网络，或者甚至攻陷了集群节点。</p>
 
-<h2 id="toc_2">启动 Docker</h2>
+<p><a id="3_2340" class="target-fix ext" rel="external nofollow" target="_blank"></a></p>
 
-<p>启动 Docker 并设置为开机自启动</p>
+<h3 id="toc_2">内核缺省安全</h3>
 
-<pre><code>[root@VM_0_17_centos ~]# systemctl  start docker.service
-[root@VM_0_17_centos ~]# systemctl  enable docker.service
-</code></pre>
+<p>这是一个很老的安全最大化状态：如果它不是缺省的，就没人用它。Docker Swarm 模式将缺省安全这一概念融入了核心，并且使用这一机制去解决编排器生命周期中三个很难并且很重要的部分：</p>
 
-<h2 id="toc_3">安装 MySQL</h2>
+<ol>
+<li> 可信引导和节点引入。</li>
+<li> 节点身份发布和管理。</li>
+<li> 认证、授权和加密的信息存储和传播。</li>
+</ol>
 
-<p>使用 Docker 拉取 MySQL 镜像</p>
+<p>我们来分别看一下这三个部分：</p>
 
-<pre><code>[root@VM_0_17_centos ~]# docker pull mysql:5.7.13
-</code></pre>
+<p><a id="4_2847" class="target-fix ext" rel="external nofollow" target="_blank"></a></p>
 
-<h2 id="toc_4">运行主容器</h2>
+<h4 id="toc_3">可信引导和节点引入</h4>
 
-<pre><code>[root@VM_0_17_centos ~]# docker run --name master -p 3306:3306 -e MYSQL_ROOT_PASSWORD=root -d mysql:5.7.13
+<p>确保集群安全的第一步，没有别的，就是严格控制成员和身份。管理员不能依赖它们节点的身份，并且在节点之间强制实行绝对的负载隔离。这意味着，未授权的节点不能允许加入到集群中，并且，已经是集群一部分的节点不能改变身份，突然去伪装成另一个节点。</p>
 
-</code></pre>
+<p>为解决这种情况，通过 Docker 企业版 Swarm 模式管理的节点，维护了健壮的、不可改变的身份。期望的特性是，通过使用两种关键的构建块去保证加密：</p>
 
-<p>--name 为容器指定名称，这里是 master</p>
+<ol>
+<li> 为集群成员使用<ruby>安全加入令牌 <rt>Secure join token</rt></ruby>。</li>
+<li> 从一个集中化的认证机构发行的内嵌唯一身份的证书。</li>
+</ol>
 
-<p>-p 将容器的指定端口映射到主机的指定端口，这里是将容器的 3306 端口映射到主机的 3306 端口</p>
+<p><a id="5_3651" class="target-fix ext" rel="external nofollow" target="_blank"></a></p>
 
-<p>-e 设置环境变量，这里是指定 root 账号的密码为 root</p>
+<h5 id="toc_4">加入 Swarm</h5>
 
-<p>-d 后台运行容器，并返回容器 ID</p>
+<p>要加入 Swarm，节点需要一份<ruby>安全加入令牌 <rt>Secure join token</rt></ruby> 的副本。在集群内的每个操作角色的令牌都是独一无二的 —— 现在有两种类型的节点：工人（workers）和管理者（managers）。由于这种区分，拥有一个工人令牌的节点将不允许以管理者角色加入到集群。唯一得到这个特殊令牌的方式是通过 swarm 的管理 API 去向集群管理者请求一个。</p>
 
-<p>mysql:5.7.13 指定运行的 mysql 版本</p>
+<p>令牌是安全的并且是随机生成的，它还有一个使得令牌泄露更容易被检测到的特殊语法：一个可以在你的日志和仓库中很容易监视的特殊前缀。幸运的是，即便发现一个泄露，令牌也可以很容易去更新，并且，推荐你经常去更新它们 —— 特别是，在一段时间中你的集群不进行扩大的情况下。</p>
 
-<h2 id="toc_5">检验是否启动成功</h2>
+<p><img src="https://dn-linuxcn.qbox.me/data/attachment/album/201806/03/215739qv7uv8sbyv87hfvx.jpg" alt=""/></p>
 
-<p>docker ps -a 显示所有的容器，包括未运行的</p>
+<p><u>Docker Swarm</u></p>
 
-<pre><code>[root@VM_0_17_centos ~]# docker ps -a
-ee86c19336f8        mysql:5.7.13        &quot;docker-entrypoint...&quot;   About an hour ago   Up About an hour    0.0.0.0:3306-&gt;3306/tcp   master
+<p><a id="5_4684" class="target-fix ext" rel="external nofollow" target="_blank"></a></p>
 
-</code></pre>
+<h5 id="toc_5">引导信任</h5>
 
-<p>注意，是 UP 状态，表示正在运行中</p>
+<p>作为它的身份标识创建的一部分，一个新的节点将向任意一个网络管理者请求发布一个新的身份。但是，在我们下面的威胁模型中，所有的通讯可以被一个第三方拦截。这种请求存在的问题是：一个节点怎么知道与它进行对话的对方是合法的管理者？</p>
 
-<p>开放 3306 端口</p>
+<p><img src="https://dn-linuxcn.qbox.me/data/attachment/album/201806/03/215739sbxzyy3i5yi7yv41.jpg" alt=""/></p>
 
-<pre><code>[root@VM_0_17_centos ~]# firewall-cmd --zone=public --add-port=3306/tcp --permanent
-[root@VM_0_17_centos ~]# firewall-cmd --reload
+<p><u>Docker Security</u></p>
 
-</code></pre>
+<p>幸运的是，Docker 有一个内置机制可以避免这种情况。这个加入令牌被主机用于加入 Swarm，包含了一个根 CA 证书的哈希串。所以，主机可以使用单向 TLS，并且使用这个哈希串去验证它加入的 Swarm 是否正确：如果管理者持有的证书没有被正确的 CA 哈希串签名，节点就知道它不可信任。</p>
 
-<p>--permanent 永久开启，避免下次开机需要再次手动开启端口</p>
+<p><a id="4_5558" class="target-fix ext" rel="external nofollow" target="_blank"></a></p>
 
-<p>使用 Navicat 连接测试</p>
+<h4 id="toc_6">节点身份发布和管理</h4>
 
-<p><img src="https://static.oschina.net/uploads/space/2018/0510/114916_0h3I_3773384.png" alt=""/></p>
+<p>在一个 Swarm 中，身份标识是内嵌在每个节点都单独持有的一个 x509 证书中。在一个最小权限原则的表现形式中，证书的私钥被绝对限制在主机的原始位置。尤其是，管理者不能访问除了它自己的私钥以外的任何一个私钥。</p>
 
-<p>MySQL 主容器已经启动成功</p>
+<p><a id="5_5908" class="target-fix ext" rel="external nofollow" target="_blank"></a></p>
 
-<h2 id="toc_6">创建主容器的复制账号</h2>
+<h5 id="toc_7">身份发布</h5>
 
-<p><img src="https://static.oschina.net/uploads/space/2018/0510/120249_0ZQx_3773384.png" alt=""/></p>
+<p>要接收它们的证书而无需共享它们的私钥，新的主机通过发布一个证书签名请求（CSR）来开始，管理者收到证书签名请求之后，转换成一个证书。这个证书成为这个新的主机的身份标识，使这个节点成为 Swarm 的一个完全合格成员！</p>
 
-<p>使用 Navicat 友好的图像化界面执行 SQL</p>
+<p><img src="https://dn-linuxcn.qbox.me/data/attachment/album/201806/03/215742n1acrwxccxngwici.jpg" alt=""/></p>
 
-<pre><code>GRANT REPLICATION SLAVE ON *.* to &#39;backup&#39;@&#39;%&#39; identified by &#39;backup&#39;;
-show grants for &#39;backup&#39;@&#39;%&#39;;
-</code></pre>
+<p>当和安全引导机制一起使用时，发行身份标识的这个机制来加入节点是缺省安全的：所有的通讯部分都是经过认证的、授权的，并且非敏感信息从来都不会以明文方式进行交换。</p>
 
-<p>出现如下信息表示授权成功</p>
+<p><a id="5_6601" class="target-fix ext" rel="external nofollow" target="_blank"></a></p>
 
-<p><img src="https://static.oschina.net/uploads/space/2018/0510/121018_Vtxn_3773384.png" alt=""/></p>
+<h5 id="toc_8">身份标识延期</h5>
 
-<h2 id="toc_7">修改 MySQL 配置环境</h2>
+<p>尽管如此，给一个 Swarm 中安全地加入节点，仅仅是 “故事” 的一部分。为降低证书的泄露或者失窃造成的影响，并且移除管理 CRL 列表的复杂性，Swarm 模式为身份标识使用了较短存活周期的证书。这些证书缺省情况下三个月后将过期，但是，也可以配置为一个小时后即刻过期！</p>
 
-<p>创建配置文件目录</p>
+<p><img src="https://dn-linuxcn.qbox.me/data/attachment/album/201806/03/215742hud947n983d3s7a8.jpg" alt=""/></p>
 
-<p>目录结构如下</p>
+<p><u>Docker secrets</u></p>
 
-<p>/usr/local/mysql/master</p>
+<p>较短的证书过期时间意味着不能手动去处理证书更新，所以，通常会使用一个 PKI 系统。对于 Swarm，所有的证书是以一种不中断的方式进行自动更新的。这个过程很简单：使用一个相互认证的 TLS 连接去证明一个特定身份标识的所有者，一个 Swarm 节点定期生成一个新的公钥 / 私钥密钥对，并且用相关的 CSR 去签名发送，创建一个维持相同身份标识的完整的新证书。</p>
 
-<p>/usr/local/mysql/slave1</p>
+<p><a id="4_7631" class="target-fix ext" rel="external nofollow" target="_blank"></a></p>
 
-<p>/usr/local/mysql/slave2</p>
+<h4 id="toc_9">经过认证、授权、和加密的信息存储和传播。</h4>
 
-<p>拷贝一份 MySQL 配置文件</p>
+<p>在一个正常的 Swarm 的操作中，关于任务的信息被发送给去运行的工人（worker）节点。这里不仅仅包含将被一个节点运行的容器的信息；也包含那个容器运行所必需的资源的所有信息，包括敏感的机密信息，比如，私钥、密码和 API 令牌。</p>
 
-<pre><code>[root@VM_0_17_centos local]# docker cp master:/etc/mysql/my.cnf /usr/local/mysql/master/my.cnf
+<p><a id="5_8035" class="target-fix ext" rel="external nofollow" target="_blank"></a></p>
 
-</code></pre>
+<h5 id="toc_10">传输安全</h5>
 
-<p>进到 master 目录下，已存在拷贝的 my.cnf</p>
+<p>事实上，参与 Swarm 的每个节点都拥有一个独一无二的 X509 格式的证书，因此，节点之间的通讯安全是没有问题的：节点使用它们各自的证书，与另一个连接方进行相互认证、继承机密、真实性、和 TLS 的完整性。</p>
 
-<pre><code>[root@VM_0_17_centos master]# ll
-total 4
--rw-r--r-- 1 root root 1801 May 10 10:27 my.cnf
+<p><img src="https://dn-linuxcn.qbox.me/data/attachment/album/201806/03/215744kv6j5j6118rrrlrl.jpg" alt=""/></p>
 
-</code></pre>
+<p><u>Swarm Mode</u></p>
 
-<p>修改 my.cnf，在 [mysqld] 节点最后加上后保存</p>
+<p>关于 Swarm 模式的一个有趣的细节是，本质上它是使用了一个推送模式：仅管理者被允许去发送信息到工人们（workers）—— 显著降低了暴露在低权限的工人节点面前的管理者节点的攻击面。</p>
 
-<pre><code>log-bin=mysql-bin
-server-id=1
-</code></pre>
+<p><a id="5_8737" class="target-fix ext" rel="external nofollow" target="_blank"></a></p>
 
-<p>log-bin=mysql-bin 使用 binary logging，mysql-bin 是 log 文件名的前缀</p>
+<h5 id="toc_11">将负载严格隔离进安全区域</h5>
 
-<p>server-id=1 唯一服务器 ID，非 0 整数，不能和其他服务器的 server-id 重复</p>
+<p>管理者节点的其中一个责任是，去决定发送到每个工人（worker）节点的任务是什么。管理者节点使用多种策略去做这个决定；根据每个节点和每个负载的特性，去跨 Swarm 去安排负载。</p>
 
-<p>将修改后的文件覆盖 Docker 中 MySQL 中的配置文件</p>
+<p>在使用 Swarm 模式的 Docker 企业版中，管理者节点通过使用附加到每个单个节点标识上的安全标签，去影响这些安排决定。这些标签允许管理者将节点组与不同的安全区域连接到一起，以限制敏感负载暴露，以及使相关机密信息更安全。</p>
 
-<pre><code>[root@VM_0_17_centos master]# docker cp /usr/local/mysql/master/my.cnf master:/etc/mysql/my.cnf
+<p><img src="https://dn-linuxcn.qbox.me/data/attachment/album/201806/03/215744hfd4zgcgzfrmthde.jpg" alt=""/></p>
 
-</code></pre>
+<p><u>Docker Swarm Security</u></p>
 
-<p>重启 mysql 的 docker , 让配置生效</p>
+<p><a id="5_9488" class="target-fix ext" rel="external nofollow" target="_blank"></a></p>
 
-<pre><code>[root@VM_0_17_centos master]# docker restart master
-</code></pre>
+<h5 id="toc_12">安全分发机密</h5>
 
-<p>启动后，重新测试连接，连接成功表示主容器配置成功</p>
+<p>除了加快身份标识发布过程之外，管理者节点还有存储和分发工人节点所需要的任何资源的任务。机密信息像任何其它类型的资源一样处理，并且基于安全的 mTLS 连接，从管理者推送到工人节点。</p>
 
-<h2 id="toc_8">运行 MySQL 从容器</h2>
+<p><img src="https://dn-linuxcn.qbox.me/data/attachment/album/201806/03/215745uoodd3k3e43kivvv.jpg" alt=""/></p>
 
-<p>首先运行从容器</p>
+<p><u>Docker Secrets</u></p>
 
-<pre><code>[root@VM_0_17_centos ~]# docker run --name slave1 -p 3307:3306 -e MYSQL_ROOT_PASSWORD=root -d mysql:5.7.13
+<p>在主机上，Docker 企业版能确保机密仅提供给它们指定的容器。在同一个主机上的其它容器并不能访问它们。Docker 以一个临时文件系统的方式显露机密给一个容器，确保机密总是保存在内存中，并且从不写入到磁盘。这种方式比其它竞争的替代者更加安全，比如，<a href="https://diogomonica.com/2017/03/27/why-you-shouldnt-use-env-variables-for-secret-data/">在环境变量中存储它们</a>。一旦这个任务完成，这个机密将永远消失。</p>
 
-</code></pre>
+<p><a id="5_10460" class="target-fix ext" rel="external nofollow" target="_blank"></a></p>
 
-<p>与主容器相似，拷贝配置文件至 slave1 目录修改后覆盖回 Docker 中</p>
+<h5 id="toc_13">存储机密</h5>
 
-<pre><code>log-bin=mysql-bin
-server-id=2
-</code></pre>
+<p>在管理者主机上的机密总是保持加密的。缺省情况下，加密这些机密的密钥（被称为数据加密密钥，DEK）是以明文的方式存储在硬盘上的。这使得那些对安全性要求较低的人可以轻松地去使用 Docker Swarm 模式。</p>
 
-<p>别忘记，重启 slave1 容器，使配置生效</p>
+<p>但是，如果你运行一个生产集群，我们推荐你启用自动锁定模式。当自动锁定模式启用后，一个重新更新过的 DEK 被一个独立的加密密钥的密钥（KEK）所加密。这个密钥从不被存储在集群中；管理者有责任将它存储在一个安全可靠的地方，并且当集群启动的时候可以提供它。这就是所谓的 “解锁” Swarm。</p>
 
-<h2 id="toc_9">配置主从复制</h2>
+<p>根据 Raft 故障容错一致性算法，Swarm 模式支持多个管理者。在这个场景中，无缝扩展了机密存储的安全性。每个管理者主机除了共享密钥之外，还有一个唯一的磁盘加密密钥。幸运的是，Raft 日志在磁盘上也是加密的，并且，在自动锁定模式下，没有 KEK 同样是不可访问的。</p>
 
-<p>使用 Navicat 连接 slave1 后新建查询，执行以下 SQL</p>
+<p><a id="4_11568" class="target-fix ext" rel="external nofollow" target="_blank"></a></p>
 
-<pre><code>CHANGE MASTER TO 
-MASTER_HOST=&#39;ip&#39;,
-MASTER_PORT=3306,
-MASTER_USER=&#39;backup&#39;,
-MASTER_PASSWORD=&#39;backup&#39;;
+<h4 id="toc_14">当一个节点被攻陷后发生了什么？</h4>
 
-START SLAVE;
-</code></pre>
+<p><img src="https://dn-linuxcn.qbox.me/data/attachment/album/201806/03/215746h7dbkd33obobtk66.jpg" alt=""/></p>
 
-<p>MASTER_HOST 填 Navicat 连接配置中的 ip 应该就可以</p>
+<p><u>Docker Secrets</u></p>
 
-<p>MASTER_PORT 主容器的端口</p>
+<p>在传统的编排器中，挽回一台被攻陷的主机是一个缓慢而复杂的过程。使用 Swarm 模式，恢复它就像运行一个 Docker 节点的 <code>rm</code> 命令一样容易。这是从集群中删除一个受影响的节点，而 Docker 将去处理剩下的事情，即，重新均衡负载，并且确保其它的主机已经知道，而不会去与受影响的节点通讯。</p>
 
-<p>MASTER_USER 同步账号的用户名</p>
+<p>正如我们看到的那样，感谢最小权限的编排器，甚至是，如果攻击者在主机上持续活动，它们将被从剩余的网络上切断。主机的证书 —— 它的身份标识 —— 被列入黑名单，因此，管理者也不能有效访问它。</p>
 
-<p>MASTER_PASSWORD 同步账号的密码</p>
+<p><a id="3_12461" class="target-fix ext" rel="external nofollow" target="_blank"></a></p>
 
-<h2 id="toc_10">检查是否配置成功</h2>
+<h3 id="toc_15">结论</h3>
 
-<pre><code>show slave status;
-</code></pre>
+<p>使用 Swarm 模式的 Docker 企业版，在缺省情况下确保了编排器的所有关键区域的安全：</p>
 
-<p><img src="https://static.oschina.net/uploads/space/2018/0510/123902_gnvI_3773384.png" alt=""/></p>
+<ul>
+<li>  加入集群。阻止恶意节点加入到集群。</li>
+<li>  把主机分组为安全区域。阻止攻击者的横向移动。</li>
+<li>  安排任务。任务将仅被委派到允许的节点。</li>
+<li>  分配资源。恶意节点不能 “盗取” 其它的负载或者资源。</li>
+<li>  存储机密。从不明文保存并且从不写入到工人节点的磁盘上。</li>
+<li>  与工人节点的通讯。使用相互认证的 TLS 加密。</li>
+</ul>
 
-<p>Slave_IO_State 如果是 Waiting for master to send event，那么就成功一半了，如果是 Connecting to master，基本就是配置失败了，建议重新检查下配置，具体失败的原因可以查看日志追踪</p>
+<p>因为 Swarm 模式的持续改进，Docker 团队正在努力将最小权限原则进一步推进。我们正在处理的一个任务是：如果一个管理者被攻陷了，怎么去保证剩下的节点的安全？路线图已经有了，其中一些功能已经可以使用，比如，白名单功能，仅允许特定的 Docker 镜像，阻止管理者随意运行负载。这是通过 Docker 可信内容来实现的。</p>
 
-<pre><code>[root@VM_0_17_centos master]# docker logs slave -f
-</code></pre>
+<hr/>
 
-<p>我遇到的是 MASTER_USER 和 MASTER_PASSWORD 是否手打输错了，贴出错误日志</p>
+<p>via: <a href="https://blog.docker.com/2017/10/least-privilege-container-orchestration/">https://blog.docker.com/2017/10/least-privilege-container-orchestration/</a></p>
 
-<pre><code>2018-05-10T02:57:00.688887Z 11 [ERROR] Slave I/O for channel &#39;&#39;: error connecting to master &#39;bakcup@ip:3306&#39; - retry-time: 60  retries: 2, Error_code: 1045
-2018-05-10T02:58:00.690476Z 11 [ERROR] Slave I/O for channel &#39;&#39;: error connecting to master &#39;bakcup@ip:3306&#39; - retry-time: 60  retries: 3, Error_code: 1045
-</code></pre>
-
-<p>注意看日志中的 bakcup，解决方法如下</p>
-
-<pre><code>STOP SLAVE;
-
-CHANGE MASTER TO 
-MASTER_HOST=&#39;连接Navicat的ip&#39;,
-MASTER_PORT=正确的端口,
-MASTER_USER=&#39;正确的用户名&#39;,
-MASTER_PASSWORD=&#39;正确的密码&#39;;
-
-START SLAVE;
-</code></pre>
-
-<p>接着上文，我们说成功一半，并没有说成功了，那么另一半在于 Slave_IO_Running 与 Slave_SQL_Running</p>
-
-<p>如果都是 Yes，那么恭喜你，可以测试主从复制的效果了，如果有一个不是 Yes，一半是重启从容器后，事务回滚引起的，那么给出解决方法如下</p>
-
-<pre><code>stop slave ;
-set GLOBAL SQL_SLAVE_SKIP_COUNTER=1;
-start slave ;
-</code></pre>
-
-<p>执行后，再次观察三个关键字段应该就都没问题了</p>
-
-<p>至此，一主一从已经搭建完成，再添加从实例的方式与上文一致，这里就不在赘述了。</p>
-
-<h2 id="toc_11">测试主从复制</h2>
-
-<p>首先，在主实例中创建一个测试数据库</p>
-
-<p><img src="https://static.oschina.net/uploads/space/2018/0510/130207_7Ty1_3773384.png" alt=""/></p>
-
-<p>打开（刷新）从实例，可见 test 库已存在</p>
-
-<p><img src="https://static.oschina.net/uploads/space/2018/0510/130133_ITNO_3773384.png" alt=""/></p>
-
-<p>在 test 库中创建一个表 t_test，添加一个 id 测试字段</p>
-
-<p>向表中添加几个数据</p>
-
-<p><img src="https://static.oschina.net/uploads/space/2018/0510/130357_IEZg_3773384.png" alt=""/></p>
-
-<p>刷新从库，可见 t_test 表及其中 1、2、3、4 数据已存在</p>
-
-<p>至此，一个具备主从复制的一主两从的 MySQL 就已搭建完成。</p>
+<p>作者：<a href="https://blog.docker.com/author/diogo/">Diogo Mónica</a> 译者：<a href="https://github.com/qhwdw">qhwdw</a> 校对：<a href="https://github.com/wxy">wxy</a></p>
 
                         
                       </div>
@@ -391,7 +325,7 @@ start slave ;
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/5/28</span>
+                    <span class="date">2018/6/5</span>
                     <span>posted in&nbsp;</span> 
           				  
           					    <span class="posted-in"><a href='Container.html'>Container</a></span>
@@ -484,31 +418,31 @@ start slave ;
 	      
 		      
 			      <li class="post">
-			        <a href="15459058392039.html">Reliable Domain Events</a>
+			        <a href="15517999043443.html">The Art of Crafting Architectural Diagrams</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
+			        <a href="15517997955971.html">为什么说我们需要软件架构图？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
+			        <a href="15516128677869.html">DNS Servers That Offer Privacy and Filtering</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
+			        <a href="15516123108194.html">Airbnb's Migration from Monolith to Services</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
+			        <a href="15516097487470.html">Events As First-Class Citizens</a>
 			      </li>
 		     
 		  

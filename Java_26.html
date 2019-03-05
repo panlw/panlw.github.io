@@ -105,277 +105,389 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15309739332194.html">
+                <a class="clearlink" href="15337171704262.html">
                 
-                  <h1>Spring WebFlux and rxjava2-jdbc</h1>
+                  <h1>Introduction to Testing with Spock and Groovy</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://medium.com/netifi/spring-webflux-and-rxjava2-jdbc-83a94e71ba04">https://medium.com/netifi/spring-webflux-and-rxjava2-jdbc-83a94e71ba04</a></p>
+<p><a href="https://www.baeldung.com/groovy-spock">https://www.baeldung.com/groovy-spock</a></p>
+
+<p>Last modified: March 2, 2018</p>
 </blockquote>
 
-<p>Spring <a href="https://docs.spring.io/spring/docs/current/spring-framework-reference/web-reactive.html#spring-webflux">WebFlux</a> is a great way to create a non-blocking REST application. One issue that you run into when start working with WebFlux is JDBC. JDBC is blocking. New school databases like <a href="http://cassandra.apache.org/">Cassandra</a> or <a href="https://www.couchbase.com/">Couchbase</a> have non-blocking drivers. In Couchbase’s case its driver uses <a href="https://github.com/ReactiveX/RxJava">RXJava</a>. NoSQL databases are great, but you can’t always use one for various reasons. There is some effort going into creating asynchronous drivers for databases, as well as Oracle’s effort to create <a href="https://blogs.oracle.com/java/jdbc-next:-a-new-asynchronous-api-for-connecting-to-a-database">ADBA</a>. Unfortunately, these are early days, and if you want to talk to a SQL database on the JVM you’re stuck with a blocking driver. This is a problem when you’re building a non-blocking application with Spring WebFlux . Luckily reactor-core and rxjava2 both implement <a href="http://www.reactive-streams.org/">ReactiveStreams</a>.</p>
+<h2 id="toc_0"><strong>1. Introduction</strong></h2>
 
-<p>This means that you can use David Moten’s <a href="https://github.com/davidmoten/rxjava2-jdbc">rxjava2-jdbc</a> library. It takes a normal JDBC driver and allows you to interact with it in a way that won’t block your application. It does this by scheduling potentially blocking work on different threads. Additionally, it has DSL that lets you model your SQL statements and results into streams. This makes integrating into your reactive application a snap.</p>
+<p>In this article, we’ll take a look at <a href="http://spockframework.org/">Spock</a>, a <a href="http://groovy-lang.org/">Groovy</a> testing framework. Mainly, Spock aims to be a more powerful alternative to the traditional JUnit stack, by leveraging Groovy features.</p>
 
-<p>Rxjava2-jdbc also provides non-blocking connection pooling. Normally in a blocking application threads are blocked until a connection is available to make a query. This is a problem for a non-blocking application as you will quickly exhaust all database connection threads and turn your wonderful non-blocking application into a clunky blocking application. In rxjava2-jdbc its connection pool returns a <a href="http://reactivex.io/RxJava/javadoc/io/reactivex/Single.html">Single</a> that is controlled by the connection pool. This means that instead of assigning threads to each query, queries subscribe to the connection pool and receive a connection when one is available — no blocked threads!</p>
+<p>Groovy is a JVM-based language which seamlessly integrates with Java. On top of interoperability, it offers additional language concepts such as being a dynamic, having optional types and meta-programming.</p>
 
-<p>Nothing is better than an example, so I created one that uses Spring WebFlux, rxjava2-jdbc, and H2. The example is a simple REST application that uses an embedded H2 database. It can be found <a href="https://github.com/netifi/webflux-rxjava2-jdbc-example">here</a>. The example has two objects. The first is an Employee object which contains information about the employee including: first name, last name, and department id. The second object is the Department object, which contains information about different departments. The application has restful endpoints for basic create, read, delete and list operations for the Employee and list operations for Department.</p>
+<p>By making use of Groovy, Spock introduces new and expressive ways of testing our Java applications, which simply aren’t possible in ordinary Java code. We’ll explore some of Spock’s high-level concepts during this article, with some practical step by step examples.</p>
 
-<h4 id="toc_0">Running the Example</h4>
+<h2 id="toc_1"><strong>2. Maven Dependency</strong></h2>
 
-<p>Running the example is simple and can be done with following command:</p>
+<p>Before we get started, let’s add our <a href="http://search.maven.org/#search%7Cga%7C1%7C%20(g%3A%22org.spockframework%22%20AND%20a%3A%22spock-core%22)%20OR%20(g%3A%22org.codehaus.groovy%22%20AND%20a%3A%22groovy-all%22)">Maven dependencies</a>:</p>
 
-<pre><code class="language-sh">./gradlew clean run
+<pre><code class="language-xml">&lt;dependency&gt;
+    &lt;groupId&gt;org.spockframework&lt;/groupId&gt;
+    &lt;artifactId&gt;spock-core&lt;/artifactId&gt;
+    &lt;version&gt;1.0-groovy-2.4&lt;/version&gt;
+    &lt;scope&gt;test&lt;/scope&gt;
+&lt;/dependency&gt;
+&lt;dependency&gt;
+    &lt;groupId&gt;org.codehaus.groovy&lt;/groupId&gt;
+    &lt;artifactId&gt;groovy-all&lt;/artifactId&gt;
+    &lt;version&gt;2.4.7&lt;/version&gt;
+    &lt;scope&gt;test&lt;/scope&gt;
+&lt;/dependency&gt;
 </code></pre>
 
-<p>This command will configure the database and start the WebFlux application using Spring Boot. The example doesn’t need a servlet container to run, and instead uses <a href="http://netty.io">Netty</a> to serve traffic. If you want to test and see if the example is up and running you can run the following curl command:</p>
+<p>We’ve added both Spock and Groovy as we would any standard library. However, as Groovy is a new JVM language, we need to include the <u>gmavenplus</u> plugin in order to be able to compile and run it:</p>
 
-<pre><code class="language-sh">curl localhost:8080/employees
+<pre><code class="language-xml">&lt;plugin&gt;
+    &lt;groupId&gt;org.codehaus.gmavenplus&lt;/groupId&gt;
+    &lt;artifactId&gt;gmavenplus-plugin&lt;/artifactId&gt;
+    &lt;version&gt;1.5&lt;/version&gt;
+    &lt;executions&gt;
+        &lt;execution&gt;
+            &lt;goals&gt;
+                &lt;goal&gt;compile&lt;/goal&gt;
+                &lt;goal&gt;testCompile&lt;/goal&gt;
+            &lt;/goals&gt;
+        &lt;/execution&gt;
+     &lt;/executions&gt;
+&lt;/plugin&gt;
 </code></pre>
 
-<p>You should see a JSON employee list if it’s running properly.</p>
+<p>Now we are ready to write our first Spock test, which will be written in Groovy code. Note that we are using Groovy and Spock only for testing purposes and this is why those dependencies are test-scoped.</p>
 
-<h4 id="toc_1">Routing Requests</h4>
+<h2 id="toc_2"><strong>3. Structure of a Spock Test</strong></h2>
 
-<p>Let’s take look inside the application and see what it’s doing. The first thing to take a look at is the <u>EmployeeRouter</u> class. This class routes incoming HTTP requests to the appropriate handler based on URL and HTTP method.</p>
+<h3 id="toc_3"><strong>3.1. Specifications and Features</strong></h3>
 
-<p><a href="https://gist.github.com/robertroeser/e7ce97c4fc7d69de449925e7a3f2b7e1#file-employeerouter-java">EmployeeRouter.java hosted with ❤ by GitHub</a></p>
+<p>As we are writing our tests in Groovy, we need to add them to the <u>src/test/groovy</u> directory, instead of <u>src/test/java.</u> Let’s create our first test in this directory, naming it <u>Specification.groovy:</u></p>
 
-<pre><code class="language-java">@Configuration
-public class EmployeeRouter {
-  @Bean
-  public RouterFunction&lt;ServerResponse&gt; route(EmployeeHandler handler) {
-    return RouterFunctions.route(
-            GET(&quot;/employees&quot;).and(RequestPredicates.accept(MediaType.APPLICATION_JSON)),
-            handler::getAllEmployees)
-        .andRoute(
-            GET(&quot;/employee/fn/{fn}/ln/{ln}&quot;)
-                .and(RequestPredicates.accept(MediaType.APPLICATION_JSON)),
-            handler::getEmployee)
-        .andRoute(
-            PUT(&quot;/employee&quot;).and(RequestPredicates.accept(MediaType.APPLICATION_JSON)),
-            handler::createNewEmployee)
-        .andRoute(
-            DELETE(&quot;/employee/id/{id}&quot;).and(RequestPredicates.accept(MediaType.APPLICATION_JSON)),
-            handler::deleteEmployee)
-        .andRoute(
-            GET(&quot;/departments&quot;).and(RequestPredicates.accept(MediaType.APPLICATION_JSON)),
-            handler::getAllDepartments);
-  }
+<pre><code class="language-java">class FirstSpecification extends Specification {
+
 }
 </code></pre>
 
-<p>In Spring WebFlux because it’s non-blocking these handlers must return a Mono<T>.</p>
+<p>Note that we are extending the <u>Specification</u> interface. Each Spock class must extend this in order to make the framework available to it. It’s doing so that allows us to implement our first <u>feature:</u></p>
 
-<h4 id="toc_2">Handling Requests</h4>
-
-<p>The next class to take a look at is the class that is handling the requests, <u>EmployeeHandler</u>.</p>
-
-<p><a href="https://gist.github.com/robertroeser/5d4ab5386e5b2e7301c33551ead8ada8#file-employeehandler-java">EmployeeHandler.java hosted with ❤ by GitHub</a></p>
-
-<pre><code class="language-java">@Component
-public class EmployeeHandler {
-  private final EmployeeRepository repository;
-
-  public EmployeeHandler(EmployeeRepository repository) {
-    this.repository = repository;
-  }
-
-  public Mono&lt;ServerResponse&gt; getAllEmployees(ServerRequest request) {
-    Flux&lt;Employee&gt; employees = repository.getAllEmployees();
-    return ServerResponse.ok()
-        .contentType(MediaType.APPLICATION_JSON)
-        .body(employees, Employee.class);
-  }
-
-  public Mono&lt;ServerResponse&gt; getEmployee(ServerRequest request) {
-    String firstName = request.pathVariable(&quot;fn&quot;);
-    String lastName = request.pathVariable(&quot;ln&quot;);
-    Mono&lt;Employee&gt; employee = repository.getEmployee(firstName, lastName);
-
-    return ServerResponse.ok()
-        .contentType(MediaType.APPLICATION_JSON)
-        .body(employee, Employee.class);
-  }
-
-  public Mono&lt;ServerResponse&gt; createNewEmployee(ServerRequest request) {
-    Mono&lt;Employee&gt; employeeMono = request.bodyToMono(Employee.class);
-    Mono&lt;Employee&gt; employee = repository.createNewEmployee(employeeMono);
-
-    return ServerResponse.ok()
-        .contentType(MediaType.APPLICATION_JSON)
-        .body(employee, Employee.class);
-  }
-
-  public Mono&lt;ServerResponse&gt; deleteEmployee(ServerRequest request) {
-    String id = request.pathVariable(&quot;id&quot;);
-    Mono&lt;Void&gt; employee = repository.deleteEmployee(id);
-
-    return ServerResponse.ok().contentType(MediaType.APPLICATION_JSON).build(employee);
-  }
-
-  public Mono&lt;ServerResponse&gt; getAllDepartments(ServerRequest request) {
-    Flux&lt;Department&gt; allDepartments = repository.getAllDepartments();
-    return ServerResponse.ok()
-        .contentType(MediaType.APPLICATION_JSON)
-        .body(allDepartments, Department.class);
-  }
+<pre><code class="language-groovy">def &quot;one plus one should equal two&quot;() {
+  expect:
+  1 + 1 == 2
 }
 </code></pre>
 
-<p>This is the class that is responsible for handling incoming requests. Each handle method returns a <u>Mono<ServerResponse></u>. The ServerResponse object has a builder that is used to create the response, and has methods that take Fluxes and Monos for responses. The <u>ServerResponse</u> object will also automatically serialize your results to JSON. Additionally, if you return a stream of responses, WebFlux will automatically turn the response into a JSON list. You can can see this in the <u>getAllEmployees</u> and <u>getAllDepoartment</u> methods. A method to look closer at is the <u>deleteEmployee</u> method. The <u>deleteEmployee</u> method is a little different then the other methods. You’ll notice that most methods use the <u>body</u> method to create a response. The <u>deleteEmployee</u> doesn’t have a body so it uses the <u>build</u> method instead which takes a Mono<Void>.</p>
+<p>Before explaining the code, it’s also worth noting that in Spock, what we refer to as a <u>feature</u> is somewhat synonymous to what we see as a <u>test</u> in JUnit. So <strong>whenever we refer to a <u>feature</u> we are actually referring to a <u>test.</u></strong></p>
 
-<h4 id="toc_3">Interacting with the Database</h4>
+<p>Now, let’s analyze our <u>feature</u>. In doing so, we should immediately be able to see some differences between it and Java.</p>
 
-<p>To create our responses we need to get the information from our database. The object that takes care of that is the the <u>EmployeeRepository</u> which is being injected into the handler. This is normally where things start to fall apart because you’re accessing a blocking database. In our case though we’re using rxjava2-jdbc and it’s no longer an issue. While this does turn a JDBC driver into a non-blocking driver and deals with the difficulties of scheduling potentially blocking work off the event loop, this isn’t as efficient as a purely non-blocking approach. However, it is sufficient for all but the highest throughput applications. Lets take a look at the <u>EmployeeRepository</u> class:</p>
+<p>The first difference is that the feature method name is written as an ordinary string. In JUnit, we would have had a method name which uses camelcase or underscores to separate the words, which would not have been as expressive or human readable.</p>
 
-<p><a href="https://gist.github.com/robertroeser/580116df0045187e4850bd4016704ce1#file-employeerepository-java">EmployeeRepository.java hosted with ❤ by GitHub</a></p>
+<p>The next is that our test code lives in an <u>expect</u> block. We will cover blocks in more detail shortly, but essentially they are a logical way of splitting up the different steps of our tests.</p>
 
-<pre><code class="language-java">@Component
-public class EmployeeRepository {
-  private Database db;
+<p>Finally, we realize that there are no assertions. That’s because the assertion is implicit, passing when our statement equals <u>true</u> and failing when it equals <u>false</u>. Again, we’ll cover assertions in more details shortly.</p>
 
-  public EmployeeRepository() throws Exception {
-    Connection connection = DriverManager.getConnection(&quot;jdbc:h2:./build/mydatabase&quot;, &quot;sa&quot;, &quot;sa&quot;);
-    NonBlockingConnectionPool pool =
-        Pools.nonBlocking()
-            .maxPoolSize(Runtime.getRuntime().availableProcessors() * 5)
-            .connectionProvider(ConnectionProvider.from(connection))
-            .build();
+<h3 id="toc_4"><strong>3.2. Blocks</strong></h3>
 
-    this.db = Database.from(pool);
-  }
+<p>Sometimes when writing JUnit a test, we might notice there isn’t an expressive way of breaking it up into parts. For example, if we were following behavior driven development, we might end up denoting the <u>given when then</u> parts using comments:</p>
 
-  Flux&lt;Employee&gt; getAllEmployees() {
-    String sql = &quot;SELECT * FROM employee e JOIN department d ON e.department_id = d.department_id&quot;;
+<pre><code class="language-java">@Test
+public void givenTwoAndTwo_whenAdding_thenResultIsFour() {
+   // Given
+   int first = 2;
+   int second = 4;
+ 
+   // When
+   int result = 2 + 2;
+ 
+   // Then
+   assertTrue(result == 4)
+}
+</code></pre>
 
-    Flowable&lt;Employee&gt; employeeFlowable =
-        db.select(sql)
-            .get(
-                rs -&gt; {
-                  Employee employee = new Employee();
-                  employee.setId(rs.getInt(&quot;employee_id&quot;));
-                  employee.setFirstName(rs.getString(&quot;employee_firstname&quot;));
-                  employee.setLastName(rs.getString(&quot;employee_lastname&quot;));
-                  employee.setDepartment(rs.getString(&quot;department_name&quot;));
+<p>Spock addresses this problem with blocks. <strong>Blocks are a Spock native way of breaking up the phases of our test using labels.</strong> They give us labels for <u>given when then</u> and more:</p>
 
-                  return employee;
-                });
+<ol>
+<li> <u>Setup</u> (Aliased by Given) – Here we perform any setup needed before a test is run. This is an implicit block, with code not in any block at all becoming part of it</li>
+<li> <u>When</u> – This is where we provide a <u>stimulus</u> to what is under test. In other words, where we invoke our method under test</li>
+<li> <u>Then</u> – This is where the assertions belong. In Spock, these are evaluated as plain boolean assertions, which will be covered later</li>
+<li> <u>Expect</u> – This is a way of performing our <u>stimulus</u> and <u>assertion</u> within the same block. Depending on what we find more expressive, we may or may not choose to use this block</li>
+<li> <u>Cleanup</u> – Here we tear down any test dependency resources which would otherwise be left behind. For example, we might want to remove any files from the file system or remove test data written to a database</li>
+</ol>
 
-    return Flux.from(employeeFlowable);
-  }
+<p>Let’s try implementing our test again, this time making full use of blocks:</p>
 
-  Mono&lt;Employee&gt; getEmployee(String firstName, String lastName) {
-    String sql =
-        &quot;SELECT employee_id, employee_firstname, employee_lastname, department_name FROM employee e &quot;
-            + &quot;JOIN department d ON e.department_id = d.department_id &quot;
-            + &quot;WHERE employee_firstname = ? AND &quot;
-            + &quot;employee_lastname = ?&quot;;
+<pre><code class="language-groovy">def &quot;two plus two should equal four&quot;() {
+    given:
+        int left = 2
+        int right = 2
+ 
+    when:
+        int result = left + right
+ 
+    then:
+        result == 4
+}
+</code></pre>
 
-    Flowable&lt;Employee&gt; employeeFlowable =
-        db.select(sql)
-            .parameters(firstName, lastName)
-            .get(
-                rs -&gt; {
-                  Employee employee = new Employee();
-                  employee.setId(rs.getInt(&quot;employee_id&quot;));
-                  employee.setFirstName(rs.getString(&quot;employee_firstname&quot;));
-                  employee.setLastName(rs.getString(&quot;employee_lastname&quot;));
-                  employee.setDepartment(rs.getString(&quot;department_name&quot;));
+<p>As we can see, blocks help our test become more readable.</p>
 
-                  return employee;
-                });
+<h3 id="toc_5"><strong>3.3. Leveraging Groovy Features for Assertions</strong></h3>
 
-    return Mono.from(employeeFlowable);
-  }
+<p><strong>Within the <u>then</u> and <u>expect</u> blocks, assertions are implicit</strong>.</p>
 
-  Mono&lt;Employee&gt; createNewEmployee(Mono&lt;Employee&gt; employeeMono) {
+<p>Mostly, every statement is evaluated and then fails if it is not <u>true</u>. When coupling this with various Groovy features, it does a good job of removing the need for an assertion library. Let’s try a <a href="https://docs.oracle.com/javase/8/docs/api/java/util/List.html">_list_</a> assertion to demonstrate this:</p>
 
-    String createSql =
-        &quot;INSERT INTO employee (employee_firstname, employee_lastname, department_id) VALUES (?, ?, ?)&quot;;
-    String selectDepartmentId = &quot;SELECT department_id from department where department_name = ?&quot;;
-    String selectSql =
-        &quot;SELECT employee_id, employee_firstname, employee_lastname, department_name FROM employee e &quot;
-            + &quot;JOIN department d ON e.department_id = d.department_id &quot;
-            + &quot;WHERE employee_id = ?&quot;;
+<pre><code class="language-groovy">def &quot;Should be able to remove from list&quot;() {
+    given:
+        def list = [1, 2, 3, 4]
+ 
+    when:
+        list.remove(0)
+ 
+    then:
+        list == [2, 3, 4]
+}
+</code></pre>
 
-    return employeeMono.flatMap(
-        newEmployee -&gt; {
-          Flowable&lt;Integer&gt; employeeIds =
-              db.select(selectDepartmentId)
-                  .parameters(newEmployee.getDepartment())
-                  .getAs(Integer.class)
-                  .flatMap(
-                      departmentId -&gt;
-                          db.update(createSql)
-                              .parameters(
-                                  newEmployee.getFirstName(),
-                                  newEmployee.getLastName(),
-                                  departmentId)
-                              .returnGeneratedKeys()
-                              .getAs(Integer.class));
+<p>While we’re only touching briefly on Groovy in this article, it’s worth explaining what is happening here.</p>
 
-          Flowable&lt;Employee&gt; employeeFlowable =
-              db.select(selectSql)
-                  .parameterStream(employeeIds)
-                  .get(
-                      rs -&gt; {
-                        Employee employee = new Employee();
-                        employee.setId(rs.getInt(&quot;employee_id&quot;));
-                        employee.setFirstName(rs.getString(&quot;employee_firstname&quot;));
-                        employee.setLastName(rs.getString(&quot;employee_lastname&quot;));
-                        employee.setDepartment(rs.getString(&quot;department_name&quot;));
+<p>First, Groovy gives us simpler ways of creating lists. We can just able to declare our elements with square brackets, and internally a <u>list</u> will be instantiated.</p>
 
-                        return employee;
-                      });
+<p>Secondly, as Groovy is dynamic, we can use <u>def</u> which just means we aren’t declaring a type for our variables.</p>
 
-          return Mono.from(employeeFlowable);
+<p>Finally, in the context of simplifying our test, the most useful feature demonstrated is operator overloading. This means that internally, rather than making a reference comparison like in Java, the <u>equals()</u> method will be invoked to compare the two lists.</p>
+
+<p>It’s also worth demonstrating what happens when our test fails. Let’s make it break and then view what’s output to the console:</p>
+
+<pre><code class="language-log">Condition not satisfied:
+ 
+list == [1, 3, 4]
+|    |
+|    false
+[2, 3, 4]
+ &lt;Click to see difference&gt;
+ 
+at FirstSpecification.Should be able to remove from list(FirstSpecification.groovy:30)
+</code></pre>
+
+<p>While all that’s going on is calling <u>equals()</u> on two lists, Spock is intelligent enough to perform a breakdown of the failing assertion, giving us useful information for debugging.</p>
+
+<h3 id="toc_6"><strong>3.4. Asserting Exceptions</strong></h3>
+
+<p>Spock also provides us with an expressive way of checking for exceptions. In JUnit, some our options might be using a <u>try-catch</u> block, declare <u>expected</u> at the top of our test, or making use of a third party library. Spock’s native assertions come with a way of dealing with exceptions out of the box:</p>
+
+<pre><code class="language-groovy">def &quot;Should get an index out of bounds when removing a non-existent item&quot;() {
+    given:
+        def list = [1, 2, 3, 4]
+  
+    when:
+        list.remove(20)
+ 
+    then:
+        thrown(IndexOutOfBoundsException)
+        list.size() == 4
+}
+</code></pre>
+
+<p>Here, we’ve not had to introduce an additional library. Another advantage is that the <u>thrown()</u> method will assert the type of the exception, but not halt execution of the test.</p>
+
+<h2 id="toc_7"><strong>4. Data Driven Testing</strong></h2>
+
+<h3 id="toc_8"><strong>4.1. What is a Data Driven Testing?</strong></h3>
+
+<p>Essentially, <strong>data driven testing is when we test the same behavior multiple times with different parameters and assertions</strong>. A classic example of this would be testing a mathematical operation such as squaring a number. Depending on the various permutations of operands, the result will be different. In Java, the term we may be more familiar with is parameterized testing.</p>
+
+<h3 id="toc_9"><strong>4.2. Implementing a Parameterized Test in Java</strong></h3>
+
+<p>For some context, it’s worth implementing a parameterized test using JUnit:</p>
+
+<pre><code class="language-java">@RunWith(Parameterized.class)
+public class FibonacciTest {
+    @Parameters
+    public static Collection&lt;Object[]&gt; data() {
+        return Arrays.asList(new Object[][] {     
+          { 1, 1 }, { 2, 4 }, { 3, 9 }  
         });
-  }
-
-  Mono&lt;Void&gt; deleteEmployee(String id) {
-    String sql = &quot;DELETE FROM employee WHERE employee_id = ?&quot;;
-    Flowable&lt;Integer&gt; counts = db.update(sql).parameter(id).counts();
-    return Flux.from(counts).then();
-  }
-
-  Flux&lt;Department&gt; getAllDepartments() {
-    return Flux.from(db.select(Department.class).get());
-  }
+    }
+ 
+    private int input;
+ 
+    private int expected;
+ 
+    public ToThePowerOfTwo(int input, int expected) {
+        this.input = input;
+        this.expected = expected;
+    }
+ 
+    @Test
+    public void test() {
+        assertEquals(fExpected, Math.pow(3, 2));
+    }
 }
 </code></pre>
 
-<p>The first thing to look at here is the constructor. The main class in rxjava2-jdbc is the Database class. This is what you use to interact with the database and run queries. Before you can do that you need to create a connection to the database. For our example, we’re creating a connection to an H2 database. Many databases allow you to pass in user credentials and other information in there connection string. If they do then you can use just create a database like so:</p>
+<p>As we can see there’s quite a lot of verbosity, and the code isn’t very readable. We’ve had to create a two-dimensional object array that lives outside of the test, and even a wrapper object for injecting the various test values.</p>
 
-<pre><code class="language-java">Database db = Database.from(“&lt;connection_string”&gt;, &lt;pool_size&gt;);
+<h3 id="toc_10"><strong>4.3. Using Datatables in Spock</strong></h3>
+
+<p>One easy win for Spock when compared to JUnit is how it cleanly it implements parameterized tests. Again, in Spock, this is known as <strong>Data Driven Testing.</strong> Now, let’s implement the same test again, only this time we’ll use Spock with <strong>Data Tables</strong>, which provides a far more convenient way of performing a parameterized test:</p>
+
+<pre><code class="language-groovy">def &quot;numbers to the power of two&quot;(int a, int b, int c) {
+  expect:
+      Math.pow(a, b) == c
+ 
+  where:
+      a | b | c
+      1 | 2 | 1
+      2 | 2 | 4
+      3 | 2 | 9
+}  
 </code></pre>
 
-<p>However, H2 doesn’t allow you to do this, so you need to create a Connection object in order to pass in credentials. You then have to use the Pools builder to create a pool. Once you’ve created the your pool you can create the database object.</p>
+<p>As we can see, we just have a straightforward and expressive Data table containing all our parameters.</p>
 
-<p>The great thing about rxjava2-jdbc is that any JDBC driver can used. You can switch any standard JDBC database like Oracle, SQL Server, DB2, etc.</p>
+<p>Also, it belongs where it should do, alongside the test, and there is no boilerplate. The test is expressive, with a human-readable name, and pure <u>expect</u> and <u>where</u> block to break up the logical sections.</p>
 
-<p>I’m not going to go into too much detail about how rxjava2-jdbc works here because David Moten’s github page has great <a href="https://github.com/davidmoten/rxjava2-jdbc/blob/master/README.adoc">documentation</a>.</p>
+<h3 id="toc_11"><strong>4.4. When a Datatable Fails</strong></h3>
 
-<p>I will point out a few things though about using Spring WebFlux and rxjava2-jdbc together. The good news is they both implement <a href="http://www.reactive-streams.org/">ReactiveStreams</a> so it’s transparent for them to interoperate. The way to do this with reactor-core is to use the <u>Flux.from</u> or <u>Mono.from</u> methods. These can take any publisher. It is important to note that in the Mono version it can only emit one item or it will throw an exception. Another thing to take a look at is the <u>deleteEmployee</u> method. This method returns a Mono<Void> which is a special convention in reactor-core. This roughly equivalent to a Completable in rxjava2. To mimic this behavior in reactor-core, call the <u>then</u> method on a Flux or a Mono. This will ignore all elements that are emitted from the stream, and either complete or emit an exception.</p>
+<p>It’s also worth seeing what happens when our test fails:</p>
 
-<h4 id="toc_4">Write some Code</h4>
+<pre><code class="language-log">Condition not satisfied:
+ 
+Math.pow(a, b) == c
+     |   |  |  |  |
+     4.0 2  2  |  1
+               false
+ 
+Expected :1
+ 
+Actual   :4.0
+</code></pre>
 
-<p>To really get a feel for how this works, the next step is to write some code. One idea I would suggest are to port the sample app to the database of your choice. Another idea is to create endpoints for creating a new department and deleting one. You can use the <u>createNewEmployee</u> and <u>deleteEmployee</u> methods as references.</p>
+<p>Again, Spock gives us a very informative error message. We can see exactly what row of our Datatable caused a failure and why.</p>
 
-<h4 id="toc_5">Conclusion</h4>
+<h2 id="toc_12"><strong>5. Mocking</strong></h2>
 
-<p>The reality is that many applications today use SQL databases, and reactive application developers did not have an easy way to access them without turning their non-blocking application into a blocking application. Hopefully in the future there will be great solutions around truly non-blocking JDBC drivers. Until that time, I hope you can see with this blog post, that while not perfect, there is an effective solution.</p>
+<h3 id="toc_13"><strong>5.1. What is Mocking?</strong></h3>
 
-<ul>
-<li>  <a href="https://medium.com/tag/java?source=post">Java</a></li>
-<li>  <a href="https://medium.com/tag/rxjava?source=post">Rxjava</a></li>
-<li>  <a href="https://medium.com/tag/spring?source=post">Spring</a></li>
-<li>  <a href="https://medium.com/tag/reactive?source=post">Reactive</a></li>
-<li>  <a href="https://medium.com/tag/rest?source=post">Rest</a></li>
-</ul>
+<p>Mocking is a way of changing the behavior of a class which our service under test collaborates with. It’s a helpful way of being able to test business logic in isolation of its dependencies.</p>
+
+<p>A classic example of this would be replacing a class which makes a network call with something which simply pretends to. For a more in-depth explanation, it’s worth reading <a href="/mockito-vs-easymock-vs-jmockit">this article</a>.</p>
+
+<h3 id="toc_14"><strong>5.2. Mocking using Spock</strong></h3>
+
+<p>Spock has it’s own mocking framework, making use of interesting concepts brought to the JVM by Groovy. First, let’s instantiate a <u>Mock:</u></p>
+
+<pre><code class="language-java">PaymentGateway paymentGateway = Mock()
+</code></pre>
+
+<p>In this case, the type of our mock is inferred by the variable type. As Groovy is a dynamic language, we can also provide a type argument, allow us to not have to assign our mock to any particular type:</p>
+
+<pre><code class="language-groovy">def paymentGateway = Mock(PaymentGateway)
+</code></pre>
+
+<p>Now, whenever we call a method on our <u>PaymentGateway</u> mock_,_ a default response will be given, without a real instance being invoked:</p>
+
+<pre><code class="language-groovy">when:
+    def result = paymentGateway.makePayment(12.99)
+ 
+then:
+    result == false
+</code></pre>
+
+<p>The term for this is <u>lenient mocking</u>. This means that mock methods which have not been defined will return sensible defaults, as opposed to throwing an exception. This is by design in Spock, in order to make mocks and thus tests less brittle.</p>
+
+<h3 id="toc_15"><strong>5.3. Stubbing Method calls on <u>Mocks</u></strong></h3>
+
+<p>We can also configure methods called on our mock to respond in a certain way to different arguments. Let’s try getting our <u>PaymentGateway</u> mock to return <u>true</u> when we make a payment of <u>20:</u></p>
+
+<pre><code class="language-groovy">given:
+    paymentGateway.makePayment(20) &gt;&gt; true
+ 
+when:
+    def result = paymentGateway.makePayment(20)
+ 
+then:
+    result == true
+</code></pre>
+
+<p>What’s interesting here, is how Spock makes use of Groovy’s operator overloading in order to stub method calls. With Java, we have to call real methods, which arguably means that the resulting code is more verbose and potentially less expressive.</p>
+
+<p>Now, let’s try a few more types of stubbing.</p>
+
+<p>If we stopped caring about our method argument and always wanted to return <u>true,</u> we could just use an underscore:</p>
+
+<pre><code class="language-groovy">paymentGateway.makePayment(_) &gt;&gt; true
+</code></pre>
+
+<p>If we wanted to alternate between different responses, we could provide a list, for which each element will be returned in sequence:</p>
+
+<pre><code class="language-groovy">paymentGateway.makePayment(_) &gt;&gt;&gt; [true, true, false, true]
+</code></pre>
+
+<p>There are more possibilities, and these may be covered in a more advanced future article on mocking.</p>
+
+<h3 id="toc_16"><strong>5.4. Verification</strong></h3>
+
+<p>Another thing we might want to do with mocks is assert that various methods were called on them with expected parameters. In other words, we ought to verify interactions with our mocks.</p>
+
+<p>A typical use case for verification would be if a method on our mock had a <u>void</u> return type. In this case, by there being no result for us to operate on, there’s no inferred behavior for us to test via the method under test. Generally, if something was returned, then the method under test could operate on it, and it’s the result of that operation would be what we assert.</p>
+
+<p>Let’s try verifying that a method with a void return type is called:</p>
+
+<pre><code class="language-groovy">def &quot;Should verify notify was called&quot;() {
+    given:
+        def notifier = Mock(Notifier)
+ 
+    when:
+        notifier.notify(&#39;foo&#39;)
+ 
+    then:
+        1 * notifier.notify(&#39;foo&#39;)
+}
+</code></pre>
+
+<p>Spock is leveraging Groovy operator overloading again. By multiplying our mocks method call by one, we are saying how many times we expect it to have been called.</p>
+
+<p>If our method had not been called at all or alternatively had not been called as many times as we specified, then our test would have failed to give us an informative Spock error message. Let’s prove this by expecting it to have been called twice:</p>
+
+<pre><code class="language-groovy">2 * notifier.notify(&#39;foo&#39;)
+</code></pre>
+
+<p>Following this, let’s see what the error message looks like. We’ll that as usual; it’s quite informative:</p>
+
+<pre><code class="language-log">Too few invocations for:
+ 
+2 * notifier.notify(&#39;foo&#39;)   (1 invocation)
+</code></pre>
+
+<p>Just like stubbing, we can also perform looser verification matching. If we didn’t care what our method parameter was, we could use an underscore:</p>
+
+<pre><code class="language-groovy">2 * notifier.notify(_)
+</code></pre>
+
+<p>Or if we wanted to make sure it wasn’t called with a particular argument, we could use the not operator:</p>
+
+<pre><code class="language-groovy">2 * notifier.notify(!&#39;foo&#39;)
+</code></pre>
+
+<p>Again, there are more possibilities, which may be covered in a future more advanced article.</p>
+
+<h2 id="toc_17"><strong>6. Conclusion</strong></h2>
+
+<p>In this article, we’ve given a quick slice through testing with Spock.</p>
+
+<p>We’ve demonstrated how, by leveraging Groovy, we can make our tests more expressive than the typical JUnit stack. We’ve explained the structure of <u>specifications</u> and <u>features</u>.</p>
+
+<p>And we’ve shown how easy it is to perform data-driven testing, and also how mocking and assertions are easy via native Spock functionality.</p>
+
+<p>The implementation of these examples can be found <a href="https://github.com/eugenp/tutorials/tree/master/testing-modules/groovy-spock">over on GitHub</a>. This is a Maven-based project, so should be easy to run as is.</p>
 
                         
                       </div>
@@ -384,7 +496,7 @@ public class EmployeeRepository {
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/7/7</span>
+                    <span class="date">2018/8/8</span>
                     <span>posted in&nbsp;</span> 
           				  
           					    <span class="posted-in"><a href='Java.html'>Java</a></span>
@@ -477,31 +589,31 @@ public class EmployeeRepository {
 	      
 		      
 			      <li class="post">
-			        <a href="15459058392039.html">Reliable Domain Events</a>
+			        <a href="15517999043443.html">The Art of Crafting Architectural Diagrams</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
+			        <a href="15517997955971.html">为什么说我们需要软件架构图？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
+			        <a href="15516128677869.html">DNS Servers That Offer Privacy and Filtering</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
+			        <a href="15516123108194.html">Airbnb's Migration from Monolith to Services</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
+			        <a href="15516097487470.html">Events As First-Class Citizens</a>
 			      </li>
 		     
 		  

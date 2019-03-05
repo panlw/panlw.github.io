@@ -105,27 +105,169 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="14500738659280.html">
+                <a class="clearlink" href="15277821532847.html">
                 
-                  <h1>CouchDB</h1>
+                  <h1>Aspect-Oriented Programming in Spring Boot Part 2: Spring JDK Proxies vs CGLIB vs AspectJ</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
-                        	<p>To test CouchDB run:<br/>
-    curl <a href="http://127.0.0.1:5984/">http://127.0.0.1:5984/</a></p>
+                        	<blockquote>
+<p>Justin Wilson May 9, 2016<br/>
+<a href="https://www.credera.com/blog/technology-insights/open-source-technology-insights/aspect-oriented-programming-in-spring-boot-part-2-spring-jdk-proxies-vs-cglib-vs-aspectj/">https://www.credera.com/blog/technology-insights/open-source-technology-insights/aspect-oriented-programming-in-spring-boot-part-2-spring-jdk-proxies-vs-cglib-vs-aspectj/</a></p>
+</blockquote>
 
-<p>The reply should look like:<br/>
-    {&quot;couchdb&quot;:&quot;Welcome&quot;,&quot;uuid&quot;:&quot;....&quot;,&quot;version&quot;:&quot;1.6.1&quot;,&quot;vendor&quot;:{&quot;version&quot;:&quot;1.6.1-1&quot;,&quot;name&quot;:&quot;Homebrew&quot;}}</p>
+<p>This is the second entry in a three-part series on aspect-oriented programming (AOP) with Spring Boot. This entry covers the differences between using AOP with Spring JDK proxies, CGLIB proxes, and AspectJ load-time weaving (LTW). The <a href="https://www.credera.com/blog/technology-insights/open-source-technology-insights/aspect-oriented-programming-in-spring-boot-part-1-making-your-own-hystrix-aspect/">first entry</a> covered how to write your own aspect, and the <a href="https://www.credera.com/blog/technology-insights/open-source-technology-insights/aspect-oriented-programming-in-spring-boot-part-3-setting-up-aspectj-load-time-weaving/">last entry</a> will contain detailed AspectJ LTW setup information.</p>
 
-<p>To have launchd start couchdb at login:<br/>
-  ln -sfv /usr/local/opt/couchdb/*.plist ~/Library/LaunchAgents<br/>
-Then to load couchdb now:<br/>
-  launchctl load ~/Library/LaunchAgents/homebrew.mxcl.couchdb.plist<br/>
-Or, if you don&#39;t want/need launchctl, you can just run:<br/>
-  couchdb<br/>
-==&gt; Summary<br/>
-🍺  /usr/local/Cellar/couchdb/1.6.1_4: 637 files, 16M</p>
+<p><strong>How Can You Call Code Without Writing Its Invocation?</strong></p>
+
+<p>The Spring framework supports two main methods of AOP—Spring proxies and AspectJ. Both methods allow code snippets called aspects to be injected or “woven” around existing code by targeting specific join points. However, even though both AOP styles can use the same code for their aspects, the way in which they weave those aspects into existing code is completely different.</p>
+
+<p><strong>Spring Proxies: JDK and CGLIB Styles</strong></p>
+
+<p>Every Spring bean (heretofore referred to as just a “bean”) can be considered a managed component. Whenever you declare a bean in XML or use @Component, @Service, or @Repository on a class targeted by Spring’s annotation component scanning (which is enabled by default for Spring Boot), that class is instantiated and managed as a singleton bean by the Spring framework. (It’s technically possible to use different scoping mechanisms to avoid singletons, but those won’t be covered here; see <a href="https://www.credera.com/blog/technology-insights/java/dependency-injection-part-3-spring/">my blog series on dependency injection</a> for more information.) Spring can inject references to that bean into other beans that request it using the @Autowired annotation (or @Resource or @Inject annotations) or beans that use “ref” in their XML definition. However, Spring doesn’t actually provide a literal reference to the original bean when it’s injected—it wraps the bean in a proxy class to give Spring a chance to weave in AOP code if needed.</p>
+
+<p>There are two ways Spring can make proxies:</p>
+
+<p>1. By default, Spring will try to use <a href="http://www.ibm.com/developerworks/java/library/j-jtp08305/index.html">JDK dynamic proxy libraries</a> to create a new instance of the injected bean’s interface which will act as a delegate to that bean. This behavior is demonstrated by the <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-proxy/src/test/java/org/jdw/blog/ProxyHystrixAspectTest.java#L36">unit tests</a> that use injected beans with interfaces in the <a href="https://github.com/jwilsoncredera/spring-aop-blog/tree/master/spring-aop-proxy">spring-aop-proxy sample project</a>.</p>
+
+<p><a href="https://www.credera.com/wp-content/uploads/2016/04/Picture2-4.png"><img src="https://www.credera.com/wp-content/uploads/2016/04/xPicture2-4.png.pagespeed.ic.dhHNYptsoi.webp" alt="Picture2"/></a></p>
+
+<p>2. If CGLIB is available on the classpath (which comes by default with Spring Boot) and there is no interface to implement a proxy with, CGLIB will be used to make a new object that extends the target bean’s class and acts as a delegate to that original bean. This behavior is also demonstrated by a <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-proxy/src/test/java/org/jdw/blog/ProxyHystrixAspectTest.java#L65">unit test</a> that uses an injected bean without an interface in the <a href="https://github.com/jwilsoncredera/spring-aop-blog/tree/master/spring-aop-proxy">spring-aop-proxy sample project</a>.</p>
+
+<p><a href="https://www.credera.com/wp-content/uploads/2016/04/Picture3-3.png"><img src="https://www.credera.com/wp-content/uploads/2016/04/xPicture3-3.png.pagespeed.ic.W2zdwkeosT.webp" alt="Picture3"/></a></p>
+
+<p>By default, Spring Boot will use JDK proxies if the bean has an interface and CGLIB proxies if the bean does not. If you try to inject a bean using its concrete class and that bean has an interface, Spring will fail to find the bean with a NoSuchBeanDefinitionException because it will fail to create a JDK proxy using the concrete class. In the first example above, that would be using this:</p>
+
+<p>| </p>
+
+<pre><code class="language-java">@Autowired
+private ImplForInterface bean;
+</code></pre>
+
+<p>Instead of this:</p>
+
+<pre><code class="language-java">@Autowired
+private Interface bean;
+</code></pre>
+
+<p>To get around this limitation and be able to inject concrete classes that have interfaces, you have to tell Spring to always use CGLIB for all beans. This will disable Spring’s use of JDK proxies entirely, making Spring always extend concrete classes even if an interface is injected. To enable this in Spring Boot, just add the following Java property, as seen in the <a href="https://github.com/jwilsoncredera/spring-aop-blog/tree/master/spring-aop-proxy-cglib">spring-aop-proxy-cglib</a> sample project’s <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-proxy-cglib/src/main/resources/application.properties">application.properties</a> file:</p>
+
+<p>spring.aop.proxy-target-class=true</p>
+
+<p><strong>Spring Proxies: Annotations on Interfaces</strong></p>
+
+<p>Consider an aspect that’s used to weave code around annotated methods (such as the <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-common/src/main/java/org/jdw/blog/common/aspect/HystrixAspect.java">HystrixAspect</a> that targets <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-common/src/main/java/org/jdw/blog/common/annotation/HystrixWrapper.java">@HystrixWrapper</a> annotated methods from part one in this series).</p>
+
+<ul>
+<li>  When a Spring JDK proxy is used, the join point annotation should be present on both the interface’s method and the concrete class’s method for the aspect to trigger correctly.
+
+<ul>
+<li>  The <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-proxy/src/test/java/org/jdw/blog/ProxyHystrixAspectTest.java#L72">second to last test in the spring-aop-proxy test class</a> proves that both the interface and the concrete class require the join point annotation when a JDK proxy is used.</li>
+</ul></li>
+<li>  When a CGLIB proxy is used, the concrete implementation must have the annotation on its method for the aspect to trigger.
+
+<ul>
+<li>  The <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-proxy-cglib/src/test/java/org/jdw/blog/ProxyCglibHystrixAspectTest.java#L96">second to last test in the spring-aop-proxy-cglib test class</a> proves that the interface’s join point annotations are ignored when CGLIB is used.</li>
+</ul></li>
+</ul>
+
+<p>The <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-proxy/src/test/java/org/jdw/blog/ProxyHystrixAspectTest.java#L48">JDK proxy unit test that expects an <strong>InaccessablePointcutAnnotationException</strong></a> is of particular interest. It demonstrates that if you’re using a JDK proxy and the join point annotation is present on the concrete implementation of a bean and not on its interface, the aspect will still trigger but it won’t be able to find the annotation that was used to trigger it. This prevents us from finding the Hystrix command group key that should come from the wrapped method’s annotation, as shown in the bold parts of the example below. (<a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-common/src/main/java/org/jdw/blog/common/annotation/HystrixWrapper.java">This</a> is the GitHub link for the @HystrixWrapper annotation, and <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-common/src/main/java/org/jdw/blog/common/aspect/HystrixAspect.java">this</a> is the link for the HystrixAspect.)</p>
+
+<pre><code class="language-java">@Retention(RetentionPolicy.RUNTIME)
+@Target(ElementType.METHOD)
+public @interface HystrixWrapper {
+  public String commandGroupKey();
+}
+@Aspect
+@Component
+public class HystrixAspect {
+
+  @Around(&quot;within(org.jdw.blog..*) &amp;amp;&amp;amp; &quot;  &quot;@annotation(org.jdw.blog.common.annotation.HystrixWrapper)&quot;)
+  public Object around(final ProceedingJoinPoint joinPoint) {
+
+    Method method = ((MethodSignature) joinPoint.getSignature()).getMethod();
+    HystrixWrapper annotation = method.getAnnotation(HystrixWrapper.class);
+    if (annotation == null) {      // Can occur when not using CCGLIB-style &#39;subclass&#39; proxies,
+      // when using an interface that has a concrete class
+      // that has the annotation.
+      throw new InaccessablePointcutAnnotationException();    }
+
+    // Hystrix invocation code goes here, see GitHub for details. 
+    // [https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-common/src/main/java/org/jdw/blog/common/aspect/HystrixAdvice.java](https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-common/src/main/java/org/jdw/blog/common/aspect/HystrixAdvice.java)
+  }
+}
+</code></pre>
+
+<p><strong>I recommend always using CGLIB to avoid this edge case.</strong> Doing so makes all Spring proxy behavior consistent since JDK proxies will never be used, it allows the injection of concrete implementations of beans which can be useful for unit tests, and it negates the need to duplicate join point annotations on interfaces and concrete classes (which could easily get out of sync). As a reminder, to always use CGLIB, just set the “spring.aop.proxy-target-class” property to true.</p>
+
+<p>Before using CGLIB, ensure your codebase always uses pre-existing AOP annotations (such as @Transactional) on concrete classes instead of only on interfaces. Interface-only AOP annotations will be ignored when CGLIB is enabled. Changing when @Transactional aspects are triggered could lead to items not being saved to the database, or poor performance due to transactional boundary shifting.</p>
+
+<p><strong>Spring Proxies: Annotations in Concrete Classes</strong></p>
+
+<p>Both JDK- and CGLIB-style Spring proxies have one glaring weakness—AOP can only be invoked by calling a method on an injected bean. Consider a bean with these two methods (all of the classes in <a href="https://github.com/jwilsoncredera/spring-aop-blog/tree/master/spring-aop-common/src/main/java/org/jdw/blog/common/executable">this package</a> qualify):</p>
+
+<pre><code class="language-java">@HystrixWrapper(commandGroupKey = &quot;blog&quot;)
+public long hystrixWrappedGetCurrentThreadId() {
+  return getCurrentThreadId();
+}
+
+public long nestedHystrixWrappedGetCurrentThreadId() {
+  return hystrixWrappedGetCurrentThreadId();
+}
+</code></pre>
+
+<p>The second method cannot trigger the HystrixAspect when calling the first method because it invokes the first method directly without going through a Spring proxy—the bean is just calling one of its own methods. Spring doesn’t have any opportunities to inject the aspect code. This is demonstrated by every other test in both the <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-proxy/src/test/java/org/jdw/blog/ProxyHystrixAspectTest.java#L42">spring-aop-proxy test class</a> and <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-proxy-cglib/src/test/java/org/jdw/blog/ProxyCglibHystrixAspectTest.java#L41">spring-aop-proxy-cglib test class</a> (all the tests that start with “testNestedHystrixWrappedMethod”).</p>
+
+<p>However, when AspectJ is used instead of Spring proxies, the HystrixAspect <u>does</u> trigger when a bean calls its own join point annotated method. This is shown by every other test in the <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-aspectj-ltw/src/test/java/org/jdw/blog/AspectJHystrixAspectTest.java#L41">spring-aop-aspectj-ltw test class</a> (which also begin with “testNestedHystrixWrappedMethod”)—every scenario that fails to invoke the Hystrix aspect for Spring proxies succeeds for AspectJ (except for <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-aspectj-ltw/src/test/java/org/jdw/blog/AspectJHystrixAspectTest.java#L101">one specific scenario</a> which will be covered later). How can this be?</p>
+
+<p><strong>AspectJ</strong></p>
+
+<p>AspectJ extends the Java compiler to weave aspect code directly into join points. It doesn’t require Spring to run. Instead, you need to use <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-aspectj-ltw/README.md">JVM arguments</a> to enable a compiler extension along with an <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-aspectj-ltw/src/main/resources/META-INF/aop.xml">aop.xml file</a> and <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-aspectj-ltw/src/main/java/org/jdw/blog/config/AspectJConfig.java">another configuration file</a> which will be covered in part three of this series.</p>
+
+<p>This has two important ramifications. First, if you’re using AspectJ, you don’t need to inject Spring beans to invoke AOP functionality. Technically you don’t even need Spring beans for AOP at all when AspectJ is enabled—you could manually create a new object and invoke AOP code on it right away if it had join points your aspects could target.</p>
+
+<p>Second, if an object calls its own methods it can trigger AOP code, unlike AOP using Spring proxies. Here’s a visual example of how this AspectJ behavior would look if the @HystrixAspect used @Before instead of @Around to inject code in front of its join point targets instead of completely wrapping them (because it’s easier to depict):</p>
+
+<p><a href="https://www.credera.com/wp-content/uploads/2016/04/Picture5-2.png"><img src="https://www.credera.com/wp-content/uploads/2016/04/xPicture5-2.png.pagespeed.ic.PXtdJ6_MY_.webp" alt="Picture5"/></a></p>
+
+<p>The fact that beans can trigger their own AOP code means you need to be very careful when enabling AspectJ on existing Spring projects, because this can change when database transactions are started by @Transactional annotations. For example, if you had a bean with two methods and one didn’t have an @Transactional annotation and it called another one that did, then that invocation would start a database transaction with AspectJ enabled but not with default Spring proxy-based AOP.</p>
+
+<pre><code class="language-java">public void notAnnotated() {
+  annotated();
+}
+
+@Transactional
+public void annotated() {
+  // With AspectJ, a direct call from notAnnotated will enable the transaction.
+  // Without it, this method will only get a transaction if it was called from a Spring proxy.
+}
+</code></pre>
+
+<p>Luckily, there is a way around this issue—AspectJ and Spring proxies can co-exist. The <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-aspectj-ltw/src/main/resources/META-INF/aop.xml">aop.xml file</a> lets you decide which aspects will be managed by AspectJ and which packages are included or excluded from AspectJ code weaving. If you exclude classes that use @Transactional from AspectJ weaving, their behavior will default to the same Spring proxy behavior they were using before. Stay tuned for part three of this series, which covers how to configure an aop.xml file.</p>
+
+<p><strong>What About That Unit Test Where AspectJ Didn’t Work?</strong></p>
+
+<p>As noted earlier, every other test in the <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-aspectj-ltw/src/test/java/org/jdw/blog/AspectJHystrixAspectTest.java#L41">spring-aop-aspectj unit test</a> (which each begin with “testNestedHystrixWrappedMethod”) demonstrates how beans can trigger the HystrixAspect when calling their own @HystrixWrapper join point annotated methods without going through Spring beans… except for the <a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-aspectj-ltw/src/test/java/org/jdw/blog/AspectJHystrixAspectTest.java#L102">last test</a>.</p>
+
+<p>That last test invokes the “nestedGetCurrentThreadId” method on a Spring CGLIB proxy of a class similar to the example below (<a href="https://github.com/jwilsoncredera/spring-aop-blog/blob/master/spring-aop-common/src/main/java/org/jdw/blog/common/executable/NonAnnotatedImplForInterfaceWithAnnotation.java#L22">GitHub link for the original class</a>). The class’s interface annotates “getCurrentThreadId” with @HystrixWrapper, but the concrete class itself does not. Thus, when “getCurrentThreadId” is invoked by “nestedGetCurrentThreadId” within the CGLIB proxy, AspectJ looks at the concrete class instead of the interface and can’t find the @HystrixWrapper join point. Therefore, the HystrixAspect is not woven.</p>
+
+<pre><code class="language-java">@Override
+public long getCurrentThreadId () {
+  return Thread.currentThread().getId();
+}
+
+@Override
+public long nestedGetCurrentThreadId () {
+  return getCurrentThreadId();
+}
+</code></pre>
+
+<p>The takeaway from this scenario is that you should always put join point annotations on concrete classes when using AspectJ, just like you should when using Spring CGLIB proxies for AOP.</p>
+
+<p><strong>Next Steps</strong></p>
+
+<p>Stay tuned for the third and final entry in this blog series, which will cover how to configure AspectJ for Spring Boot. It contains a critical piece of JVM configuration information that isn’t widely found in other tutorials (including Spring’s own documentation), so be sure to catch the next entry by following @CrederaOpen on Twitter or connecting with us on LinkedIn.</p>
 
                         
                       </div>
@@ -134,10 +276,10 @@ Or, if you don&#39;t want/need launchctl, you can just run:<br/>
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2015/12/14</span>
+                    <span class="date">2018/5/31</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='OSX.html'>OSX</a></span>
+          					    <span class="posted-in"><a href='Java.html'>Java</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -227,31 +369,31 @@ Or, if you don&#39;t want/need launchctl, you can just run:<br/>
 	      
 		      
 			      <li class="post">
-			        <a href="15459058392039.html">Reliable Domain Events</a>
+			        <a href="15517999043443.html">The Art of Crafting Architectural Diagrams</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
+			        <a href="15517997955971.html">为什么说我们需要软件架构图？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
+			        <a href="15516128677869.html">DNS Servers That Offer Privacy and Filtering</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
+			        <a href="15516123108194.html">Airbnb's Migration from Monolith to Services</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
+			        <a href="15516097487470.html">Events As First-Class Citizens</a>
 			      </li>
 		     
 		  

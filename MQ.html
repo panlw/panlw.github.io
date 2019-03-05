@@ -105,93 +105,138 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15376981994343.html">
+                <a class="clearlink" href="15516097487470.html">
                 
-                  <h1>Kafka实践：到底该不该把不同类型的消息放在同一个主题中？</h1>
+                  <h1>Events As First-Class Citizens</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
-                        	<pre><code>作者 Martin Kleppmann，译者 无明  发布于 2018年8月22日
-</code></pre>
-
-<blockquote>
-<p><a href="http://www.infoq.com/cn/articles/event-types-in-kafka-topic">http://www.infoq.com/cn/articles/event-types-in-kafka-topic</a></p>
-
-<p>英文原文：<a href="http://martin.kleppmann.com/2018/01/18/event-types-in-kafka-topic.html">http://martin.kleppmann.com/2018/01/18/event-types-in-kafka-topic.html</a></p>
+                        	<blockquote>
+<p>原文地址 <a href="https://hackernoon.com/events-as-first-class-citizens-8633e8479493">https://hackernoon.com/events-as-first-class-citizens-8633e8479493</a></p>
 </blockquote>
 
-<p>如果你使用了像 <a href="http://kafka.apache.org/">Kafka</a> 这样的流式处理平台，就要搞清楚一件事情：你需要用到哪些主题？特别是如果你要将一堆不同的事件作为消息发布到 Kafka，是将它们放在同一个主题中，还是将它们拆分到不同的主题中？</p>
+<p>We’ve all heard of events and event-driven programming, but in my experience, events are not used nearly enough in our (software) lives. We often don’t appreciate how powerful this tool can be in our toolbox, and consequently we don’t take advantage of it when we really should.</p>
 
-<p>Kafka 主题最重要的一个功能是可以让消费者指定它们想要消费的消息子集。在极端情况下，将所有数据放在同一个主题中可能不是一个好主意，因为这样消费者就无法选择它们感兴趣的事件——它们需要消费所有的消息。另一种极端情况，拥有数百万个不同的主题也不是一个好主意，因为 Kafka 的每个主题都是有成本的，拥有大量主题会损害性能。</p>
+<p>In this post, I’ll discuss the lifecycle of a “fix” at Stitch Fix and how we use events to model it. I’ll suggest that we should think of events as a first-class citizen in our system, because they help us both to decouple parts of the system and to reason about them independently. Lastly, I’ll talk about how common it is to use events in the real world, and use the metaphor of software development itself to help develop intuition about event-based systems.</p>
 
-<p>实际上，从性能的角度来看，分区数量才是关键因素。在 Kafka 中，每个主题至少对应一个分区，如果你有 n 个主题，至少会有 n 个分区。不久之前，Jun Rao 写了一篇<a href="https://www.confluent.io/blog/how-to-choose-the-number-of-topicspartitions-in-a-kafka-cluster/">博文</a>，解释了拥有多个分区的成本（端到端延迟、文件描述符、内存开销、发生故障后的恢复时间）。根据经验，如果你关心延迟，那么每个节点分配几百个分区就可以了。如果每个节点的分区数量超过成千上万个，就会造成较大的延迟。</p>
+<h3 id="toc_0"><strong>The Lifecycle of a Fix</strong></h3>
 
-<p>关于性能的讨论为设计主题结构提供了一些指导：如果你发现自己有数千个主题，那么将一些细粒度、低吞吐量的主题合并到粗粒度主题中可能是个明智之举，这样可以避免分区数量蔓延。</p>
+<p>At Stitch Fix, the engineering team builds and operates more than 70 individual applications and services, serving every aspect of Stitch Fix’s business. We have applications for our Merchandising team which is responsible for buying the clothes, our Warehouse Operations team which stores and ships them, and our thousands-strong Styling team which chooses them for our clients. We have applications used by our clients to schedule their Fixes, rate them, and pay for them. And we have applications used by our Client Experience team to help give our clients the best clothing purchase experience we can. Almost all of these applications and services operate on one or more of the core entities in our business — clients, items, fixes, etc. — in one way or another.</p>
 
-<p>然而，性能并不是我们唯一关心的问题。在我看来，更重要的是主题结构的数据完整性和数据模型。我们将在本文的其余部分讨论这些内容。</p>
+<p>To walk through just one motivating example, a nascent fix is created when a client tells us she’d like to receive it on a particular day (scheduling). Based on where and when that fix is shipping, we assign it to one of our warehouses around the US (warehouse assignment), and we make it available to be styled by one of our 3500 stylists (stylist assignment). The stylist selects 5 items she expects the client to enjoy (styling), and we’re ready to send it out. The warehouse team picks, packs, and ships the fix (shipping), and the client receives it on her doorstep. She keeps what she wants, and returns what she doesn’t (checkout). And the cycle is complete.</p>
 
-<h2 id="toc_0">主题等于相同类型事件的集合？</h2>
-
-<p>人们普遍认为应该将相同类型的事件放在同一主题中，不同的事件类型应该使用不同的主题。这种思路让我们联想到关系型数据库，其中表是相同类型记录的集合，于是我们就有了数据库表和 Kafka 主题之间的类比。</p>
-
-<p><a href="https://docs.confluent.io/current/schema-registry/docs/index.html">Confluent Avro Schema Registry</a> 进一步强化了这种概念，因为它鼓励你对主题的所有消息使用相同的 Avro 模式（schema）。模式可以在保持兼容性的同时进行演化（例如通过添加可选字段），但所有消息都必须符合某种记录类型。稍后我会再回过头来讨论这个问题。</p>
-
-<p>对于某些类型的流式数据，例如活动事件，要求同一主题中所有消息都符合相同的模式，这是合理的。但是，有些人把 Kafka 当成了数据库来用，例如<a href="https://docs.microsoft.com/en-us/azure/architecture/patterns/event-sourcing">事件溯源</a>，或者<a href="https://www.confluent.io/blog/build-services-backbone-events/">在微服务之间交换数据</a>。对于这种情况，我认为是否将主题定义为具有相同模式的消息集合就不那么重要了。这个时候，更重要的是主题分区中的消息必须是有序的。</p>
-
-<p>想象一下这样的场景：你有一个实体（比如客户），这个实体可能会发生许多不同的事情，比如创建客户、客户更改地址、客户向帐户中添加新的信用卡、客户发起客服请求，客户支付账单、客户关闭帐户。</p>
-
-<p>这些事件之间的顺序很重要。例如，我们希望其他事件必须在创建客户之后才能发生，并且在客户关闭帐户之后不能再发生其他事件。在使用 Kafka 时，你可以将它们全部放在同一个主题分区中来保持它们的顺序。在这个示例中，你可以使用客户 ID 作为分区的键，然后将所有事件放在同一个主题中。它们必须位于同一主题中，因为不同的主题对应不同的分区，而 Kafka 是不保证分区之间的顺序的。</p>
-
-<h2 id="toc_1">顺序问题</h2>
-
-<p>如果你为 customerCreated、customerAddressChanged 和 customerInvoicePaid 事件使用了不同的主题，那么这些主题的消费者可能就看不到这些事件之间的顺序。例如，消费者可能会看到一个不存在的客户做出的地址变更（这个客户尚未创建，因为相应的 customerCreated 事件可能发生了延迟）。</p>
-
-<p>如果消费者暂停一段时间（比如进行维护或部署新版本），那么事件出现乱序的可能性就更高了。在消费者停止期间，事件继续发布，并且这些事件被存储在特定定的主题分区中。当消费者再次启动时，它会消费所有积压在分区中的事件。如果消费者只消费一个分区，那就没问题：积压的事件会按照它们存储的顺序依次被处理。但是，如果消费者同时消费几个主题，就会按任意顺序读取主题中数据。它可以先读取积压在一个主题上的所有数据，然后再读取另一个主题上积压的数据，或者交错地读取多个主题的数据。</p>
-
-<p>因此，如果你将 customerCreated、customerAddressChanged 和 customerInvoicePaid 事件放在三个单独的主题中，那么消费者可能会在看到 customerCreated 事件之前先看到 customerAddressChanged 事件。因此，消费者很可能会看到一个客户的 customerAddressChanged 事件，但这个客户却未被创建。</p>
-
-<p>你可能会想到为每条消息附加时间戳，并用它来对事件进行排序。如果你将事件导入数据仓库，再对事件进行排序，或许是没有问题的。但在流数据中只使用时间戳是不够的：在你收到一个具有特定时间戳的事件时，你不知道是否需要等待具有较早时间戳的事件，或者所有之前的事件是否已经在当前事情之前到达。依靠时钟进行同步通常会导致噩梦，有关时钟问题的更多详细信息，请参阅 “Designing Data-Intensive Applications” 的第 8 章。</p>
-
-<h2 id="toc_2">何时拆分主题，何时合并主题？</h2>
-
-<p>基于这个背景，我将给出一些经验之谈，帮你确定哪些数据应该放在同一主题中，以及哪些数据应该放在不同的主题中。</p>
-
-<ol>
-<li><p>首先，需要保持固定顺序的事件必须放在同一主题中（并且需要使用相同的分区键）。如果事件属于同一实体，那么事件的顺序就很重要。因此，我们可以说，同一实体的所有事件都应该保存在同一主题中。</p>
-
-<p>如果你使用事件溯源进行数据建模，事件的排序尤为重要。聚合对象的状态是通过以特定的顺序重放事件日志而得出的。因此，即使可能存在不同的事件类型，聚合所需要的所有事件也必须在同一主题中。</p></li>
-<li><p>对于不同实体的事件，它们应该保存在相同的主题中还是不同的主题中？我想说，如果一个实体依赖于另一个实体（例如一个地址属于一个客户），或者经常需要同时用到它们，那么它们也应该保存在同一主题中。另一方面，如果它们不相关，并且属于不同的团队，那么最好将它们放在不同的主题中。</p>
-
-<p>另外，这也取决于事件的吞吐量：如果一个实体类型的事件吞吐量比其他实体要高很多，那么最好将它分成几个主题，以免让只想消费低吞吐量实体的消费者不堪重负（参见第 4 点）。不过，可以将多个具有低吞吐量的实体合并起来。</p></li>
-<li><p>如果一个事件涉及多个实体该怎么办？例如，订单涉及到产品和客户，转账至少涉及到两个账户。</p>
-
-<p>我建议在一开始将这些事件记录为单个原子消息，而不是将其分成几个属于不同主题的消息。在记录事件时，最好可以保持原封不动，即尽可能保持数据的原始形式。你可以随后使用流式处理器来拆分复合事件，但如果过早进行拆分，想要重建原始事件会难得多。如果能够为初始事件分配一个唯一 ID（例如 UUID）就更好了，之后如果你要拆分原始事件，可以带上这个 ID，从而可以追溯到每个事件的起源。</p></li>
-<li><p>看看消费者需要订阅的主题数量。如果几个消费者都订阅了一组特定的主题，这表明可能需要将这些主题合并在一起。</p>
-
-<p>如果将细粒度的主题合并成粗粒度的主题，一些消费者可能会收到他们不需要的事件，需要将其忽略。这不是什么大问题：消费消息的成本非常低，即使最终忽略了一大半的事件，总的成本可能也不会很大。只有当消费者需要忽略绝大多数消息（例如 99.9％是不需要的）时，我才建议将大容量事件流拆分成小容量事件流。</p></li>
-<li><p>用作 Kafka Streams 状态存储（KTable）的变更日志主题应该与其他主题分开。在这种情况下，这些主题由 Kafka Streams 流程来管理，所以不应该包含其他类型的事件。</p>
-
-<p>最后，如果基于上述的规则依然无法做出正确的判断，该怎么办？那么就按照类型对事件进行分组，把相同类型的事件放在同一个主题中。不过，我认为这条规则是最不重要的。</p></li>
-</ol>
-
-<h2 id="toc_3">模式管理</h2>
-
-<p>如果你的数据是普通文本（如 JSON），而且没有使用静态的模式，那么就可以轻松地将不同类型的事件放在同一个主题中。但是，如果你使用了模式编码（如 Avro），那么在单个主题中保存多种类型的事件则需要考虑更多的事情。</p>
-
-<p>如上所述，基于 Avro 的 Kafka Confluent Schema Registry 假设了一个前提，即每个主题都有一个模式（更确切地说，一个模式用于消息的键，一个模式用于消息的值）。你可以注册新版本的模式，注册表会检查模式是否向前和向后兼容。这样设计的一个好处是，你可以让不同的生产者和消费者同时使用不同版本的模式，并且仍然保持彼此的兼容性。</p>
-
-<p>Confluent 的 Avro 序列化器通过 subject 名称在注册表中注册模式。默认情况下，消息键的 subject 为 <topic>-key，消息值的 subject 为 &lt; topic&gt;-value。模式注册表会检查在特定 subject 下注册的所有模式的相互兼容性。</p>
-
-<p>最近，我为 Avro 序列化器提供了一个补丁（<a href="https://github.com/confluentinc/schema-registry/pull/680">https://github.com/confluentinc/schema-registry/pull/680</a>），让兼容性检查变得更加灵活。这个补丁添加了两个新的配置选项：key.subject.name.strategy（用于定义如何构造消息键的 subject 名称）和 value.subject.name.strategy（用于定义如何构造消息值的 subject 名称）。它们的值可以是如下几个：</p>
+<p>We just described a moderately complicated workflow, with many individual steps, all operating on a single fix. Looked at through the lens of software engineering, the straightforward way to model this is as a state machine, with individual events that indicate that the fix has transitioned from one state to another. And that’s exactly how we implement it. Here’s a simplified representation of this workflow:</p>
 
 <ul>
-<li>  io.confluent.kafka.serializers.subject.TopicNameStrategy（默认）：消息键的 subject 名称为 <topic>-key，消息值为 &lt; topic&gt;-value。这意味着主题中所有消息的模式必须相互兼容。</li>
-<li>  io.confluent.kafka.serializers.subject.RecordNameStrategy：subject 名称是 Avro 记录类型的完全限定名。因此，模式注册表会检查特定记录类型的兼容性，而不管是哪个主题。这个设置允许同一主题包含不同类型的事件。</li>
-<li>  io.confluent.kafka.serializers.subject.TopicRecordNameStrategy：subject 名称是 <topic>-<type>，其中 &lt; topic &gt; 是 Kafka 主题名，<type > 是 Avro 记录类型的完全限定名。这个设置允许同一主题包含不同类型的事件，并进一步对当前主题进行兼容性检查。</li>
+<li>  Request a fix</li>
+<li>  -&gt; Fix is __scheduled_</li>
+<li>  Assign fix to warehouse</li>
+<li>  -&gt; Fix is __hizzy_assigned_ (we call our warehouses “hizzies”; don’t ask)</li>
+<li>  Assign fix to a stylist</li>
+<li>  -&gt; Fix is __stylist_assigned_</li>
+<li>  Style the fix</li>
+<li>  -&gt; Fix is __styled_</li>
+<li>  Pick the items for the fix</li>
+<li>  -&gt; Fix is __picked_</li>
+<li>  Pack the items into a box</li>
+<li>  -&gt; Fix is __packed_</li>
+<li>  Ship the fix via a shipping carrier</li>
+<li>  -&gt; Fix is __shipped_</li>
+<li>  Fix travels (as actual atoms!) to the client</li>
+<li>  -&gt; Fix is __delivered_</li>
+<li>  Client decides what to keep and return, pays for her fix</li>
+<li>  -&gt; Fix is __checked_out_</li>
 </ul>
 
-<p>有了这个新特性，你就可以轻松地将属于特定实体的所有不同类型的事件放在同一个主题中。现在，你可以自由选择主题的粒度，而不仅限于一个类型对应一个主题。</p>
+<p>Several things immediately come to mind:</p>
+
+<ul>
+<li>  As the fix moves happily along, different applications or services do something with it, by enriching it with more (meta)data, by connecting it up with something else, or by doing something physical with the goods or the packaging. That doing of the something will take the fix from one state to another (_state transitions_).</li>
+<li>  The next application or service can only do its work when the previous one has done its, and consequently needs to know when to step up (_events_).</li>
+<li>  We can’t skip any of these steps, or there would be something missing — in many cases, quite literally. Said another way, from a given state, it’s only possible to go to a subset of the other states (_state machine_).</li>
+<li>  If we just remembered the current state of things — where the fix is right now — we’d be missing a lot. We want to be able to ask where the fix is right now, but we also want to know where it has been, how long it was there, and when it moved to the next step. So if we only stored its current-state in some database table and nothing else about it, we’d be stuck. Instead we need to also record all the steps along the way.</li>
+</ul>
+
+<h3 id="toc_1"><strong>Events as a First-Class Citizen</strong></h3>
+
+<p>Notice that if we only had the standard tools of the classic 3-tier architecture at our disposal, we’d be in trouble. We’re all familiar with these three fundamental application building blocks:</p>
+
+<ul>
+<li>  Presentation: The user interface where the user interacts with the system</li>
+<li>  Application: The “business logic” where we do the work, typically statelessly</li>
+<li>  Persistence: The place where we store things, typically in a database</li>
+</ul>
+
+<p>I strongly believe that events represent a fourth fundamental building block:</p>
+
+<ul>
+<li>  Event: The statement that an interesting thing happened, or, according to Wikipedia, “_a significant change in state_”</li>
+</ul>
+
+<p>In a [micro]services architecture like we have at Stitch Fix, a given application or service might be a producer of events, a consumer of events, or both. For example, the styling application listens for the __stylist_assigned_ event, and displays all the information needed to the stylist for her to style the fix. When she is done with the fix, she clicks the “Ship It” button, which (among other things) publishes the __styled_ event. The warehouse services listen for that event, and can start their work, etc.</p>
+
+<p>Consuming these events and producing these events are first-class parts of these applications and services; they need these events to do their jobs. So when we talk about the “interface” of one of these services, let’s make this explicit. A service interface includes:</p>
+
+<ul>
+<li>  Synchronous request-response operations (e.g., for use, this is REST/JSON, but it could just as easily be over gRPC, Thrift, etc.)</li>
+<li>  Events the service produces</li>
+<li>  Events the service consumes</li>
+<li>  Bulk reads and writes (e.g., an ETL that extracts data from the service into an analytics system)</li>
+</ul>
+
+<p>More generally, a service’s interface includes any mechanism for getting data into or out of the service. As a service owner or a service consumer, we forget this at our own peril.</p>
+
+<h3 id="toc_2"><strong>Events as Decoupling</strong></h3>
+
+<p>The producer of an event publishes it, and zero or more consumers subscribe to it. Maybe no one is listening; maybe one is; maybe many are. The producer does not know or care. This gives the nice property that the producer and consumer are completely decoupled from one another. We can add more consumers, remove them, or scale them up and down — without the producer being any the wiser.</p>
+
+<h3 id="toc_3"><strong>Events as Record</strong></h3>
+
+<p>Once we represent all the interesting state transitions for our entity as events, we can use those events as a record of what happened to that entity, and when. This is hugely valuable when we want to go back and see what went on. It’s common for our client experience team (think “customer support”, but with more smiles and empathy) to look up the history of a fix when they are trying to help out a client. It’s common for our data science team to use the events around a fix to optimize various aspects of our workflow. And it’s common for our engineering team to use this as a debugging and diagnosis tool.</p>
+
+<p>Taking this idea to its logical conclusion, we could imagine <em>only</em> retaining the events and never bothering to store the current state in any permanent way. After all we can always simply reconstruct it by playing the events forward. This is such a clever idea that people have already thought of it — it is called “event sourcing” (see the many writings of <a href="https://goodenoughsoftware.net/tag/event-sourcing/">Greg Young</a>, <a href="http://microservices.io/patterns/data/event-sourcing.html">Chris Richardson</a>, etc.), and it has a lot of wonderful resilience properties, particularly in distributed systems. In fact, there are entire software systems based on this idea (<a href="https://eventstore.org/">Event Store</a>, <a href="https://www.confluent.io/blog/apache-kafka-for-service-architectures/">Kafka</a>, <a href="https://doc.akka.io/docs/akka/2.5.4/scala/persistence.html#event-sourcing">Akka Persistence</a>, etc.). It’s also, of course, exactly how double-entry booking works in accounting, so even these (very smart) people were <a href="https://en.wikipedia.org/wiki/Double-entry_bookkeeping_system">preempted by the Medici 700 years ago</a>.</p>
+
+<h3 id="toc_4"><strong>Events are How the Real World Works™</strong></h3>
+
+<p>I often hear that it’s hard for developers to think in terms of events. It can feel a bit counterintuitive if you’re used to building the classic three-tier. What can trip people up is that at any given moment something might have happened in one part of our system, but the effects of that action are not yet visible in the other areas of our system. We use words like “eventual consistency” and “asynchrony” here, and they’ve earned their reputation for being hard to reason about. But I’d like to suggest that you have a lot more intuition about events than you think you do. If you can think about your problem as a workflow, you’re more than halfway there.</p>
+
+<p>So let’s take an example that will be familiar to every software engineer. Imagine a typical modern software development process, where we write code, check it into source control, test it, stage it, and deploy it. We often talk about this as a “lifecycle” or “pipeline” or “workflow”. Well, that sounds a lot like events. Let’s see.</p>
+
+<ul>
+<li>  Write code</li>
+<li>  -&gt; code is __submitted_</li>
+<li>  Test code</li>
+<li>  -&gt; code is __tested_</li>
+<li>  Deploy it to a staging server</li>
+<li>  -&gt; code is __staged_</li>
+<li>  Deploy it to production</li>
+<li>  -&gt; code is __deployed_</li>
+</ul>
+
+<p>This seems super-familiar — we do this every day! And it’s not just a tangential thing off in the corner; for most of us, this is our job.</p>
+
+<p>Think if this did not behave like an asynchronous workflow, and we did all of this synchronously. Imagine that every time you hit return in your IDE, your code would be deployed to production. I’m all for continuous delivery, believe me, but this would be crazy.</p>
+
+<p>So this idea that you can’t reason about systems where there is an “inconsistency” between one part of the system and another is a little silly. For much of the day, your code has one version on your laptop, and another “stale” version in production, and everything works just fine.</p>
+
+<h3 id="toc_5"><strong>Conclusion</strong></h3>
+
+<p>Thanks for reading this far. If you have, I hope I’ve got you thinking that you should reach for the “event” tool in your toolbox more often. It can help you in many ways.</p>
+
+<p>And if you’re having trouble reasoning about events, just think about what you do for 8, 10, 12 hours every day.</p>
+
+<h3 id="toc_6"><strong>Helpful Resources</strong></h3>
+
+<p>If you are interested in deepening your knowledge of events and event-driven systems, check out:</p>
+
+<ul>
+<li>  <a href="https://www.infoq.com/presentations/microservices-data-centric">Managing Data in Microservices</a>, slides / video from my talk at QCon New York 2017</li>
+<li>  <a href="https://www.youtube.com/watch?v=STKCRSUsyP0">The Many Meanings of Event-Driven Architecture</a>, video of <a href="https://martinfowler.com/">Martin Fowler</a>’s keynote at GOTO Chicago 2017</li>
+<li>  <a href="http://microservices.io/patterns/data/event-sourcing.html">Microservices and the Event Sourcing Pattern</a>, by <a href="http://chrisrichardson.net/">Chris Richardson</a></li>
+<li>  <a href="https://www.youtube.com/watch?v=JHGkaShoyNs">CQRS and Event Sourcing</a>, by <a href="https://goodenoughsoftware.net/">Greg Young</a></li>
+<li>  <a href="http://www.enterpriseintegrationpatterns.com/">Enterprise Integration Patterns</a>, the classic oldie-but-still-very-much-goodie book and pattern collection by <a href="http://www.enterpriseintegrationpatterns.com/gregor.html">Gregor Hohpe</a></li>
+</ul>
 
                         
                       </div>
@@ -200,7 +245,7 @@
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/9/23</span>
+                    <span class="date">2019/3/3</span>
                     <span>posted in&nbsp;</span> 
           				  
           					    <span class="posted-in"><a href='MQ.html'>MQ</a></span>
@@ -293,31 +338,31 @@
 	      
 		      
 			      <li class="post">
-			        <a href="15459058392039.html">Reliable Domain Events</a>
+			        <a href="15517999043443.html">The Art of Crafting Architectural Diagrams</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
+			        <a href="15517997955971.html">为什么说我们需要软件架构图？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
+			        <a href="15516128677869.html">DNS Servers That Offer Privacy and Filtering</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
+			        <a href="15516123108194.html">Airbnb's Migration from Monolith to Services</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
+			        <a href="15516097487470.html">Events As First-Class Citizens</a>
 			      </li>
 		     
 		  

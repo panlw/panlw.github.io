@@ -105,85 +105,134 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15453866242265.html">
+                <a class="clearlink" href="15459021437244.html">
                 
-                  <h1>Design Of A Modern Cache</h1>
+                  <h1>Reliable Delivery Pub/Sub Message Queues with Redis</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p>原文地址 <a href="http://highscalability.com/blog/2016/1/25/design-of-a-modern-cache.html">http://highscalability.com/blog/2016/1/25/design-of-a-modern-cache.html</a></p>
+<p>原文地址 <a href="https://davidmarquis.wordpress.com/2013/01/03/reliable-delivery-message-queues-with-redis/">https://davidmarquis.wordpress.com/2013/01/03/reliable-delivery-message-queues-with-redis/</a></p>
 </blockquote>
 
-<pre><code>MONDAY, JANUARY 25, 2016 AT 8:56AM
-</code></pre>
+<p><img src="media/15459021437244/15459022953899.png" alt=""/></p>
 
-<p><img src="https://c2.staticflickr.com/2/1584/23979355273_e1ea8b2397_o.png" alt=""/></p>
+<p><u><strong>UPDATE</strong></u>_<strong>:</strong>_ I have open-sourced a Java implementation of the below principles called “<a href="https://github.com/davidmarquis/redisq">RedisQ</a>“. Enjoy!</p>
 
-<p><u>This is a guest post by <a href="https://github.com/ben-manes">Benjamin Manes</a>, who did engineery things for Google and is now doing engineery things for a new load documentation startup, <a href="https://loaddocs.co/">LoadDocs</a>.</u></p>
+<p>Redis is a high performance key-value datastore that differs from other key-value solutions in the way it handles values. Instead of just storing values as simple strings, it recognizes multiple specific data types such as Lists, Sets, Hashes (maps), Strings or Numbers. Each data type has its own set of features to manipulate the data it contains in an atomic manner, making it an ideal tool for highly distributed system where concurrency is a potential issue.</p>
 
-<p>Caching is a common approach for improving performance, yet most implementations use strictly classical techniques. In this article we will explore the modern methods used by <a href="https://github.com/ben-manes/caffeine">Caffeine</a>, an open-source Java caching library, that <strong>yield high hit rates and excellent concurrency</strong>. These ideas can be translated to your favorite language and hopefully some readers will be inspired to do just that.</p>
+<p>Combining those features in creative ways allows for novel ways of doing “traditional” things differently. One particular combination has recently allowed my team and I to implement a moderately (read: good enough) reliable message delivery mechanism for multiple consumers consuming messages at their own pace.</p>
 
-<h3 id="toc_0">Eviction Policy</h3>
+<p>The solution has advantages and some caveats, but if your problem allows you to live with the possible drawbacks, it’s a nice lightweight solution to a problem that is usually answered using some more traditional (and more complex) tools, like *MQs.</p>
 
-<p>A cache’s <strong>eviction policy tries to predict which entries are most likely to be used again</strong> in the near future, thereby maximizing the hit ratio. The Least Recently Used (LRU) policy is perhaps the most popular due to its simplicity, good runtime performance, and a decent hit rate in common workloads. Its ability to predict the future is limited to the history of the entries residing in the cache, preferring to give the last access the highest priority by guessing that it is the most likely to be reused again soon.</p>
-
-<p>Modern caches extend the usage history to include the recent past and give preference to entries based on recency and frequency. One approach for retaining history is to use a popularity sketch (a compact, probabilistic data structure) to identify the “heavy hitters” in a large stream of events. Take for example <a href="http://dimacs.rutgers.edu/%7Egraham/pubs/papers/cmsoft.pdf">CountMin Sketch</a>, which <strong>uses a matrix of counters and multiple hash functions</strong>. The addition of an entry increments a counter in each row and the frequency is estimated by taking the minimum value observed. This approach lets us tradeoff between space, efficiency, and the error rate due to collisions by adjusting the matrix’s width and depth.</p>
-
-<p><img src="https://docs.google.com/drawings/d/sPS-0VWjzfHp6DtvEQKU0Hg/image?w=470&amp;h=177&amp;rev=1&amp;ac=1" alt=""/></p>
-
-<p><a href="http://arxiv.org/pdf/1512.00727.pdf">Window TinyLFU</a> (W-TinyLFU) <strong>uses the sketch as a filter, admitting a new entry</strong> if it has a higher frequency than the entry that would have to be evicted to make room for it. Instead of filtering immediately, an admission window gives an entry a chance to build up its popularity. This avoids consecutive misses, especially in cases like sparse bursts where an entry may not be deemed suitable for long-term retention. To keep the history fresh an aging process is performed periodically or incrementally to halve all of the counters.</p>
-
-<p><img src="https://docs.google.com/drawings/d/sHXTg0FelH7DQ0ctP3zAnYg/image?w=511&amp;h=123&amp;rev=94&amp;ac=1" alt=""/></p>
-
-<p>W-TinyLFU uses the Segmented LRU (SLRU) policy for long term retention. An entry starts in the probationary segment and on a subsequent access it is promoted to the protected segment (capped at 80% capacity). When the protected segment is full it evicts into the probationary segment, which may trigger a probationary entry to be discarded. This ensures that entries with a small reuse interval (the hottest) are retained and those that are less often reused (the coldest) become eligible for eviction.</p>
-
-<p><img src="https://lh5.googleusercontent.com/FMyO_6DWOaAU-ulD38My9G-KpmYdAe8IQupR0n9MUEDVlDJ9xjvnJtccy2lms-rzQ3bPkbB773lPsCS67WgvOrLn-LpVBkVNCjfavzi4QD3BSNwWp0gGQEI_21rfhKytOLp-N2A" alt=""/></p>
-
-<p><img src="https://lh4.googleusercontent.com/KzGH8Y4W-2qZ4bGpqmHQVb6rXb6DbYiBcrm4UwKfdDyIoiwUXAAnLSPHW4r9WEqhIVEat7pelOPiB5w_VbWI-vC_trza1WU_DVsYW2quV-1RIb9uUnY32PSPF8GklwJySYruC94" alt=""/></p>
-
-<p>As the database and search traces show, there is a lot of opportunity to improve upon LRU by taking into account recency and frequency. More advanced policies such as <a href="https://www.usenix.org/event/fast03/tech/full_papers/megiddo/megiddo.pdf">ARC</a>, <a href="http://web.cse.ohio-state.edu/hpcs/WWW/HTML/publications/papers/TR-02-6.pdf">LIRS</a>, and <a href="http://arxiv.org/pdf/1512.00727.pdf">W-TinyLFU</a> narrow the gap to provide a near optimal hit rate. For additional workloads see the research papers and try our <a href="https://github.com/ben-manes/caffeine/wiki/Simulator">simulator</a> if you have your own traces to experiment with.</p>
-
-<h3 id="toc_1">Expiration Policy</h3>
-
-<p>Expiration is often implemented as variable per entry and expired entries are evicted lazily due to a capacity constraint. This pollutes the cache with dead items, so sometimes a scavenger thread is used to periodically sweep the cache and reclaim free space. This strategy tends to work better than ordering entries by their expiration time on a O(lg n) priority queue due to hiding the cost from the user instead of incurring a penalty on every read or write operation.</p>
-
-<p>Caffeine takes a different approach by <strong>observing that most often a fixed duration is preferred</strong>. This constraint allows for organizing entries on O(1) time ordered queues. A time to live duration is a write order queue and a time to idle duration is an access order queue. The cache can reuse the eviction policy’s queues and the concurrency mechanism described below, so that expired entries are discarded during the cache’s maintenance phase.</p>
-
-<h3 id="toc_2">Concurrency</h3>
-
-<p>Concurrent access to a cache is viewed as a difficult problem because in <strong>most policies every access is a write to some shared state</strong>. The traditional solution is to guard the cache with a single lock. This might then be improved through lock striping by splitting the cache into many smaller independent regions. Unfortunately that tends to have a limited benefit due to hot entries causing some locks to be more contented than others. When contention becomes a bottleneck the next classic step has been to <strong>update only per entry metadata</strong> and use either a <a href="http://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.110.8469&amp;rep=rep1&amp;type=pdf">random sampling</a> or a <a href="https://en.wikipedia.org/wiki/Page_replacement_algorithm#Second-chance">FIFO-based</a> eviction policy. Those techniques can have great read performance, poor write performance, and difficulty in choosing a good victim.</p>
-
-<p>An <a href="http://web.cse.ohio-state.edu/hpcs/WWW/HTML/publications/papers/TR-09-1.pdf">alternative</a> is to <strong>borrow an idea from database theory where writes are scaled by using a commit log</strong>. Instead of mutating the data structures immediately, the <strong>updates are written to a log and replayed in asynchronous batches</strong>. This same idea can be applied to a cache by performing the hash table operation, recording the operation to a buffer, and scheduling the replay activity against the policy when deemed necessary. The policy is still guarded by a lock, or a try lock to be more precise, but shifts contention onto appending to the log buffers instead.</p>
-
-<p>In Caffeine <strong>separate buffers are used for cache reads and writes</strong>. An access is recorded into a <strong>striped ring buffer</strong> where the stripe is chosen by a thread specific hash and the number of stripes grows when contention is detected. When a ring buffer is full an asynchronous drain is scheduled and subsequent additions to that buffer are discarded until space becomes available. When the access is not recorded due to a full buffer the cached value is still returned to the caller. The loss of policy information does not have a meaningful impact because W-TinyLFU is able to identify the hot entries that we wish to retain. By using a thread-specific hash instead of the key’s hash the cache avoids popular entries from causing contention by more evenly spreading out the load.</p>
-
-<p><img src="https://docs.google.com/drawings/d/sxSo8y3_uR8QZ_NbIqnCwzA/image?w=313&amp;h=121&amp;rev=371&amp;ac=1" alt=""/></p>
-
-<p>In the case of a write a more traditional concurrent queue is used and every change schedules an immediate drain. While data loss is unacceptable, there are still ways to optimize the write buffer. Both types of buffers are written to by multiple threads but only consumed by a single one at a given time. This multiple producer / single consumer behavior allows for simpler, more efficient algorithms to be employed. </p>
-
-<p>The buffers and fine grained writes introduce a race condition where operations for an entry may be recorded out of order. An insertion, read, update, and removal can be replayed in any order and if improperly handled the policy could retain dangling references. The solution to this is a state machine defining the lifecycle of an entry.</p>
-
-<p> <img src="https://docs.google.com/drawings/d/scG-jsP3Cfr4YfwBQn9_bpQ/image?w=529&amp;h=133&amp;rev=173&amp;ac=1" alt=""/></p>
-
-<p>In <a href="https://github.com/ben-manes/caffeine/wiki/Benchmarks#read-100-1">benchmarks</a> the cost of the buffers is relatively cheap and scales with the underlying hash table. <strong>Reads scale linearly with the number of CPUs</strong> at about 33% of the hash table’s throughput. Writes have a 10% penalty, but only because contention when updating the hash table is the dominant cost.</p>
-
-<p><img src="https://lh5.googleusercontent.com/Zrb2daVCRylwYZpSKykg1HVxCwsJI6N4sB7KQZ6wTfVdhdZNf75PNi38kO9BKMGn0PW5hHgaEDg2JfFtqbAPU3r4kQZ1toHJ0k7b7gTFII0pXbAJw0pbJ1oPjmqL6ZVEKBHSzLY" alt=""/></p>
-
-<h3 id="toc_3">Conclusion</h3>
-
-<p>There are many pragmatic topics that have not been covered. This could include tricks to minimize the memory overhead, testing techniques to retain quality as complexity grows, and ways to analyze performance to determine whether a optimization is worthwhile. These are areas that practitioners must keep an eye on, because once neglected it can be difficult to restore confidence in one’s own ability to manage the ensuing complexity.</p>
-
-<p>The design and implementation of <a href="https://github.com/ben-manes/caffeine">Caffeine</a> is the result of numerous insights and the hard work of many contributors. Its evolution over the years wouldn’t have been possible without the help from the following people: Charles Fry, Adam Zell, Gil Einziger, Roy Friedman, Kevin Bourrillion, Bob Lee, Doug Lea, Josh Bloch, Bob Lane, Nitsan Wakart, Thomas Müeller, Dominic Tootell, Louis Wasserman, and Vladimir Blagojevic. Thanks to Nitsan Wakart, Adam Zell, Roy Friedman, and Will Chu for their feedback on drafts of this article.</p>
-
-<h2 id="toc_4">Related Articles </h2>
+<p>In a recent project, we ended up choosing Redis mostly because:</p>
 
 <ul>
-<li>  <a href="https://news.ycombinator.com/item?id=10968521">On HackerNews</a></li>
-<li>  <a href="https://www.reddit.com/r/programming/comments/42s3ku/design_of_a_modern_cache/">On Reddit</a> </li>
-<li>  <a href="https://github.com/dgryski/go-tinylfu">TinyLFU</a> - cache admission policy</li>
+<li>  It was already part of our architecture and we had a simple inter-component messaging use case but didn’t want to introduce a new component in our architecture just for this.</li>
+<li>  Expected volume was low, which meant that our data set could fit in memory. <u>Note: although Redis requires everything you store in it to fit in memory, it supports persistence to disk.</u></li>
+<li>  Redis allowed for all of the implementation characteristics we were looking for, namely:
+
+<ul>
+<li>  <strong>Concurrency:</strong> Because all operations in Redis are atomic, supporting concurrency without too much of a hassle is straightforward.</li>
+<li>  <strong>Persistence:</strong> Configured properly, we can ensure persistence of our queues to disk using one of the supported Redis <a href="http://redis.io/topics/persistence" title="Redis persistence">persistence strategies</a>.</li>
+<li>  <strong>Lightweight:</strong> Using Redis from any language/platform is extremely simple and provisioning it / maintaining it on a production server is dead easy.</li>
+</ul></li>
 </ul>
+
+<p>In this post, I will go over the strategy we used with regards to Redis data structures and operations for handling the message publishing and consuming.</p>
+
+<p>The high-level strategy consists of the following:</p>
+
+<ul>
+<li>  When each consumer starts up and gets ready to consume messages, it registers by adding itself to a Set representing all consumers registered on a queue.</li>
+<li>  When a producers publishes a message on a queue, it:
+
+<ul>
+<li>  Saves the content of the message in a Redis key</li>
+<li>  Iterates over the set of consumers registered on the queue, and pushes the message ID in a List for each of the registered consumers</li>
+</ul></li>
+<li>  Each consumer continuously looks out for a new entry in its consumer-specific list and when one comes in, removes the entry, handles the message and passes on to the next message.</li>
+</ul>
+
+<p><strong>Why not use Redis Pub/Sub?</strong></p>
+
+<p>I already see you coming and asking why not using the <a href="http://redis.io/topics/pubsub">Pub/Sub semantics</a> supported out-of-the-box by Redis? The reason was two fold:</p>
+
+<ol>
+<li> What Redis offers with Pub/Sub is a listener model, where each subscriber receives each messages when it is listening, but won’t receive them when not connected.</li>
+<li> In a clustered environment where you have multiple instances of your consumer component running at the same time, each instance would receive each message produced on the channel. We wanted to make sure any given message got consumed once per logical consumer, even when multiple instances of this component are running.</li>
+</ol>
+
+<p>Hence the name of this post “Reliable Delivery”, because we wanted to make sure every logical consumer eventually receives all messages produced on a queue once and only once, even when not connected – due to, for example, a deployment, a restart or a application failure/crash.</p>
+
+<p><strong>Detailed look at the strategy</strong></p>
+
+<p>Here’s a closer look at the different scenarios using a fictive example of an ordering system with multiple consumers interested in messages when new orders are created:</p>
+
+<p><strong>Registering a consumer</strong><br/>
+<img src="media/15459021437244/15459023170786.jpg" alt=""/></p>
+
+<p>A “consumer” represents a logical entity of your architecture. You assign each concumer an identifier which it will use to register itself as a consumer on the queue.</p>
+
+<p>Registering a consumer is only a matter of adding a Set entry to a key that is crafted with the name of the queue in it.</p>
+
+<p>The semantics of a Set are helpful here: each consumer can just “add” an entry to the Set upon start up in a single operation, without the need to worry about any existing value.</p>
+
+<p><strong>Publishing a message</strong><br/>
+<img src="media/15459021437244/15459023263357.jpg" alt=""/></p>
+
+<p>On the Producer side, a few things need to happen when we’re publishing a message to a specific queue:</p>
+
+<ol>
+<li> The Producer increments a counter to get the next message ID using the INC command on key “orders.nextid”</li>
+<li> It then stores the message in a key containing the new message ID (“orders.messages.8” in our case). The actual format you store messages can be anything. We used a hash with some metadata information about each message, along with the actual payload. The payload can be serialized in JSON, XML or any format makes sense for your usage.</li>
+<li> Then for each consumer registered in key “orders.consumers”, it pushes the message ID using the <a href="http://redis.io/commands/rpush">RPUSH</a> command on lists for each consumers.</li>
+</ol>
+
+<p>To prevent duplication of message content in Redis, we store the content once and then only add references to the messages in consumer-specific lists. When a consumer consumes messages (more on that later), it will remove the ID from its list (its queue), then read the actual message content in a separate operation.</p>
+
+<p>But what happens when all consumers have read the message? If we stopped here, each message would end up being stored in Redis forever. An efficient solution to this problem is to use Redis’ ability to expire (clean up) keys after some time using the <a href="http://redis.io/commands/expire">EXPIRE</a> command. Using a reasonable amount of time for the expiration makes up for a cheap cleanup process.</p>
+
+<p>A slight variation, at a cost of message content duplication, would be to store the actual message content in each consumer-specific list. For simpler use cases where messages are small enough, this could be a compelling tradeoff.</p>
+
+<p><strong>Consuming messages</strong><br/>
+<img src="media/15459021437244/15459023359516.jpg" alt=""/></p>
+
+<p>Each consumer has a specific identifier and uses this identifier to “listen” on Lists stored in specially crafted Redis keys. Redis has this nice feature of “blocking pop”, which allows a client to remove the first or last element of a list, or wait until an element gets added.</p>
+
+<p>Leveraging this feature, each consumer creates a thread that will continuously loop and do the following:</p>
+
+<ol>
+<li> Use <a href="http://redis.io/commands/blpop">BLPOP</a> (blocking left pop) with a moderately small timeout to continuously “remove an element from the list or wait a bit”.</li>
+<li> When an element gets removed by the pop operation, read the message content and process it.</li>
+<li> When an element does not get removed (no message available), just wait and start over again.</li>
+</ol>
+
+<p>You can have multiple threads or processes consuming messages with the same “consumer identifier” and the solution still works. This allows for both stability and scalability:</p>
+
+<ul>
+<li>  You can spawn multiple consumers consuming messages as the same logical entity, and ensure that if one goes down, the consumption of messages does not stop.</li>
+<li>  You can also spawn more consumers when needed for added horsepower.</li>
+</ul>
+
+<p><strong>Caveats</strong></p>
+
+<ul>
+<li>  The solution as described above does not support retryability of messages in case of a failure to process on the consumer side. I could imagine a way to do it using Redis, but one has to wonder if Redis is still the right tool if such a characteristic is required by your use case.</li>
+<li>  The solution also does not guarantee that messages will be consumed in the order they were produced. If you have a single consumer instance you’re covered, but as soon as you have multiple consumer instances you cannot guarantee the ordering of messages. Maintaining a lock in a specific key for each consumer would enable this, at the cost of scalability (only 1 message can be consumed at any time throughout your consumer instances).</li>
+<li>  If your producers and consumers are using different languages, you must implement this strategy for each platform/language. Fortunately, there are Redis client for pretty much any popular platforms.</li>
+</ul>
+
+<p><strong>Wrap up</strong></p>
+
+<p>There are many ways Redis can be leveraged using the simple data structures and atomic operations it provides. Using a particular combination of those, we’ve been able to implement a simple system that allowed reliable message delivery to multiple consumers in a clustered environment without too much of a hassle.</p>
+
+<p>Because Redis was already part of our architecture, it proved to be a natural choice. The efforts required to build up this solution outweighed the efforts required to provision and maintain an additional component to manage our queues.</p>
+
+<p>It might not be the most appropriate choice for your case. Be thoughtful in your architectural choices!</p>
+
+<p><u><strong>UPDATE</strong></u>_<strong>:</strong>_ I have open-sourced a Java implementation of the above principles called “<a href="https://github.com/davidmarquis/redisq">RedisQ</a>“. Enjoy!</p>
 
                         
                       </div>
@@ -192,7 +241,7 @@
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/12/21</span>
+                    <span class="date">2018/12/27</span>
                     <span>posted in&nbsp;</span> 
           				  
           					    <span class="posted-in"><a href='Cache.html'>Cache</a></span>
@@ -285,31 +334,31 @@
 	      
 		      
 			      <li class="post">
-			        <a href="15459058392039.html">Reliable Domain Events</a>
+			        <a href="15517999043443.html">The Art of Crafting Architectural Diagrams</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
+			        <a href="15517997955971.html">为什么说我们需要软件架构图？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
+			        <a href="15516128677869.html">DNS Servers That Offer Privacy and Filtering</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
+			        <a href="15516123108194.html">Airbnb's Migration from Monolith to Services</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
+			        <a href="15516097487470.html">Events As First-Class Citizens</a>
 			      </li>
 		     
 		  

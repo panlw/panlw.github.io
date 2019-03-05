@@ -105,264 +105,190 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15274396845490.html">
+                <a class="clearlink" href="15281296238206.html">
                 
-                  <h1>面试-线程池的成长之路</h1>
+                  <h1>SOFABoot 类隔离原理剖析</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
-                        	<p>尹吉欢 投稿 纯洁的微笑  3天前</p>
-
-<blockquote>
-<p><a href="https://mp.weixin.qq.com/s/5dexEENTqJWXN_17c6Lz6A">原文地址</a></p>
+                        	<blockquote>
+<p>林小树 <a href="https://zhuanlan.zhihu.com/p/37665305">https://zhuanlan.zhihu.com/p/37665305</a></p>
 </blockquote>
 
-<h1 id="toc_0"><strong>背景</strong></h1>
+<p><strong>原创声明</strong>：本文系作者原创，谢绝个人、媒体、公众号或网站未经授权转载，违者追究其法律责任。</p>
 
-<p>相信大家在面试过程中遇到面试官问线程的很多，线程过后就是线程池了。从易到难，都是这么个过程，还有就是确实很多人在工作中接触线程池比较少，最多的也就是创建一个然后往里面提交线程，对于一些经验很丰富的面试官来说，一下就可以问出很多线程池相关的问题，与其被问的晕头转向，还不如好好学习。此时不努力更待何时。</p>
+<blockquote>
+<p>SOFABoot 是蚂蚁金服中间件团队开源的基于 Spring Boot 的一个开发框架，其在 Spring Boot 基础能力之上，增加了类隔离能力，以更好地解决随着工程应用变得臃肿庞大后带来的包冲突问题。类隔离能力天生带来模块化能力，同样给协作开发带来便利。<br/>
+SOFABoot 的类隔离能力借助单独的组件 SOFAArk 实现，遵循 Spring Boot 依赖即服务的思想，只要工程中引入了 SOFAArk 组件依赖，类隔离能力即生效。<br/>
+在上一篇文章 <a href="https://zhuanlan.zhihu.com/p/36909393">《在 Spring Boot 中集成 SOFABoot 类隔离能力》</a>中，我们详细介绍了 SOFABoot 类隔离能力的使用背景及其使用方式。本文将介绍 SOFABoot 类隔离组件 SOFAArk 的实现原理。</p>
+</blockquote>
 
-<h1 id="toc_1">什么是线程池？</h1>
+<h2 id="toc_0"><strong>理解 SOFAArk 三要素</strong></h2>
 
-<p>线程池是一种多线程处理形式，处理过程中将任务提交到线程池，任务的执行交由线程池来管理。</p>
+<p>SOFAArk 类隔离框架定义了三个概念，Ark Container，Ark Plugin，Ark Biz。</p>
 
-<p>如果每个请求都创建一个线程去处理，那么服务器的资源很快就会被耗尽，使用线程池可以减少创建和销毁线程的次数，每个工作线程都可以被重复利用，可执行多个任务。</p>
+<p>在介绍这三个主角之前，我们先来介绍另一个管家：<strong>Ark 包</strong>。我们都知道一个标准的 Spring Boot 应用可以借助 Spring 官方提供的打包插件：</p>
 
-<p>如果用生活中的列子来说明，我们可以把线程池当做一个客服团队，如果同时有 1000 个人打电话进行咨询，按照正常的逻辑那就是需要 1000 个客服接听电话，服务客户。现实往往需要考虑到很多层面的东西，比如：资源够不够，招这么多人需要费用比较多。正常的做法就是招 100 个人成立一个客服中心，当有电话进来后分配没有接听的客服进行服务，如果超出了 100 个人同时咨询的话，提示客户等待，稍后处理，等有客服空出来就可以继续服务下一个客户，这样才能达到一个资源的合理利用，实现效益的最大化。</p>
+<pre><code>&lt;plugin&gt;
+    &lt;groupId&gt;org.springframework.boot&lt;/groupId&gt;
+    &lt;artifactId&gt;spring-boot-maven-plugin&lt;/artifactId&gt;
+&lt;/plugin&gt;
 
-<h1 id="toc_2">Java 中的线程池种类</h1>
-
-<p><strong>1. newSingleThreadExecutor</strong></p>
-
-<p>创建方式：</p>
-
-<pre><code>ExecutorService pool = Executors.newSingleThreadExecutor();
 </code></pre>
 
-<p>一个单线程的线程池。这个线程池只有一个线程在工作，也就是相当于单线程串行执行所有任务。如果这个唯一的线程因为异常结束，那么会有一个新的线程来替代它。此线程池保证所有任务的执行顺序按照任务的提交顺序执行。</p>
+<p>将应用打包成一个可执行 FatJar。相对应的，Ark 包则是 SOFABoot 官方提供的打包插件：</p>
 
-<p>使用方式：</p>
+<pre><code>&lt;plugin&gt;
+    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
+    &lt;artifactId&gt;sofa-ark-maven-plugin&lt;/artifactId&gt;
+&lt;/plugin&gt;
 
-<pre><code>import java.util.concurrent.ExecutorService;import java.util.concurrent.Executors;public class ThreadPool {    public static void main(String[] args) {        ExecutorService pool = Executors.newSingleThreadExecutor();        for (int i = 0; i &lt; 10; i++) {            pool.execute(() -&gt; {                System.out.println(Thread.currentThread().getName() + &quot;\t开始发车啦....&quot;);            });        }    }}
 </code></pre>
 
-<p>输出结果如下：</p>
+<p>将应用打包成一个具有类隔离能力的可执行 FatJar，称之为 Ark 包。下图是粗略地对比两者的目录结构差别：</p>
 
-<pre><code>pool-1-thread-1    开始发车啦....pool-1-thread-1    开始发车啦....pool-1-thread-1    开始发车啦....pool-1-thread-1    开始发车啦....pool-1-thread-1    开始发车啦....pool-1-thread-1    开始发车啦....pool-1-thread-1    开始发车啦....pool-1-thread-1    开始发车啦....pool-1-thread-1    开始发车啦....pool-1-thread-1    开始发车啦....
-</code></pre>
+<p><img src="https://pic3.zhimg.com/v2-096b7865cea9b432d6dee8990d2b2dc1_b.jpg" alt=""/><img src="https://pic3.zhimg.com/v2-096b7865cea9b432d6dee8990d2b2dc1_r.jpg" alt=""/></p>
 
-<p>从输出的结果我们可以看出，一直只有一个线程在运行。</p>
-
-<p>2.<strong>newFixedThreadPool</strong></p>
-
-<p>创建方式：</p>
-
-<pre><code>ExecutorService pool = Executors.newFixedThreadPool(10);
-</code></pre>
-
-<p>创建固定大小的线程池。每次提交一个任务就创建一个线程，直到线程达到线程池的最大大小。线程池的大小一旦达到最大值就会保持不变，如果某个线程因为执行异常而结束，那么线程池会补充一个新线程。</p>
-
-<p>使用方式：</p>
-
-<pre><code>import java.util.concurrent.ExecutorService;import java.util.concurrent.Executors;public class ThreadPool {    public static void main(String[] args) {        ExecutorService pool = Executors.newFixedThreadPool(10);        for (int i = 0; i &lt; 10; i++) {            pool.execute(() -&gt; {                System.out.println(Thread.currentThread().getName() + &quot;\t开始发车啦....&quot;);            });        }    }}
-</code></pre>
-
-<p>输出结果如下：</p>
-
-<pre><code>pool-1-thread-1    开始发车啦....pool-1-thread-4    开始发车啦....pool-1-thread-3    开始发车啦....pool-1-thread-2    开始发车啦....pool-1-thread-6    开始发车啦....pool-1-thread-7    开始发车啦....pool-1-thread-5    开始发车啦....pool-1-thread-8    开始发车啦....pool-1-thread-9    开始发车啦....pool-1-thread-10 开始发车啦....
-</code></pre>
-
-<p><strong>3. newCachedThreadPool</strong></p>
-
-<p>创建方式：</p>
-
-<pre><code>ExecutorService pool = Executors.newCachedThreadPool();
-</code></pre>
-
-<p>创建一个可缓存的线程池。如果线程池的大小超过了处理任务所需要的线程，那么就会回收部分空闲的线程，当任务数增加时，此线程池又添加新线程来处理任务。</p>
-
-<p>使用方式如上 2 所示。</p>
-
-<p>4.<strong>newScheduledThreadPool</strong></p>
-
-<p>创建方式：</p>
-
-<pre><code>ScheduledExecutorService pool = Executors.newScheduledThreadPool(10);
-</code></pre>
-
-<p>此线程池支持定时以及周期性执行任务的需求。</p>
-
-<p>使用方式：</p>
-
-<pre><code>import java.util.concurrent.Executors;import java.util.concurrent.ScheduledExecutorService;import java.util.concurrent.TimeUnit;public class ThreadPool {    public static void main(String[] args) {        ScheduledExecutorService pool = Executors.newScheduledThreadPool(10);        for (int i = 0; i &lt; 10; i++) {            pool.schedule(() -&gt; {                System.out.println(Thread.currentThread().getName() + &quot;\t开始发车啦....&quot;);            }, 10, TimeUnit.SECONDS);        }    }}
-</code></pre>
-
-<p>上面演示的是延迟 10 秒执行任务, 如果想要执行周期性的任务可以用下面的方式，每秒执行一次</p>
-
-<pre><code>//pool.scheduleWithFixedDelay也可以pool.scheduleAtFixedRate(() -&gt; {                System.out.println(Thread.currentThread().getName() + &quot;\t开始发车啦....&quot;);}, 1, 1, TimeUnit.SECONDS);
-</code></pre>
-
-<p>5.<strong>newWorkStealingPool</strong></p>
-
-<p>newWorkStealingPool 是 jdk1.8 才有的，会根据所需的并行层次来动态创建和关闭线程，通过使用多个队列减少竞争，底层用的 ForkJoinPool 来实现的。ForkJoinPool 的优势在于，可以充分利用多 cpu，多核 cpu 的优势，把一个任务拆分成多个 “小任务”，把多个“小任务” 放到多个处理器核心上并行执行；当多个 “小任务” 执行完成之后，再将这些执行结果合并起来即可。</p>
-
-<h1 id="toc_3">说说线程池的拒绝策略</h1>
-
-<p>当请求任务不断的过来，而系统此时又处理不过来的时候，我们需要采取的策略是拒绝服务。RejectedExecutionHandler 接口提供了拒绝任务处理的自定义方法的机会。在 ThreadPoolExecutor 中已经包含四种处理策略。</p>
+<p>可以看到 Ark 包作为应用部署包的分发格式，它包含有 Ark Container，Ark Plugin 和 Ark Biz 三种格式模块。这里我们不对 Ark 包或者其他格式模块的目录结构作分析，感兴趣的同学可以点开文末附上的相关链接。我们重点介绍这三个角色的功能。</p>
 
 <ul>
-<li>  AbortPolicy 策略：该策略会直接抛出异常，阻止系统正常工作。</li>
+<li>  Ark Container: Ark 容器，是组件 SOFAArk 的核心，运行 Ark 包时，Ark 容器会最先启动，负责应用运行时的管理，主要包括构建 Ark Plugin 和 Ark Biz 的类导入导出关系表、启动并初始化 Ark Plugin 和 Ark Biz、管理 Ark Plugin 服务的发布和引用等等。</li>
+<li>  Ark Plugin: SOFAArk 定义的一种模块格式，由若干个 Jar 包组成的一个 FatJar，开发人员可以借助官方提供的 maven 打包插件将若干 Jar 包打包成一个 Ark Plugin 供应用依赖。运行时，由独立的类加载器加载，因此有隔离需求的 Jar 包建议打包成 Ark Plugin 供应用依赖。</li>
+<li>  Ark Biz: SOFAArk 定义的一种模块格式，是应用及其依赖的所有三方包组成的一个 FatJar，需要注意的是，Ark Biz 不会包含应用依赖的 Ark Plugin。运行时，Ark Biz 由独立的类加载器加载，借助类导入导出关系表，Ark Biz 可以使用 Ark Plugin 的导出类和资源。</li>
 </ul>
 
-<pre><code>public static class AbortPolicy implements RejectedExecutionHandler {    public AbortPolicy() { }    public void rejectedExecution(Runnable r, ThreadPoolExecutor e) {        throw new RejectedExecutionException(&quot;Task &quot; + r.toString() +                                                 &quot; rejected from &quot; +                                                 e.toString());    }}
+<h2 id="toc_1"><strong>SOFAArk 运行时隔离</strong></h2>
+
+<p>根据上一节的描述可以知道 SOFABoot 类隔离关键是理解 SOFAArk 定义的三个概念，Ark Container，Ark Plugin 和 Ark Biz。下图表示的是应用启动后，运行时 Ark Container，Ark Plugin，Ark Biz 的逻辑分层图：</p>
+
+<p><img src="https://pic3.zhimg.com/v2-27569011d5bddb7723b45797dc66758e_b.jpg" alt=""/><img src="https://pic3.zhimg.com/v2-27569011d5bddb7723b45797dc66758e_r.jpg" alt=""/></p>
+
+<p>我们将先以 Ark Plugin 入手来介绍 SOFABoot 类隔离的实现原理。</p>
+
+<h2 id="toc_2"><strong>Ark Plugin 隔离</strong></h2>
+
+<p>开发者借助 SOFABoot 官方提供的插件：</p>
+
+<pre><code>&lt;plugin&gt;
+    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
+    &lt;artifactId&gt;sofa-ark-plugin-maven-plugin&lt;/artifactId&gt;
+&lt;/plugin&gt;
+
 </code></pre>
+
+<p>可以将 Java 模块打包成一个 Ark Plugin，这里我们不讨论该打包插件的配置参数和使用方式，感兴趣的同学可以点开文末附上的相关链接以及学习 SOFABoot 类隔离能力使用篇。只需要知道，Ark Plugin 主要包含元信息有：插件启动器、导出类、导入类、导出资源、导入资源、优先级等，这些元信息保存在 Ark Plugin 中的 META-INF/MANIFEST.MF 中，一份典型的 MANIFEST.MF 文件样式如下：</p>
+
+<pre><code>Manifest-Version: 1.0
+groupId: com.alipay.sofa
+artifactId: sample-ark-plugin
+version: 0.3.0-SNAPSHOT
+priority: 1000
+pluginName: sample-ark-plugin
+activator: com.alipay.sofa.ark.sample.activator.SamplePluginActivator
+import-packages: 
+import-classes: 
+import-resources: 
+export-packages: com.alipay.sofa.ark.sample.common.*,com.alipay.sofa.ark.sample
+export-classes: com.alipay.sofa.ark.sample.facade.SamplePluginService
+export-resources: Sample_Resource_Exported
+
+</code></pre>
+
+<p>在上面我们提到，运行 Ark 包时，类隔离容器 Ark Container 会最先启动，然后 Ark Container 会接管整个应用的启动过程。针对 Ark Plugin 处理逻辑如下：</p>
 
 <ul>
-<li>  CallerRunsPolicy 策略：只要线程池未关闭，该策略直接在调用者线程中，运行当前的被丢弃的任务。</li>
+<li>  首先解析 Ark 包中引入的所有 Ark Plugin，读取插件元信息，构建类 / 资源导入导出关系索引表。</li>
+<li>  提前生成所有插件类加载器，每个 Ark Plugin 都使用独立的类加载器，管理插件类加载逻辑，借助第一步生成的类导入导出关系表，突破 Java 原生的双亲委派模型，可以委托其他插件加载所需类，构建一个类 OSGi 的网状类加载模型。</li>
+<li>  根据插件优先级，依次调用插件启动器。在插件启动器中，插件开发者可以向容器注册服务以方便其他插件引用，也可以引用其他插件发布的服务，及插件启动所需的初始化操作。</li>
 </ul>
 
-<pre><code>public static class CallerRunsPolicy implements RejectedExecutionHandler {    public CallerRunsPolicy() { }    public void rejectedExecution(Runnable r, ThreadPoolExecutor e) {        if (!e.isShutdown()) {                r.run();        }    }}
+<p>需要明确一点，为了让类加载模型足够简单，Ark 容器在启动任何插件前，会把所有的插件类加载器提前构建完毕。Ark Plugin 可以相互委托加载，插件优先级只是影响插件的启动顺序，而且也不强制要求每个 Ark Plugin 都要有启动器。</p>
+
+<p>启动完所有插件后，Ark Container 则开始负责启动 Ark Biz 模块。</p>
+
+<h2 id="toc_3"><strong>Ark Biz 隔离</strong></h2>
+
+<p>Ark Container 在完成 Ark Plugin 的隔离和启动后，则开始准备 Ark Biz 的隔离和启动。</p>
+
+<p>在上文中提到，应用打成 Ark 包后，Ark 包会包含 Ark Plugin 模块和 Ark Biz 模块。实际上 Ark Biz 其实就是应用及其所有的三方依赖打成的 FatJar 包，Ark Biz 不会包含应用引入的 Ark Plugin。开发者借助 SOFABoot 官方提供的插件：</p>
+
+<pre><code>&lt;plugin&gt;
+    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
+    &lt;artifactId&gt;sofa-ark-maven-plugin&lt;/artifactId&gt;
+&lt;/plugin&gt;
+
 </code></pre>
+
+<p>可以将 Java（Spring Boot） 应用打包成一个 Ark Biz，这里我们不讨论该打包插件的配置参数和使用方式，感兴趣的同学可以点开文末附上的相关链接以及学习 SOFABoot 类隔离能力使用篇。只需要知道，Ark Biz 主要包含元信息有：应用启动入口、禁止导入类、禁止导入资源等。这些元信息保存在 Ark Biz 中的 META-INF/MANIFEST.MF 中，一份典型的 MANIFEST.MF 文件样式如下：</p>
+
+<pre><code>Manifest-Version: 1.0
+Archiver-Version: Plexus Archiver
+Created-By: Apache Maven 3.2.5
+Build-Jdk: 1.8.0_101
+Built-By: qilong.zql
+Ark-Biz-Name: sofa-ark-sample-springboot-ark
+deny-import-resources:
+deny-import-packages:
+deny-import-classes:
+Main-Class: com.alipay.sofa.ark.sample.springbootdemo.SpringbootDemoApplication
+
+</code></pre>
+
+<p>Ark Biz 和 Ark Plugin 有很大的不同，最明显的则是 Ark Biz 单向依赖 Ark Plugin，即 Ark Biz 只能单向委托 Ark Plugin 加载类和资源，反之则不可以。实际上在运行时，Ark Biz 是运行在 Ark Plugin 之上，Ark Container 也是先启动所有 Ark Plugin 然后启动 Ark Biz。默认情况下，Ark Plugin 导出的所有类和资源都能被 Ark Biz 委托加载到，为了方便应用开发者能够自主控制类加载逻辑，允许在打包插件中配置禁止导入类和禁止导入资源，如此，对于配置的类和资源， Ark Biz 能够优先加载内部包含的类，而不会委托给 Ark Plugin 加载。Ark Container 针对 Ark Biz 处理逻辑如下：</p>
 
 <ul>
-<li>  DiscardOleddestPolicy 策略： 该策略将丢弃最老的一个请求，也就是即将被执行的任务，并尝试再次提交当前任务。</li>
+<li>  首先解析 Ark 包中 Ark Biz 模块，读取元信息，构建类 / 资源导入导出关系索引表。</li>
+<li>  生成 Ark Biz 类加载器，管理 Ark Biz 类加载逻辑，借助第一步生成的类导入导出关系表，突破 Java 原生的双亲委派模型，可以委托 Ark Plugin 加载所需类和资源。</li>
+<li>  调用应用启动入口，启动应用。</li>
 </ul>
 
-<pre><code>public static class DiscardOldestPolicy implements RejectedExecutionHandler {    public DiscardOldestPolicy() { }    public void rejectedExecution(Runnable r, ThreadPoolExecutor e) {        if (!e.isShutdown()) {            e.getQueue().poll();            e.execute(r);        }    }}
-</code></pre>
+<p>如此，Ark 包即完成整个启动过程。</p>
+
+<h2 id="toc_4"><strong>和 OSGi 对比</strong></h2>
+
+<p>作为开源界早负盛名的动态模块系统，基于 OSGi 规范的 Equinox、Felix 等同样具备类隔离能力，然而他们更多强调的是一种编程模型，面向模块化开发，有一整套模块生命周期的管理，定义模块通信机制以及复杂的类加载模型。作为专注于解决依赖冲突的隔离框架，SOFAArk 专注于类隔离，简化了类加载模型，因此显得更加轻量。</p>
+
+<p>其次在 OSGi 规范中，所有的模块定义成 Bundle 形式，作为应用开发者，他需要了解 OSGi 背后的工作原理，对开发者要求比较高。在 SOFAArk 中，定义了两层模块类型，Ark Plugin 和 Ark Biz，应用开发者只需要添加隔离的 Ark Plugin 依赖，对本身的开发没有任何影响，基本没有开发门槛。</p>
+
+<h2 id="toc_5"><strong>正在做的事</strong></h2>
+
+<p>全文读下来，你可能会产生这样的一个疑惑：如果在应用中引入其他应用打包的 Ark Biz 会如何呢？</p>
+
+<p>目前 SOFAArk 是可以启动多个 Ark Biz 的，比较遗憾的是，现在 Ark Biz 之间没法做到服务通信。如果你之前读完过上一篇 SOFABoot 类隔离使用篇及这篇原理篇，你也许会发现，虽然 SOFAArk 是一个纯粹的类隔离框架，但是基于 SOFAArk 之上，可以开发各具功能特色的 Ark Plugin，补充框架能力，供应用开发者按需依赖使用，比如已经推出的 SOFARPC Ark Plugin。回到上面的问题，为了解决多个 Ark Biz 合并部署的问题，我们正在开发一个新的 Ark Plugin，Jarslink2.0。</p>
+
+<p>在蚂蚁内部，多个应用合并部署在同一个 JVM 之上，是一件常见的事情。这样带来的主要优势如下：</p>
 
 <ul>
-<li>  DiscardPolicy 策略：该策略默默的丢弃无法处理的任务，不予任何处理。</li>
+<li>  无关应用合并部署：有些应用在独立部署时，相互之间没有服务依赖，而且这些应用承担业务体量都偏小，单独占有一台物理机部署比较浪费资源。这些应用合并部署，能够节省成本。</li>
+<li>  相关应用合并部署：多个应用之间存在服务依赖，独立部署时，各应用之间使用 RPC 调用，虽然使用了分布式架构，稳定性高，但依然存在网络抖动导致的延时性问题。这些应用合并部署，RPC 调用转为 JVM 内部调用，缩减调用开销。</li>
 </ul>
 
-<pre><code>public static class DiscardPolicy implements RejectedExecutionHandler {    public DiscardPolicy() { }    public void rejectedExecution(Runnable r, ThreadPoolExecutor e) {    }}
-</code></pre>
+<p>当然，作为蚂蚁内部非常重要的一项技术创新，合并部署在特定的业务背景下有着更为重要的意义，也远不止上面提到的两点优势，比如故障的隔离等等。</p>
 
-<p>除了 JDK 默认为什么提供的四种拒绝策略，我们可以根据自己的业务需求去自定义拒绝策略，自定义的方式很简单，直接实现 RejectedExecutionHandler 接口即可</p>
-
-<p>比如 Spring integration 中就有一个自定义的拒绝策略 CallerBlocksPolicy，将任务插入到队列中，直到队列中有空闲并插入成功的时候，否则将根据最大等待时间一直阻塞，直到超时。</p>
-
-<pre><code>package org.springframework.integration.util;import java.util.concurrent.BlockingQueue;import java.util.concurrent.RejectedExecutionException;import java.util.concurrent.RejectedExecutionHandler;import java.util.concurrent.ThreadPoolExecutor;import java.util.concurrent.TimeUnit;import org.apache.commons.logging.Log;import org.apache.commons.logging.LogFactory;public class CallerBlocksPolicy implements RejectedExecutionHandler {    private static final Log logger = LogFactory.getLog(CallerBlocksPolicy.class);    private final long maxWait;    /**     * @param maxWait The maximum time to wait for a queue slot to be     * available, in milliseconds.     */    public CallerBlocksPolicy(long maxWait) {        this.maxWait = maxWait;    }    @Override    public void rejectedExecution(Runnable r, ThreadPoolExecutor executor) {        if (!executor.isShutdown()) {            try {                BlockingQueue&lt;Runnable&gt; queue = executor.getQueue();                if (logger.isDebugEnabled()) {                    logger.debug(&quot;Attempting to queue task execution for &quot; + this.maxWait + &quot; milliseconds&quot;);                }                if (!queue.offer(r, this.maxWait, TimeUnit.MILLISECONDS)) {                    throw new RejectedExecutionException(&quot;Max wait time expired to queue task&quot;);                }                if (logger.isDebugEnabled()) {                    logger.debug(&quot;Task execution queued&quot;);                }            }            catch (InterruptedException e) {                Thread.currentThread().interrupt();                throw new RejectedExecutionException(&quot;Interrupted&quot;, e);            }        }        else {            throw new RejectedExecutionException(&quot;Executor has been shut down&quot;);        }    }}
-</code></pre>
-
-<p>定义好之后如何使用呢？光定义没用的呀，一定要用到线程池中呀，可以通过下面的方式自定义线程池，指定拒绝策略。</p>
-
-<pre><code>BlockingQueue&lt;Runnable&gt; workQueue = new ArrayBlockingQueue&lt;&gt;(100);ThreadPoolExecutor executor = new ThreadPoolExecutor(    10, 100, 10, TimeUnit.SECONDS, workQueue, new CallerBlocksPolicy());
-</code></pre>
-
-<h1 id="toc_4">execute 和 submit 的区别？</h1>
-
-<p>在前面的讲解中，我们执行任务是用的 execute 方法，除了 execute 方法，还有一个 submit 方法也可以执行我们提交的任务。</p>
-
-<p>这两个方法有什么区别呢？分别适用于在什么场景下呢？我们来做一个简单的分析。</p>
-
-<p>execute 适用于不需要关注返回值的场景，只需要将线程丢到线程池中去执行就可以了</p>
-
-<pre><code>public class ThreadPool {    public static void main(String[] args) {        ExecutorService pool = Executors.newFixedThreadPool(10);        pool.execute(() -&gt; {            System.out.println(Thread.currentThread().getName() + &quot;\t开始发车啦....&quot;);        });    }}
-</code></pre>
-
-<p>submit 方法适用于需要关注返回值的场景，submit 方法的定义如下：</p>
-
-<pre><code>public interface ExecutorService extends Executor {　　...　　&lt;T&gt; Future&lt;T&gt; submit(Callable&lt;T&gt; task);　　&lt;T&gt; Future&lt;T&gt; submit(Runnable task, T result);　　Future&lt;?&gt; submit(Runnable task);　　...}
-</code></pre>
-
-<p>其子类 AbstractExecutorService 实现了 submit 方法, 可以看到无论参数是 Callable 还是 Runnable，最终都会被封装成 RunnableFuture，然后再调用 execute 执行。</p>
-
-<pre><code>    /**     * @throws RejectedExecutionException {@inheritDoc}     * @throws NullPointerException       {@inheritDoc}     */    public Future&lt;?&gt; submit(Runnable task) {        if (task == null) throw new NullPointerException();        RunnableFuture&lt;Void&gt; ftask = newTaskFor(task, null);        execute(ftask);        return ftask;    }    /**     * @throws RejectedExecutionException {@inheritDoc}     * @throws NullPointerException       {@inheritDoc}     */    public &lt;T&gt; Future&lt;T&gt; submit(Runnable task, T result) {        if (task == null) throw new NullPointerException();        RunnableFuture&lt;T&gt; ftask = newTaskFor(task, result);        execute(ftask);        return ftask;    }    /**     * @throws RejectedExecutionException {@inheritDoc}     * @throws NullPointerException       {@inheritDoc}     */    public &lt;T&gt; Future&lt;T&gt; submit(Callable&lt;T&gt; task) {        if (task == null) throw new NullPointerException();        RunnableFuture&lt;T&gt; ftask = newTaskFor(task);        execute(ftask);        return ftask;    }
-</code></pre>
-
-<p>下面我们来看看这三个方法分别如何去使用：</p>
-
-<p><strong>submit(Callable<t style="max-width: 100%;box-sizing: border-box;font-size: inherit;color: inherit;line-height: inherit;word-wrap: break-word !important;"> task);</t></strong></p>
-
-<pre><code>public class ThreadPool {    public static void main(String[] args) throws Exception {        ExecutorService pool = Executors.newFixedThreadPool(10);        Future&lt;String&gt; future = pool.submit(new Callable&lt;String&gt;() {            @Override            public String call() throws Exception {                return &quot;Hello&quot;;            }        });        String result = future.get();        System.out.println(result);    }}
-</code></pre>
-
-<p><strong>submit(Runnable task, T result);</strong></p>
-
-<pre><code>public class ThreadPool {    public static void main(String[] args) throws Exception {        ExecutorService pool = Executors.newFixedThreadPool(10);        Data data = new Data();        Future&lt;Data&gt; future = pool.submit(new MyRunnable(data), data);        String result = future.get().getName();        System.out.println(result);    }}class Data {    String name;    public String getName() {        return name;    }    public void setName(String name) {        this.name = name;    }}class MyRunnable implements Runnable {    private Data data;    public MyRunnable(Data data) {        this.data = data;    }    @Override    public void run() {        data.setName(&quot;yinjihuan&quot;);    }}
-</code></pre>
-
-<p><strong>Future submit(Runnable task);</strong><br/>
-直接 submit 一个 Runnable 是拿不到返回值的，返回值就是 null.</p>
-
-<h1 id="toc_5">五种线程池的使用场景</h1>
+<p>说回到 Jarslink2.0，这个 SOFABoot 官方开发的 Ark Plugin，主要是为了解决多个 Ark Biz 运行时管理问题。我们知道，每个 Java(Spring Boot) 应用，都可以通过我们的 maven 插件打包成 Ark Biz 供其他应用依赖。目前 SOFAArk 框架只能做到隔离 Ark Biz，作为框架能力的补充，Jarslink2.0 插件专门管理多个 Ark Biz 的运行时。这里默认每个 Ark Biz 都是一个 SOAFBoot/Spring Boot 工程，Jarslink2.0 提供的能力如下：</p>
 
 <ul>
-<li><p>newSingleThreadExecutor：一个单线程的线程池，可以用于需要保证顺序执行的场景，并且只有一个线程在执行。</p></li>
-<li><p>newFixedThreadPool：一个固定大小的线程池，可以用于已知并发压力的情况下，对线程数做限制。</p></li>
-<li><p>newCachedThreadPool：一个可以无限扩大的线程池，比较适合处理执行时间比较小的任务。</p></li>
-<li><p>newScheduledThreadPool：可以延时启动，定时启动的线程池，适用于需要多个后台线程执行周期任务的场景。</p></li>
-<li><p>newWorkStealingPool：一个拥有多个任务队列的线程池，可以减少连接数，创建当前可用 cpu 数量的线程来并行执行。</p></li>
+<li>  动态安装、卸载 Ark Biz。</li>
+<li>  Ark Biz 之间使用注解和 xml 两种形式发布和引用 jvm 服务，解决多 Ark Biz 服务依赖问题。</li>
+<li>  Ark Biz 如果使用了 SOFARPC 能力，可以自动完成 RPC 转 JVM 内部调用。</li>
 </ul>
 
-<h1 id="toc_6">线程池的关闭</h1>
+<p>在这里特别感谢方腾飞， 蚂蚁内部花名 @清英 ，也是我们熟知的并发编程网 (<a href="https://link.zhihu.com/?target=http%3A//ifeve.com/">http://ifeve.com/</a>)创始人。清英在蚂蚁内部开发的 Jarslink1.0 在网商银行已经落地使用很长一段时间，Jarslink2.0 是在 Jarslink1.0 基础之上，结合 SOFABoot 类隔离框架，提供了更加通用的应用 (模块) 隔离和通信的实现方案，敬请期待！</p>
 
-<p>关闭线程池可以调用 shutdownNow 和 shutdown 两个方法来实现</p>
-
-<p><strong>shutdownNow：对正在执行的任务全部发出 interrupt()，停止执行，对还未开始执行的任务全部取消，并且返回还没开始的任务列表</strong></p>
-
-<pre><code>public class ThreadPool {    public static void main(String[] args) throws Exception {        ExecutorService pool = Executors.newFixedThreadPool(1);        for (int i = 0; i &lt; 5; i++) {            System.err.println(i);            pool.execute(() -&gt; {                try {                    Thread.sleep(30000);                    System.out.println(&quot;--&quot;);                } catch (Exception e) {                    e.printStackTrace();                }            });        }        Thread.sleep(1000);        List&lt;Runnable&gt; runs = pool.shutdownNow();    }}
-</code></pre>
-
-<p>上面的代码模拟了立即取消的场景，往线程池里添加 5 个线程任务，然后 sleep 一段时间，线程池只有一个线程，如果此时调用 shutdownNow 后应该需要中断一个正在执行的任务和返回 4 个还未执行的任务，控制台输出下面的内容：</p>
-
-<pre><code>01234[fs.ThreadPool$$Lambda$1/990368553@682a0b20, fs.ThreadPool$$Lambda$1/990368553@682a0b20, fs.ThreadPool$$Lambda$1/990368553@682a0b20, fs.ThreadPool$$Lambda$1/990368553@682a0b20]java.lang.InterruptedException: sleep interrupted    at java.lang.Thread.sleep(Native Method)    at fs.ThreadPool.lambda$0(ThreadPool.java:15)    at fs.ThreadPool$$Lambda$1/990368553.run(Unknown Source)    at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1142)    at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:617)    at java.lang.Thread.run(Thread.java:745)
-</code></pre>
-
-<p><strong>shutdown：当我们调用 shutdown 后，线程池将不再接受新的任务，但也不会去强制终止已经提交或者正在执行中的任务</strong></p>
-
-<pre><code>public class ThreadPool {    public static void main(String[] args) throws Exception {        ExecutorService pool = Executors.newFixedThreadPool(1);        for (int i = 0; i &lt; 5; i++) {            System.err.println(i);            pool.execute(() -&gt; {                try {                    Thread.sleep(30000);                    System.out.println(&quot;--&quot;);                } catch (Exception e) {                    e.printStackTrace();                }            });        }        Thread.sleep(1000);        pool.shutdown();        pool.execute(() -&gt; {            try {                Thread.sleep(30000);                System.out.println(&quot;--&quot;);            } catch (Exception e) {                e.printStackTrace();            }        });    }}
-</code></pre>
-
-<p>上面的代码模拟了正在运行的状态，然后调用 shutdown，接着再往里面添加任务，肯定是拒绝添加的，请看输出结果：</p>
-
-<pre><code>01234Exception in thread &quot;main&quot; java.util.concurrent.RejectedExecutionException: Task fs.ThreadPool$$Lambda$2/1747585824@3d075dc0 rejected from java.util.concurrent.ThreadPoolExecutor@214c265e[Shutting down, pool size = 1, active threads = 1, queued tasks = 4, completed tasks = 0]    at java.util.concurrent.ThreadPoolExecutor$AbortPolicy.rejectedExecution(ThreadPoolExecutor.java:2047)    at java.util.concurrent.ThreadPoolExecutor.reject(ThreadPoolExecutor.java:823)    at java.util.concurrent.ThreadPoolExecutor.execute(ThreadPoolExecutor.java:1369)    at fs.ThreadPool.main(ThreadPool.java:24)
-</code></pre>
-
-<p>还有一些业务场景下需要知道线程池中的任务是否全部执行完成，当我们关闭线程池之后，可以用 isTerminated 来判断所有的线程是否执行完成，千万不要用 isShutdown，isShutdown 只是返回你是否调用过 shutdown 的结果。</p>
-
-<pre><code>public class ThreadPool {    public static void main(String[] args) throws Exception {        ExecutorService pool = Executors.newFixedThreadPool(1);        for (int i = 0; i &lt; 5; i++) {            System.err.println(i);            pool.execute(() -&gt; {                try {                    Thread.sleep(3000);                    System.out.println(&quot;--&quot;);                } catch (Exception e) {                    e.printStackTrace();                }            });        }        Thread.sleep(1000);        pool.shutdown();        while(true){              if(pool.isTerminated()){                  System.out.println(&quot;所有的子线程都结束了！&quot;);                  break;              }              Thread.sleep(1000);            }      }}
-</code></pre>
-
-<h1 id="toc_7">自定义线程池</h1>
-
-<p>在实际的使用过程中，大部分我们都是用 Executors 去创建线程池直接使用，如果有一些其他的需求，比如指定线程池的拒绝策略，阻塞队列的类型，线程名称的前缀等等，我们可以采用自定义线程池的方式来解决。</p>
-
-<p>如果只是简单的想要改变线程名称的前缀的话可以自定义 ThreadFactory 来实现，在 Executors.new… 中有一个 ThreadFactory 的参数，如果没有指定则用的是 DefaultThreadFactory。</p>
-
-<p>自定义线程池核心在于创建一个 ThreadPoolExecutor 对象，指定参数</p>
-
-<p>下面我们看下 ThreadPoolExecutor 构造函数的定义：</p>
-
-<pre><code>public ThreadPoolExecutor(int corePoolSize,                              int maximumPoolSize,                              long keepAliveTime,                              TimeUnit unit,                              BlockingQueue&lt;Runnable&gt; workQueue,                              ThreadFactory threadFactory,                              RejectedExecutionHandler handler) ;
-</code></pre>
+<h2 id="toc_6">欢迎微博关注 @SOFAStack 与我们互动，相关传送门：</h2>
 
 <ul>
-<li><p>corePoolSize<br/>
-线程池大小，决定着新提交的任务是新开线程去执行还是放到任务队列中，也是线程池的最最核心的参数。一般线程池开始时是没有线程的，只有当任务来了并且线程数量小于 corePoolSize 才会创建线程。</p></li>
-<li><p>maximumPoolSize<br/>
-最大线程数，线程池能创建的最大线程数量。</p></li>
-<li><p>keepAliveTime<br/>
-在线程数量超过 corePoolSize 后，多余空闲线程的最大存活时间。</p></li>
-<li><p>unit<br/>
-时间单位</p></li>
-<li><p>workQueue<br/>
-存放来不及处理的任务的队列，是一个 BlockingQueue。</p></li>
-<li><p>threadFactory<br/>
-生产线程的工厂类，可以定义线程名，优先级等。</p></li>
-<li><p>handler<br/>
-拒绝策略，当任务来不及处理的时候，如何处理, 前面有讲解。</p></li>
+<li>  Ark 包目录结构及其打包插件的使用
+<a href="https://link.zhihu.com/?target=https%3A//alipay.github.io/sofastack.github.io/docs/ark-jar.html">https://alipay.github.io/sofastack.github.io/docs/ark-jar.html</a></li>
+<li>  Ark Plugin 目录结构及其打包插件的使用
+<a href="https://link.zhihu.com/?target=https%3A//alipay.github.io/sofastack.github.io/docs/ark-plugin.html">https://alipay.github.io/sofastack.github.io/docs/ark-plugin.html</a></li>
+<li>  Ark Biz 目录结构及其打包插件的使用
+<a href="https://link.zhihu.com/?target=https%3A//alipay.github.io/sofastack.github.io/docs/ark-biz.html">https://alipay.github.io/sofastack.github.io/docs/ark-biz.html</a></li>
+<li>  Ark Plugin 的工程示例
+<a href="https://link.zhihu.com/?target=https%3A//github.com/alipay/sofa-ark/tree/master/sofa-ark-samples/sample-ark-plugin">https://github.com/alipay/sofa-ark/tree/master/sofa-ark-samples/sample-ark-plugin</a></li>
+<li>  Spring Boot <a href="https://link.zhihu.com/?target=https%3A//github.com/alipay/sofa-ark/tree/master/sofa-ark-samples/sample-springboot-ark">https://github.com/alipay/sofa-ark/tree/master/sofa-ark-samples/sample-springboot-ark</a></li>
 </ul>
-
-<p>了解上面的参数信息后我们就可以定义自己的线程池了，我这边用 ArrayBlockingQueue 替换了 LinkedBlockingQueue，指定了队列的大小，当任务超出队列大小之后使用 CallerRunsPolicy 拒绝策略处理。</p>
-
-<p>这样做的好处是严格控制了队列的大小，不会出现一直往里面添加任务的情况，有的时候任务处理的比较慢，任务数量过多会占用大量内存，导致内存溢出。</p>
-
-<p>当然你也可以在提交到线程池的入口进行控制，比如用 CountDownLatch, Semaphore 等。</p>
-
-<pre><code>/** * 自定义线程池&lt;br&gt; * 默认的newFixedThreadPool里的LinkedBlockingQueue是一个无边界队列，如果不断的往里加任务，最终会导致内存的不可控&lt;br&gt; * 增加了有边界的队列，使用了CallerRunsPolicy拒绝策略 * @author yinjihuan * */public class FangjiaThreadPoolExecutor {    private static ExecutorService executorService = newFixedThreadPool(50);    private static ExecutorService newFixedThreadPool(int nThreads) {        return new ThreadPoolExecutor(nThreads, nThreads, 0L, TimeUnit.MILLISECONDS,                new ArrayBlockingQueue&lt;Runnable&gt;(10000), new DefaultThreadFactory(), new CallerRunsPolicy());    }    public static void execute(Runnable command) {        executorService.execute(command);    }    public static void shutdown() {        executorService.shutdown();    }    static class DefaultThreadFactory implements ThreadFactory {        private static final AtomicInteger poolNumber = new AtomicInteger(1);        private final ThreadGroup group;        private final AtomicInteger threadNumber = new AtomicInteger(1);        private final String namePrefix;        DefaultThreadFactory() {            SecurityManager s = System.getSecurityManager();            group = (s != null) ? s.getThreadGroup() :                                  Thread.currentThread().getThreadGroup();            namePrefix = &quot;FSH-pool-&quot; +                          poolNumber.getAndIncrement() +                         &quot;-thread-&quot;;        }        public Thread newThread(Runnable r) {            Thread t = new Thread(group, r,                                  namePrefix + threadNumber.getAndIncrement(),                                  0);            if (t.isDaemon())                t.setDaemon(false);            if (t.getPriority() != Thread.NORM_PRIORITY)                t.setPriority(Thread.NORM_PRIORITY);            return t;        }    }}
-</code></pre>
 
                         
                       </div>
@@ -371,7 +297,7 @@
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/5/28</span>
+                    <span class="date">2018/6/5</span>
                     <span>posted in&nbsp;</span> 
           				  
           					    <span class="posted-in"><a href='Microservice.html'>Microservice</a></span>
@@ -464,31 +390,31 @@
 	      
 		      
 			      <li class="post">
-			        <a href="15459058392039.html">Reliable Domain Events</a>
+			        <a href="15517999043443.html">The Art of Crafting Architectural Diagrams</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
+			        <a href="15517997955971.html">为什么说我们需要软件架构图？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
+			        <a href="15516128677869.html">DNS Servers That Offer Privacy and Filtering</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
+			        <a href="15516123108194.html">Airbnb's Migration from Monolith to Services</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
+			        <a href="15516097487470.html">Events As First-Class Citizens</a>
 			      </li>
 		     
 		  

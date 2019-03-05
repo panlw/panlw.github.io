@@ -105,244 +105,137 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15456638361570.html">
+                <a class="clearlink" href="15516097487470.html">
                 
-                  <h1>Spring boot metrics monitoring using TICK stack</h1>
+                  <h1>Events As First-Class Citizens</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
-                        	<pre><code>Mohammed Aboullaite | 08 Apr 2018 | 6 min (1537 words)
-</code></pre>
-
-<blockquote>
-<p>原文地址 <a href="https://aboullaite.me/spring-boot-metrics-monitoring-using-tick-stack/">https://aboullaite.me/spring-boot-metrics-monitoring-using-tick-stack/</a></p>
+                        	<blockquote>
+<p>原文地址 <a href="https://hackernoon.com/events-as-first-class-citizens-8633e8479493">https://hackernoon.com/events-as-first-class-citizens-8633e8479493</a></p>
 </blockquote>
 
-<p>Worth nothing to mention that monitoring the performance and availability of applications is very important. This is one of the many cool features bundled with Spring boot, which since its first days comes with production ready features (i.e Actuator) to help us keeping an eye on apps performance. With the release of spring boot 2, <a href="https://docs.spring.io/spring-boot/docs/current/reference/html/production-ready.html">Actuator</a> got a huge boost, offering dev/ops more application metrics facade that supports numerous monitoring systems.</p>
+<p>We’ve all heard of events and event-driven programming, but in my experience, events are not used nearly enough in our (software) lives. We often don’t appreciate how powerful this tool can be in our toolbox, and consequently we don’t take advantage of it when we really should.</p>
 
-<p>In this post, we&#39;ll see how we can easily monitor Spring boot applications using the <a href="https://www.influxdata.com/time-series-platform/">TICK stack</a>.</p>
+<p>In this post, I’ll discuss the lifecycle of a “fix” at Stitch Fix and how we use events to model it. I’ll suggest that we should think of events as a first-class citizen in our system, because they help us both to decouple parts of the system and to reason about them independently. Lastly, I’ll talk about how common it is to use events in the real world, and use the metaphor of software development itself to help develop intuition about event-based systems.</p>
 
-<p><img src="media/15456638361570/15456639113571.jpg" alt=""/></p>
+<h3 id="toc_0"><strong>The Lifecycle of a Fix</strong></h3>
 
-<h3 id="toc_0">The TICK stack ?!</h3>
+<p>At Stitch Fix, the engineering team builds and operates more than 70 individual applications and services, serving every aspect of Stitch Fix’s business. We have applications for our Merchandising team which is responsible for buying the clothes, our Warehouse Operations team which stores and ships them, and our thousands-strong Styling team which chooses them for our clients. We have applications used by our clients to schedule their Fixes, rate them, and pay for them. And we have applications used by our Client Experience team to help give our clients the best clothing purchase experience we can. Almost all of these applications and services operate on one or more of the core entities in our business — clients, items, fixes, etc. — in one way or another.</p>
 
-<p>The TICK stack is a collection of products from the developers of the time-series database InfluxDB. It is made up of the following components:</p>
+<p>To walk through just one motivating example, a nascent fix is created when a client tells us she’d like to receive it on a particular day (scheduling). Based on where and when that fix is shipping, we assign it to one of our warehouses around the US (warehouse assignment), and we make it available to be styled by one of our 3500 stylists (stylist assignment). The stylist selects 5 items she expects the client to enjoy (styling), and we’re ready to send it out. The warehouse team picks, packs, and ships the fix (shipping), and the client receives it on her doorstep. She keeps what she wants, and returns what she doesn’t (checkout). And the cycle is complete.</p>
+
+<p>We just described a moderately complicated workflow, with many individual steps, all operating on a single fix. Looked at through the lens of software engineering, the straightforward way to model this is as a state machine, with individual events that indicate that the fix has transitioned from one state to another. And that’s exactly how we implement it. Here’s a simplified representation of this workflow:</p>
 
 <ul>
-<li>  <strong>Telegraf</strong>: collects time-series data from a variety of sources.</li>
-<li>  <strong>InfluxDB</strong>: stores time-series data.</li>
-<li>  <strong>Chronograf</strong>: visualizes and graphs the time-series data.</li>
-<li>  <strong>Kapacitor</strong>: provides alerting and detects anomalies in time-series data.</li>
+<li>  Request a fix</li>
+<li>  -&gt; Fix is __scheduled_</li>
+<li>  Assign fix to warehouse</li>
+<li>  -&gt; Fix is __hizzy_assigned_ (we call our warehouses “hizzies”; don’t ask)</li>
+<li>  Assign fix to a stylist</li>
+<li>  -&gt; Fix is __stylist_assigned_</li>
+<li>  Style the fix</li>
+<li>  -&gt; Fix is __styled_</li>
+<li>  Pick the items for the fix</li>
+<li>  -&gt; Fix is __picked_</li>
+<li>  Pack the items into a box</li>
+<li>  -&gt; Fix is __packed_</li>
+<li>  Ship the fix via a shipping carrier</li>
+<li>  -&gt; Fix is __shipped_</li>
+<li>  Fix travels (as actual atoms!) to the client</li>
+<li>  -&gt; Fix is __delivered_</li>
+<li>  Client decides what to keep and return, pays for her fix</li>
+<li>  -&gt; Fix is __checked_out_</li>
 </ul>
 
-<p>We can use each of these components separately, but if we use them together, we&#39;ll have a scalable, integrated open-source system for processing time-series data.</p>
-
-<h3 id="toc_1">Configuring the TICK stack and spring boot</h3>
-
-<p>As I mentioned above, Spring Boot 2 actuator comes bundled with metrics facade easily integrated with many monitoring platforms including the Tick stack.</p>
-
-<h4 id="toc_2">Configuring Spring Boot</h4>
-
-<p>First of all we need, obviously, to add spring boot actuator dependency to our application:</p>
-
-<pre><code>&lt;dependency&gt;  
-            &lt;groupId&gt;org.springframework.boot&lt;/groupId&gt;
-            &lt;artifactId&gt;spring-boot-starter-actuator&lt;/artifactId&gt;
-            &lt;version&gt;${actuator.version}&lt;/version&gt;
-        &lt;/dependency&gt;
-
-</code></pre>
-
-<p>If you are using spring boot 2, Actuator autoconfigure micrometer magically. if not and you&#39;re using a previous version, please check <a href="https://micrometer.io/docs/ref/spring/1.5">these configuration steps</a>.</p>
-
-<p>On the other hand, <a href="https://www.influxdata.com/time-series-platform/telegraf/">Telegraf</a> is an agent written in Go and accepts StatsD protocol metrics over UDP, then periodically forwards the metrics to InfluxDB. <a href="https://micrometer.io/">Micrometer</a> supports three flavors of StatsD: the original <code>Etsy</code> format plus the <code>Datadog</code> and <code>Telegraf</code> extensions of StatsD that add dimensional support. Obviously we&#39;re going to use this registry to publish metrics to telegraf. For that we need to add these lines to our <code>application.properties</code> file:</p>
-
-<pre><code>management.metrics.export.statsd.enabled=true  
-management.metrics.export.statsd.flavor=telegraf  
-management.metrics.export.statsd.port=8125  
-
-</code></pre>
-
-<h4 id="toc_3">Configuring the TICK stack</h4>
-
-<p>The <code>docker-compose</code> file below configures 4 services:</p>
+<p>Several things immediately come to mind:</p>
 
 <ul>
-<li>  <code>telegraf</code> service to collect data sent by micrometer. This service is configured using the <code>./etc/telegraf.conf</code> file. this service expose the port <code>8125</code> used by Actuator to send metrics</li>
-<li>  <code>influxdb</code> service that stores data sent from telegraf. we mount a volume to <code>./data/influxdb</code> to save data on host disk. It expose the port <code>8086</code> to access influxdb API.</li>
-<li>  <code>chronograf</code> service to visualize influxdb data, create dashboards and show alerts triggered from kapacitor. this service expose port <code>8888</code> to access this web application.</li>
-<li>  <code>kapacitor</code> service, analyse influxdb data and triggers alerts.</li>
+<li>  As the fix moves happily along, different applications or services do something with it, by enriching it with more (meta)data, by connecting it up with something else, or by doing something physical with the goods or the packaging. That doing of the something will take the fix from one state to another (_state transitions_).</li>
+<li>  The next application or service can only do its work when the previous one has done its, and consequently needs to know when to step up (_events_).</li>
+<li>  We can’t skip any of these steps, or there would be something missing — in many cases, quite literally. Said another way, from a given state, it’s only possible to go to a subset of the other states (_state machine_).</li>
+<li>  If we just remembered the current state of things — where the fix is right now — we’d be missing a lot. We want to be able to ask where the fix is right now, but we also want to know where it has been, how long it was there, and when it moved to the next step. So if we only stored its current-state in some database table and nothing else about it, we’d be stuck. Instead we need to also record all the steps along the way.</li>
 </ul>
 
-<pre><code>version: &#39;3&#39;
+<h3 id="toc_1"><strong>Events as a First-Class Citizen</strong></h3>
 
-services:  
-  # Define a Telegraf service
-  telegraf:
-    image: telegraf:1.5.3
-    volumes:
-      - ./etc/telegraf.conf:/etc/telegraf/telegraf.conf:ro
-    links:
-      - influxdb
-    ports:
-      - &quot;8125:8125/udp&quot;
-  # Define an InfluxDB service
-  influxdb:
-    image: influxdb:1.5.1
-    volumes:
-      - ./data/influxdb:/var/lib/influxdb
-    ports:
-      - &quot;8086:8086&quot;
-  # Define a Chronograf service
-  chronograf:
-    image: chronograf:1.4.3.1
-    environment:
-      INFLUXDB_URL: http://influxdb:8086
-      KAPACITOR_URL: http://kapacitor:9092
-    ports:
-      - &quot;8888:8888&quot;
-    links:
-      - influxdb
-      - kapacitor
-  # Define a Kapacitor service
-  kapacitor:
-    image: kapacitor:1.4.1
-    environment:
-      KAPACITOR_HOSTNAME: kapacitor
-      KAPACITOR_INFLUXDB_0_URLS_0: http://influxdb:8086
-    links:
-      - influxdb
-    ports:
-      - &quot;9092:9092&quot;
-
-</code></pre>
-
-<p>The <code>telegraf.conf</code> file I&#39;ve used is very minimalist. it configures the telegraf agent properties as well as StatsD as input plugin and influxdb as output plugin:</p>
-
-<pre><code># Telegraf Configuration
-# Global tags can be specified here in key=&quot;value&quot; format.
-[global_tags]
-# Configuration for telegraf agent
-[agent]
-## Default data collection interval for all inputs
-interval = &quot;10s&quot;  
-## Rounds collection interval to &#39;interval&#39;
-round_interval = true  
-## This controls the size of writes that Telegraf sends to output plugins.
-metric_batch_size = 1000  
-## This buffer only fills when writes fail to output plugin(s).
-metric_buffer_limit = 10000  
-## Collection jitter is used to jitter the collection by a random amount.
-collection_jitter = &quot;0s&quot;  
-flush_interval = &quot;10s&quot;  
-flush_jitter = &quot;0s&quot;  
-precision = &quot;&quot;
-
-## Logging configuration:
-debug = false  
-## Run telegraf in quiet mode (error log messages only).
-quiet = false  
-## Specify the log file name. The empty string means to log to stderr.
-logfile = &quot;&quot;  
-## Override default hostname, if empty use os.Hostname()
-hostname = &quot;&quot;  
-## If set to true, do no set the &quot;host&quot; tag in the telegraf agent.
-omit_hostname = false
-
-###############################################################################
-#                            OUTPUT PLUGINS                                   #
-###############################################################################
-
-# Configuration for influxdb server to send metrics to
-[[outputs.influxdb]]
-## The full HTTP or UDP URL for your InfluxDB instance.
-urls = [&quot;http://influxdb:8086&quot;] # required  
-## The target database for metrics (telegraf will create it if not exists).
-database = &quot;telegraf&quot; # required
-
-## Name of existing retention policy to write to.  Empty string writes to
-## the default retention policy.
-retention_policy = &quot;&quot;  
-## Write consistency (clusters only), can be: &quot;any&quot;, &quot;one&quot;, &quot;quorum&quot;, &quot;all&quot;
-write_consistency = &quot;any&quot;
-
-## Write timeout (for the InfluxDB client), formatted as a string.
-timeout = &quot;5s&quot;
-
-###############################################################################
-#                            INPUT PLUGINS                                    #
-###############################################################################
-
-# # Statsd UDP/TCP Server
- [[inputs.statsd]]
-#   ## Protocol, must be &quot;tcp&quot;, &quot;udp&quot;, &quot;udp4&quot; or &quot;udp6&quot; (default=udp)
-   protocol = &quot;udp&quot;
-#
-#   ## MaxTCPConnection - applicable when protocol is set to tcp (default=250)
-   max_tcp_connections = 250
-#
-#   ## Address and port to host UDP listener on
-   service_address = &quot;:8125&quot;
-#
-#   ## The following configuration options control when telegraf clears it&#39;s cache
-#   ## of previous values. If set to false, then telegraf will only clear it&#39;s
-#   ## cache when the daemon is restarted.
-#   ## Reset gauges every interval (default=true)
-   delete_gauges = true
-#   ## Reset counters every interval (default=true)
-   delete_counters = true
-#   ## Reset sets every interval (default=true)
-   delete_sets = true
-#   ## Reset timings &amp; histograms every interval (default=true)
-   delete_timings = true
-#
-#   ## Percentiles to calculate for timing &amp; histogram stats
-   percentiles = [90]
-#
-#   ## separator to use between elements of a statsd metric
-   metric_separator = &quot;_&quot;
-#
-#   ## Parses tags in the datadog statsd format
-#   ## http://docs.datadoghq.com/guides/dogstatsd/
-   parse_data_dog_tags = false
-#   ## Number of UDP messages allowed to queue up, once filled,
-#   ## the statsd server will start dropping packets
-   allowed_pending_messages = 10000
-#
-#   ## Number of timing/histogram values to track per-measurement in the
-#   ## calculation of percentiles. Raising this limit increases the accuracy
-#   ## of percentiles but also increases the memory usage and cpu time.
-   percentile_limit = 1000
-
-</code></pre>
-
-<h4 id="toc_4">Show me the graphs</h4>
-
-<p>If everything is good, you should see metrics stored in <code>influxdb</code> from the <code>chronograf</code> application. The UX is so fluent and lean. After 5 min only I was able to build this very simple dashboard:<br/>
-<img src="media/15456638361570/15456639407892.jpg" alt=""/><br/>
-Yaaay visibility!</p>
-
-<h3 id="toc_5">Configuring alerts</h3>
-
-<p>One of the great features of the TICK stack is the alerting and detecting anomalies in the data. It support many alert endpoints(TCP, HipChat, Slack, SMTP, Talk, log, Telegram ...). The configuration of <code>Kapacitor</code> from <code>chronograf</code> is very easy and straightforward. I&#39;ve set up a <code>Memory usage</code> alert in a matter of seconds. (Well, it&#39;s a very basic alert! configuring real world, complexe alerts will need more time obviously ;))<br/>
-<img src="media/15456638361570/15456639514924.jpg" alt=""/></p>
-
-<p>The <a href="https://docs.influxdata.com/chronograf/v1.4/guides/create-a-kapacitor-alert/">official documentation</a> explains the required step to create your first alert!</p>
-
-<h3 id="toc_6">Securing Chronograf</h3>
-
-<p>The community edition of the TICK stack does not ship with security by default. To secure <code>Chronograf</code> we can put it behind a web server and configure Basic authentication. The second option, which I prefer, would be to use <a href="https://www.keycloak.org/">keycloak</a> proxy as I explained previously in <a href="https://github.com/aboullaite/kibana-keycloak">this post</a>!</p>
-
-<hr/>
-
-<h5 id="toc_7">Ressources</h5>
+<p>Notice that if we only had the standard tools of the classic 3-tier architecture at our disposal, we’d be in trouble. We’re all familiar with these three fundamental application building blocks:</p>
 
 <ul>
-<li>  <a href="https://micrometer.io/docs">https://micrometer.io/docs</a></li>
-<li>  <a href="https://docs.spring.io/spring-boot/docs/current/reference/htmlsingle/#production-ready">https://docs.spring.io/spring-boot/docs/current/reference/htmlsingle/#production-ready</a></li>
-<li>  <a href="https://www.influxdata.com/time-series-platform/">https://www.influxdata.com/time-series-platform/</a></li>
-<li>  <a href="https://www.digitalocean.com/community/tutorials/how-to-monitor-system-metrics-with-the-tick-stack-on-centos-7">https://www.digitalocean.com/community/tutorials/how-to-monitor-system-metrics-with-the-tick-stack-on-centos-7</a></li>
+<li>  Presentation: The user interface where the user interacts with the system</li>
+<li>  Application: The “business logic” where we do the work, typically statelessly</li>
+<li>  Persistence: The place where we store things, typically in a database</li>
+</ul>
+
+<p>I strongly believe that events represent a fourth fundamental building block:</p>
+
+<ul>
+<li>  Event: The statement that an interesting thing happened, or, according to Wikipedia, “_a significant change in state_”</li>
+</ul>
+
+<p>In a [micro]services architecture like we have at Stitch Fix, a given application or service might be a producer of events, a consumer of events, or both. For example, the styling application listens for the __stylist_assigned_ event, and displays all the information needed to the stylist for her to style the fix. When she is done with the fix, she clicks the “Ship It” button, which (among other things) publishes the __styled_ event. The warehouse services listen for that event, and can start their work, etc.</p>
+
+<p>Consuming these events and producing these events are first-class parts of these applications and services; they need these events to do their jobs. So when we talk about the “interface” of one of these services, let’s make this explicit. A service interface includes:</p>
+
+<ul>
+<li>  Synchronous request-response operations (e.g., for use, this is REST/JSON, but it could just as easily be over gRPC, Thrift, etc.)</li>
+<li>  Events the service produces</li>
+<li>  Events the service consumes</li>
+<li>  Bulk reads and writes (e.g., an ETL that extracts data from the service into an analytics system)</li>
+</ul>
+
+<p>More generally, a service’s interface includes any mechanism for getting data into or out of the service. As a service owner or a service consumer, we forget this at our own peril.</p>
+
+<h3 id="toc_2"><strong>Events as Decoupling</strong></h3>
+
+<p>The producer of an event publishes it, and zero or more consumers subscribe to it. Maybe no one is listening; maybe one is; maybe many are. The producer does not know or care. This gives the nice property that the producer and consumer are completely decoupled from one another. We can add more consumers, remove them, or scale them up and down — without the producer being any the wiser.</p>
+
+<h3 id="toc_3"><strong>Events as Record</strong></h3>
+
+<p>Once we represent all the interesting state transitions for our entity as events, we can use those events as a record of what happened to that entity, and when. This is hugely valuable when we want to go back and see what went on. It’s common for our client experience team (think “customer support”, but with more smiles and empathy) to look up the history of a fix when they are trying to help out a client. It’s common for our data science team to use the events around a fix to optimize various aspects of our workflow. And it’s common for our engineering team to use this as a debugging and diagnosis tool.</p>
+
+<p>Taking this idea to its logical conclusion, we could imagine <em>only</em> retaining the events and never bothering to store the current state in any permanent way. After all we can always simply reconstruct it by playing the events forward. This is such a clever idea that people have already thought of it — it is called “event sourcing” (see the many writings of <a href="https://goodenoughsoftware.net/tag/event-sourcing/">Greg Young</a>, <a href="http://microservices.io/patterns/data/event-sourcing.html">Chris Richardson</a>, etc.), and it has a lot of wonderful resilience properties, particularly in distributed systems. In fact, there are entire software systems based on this idea (<a href="https://eventstore.org/">Event Store</a>, <a href="https://www.confluent.io/blog/apache-kafka-for-service-architectures/">Kafka</a>, <a href="https://doc.akka.io/docs/akka/2.5.4/scala/persistence.html#event-sourcing">Akka Persistence</a>, etc.). It’s also, of course, exactly how double-entry booking works in accounting, so even these (very smart) people were <a href="https://en.wikipedia.org/wiki/Double-entry_bookkeeping_system">preempted by the Medici 700 years ago</a>.</p>
+
+<h3 id="toc_4"><strong>Events are How the Real World Works™</strong></h3>
+
+<p>I often hear that it’s hard for developers to think in terms of events. It can feel a bit counterintuitive if you’re used to building the classic three-tier. What can trip people up is that at any given moment something might have happened in one part of our system, but the effects of that action are not yet visible in the other areas of our system. We use words like “eventual consistency” and “asynchrony” here, and they’ve earned their reputation for being hard to reason about. But I’d like to suggest that you have a lot more intuition about events than you think you do. If you can think about your problem as a workflow, you’re more than halfway there.</p>
+
+<p>So let’s take an example that will be familiar to every software engineer. Imagine a typical modern software development process, where we write code, check it into source control, test it, stage it, and deploy it. We often talk about this as a “lifecycle” or “pipeline” or “workflow”. Well, that sounds a lot like events. Let’s see.</p>
+
+<ul>
+<li>  Write code</li>
+<li>  -&gt; code is __submitted_</li>
+<li>  Test code</li>
+<li>  -&gt; code is __tested_</li>
+<li>  Deploy it to a staging server</li>
+<li>  -&gt; code is __staged_</li>
+<li>  Deploy it to production</li>
+<li>  -&gt; code is __deployed_</li>
+</ul>
+
+<p>This seems super-familiar — we do this every day! And it’s not just a tangential thing off in the corner; for most of us, this is our job.</p>
+
+<p>Think if this did not behave like an asynchronous workflow, and we did all of this synchronously. Imagine that every time you hit return in your IDE, your code would be deployed to production. I’m all for continuous delivery, believe me, but this would be crazy.</p>
+
+<p>So this idea that you can’t reason about systems where there is an “inconsistency” between one part of the system and another is a little silly. For much of the day, your code has one version on your laptop, and another “stale” version in production, and everything works just fine.</p>
+
+<h3 id="toc_5"><strong>Conclusion</strong></h3>
+
+<p>Thanks for reading this far. If you have, I hope I’ve got you thinking that you should reach for the “event” tool in your toolbox more often. It can help you in many ways.</p>
+
+<p>And if you’re having trouble reasoning about events, just think about what you do for 8, 10, 12 hours every day.</p>
+
+<h3 id="toc_6"><strong>Helpful Resources</strong></h3>
+
+<p>If you are interested in deepening your knowledge of events and event-driven systems, check out:</p>
+
+<ul>
+<li>  <a href="https://www.infoq.com/presentations/microservices-data-centric">Managing Data in Microservices</a>, slides / video from my talk at QCon New York 2017</li>
+<li>  <a href="https://www.youtube.com/watch?v=STKCRSUsyP0">The Many Meanings of Event-Driven Architecture</a>, video of <a href="https://martinfowler.com/">Martin Fowler</a>’s keynote at GOTO Chicago 2017</li>
+<li>  <a href="http://microservices.io/patterns/data/event-sourcing.html">Microservices and the Event Sourcing Pattern</a>, by <a href="http://chrisrichardson.net/">Chris Richardson</a></li>
+<li>  <a href="https://www.youtube.com/watch?v=JHGkaShoyNs">CQRS and Event Sourcing</a>, by <a href="https://goodenoughsoftware.net/">Greg Young</a></li>
+<li>  <a href="http://www.enterpriseintegrationpatterns.com/">Enterprise Integration Patterns</a>, the classic oldie-but-still-very-much-goodie book and pattern collection by <a href="http://www.enterpriseintegrationpatterns.com/gregor.html">Gregor Hohpe</a></li>
 </ul>
 
                         
@@ -352,10 +245,10 @@ Yaaay visibility!</p>
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/12/24</span>
+                    <span class="date">2019/3/3</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Spring.html'>Spring</a></span>
+          					    <span class="posted-in"><a href='MQ.html'>MQ</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -445,31 +338,31 @@ Yaaay visibility!</p>
 	      
 		      
 			      <li class="post">
-			        <a href="15459058392039.html">Reliable Domain Events</a>
+			        <a href="15517999043443.html">The Art of Crafting Architectural Diagrams</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
+			        <a href="15517997955971.html">为什么说我们需要软件架构图？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
+			        <a href="15516128677869.html">DNS Servers That Offer Privacy and Filtering</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
+			        <a href="15516123108194.html">Airbnb's Migration from Monolith to Services</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
+			        <a href="15516097487470.html">Events As First-Class Citizens</a>
 			      </li>
 		     
 		  

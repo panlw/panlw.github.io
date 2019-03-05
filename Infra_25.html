@@ -105,397 +105,1024 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15301794059091.html">
+                <a class="clearlink" href="15331749691571.html">
                 
-                  <h1>架构设计：负载均衡层设计方案（2）——Nginx 安装</h1>
+                  <h1>基于ZooKeeper的分布式锁和队列</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://blog.csdn.net/yinwenjie/article/details/46620711">https://blog.csdn.net/yinwenjie/article/details/46620711</a></p>
+<p><a href="http://www.cnblogs.com/luxiaoxun/p/4889764.html">http://www.cnblogs.com/luxiaoxun/p/4889764.html</a></p>
 </blockquote>
 
-<p>前一篇文章<a href="http://blog.csdn.net/yinwenjie/article/details/46605451">《架构设计：负载均衡层设计方案（1）——负载场景和解决方式》</a>中我们描述了要搭设负载均衡层的业务场景和负载均衡层搭建和扩展思路。从这篇文章开始的后几篇文章，我们将详细介绍 Nginx、LVS 和 Nginx+Keepalived、LVS+Keepalived 和 LVS+Nginx+Keepalived 的安装细节，以及它们的性能优化方式。</p>
+<p>在分布式系统中，往往需要一些分布式同步原语来做一些协同工作，<a href="http://www.cnblogs.com/luxiaoxun/p/4887452.html">上一篇</a>文章介绍了 Zookeeper 的基本原理，本文介绍下基于 Zookeeper 的 Lock 和 Queue 的实现，主要代码都来自 Zookeeper 的官方 recipe。</p>
 
-<p>Nginx 和 LVS 都是可以独立工作的，Keepalived 作为检测机制，不但可以和 Nginx、LVS 集成也可以和其他软件集成形成高可用方案（例如可以和 MySQL 数据库集成、可以和 Jetty 服务器集成、还可以和自己写的程序集成）。所以首先我们先来详细讲述 Nginx 和 LVS 的核心工作原理、安装过程和优化方式，再分别讲解他们和 Keepalived 的集成方式。这样的方式应该可以使您更快的掌握其中的核心，并能最快的融会贯通。</p>
+<h3 id="toc_0">锁（Lock）</h3>
 
-<h1 id="toc_0"><a></a>1、Nginx 重要算法介绍</h1>
+<p>完全分布式锁是全局同步的，这意味着在任何时刻没有两个客户端会同时认为它们都拥有相同的锁，使用 Zookeeper 可以实现分布式锁，需要首先定义一个锁节点（lock root node）。</p>
 
-<p>Nginx 是什么，请自行百度。我们先介绍几个关键的算法，如果您还不了解这些算法在 Nginx 中所起的作用，请不要着急，本文后半部分将说明它们的作用。</p>
+<p>需要获得锁的客户端按照以下步骤来获取锁：</p>
 
-<h2 id="toc_1"><a></a>1.1、一致性 Hash 算法</h2>
+<ol>
+<li> 保证锁节点（lock root node）这个父根节点的存在，这个节点是每个要获取 lock 客户端共用的，这个节点是 PERSISTENT 的。</li>
+<li><p>第一次需要创建本客户端要获取 lock 的节点，调用 create( )，并设置 节点为 EPHEMERAL_SEQUENTIAL 类型，表示该节点为临时的和顺序的。如果获取锁的节点挂掉，则该节点自动失效，可以让其他节点获取锁。</p></li>
+<li><p>在父锁节点（lock root node）上调用 getChildren() ，不需要设置监视标志。 (为了避免 “羊群效应”).</p></li>
+<li><p>按照 Fair 竞争的原则，将步骤 3 中的子节点（要获取锁的节点）按照节点顺序的大小做排序，取出编号最小的一个节点做为 lock 的 owner，判断自己的节点 id<br/>
+是否就为 owner id，如果是则返回，lock 成功。如果不是则调用 exists( ) 监听比自己小的前一位的 id，关注它锁释放的操作（也就是 exist watch）。</p></li>
+<li><p>如果第 4 步监听 exist 的 watch 被触发，则继续按 4 中的原则判断自己是否能获取到 lock。</p></li>
+</ol>
 
-<p><img src="https://img-blog.csdn.net/20150703172857890" alt=""/></p>
+<p>释放锁：需要释放锁的客户端只需要删除在第 2 步中创建的节点即可。</p>
 
-<p>一致性 Hash 算法是现代系统架构中的最关键算法之一，在分布式计算系统、分布式存储系统、数据分析等众多领域中广泛应用。针对这个系列的博文，在负载均衡层、业务通信层、数据存储层都会有他的身影。</p>
+<p>注意事项：</p>
 
-<ul>
-<li><p>hash 算法的关键在于它能够根据不同的属性数据，生成一串不相同的 hash 值，并且能够将这个 hash 值转换为</p>
+<p>一个节点的删除只会导致一个客户端被唤醒，因为每个节点只被一个客户端 watch，这避免了 “羊群效应”。</p>
 
-<p><span class="MathJax" id="MathJax-Element-1-Frame" tabindex="0" style="text-align: center; position: relative;" data-mathml="<math xmlns=&quot;http://www.w3.org/1998/Math/MathML&quot; display=&quot;block&quot;><nobr aria-hidden="true">0—232−1</nobr><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><mn>0</mn><mo>—</mo><msup><mn>2</mn><mrow class="MJX-TeXAtom-ORD"><mn>32</mn></mrow></msup><mo>−</mo><mn>1</mn></math><script type="math/tex; mode=display" id="MathJax-Element-1">0 — 2<sup>{32}-1</script>范围整数（即上图中的圆环）<mn>0</mn><mo>&amp;#x2014;</mo><msup><mn>2</mn>&lt;mrow</sup> class=&quot;MJX-TeXAtom-ORD&quot;&gt;<mn>32</mn></mrow></msup><mo>&amp;#x2212;</mo><mn>1</mn></math>&quot; role=&quot;presentation&quot;&gt;</span></p></li>
-<li><p>一台服务器的某个或者某一些属性当然也可以进行 hash 计算（通常是这个服务器的 IP 地址和开放端口），并且根据计算分布在这个圆环上的某一个点。也就是图中圆环上的蓝色点。</p></li>
-<li><p>一个处理请求当然也可以根据这个请求的某一个或者某一些属性进行 hash 计算（可以是这个请求的 IP、端口、cookie 值、URL 值或者请求时间等等），并且根据计算记过分布在这个圆环上的某一个点上。也就是上图圆环上的黄色点。</p></li>
-<li><p>我们约定落在某一个蓝点 A 左侧和蓝点 B 右侧的黄色点所代表的请求，都有蓝点 A 所代表的服务器进行处理，这样就完成解决了 “谁来处理” 的问题。在蓝色点稳定存在的前提下，来自于同一个 Hash 约定的请求所落在的位置都是一样的，这就保证了服务处理映射的稳定性。</p></li>
-<li><p>当某一个蓝色点由于某种原因下线，其所影响到的黄色点也是有限的。即下一次客户端的请求将由其他的蓝色点所代表的服务器进行处理。</p></li>
-</ul>
+<p>一个分布式 lock 的实现：</p>
 
-<h2 id="toc_2"><a></a>1.2、轮询与加权轮询</h2>
+<pre><code class="language-java">package org.apache.zookeeper.recipes.lock;
 
-<p><img src="https://img-blog.csdn.net/20150705093244323" alt=""/></p>
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.apache.zookeeper.KeeperException;
+import org.apache.zookeeper.WatchedEvent;
+import org.apache.zookeeper.Watcher;
+import static org.apache.zookeeper.CreateMode.EPHEMERAL_SEQUENTIAL;
+import org.apache.zookeeper.ZooKeeper;
+import org.apache.zookeeper.data.ACL;
+import org.apache.zookeeper.data.Stat;
 
-<ul>
-<li><p>当有任务需要传递到下层节点进行处理时，任务来源点会按照一个固定的顺序，将任务依次分配到下层节点，如果下层可用的节点数量为 X，那么第 N 个任务的分配规则为：</p>
+import java.util.List;
+import java.util.SortedSet;
+import java.util.TreeSet;
 
-<p><span class="MathJax" id="MathJax-Element-2-Frame" tabindex="0" style="text-align: center; position: relative;" data-mathml="<math xmlns=&quot;http://www.w3.org/1998/Math/MathML&quot; display=&quot;block&quot;><nobr aria-hidden="true">目标节点 =(NmodX)+1</nobr> <math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><mrow class="MJX-TeXAtom-ORD"><mo>目</mo></mrow><mrow class="MJX-TeXAtom-ORD"><mo>标</mo></mrow><mrow class="MJX-TeXAtom-ORD"><mo>节</mo></mrow><mrow class="MJX-TeXAtom-ORD"><mo>点</mo></mrow> <mo>=</mo><mo stretchy="false">(</mo><mi>N</mi><mi>m</mi><mi>o</mi><mi>d</mi><mi>X</mi><mo stretchy="false">)</mo><mo>+</mo><mn>1</mn></math> <script type="math/tex; mode=display" id="MathJax-Element-2">目标节点 = (N mod X) + 1</script><mrow class=&quot;MJX-TeXAtom-ORD&quot;><mo>&amp;#x76EE;</mo></mrow><mrow class=&quot;MJX-TeXAtom-ORD&quot;><mo>&amp;#x6807;</mo></mrow><mrow class=&quot;MJX-TeXAtom-ORD&quot;><mo>&amp;#x8282;</mo></mrow><mrow class=&quot;MJX-TeXAtom-ORD&quot;><mo>&amp;#x70B9;</mo></mrow><mo>=</mo><mo stretchy=&quot;false&quot;>(</mo><mi>N</mi><mi>m</mi><mi>o</mi><mi>d</mi><mi>X</mi><mo stretchy=&quot;false&quot;>)</mo><mo>+</mo><mn>1</mn></math>&quot; role=&quot;presentation&quot;&gt;</span></p></li>
-<li><p>轮询处理在很多架构思想中都有体现：DNS 解析多 IP 时、LVS 向下转发消息时、Nginx 向下转发消息时、Zookeeper 向计算节点分配任务时。了解基本的轮询过程有助于我们在进行软件架构设计时进行思想借鉴。</p></li>
-<li><p>但是上面的轮询方式是有缺陷的，由于各种客观原因我们可能无法保证任务处理节点的处理能力都是一样的（CPU、IO、内存频率等不同）。所以 A 节点业务能同时处理 100 个任务，但是 B 节点可能同时只能处理 50 个任务。</p></li>
-<li><p>在这种情况下我们需要依据下层节点某个或者多个属性设置权值。这个属性可能是网络带宽、CPU 繁忙程度或者就是各一个固定的权值。</p></li>
-</ul>
+/**
+ * A &lt;a href=&quot;package.html&quot;&gt;protocol to implement an exclusive
+ *  write lock or to elect a leader&lt;/a&gt;. &lt;p/&gt; You invoke {@link #lock()} to 
+ *  start the process of grabbing the lock; you may get the lock then or it may be 
+ *  some time later. &lt;p/&gt; You can register a listener so that you are invoked 
+ *  when you get the lock; otherwise you can ask if you have the lock
+ *  by calling {@link #isOwner()}
+ *
+ */
+public class WriteLock extends ProtocolSupport {
+    private static final Logger LOG = LoggerFactory.getLogger(WriteLock.class);
 
-<p>那么加权轮询的分配依据是什么呢？有很多分配依据，例如：概率算法（此算法中包括蒙特卡罗算法，拉斯维加斯算法和舍伍德算法，在网络上有很多介绍资料）、最大公约数法。这里我们对最大公约数算法进行介绍，因为该方法简单实用：</p>
+    private final String dir;
+    private String id;
+    private ZNodeName idName;
+    private String ownerId;
+    private String lastChildId;
+    private byte[] data = {0x12, 0x34};
+    private LockListener callback;
+    private LockZooKeeperOperation zop;
 
-<p><img src="https://img-blog.csdn.net/20150705113306874" alt=""/></p>
-
-<ul>
-<li><p>首先按照某种规则计算得到每个处理节点的权值，上文已经说到计算规则可能是这个服务节点的 CPU 利用率、网络占用情况或者在配置文件中的固定权重。</p></li>
-<li><p>求这些权值的最大公约数，在上图中三个节点的权值分别是 100、80、60. 那么求得的最大公约数就是 20（如果您忘记了最大公约数的定义，请自行复习）。那么这三个节点的被除结果分别是 5、4、3，求和值为 12。</p></li>
-<li><p>得到以上的计算结果，就可以开始进行请求分配了，公式同样为：</p>
-
-<p><span class="MathJax" id="MathJax-Element-3-Frame" tabindex="0" style="text-align: center; position: relative;" data-mathml="<math xmlns=&quot;http://www.w3.org/1998/Math/MathML&quot; display=&quot;block&quot;><nobr aria-hidden="true">(NmodX)+1=Y</nobr><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><mo stretchy="false">(</mo><mi>N</mi><mi>m</mi><mi>o</mi><mi>d</mi><mi>X</mi><mo stretchy="false">)</mo><mo>+</mo><mn>1</mn><mo>=</mo><mi>Y</mi></math><script type="math/tex; mode=display" id="MathJax-Element-3">(N mod X) + 1 = Y</script><br/>
-其中 N 表示当前的第 N 次任务；X 表示整除后的求和结果；Y 为处理节点。<mo stretchy=&quot;false&quot;>(</mo><mi>N</mi><mi>m</mi><mi>o</mi><mi>d</mi><mi>X</mi><mo stretchy=&quot;false&quot;>)</mo><mo>+</mo><mn>1</mn><mo>=</mo><mi>Y</mi></math>&quot; role=&quot;presentation&quot;&gt;</span></p></li>
-</ul>
-
-<blockquote>
-<p>总结一下：加权轮询是轮询方案的补充，通过将处理节点的属性转换成权值可以有效的描述处理节点的处理能力，实现更科学的处理任务分配。加权轮询的关键在于加权算法，最大公约数算法简单实用，定位效率高。</p>
-</blockquote>
-
-<h1 id="toc_3"><a></a>2、Nginx 的安装</h1>
-
-<h2 id="toc_4"><a></a>2.1、准备工作</h2>
-
-<p>操作系统：centOS 6.5。</p>
-
-<p>Nginx 的下载地址：<a href="http://nginx.org/en/download.html">http://nginx.org/en/download.html</a>。请下载 stable 的版本 1.8.0。后续 Nginx 肯定还会有升级，官网上面会持续更新 stable version。</p>
-
-<p>最小必备组件：<br/>
-yum -y install make zlib zlib-devel gcc gcc-c++ ssh libtool</p>
-
-<h2 id="toc_5"><a></a>2.2、正式安装</h2>
-
-<ul>
-<li><p>下载 nginx1.8.0 版本<br/>
-<img src="https://img-blog.csdn.net/20150705120030369" alt=""/></p></li>
-<li><p>解压 nginx 的 tar 文件<br/>
-<img src="https://img-blog.csdn.net/20150705120225553" alt=""/></p></li>
-<li><p>进行源码编译<br/>
-<img src="https://img-blog.csdn.net/20150705120707338" alt=""/></p></li>
-</ul>
-
-<p>我们看到这时编译检查报错，报错写得很清楚，为了支持 HTTP 重写模块，Nginx 需要 PCRElib 的支持。那我们到 <a href="http://ncu.dl.sourceforge.net/project/pcre/pcre/8.37/pcre-8.37.tar.gz">http://ncu.dl.sourceforge.net/project/pcre/pcre/8.37/pcre-8.37.tar.gz</a> 下载一个稳定的 pcre 版本编译安装即可（不一定是 8.37 版本）。</p>
-
-<ul>
-<li><p>再进行源码编译安装<br/>
-./configure –prefix=/usr/nginx-1.8.0<br/>
-make &amp;&amp; make install<br/>
-<img src="https://img-blog.csdn.net/20150705130214392" alt=""/></p></li>
-<li><p>整个验证、编译、安装过程不应该报任何错误。如果您使用 prefix 设置了安装目标目录，那么可能您还需要在 / etc/profix 文件中设置环境变量：<br/>
-<img src="https://img-blog.csdn.net/20150705130747519" alt=""/></p></li>
-</ul>
-
-<h2 id="toc_6"><a></a>2.3、安装验证和启动</h2>
-
-<p>下面介绍几个 nginx 常用的命令，如果您可以正常使用这些命令，那么说明 nginx 已经安装成功了。</p>
-
-<p>nginx：直接在命令行键入 nginx，就可以启动 nginx。</p>
-
-<p>nginx -t：检查配置文件是否正确。这个命令可以检查 nginx.conf 配置文件其格式、语法是否正确。如果配置文件存在错误，则会出现相应提示；如果 nginx.conf 文件正确，也会出现相应的成功提示。</p>
-
-<p>nginx -s reload：重加载 / 重启 nginx——以新的 nginx.conf 配置文件中的定义。</p>
-
-<p>nginx -s stop：停止 nginx。</p>
-
-<h1 id="toc_7"><a></a>3、进阶</h1>
-
-<p>Nginx 在安装完成后，不用更改任何配置信息就可以直接运行。但是很显然这不会满足我们生产环境的要求。所以我们要重点介绍 Nginx 的配置文件，以及其中重要的配置项的含义。</p>
-
-<h2 id="toc_8"><a></a>3.1、重要配置项</h2>
-
-<p>如果您是按照本文的描述方式安装的 Nginx，那么 Nginx 的主配置文件在：/usr/nginx-1.8.0/conf/nginx.conf 的位置，如果您在编译安装的时候并没有指定安装目录，那么 Nginx 的主配置文件在：/usr/local/nginx/conf/nginx.conf 的位置。当然您还可以在启动 Nginx 的时候使用 -c 的参数人为指定 Nginx 的配置文件位置（但是这种方式不建议）。</p>
-
-<p>我们重新整理了 Nginx 的配置文件，将其分块，以便于讲解：</p>
-
-<pre><code>#================================以下是全局配置项
-#指定运行nginx的用户和用户组，默认情况下该选项关闭（关闭的情况就是nobody）
-#user  nobody nobody;     
-#运行nginx的进程数量，后文详细讲解
-worker_processes  1;      
-#nginx运行错误的日志存放位置。当然您还可以指定错误级别
-#error_log  logs/error.log;    
-#error_log  logs/error.log  notice;
-#error_log  logs/error.log  info;
-#指定主进程id文件的存放位置，虽然worker_processes != 1的情况下，会有很多进程，管理进程只有一个
-#pid        logs/nginx.pid;    
-
-events {
-    #每一个进程可同时建立的连接数量，后问详细讲解
-    worker_connections  1024;   
-    #连接规则，可以采用[kqueue rtsig epoll select poll eventport ]，后文详细讲解
-    use   epoll;    
-}
-#================================以上是全局配置项
-
-http {
-    #================================以下是Nginx后端服务配置项
-    upstream backendserver1 {
-        #nginx向后端服务器分配请求任务的方式，默认为轮询；如果指定了ip_hash，就是hash算法（上文介绍的算法内容）
-        #ip_hash    
-        #后端服务器 ip:port ，如果有多个服务节点，这里就配置多个
-        server 192.168.220.131:8080; 
-        server 192.168.220.132:8080;    
-        #backup表示，这个是一个备份节点，只有当所有节点失效后，nginx才会往这个节点分配请求任务
-        #server 192.168.220.133:8080 backup;        
-        #weight，固定权重，还记得我们上文提到的加权轮询方式吧。
-        #server 192.168.220.134:8080 weight=100;    
+    /**
+     * zookeeper contructor for writelock
+     * @param zookeeper zookeeper client instance
+     * @param dir the parent path you want to use for locking
+     * @param acls the acls that you want to use for all the paths, 
+     * if null world read/write is used.
+     */
+    public WriteLock(ZooKeeper zookeeper, String dir, List&lt;ACL&gt; acl) {
+        super(zookeeper);
+        this.dir = dir;
+        if (acl != null) {
+            setAcl(acl);
+        }
+        this.zop = new LockZooKeeperOperation();
     }
-    #================================以上是Nginx后端服务配置项
 
-    #=================================================以下是 http 协议主配置
-    #安装nginx后，在conf目录下除了nginx.conf主配置文件以外，有很多模板配置文件，这里就是导入这些模板文件
-    include       mime.types;
-    #HTTP核心模块指令，这里设定默认类型为二进制流，也就是当文件类型未定义时使用这种方式
-    default_type  application/octet-stream;     
-    #日志格式
-    #log_format  main  &#39;$remote_addr - $remote_user [$time_local] &quot;$request&quot; &#39;   
-                      &#39;$status $body_bytes_sent &quot;$http_referer&quot; &#39;
-                      &#39;&quot;$http_user_agent&quot; &quot;$http_x_forwarded_for&quot;&#39;;
+    /**
+     * zookeeper contructor for writelock with callback
+     * @param zookeeper the zookeeper client instance
+     * @param dir the parent path you want to use for locking
+     * @param acl the acls that you want to use for all the paths
+     * @param callback the call back instance
+     */
+    public WriteLock(ZooKeeper zookeeper, String dir, List&lt;ACL&gt; acl, 
+            LockListener callback) {
+        this(zookeeper, dir, acl);
+        this.callback = callback;
+    }
 
-    #日志文件存放的位置
-    #access_log  logs/access.log  main;         
+    /**
+     * return the current locklistener
+     * @return the locklistener
+     */
+    public LockListener getLockListener() {
+        return this.callback;
+    }
 
-    #sendfile 规则开启
-    sendfile        on;
-    #指定一个连接的等待时间（单位秒），如果超过等待时间，连接就会断掉。注意一定要设置，否则高并发情况下会产生性能问题。
-    keepalive_timeout  65;                      
+    /**
+     * register a different call back listener
+     * @param callback the call back instance
+     */
+    public void setLockListener(LockListener callback) {
+        this.callback = callback;
+    }
 
-    #开启数据压缩，后文详细介绍
-    gzip  on;                                   
-    #=================================================以上是 http 协议主配置
+    /**
+     * Removes the lock or associated znode if 
+     * you no longer require the lock. this also 
+     * removes your request in the queue for locking
+     * in case you do not already hold the lock.
+     * @throws RuntimeException throws a runtime exception
+     * if it cannot connect to zookeeper.
+     */
+    public synchronized void unlock() throws RuntimeException {
 
-    #=================================================以下是一个服务实例的配置
-    server {
-        #这个代理实例的监听端口
-        listen       80;
-        #server_name 取个唯一的实例名都要想半天？
-        server_name  localhost; 
-        #文字格式
-        charset utf-8;  
-        #access_log  logs/host.access.log  main;    
-
-        #location将按照规则分流满足条件的URL。&quot;location /&quot;您可以理解为“默认分流位置”。
-        location / {
-            #root目录，这个html表示nginx主安装目录下的“html”目录。
-            root   html;   
-            #目录中的默认展示页面
-            index  index.html index.htm;        
-        }
-
-        #location支持正则表达式，“~” 表示匹配正则表达式。
-        location ~ ^/business/ {   
-            #方向代理。后文详细讲解。
-            proxy_pass http://backendserver1;   
-        }
-
-        #redirect server error pages to the static page /50x.html
-        #error_page  404              /404.html;
-        error_page   500 502 503 504  /50x.html;
-        location = /50x.html {
-            root   html;
+        if (!isClosed() &amp;&amp; id != null) {
+            // we don&#39;t need to retry this operation in the case of failure
+            // as ZK will remove ephemeral files and we don&#39;t wanna hang
+            // this process when closing if we cannot reconnect to ZK
+            try {
+                ZooKeeperOperation zopdel = new ZooKeeperOperation() {
+                    public boolean execute() throws KeeperException,
+                        InterruptedException {
+                        zookeeper.delete(id, -1);   
+                        return Boolean.TRUE;
+                    }
+                };
+                zopdel.execute();
+            } catch (InterruptedException e) {
+                LOG.warn(&quot;Caught: &quot; + e, e);
+                //set that we have been interrupted.
+               Thread.currentThread().interrupt();
+            } catch (KeeperException.NoNodeException e) {
+                // do nothing
+            } catch (KeeperException e) {
+                LOG.warn(&quot;Caught: &quot; + e, e);
+                throw (RuntimeException) new RuntimeException(e.getMessage()).
+                    initCause(e);
+            }
+            finally {
+                if (callback != null) {
+                    callback.lockReleased();
+                }
+                id = null;
+            }
         }
     }
-    #=================================================以上是一个服务实例的配置
-}
 
+    /** 
+     * the watcher called on  
+     * getting watch while watching 
+     * my predecessor
+     */
+    private class LockWatcher implements Watcher {
+        public void process(WatchedEvent event) {
+            // lets either become the leader or watch the new/updated node
+            LOG.debug(&quot;Watcher fired on path: &quot; + event.getPath() + &quot; state: &quot; + 
+                    event.getState() + &quot; type &quot; + event.getType());
+            try {
+                lock();
+            } catch (Exception e) {
+                LOG.warn(&quot;Failed to acquire lock: &quot; + e, e);
+            }
+        }
+    }
+
+    /**
+     * a zoookeeper operation that is mainly responsible
+     * for all the magic required for locking.
+     */
+    private  class LockZooKeeperOperation implements ZooKeeperOperation {
+
+        /** find if we have been created earler if not create our node
+         * 
+         * @param prefix the prefix node
+         * @param zookeeper teh zookeeper client
+         * @param dir the dir paretn
+         * @throws KeeperException
+         * @throws InterruptedException
+         */
+        private void findPrefixInChildren(String prefix, ZooKeeper zookeeper, String dir) 
+            throws KeeperException, InterruptedException {
+            List&lt;String&gt; names = zookeeper.getChildren(dir, false);
+            for (String name : names) {
+                if (name.startsWith(prefix)) {
+                    id = dir + &quot;/&quot; + name;
+                    if (LOG.isDebugEnabled()) {
+                        LOG.debug(&quot;Found id created last time: &quot; + id);
+                    }
+                    break;
+                }
+            }
+            if (id == null) {
+                id = zookeeper.create(dir + &quot;/&quot; + prefix, data, 
+                        getAcl(), EPHEMERAL_SEQUENTIAL);
+
+                if (LOG.isDebugEnabled()) {
+                    LOG.debug(&quot;Created id: &quot; + id);
+                }
+            }
+
+        }
+
+        /**
+         * the command that is run and retried for actually 
+         * obtaining the lock
+         * @return if the command was successful or not
+         */
+        public boolean execute() throws KeeperException, InterruptedException {
+            do {
+                if (id == null) {
+                    long sessionId = zookeeper.getSessionId();
+                    String prefix = &quot;x-&quot; + sessionId + &quot;-&quot;;
+                    // lets try look up the current ID if we failed 
+                    // in the middle of creating the znode
+                    findPrefixInChildren(prefix, zookeeper, dir);
+                    idName = new ZNodeName(id);
+                }
+                if (id != null) {
+                    List&lt;String&gt; names = zookeeper.getChildren(dir, false);
+                    if (names.isEmpty()) {
+                        LOG.warn(&quot;No children in: &quot; + dir + &quot; when we&#39;ve just &quot; +
+                        &quot;created one! Lets recreate it...&quot;);
+                        // lets force the recreation of the id
+                        id = null;
+                    } else {
+                        // lets sort them explicitly (though they do seem to come back in order ususally :)
+                        SortedSet&lt;ZNodeName&gt; sortedNames = new TreeSet&lt;ZNodeName&gt;();
+                        for (String name : names) {
+                            sortedNames.add(new ZNodeName(dir + &quot;/&quot; + name));
+                        }
+                        ownerId = sortedNames.first().getName();
+                        SortedSet&lt;ZNodeName&gt; lessThanMe = sortedNames.headSet(idName);
+                        if (!lessThanMe.isEmpty()) {
+                            ZNodeName lastChildName = lessThanMe.last();
+                            lastChildId = lastChildName.getName();
+                            if (LOG.isDebugEnabled()) {
+                                LOG.debug(&quot;watching less than me node: &quot; + lastChildId);
+                            }
+                            Stat stat = zookeeper.exists(lastChildId, new LockWatcher());
+                            if (stat != null) {
+                                return Boolean.FALSE;
+                            } else {
+                                LOG.warn(&quot;Could not find the&quot; +
+                                        &quot; stats for less than me: &quot; + lastChildName.getName());
+                            }
+                        } else {
+                            if (isOwner()) {
+                                if (callback != null) {
+                                    callback.lockAcquired();
+                                }
+                                return Boolean.TRUE;
+                            }
+                        }
+                    }
+                }
+            }
+            while (id == null);
+            return Boolean.FALSE;
+        }
+    };
+
+    /**
+     * Attempts to acquire the exclusive write lock returning whether or not it was
+     * acquired. Note that the exclusive lock may be acquired some time later after
+     * this method has been invoked due to the current lock owner going away.
+     */
+    public synchronized boolean lock() throws KeeperException, InterruptedException {
+        if (isClosed()) {
+            return false;
+        }
+        ensurePathExists(dir);
+
+        return (Boolean) retryOperation(zop);
+    }
+
+    /**
+     * return the parent dir for lock
+     * @return the parent dir used for locks.
+     */
+    public String getDir() {
+        return dir;
+    }
+
+    /**
+     * Returns true if this node is the owner of the
+     *  lock (or the leader)
+     */
+    public boolean isOwner() {
+        return id != null &amp;&amp; ownerId != null &amp;&amp; id.equals(ownerId);
+    }
+
+    /**
+     * return the id for this lock
+     * @return the id for this lock
+     */
+    public String getId() {
+       return this.id;
+    }
+}
 </code></pre>
 
-<p>以上是一个完整的 nginx 配置信息，可以直接粘贴使用，但不建议您这样做。因为上文中很多关键的配置属性都还没有讲解。这样粘贴复制不利于您的工作和学习。</p>
+<p>注意这里的 lock，可能会失败，会尝试多次，每次失败后会 Sleep 一段时间。</p>
 
-<h3 id="toc_9"><a></a>3.1.1、use [kqueue | rtsig | epoll | select | poll]</h3>
+<p>PS：官方的代码有个小 bug，id 和 ownerId 应该都是全路径，即 id = dir + &quot;/&quot; + name; 原代码在 findPrefixInChildren 里有问题。</p>
 
-<p>科技在发展，社会在进步，满足摩尔定义的 IT 行业更是这样。以前所有的连接都是阻断式的（blocking I/O）也就是说一个 TCP 连接线程在发出 Request 后，代码就不会再往下执行了，直到得到远端的 Response 为止；服务器端也一样的，在处理完某一个客户端的 Request 之前，其他客户端的请求都会等待。这种处理方式使客户端和服务器端的通讯性能大打折扣。</p>
+<p>用于辅助节点大小顺序排序的类：</p>
 
-<p>很明显多线程貌似能够解决这个问题：一个线程处理不了，我可以再开线程来处理啊。但是多线程是有局限性的：</p>
+<pre><code class="language-java">package org.apache.zookeeper.recipes.lock;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/**
+ * Represents an ephemeral znode name which has an ordered sequence number and
+ * can be sorted in order
+ * 
+ */
+class ZNodeName implements Comparable&lt;ZNodeName&gt; {
+    private final String name;
+    private String prefix;
+    private int sequence = -1;
+    private static final Logger LOG = LoggerFactory.getLogger(ZNodeName.class);
+
+    public ZNodeName(String name) {
+        if (name == null) {
+            throw new NullPointerException(&quot;id cannot be null&quot;);
+        }
+        this.name = name;
+        this.prefix = name;
+        int idx = name.lastIndexOf(&#39;-&#39;);
+        if (idx &gt;= 0) {
+            this.prefix = name.substring(0, idx);
+            try {
+                this.sequence = Integer.parseInt(name.substring(idx + 1));
+                // If an exception occurred we misdetected a sequence suffix,
+                // so return -1.
+            } catch (NumberFormatException e) {
+                LOG.info(&quot;Number format exception for &quot; + idx, e);
+            } catch (ArrayIndexOutOfBoundsException e) {
+                LOG.info(&quot;Array out of bounds for &quot; + idx, e);
+            }
+        }
+    }
+
+    @Override
+    public String toString() {
+        return name.toString();
+    }
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o)
+            return true;
+        if (o == null || getClass() != o.getClass())
+            return false;
+
+        ZNodeName sequence = (ZNodeName) o;
+
+        if (!name.equals(sequence.name))
+            return false;
+
+        return true;
+    }
+
+    @Override
+    public int hashCode() {
+        return name.hashCode() + 37;
+    }
+
+    public int compareTo(ZNodeName that) {
+        int s1 = this.sequence;
+        int s2 = that.sequence;
+        if (s1 == -1 &amp;&amp; s2 == -1) {
+            return this.name.compareTo(that.name);
+        }
+        if (s1 == -1) {
+            return -1;
+        } else if (s2 == -1) {
+            return 1;
+        } else {
+            return s1 - s2;
+        }
+    }
+
+    /**
+     * Returns the name of the znode
+     */
+    public String getName() {
+        return name;
+    }
+
+    /**
+     * Returns the sequence number
+     */
+    public int getZNodeName() {
+        return sequence;
+    }
+
+    /**
+     * Returns the text prefix before the sequence number
+     */
+    public String getPrefix() {
+        return prefix;
+    }
+}
+</code></pre>
+
+<p>PS：这个 ZNodeName 类是被我修改过的，官方的代码比较有问题，官方的先用了节点路径的前缀 prefix 比较，再去比较 sequence 序号是不对的，这样会导致 sessionid 小的总是能拿到锁。应该直接比较全局有序的 sequence 序号，小的先拿到锁，先到先得。</p>
+
+<p>Zookeeper 统一操作 ZooKeeperOperation 接口：</p>
+
+<pre><code class="language-java">public interface ZooKeeperOperation {
+
+    /**
+     * Performs the operation - which may be involved multiple times if the connection
+     * to ZooKeeper closes during this operation
+     *
+     * @return the result of the operation or null
+     * @throws KeeperException
+     * @throws InterruptedException
+     */
+    public boolean execute() throws KeeperException, InterruptedException;
+}
+</code></pre>
+
+<p>因为 Zookeeper 的操作会失败，这个类封装了多次尝试：</p>
+
+<pre><code class="language-java">/**
+ *
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package org.apache.zookeeper.recipes.lock;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.apache.zookeeper.CreateMode;
+import org.apache.zookeeper.KeeperException;
+import org.apache.zookeeper.ZooDefs;
+import org.apache.zookeeper.ZooKeeper;
+import org.apache.zookeeper.data.ACL;
+import org.apache.zookeeper.data.Stat;
+import org.apache.zookeeper.recipes.lock.ZooKeeperOperation;
+
+import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
+
+/**
+ * A base class for protocol implementations which provides a number of higher 
+ * level helper methods for working with ZooKeeper along with retrying synchronous
+ *  operations if the connection to ZooKeeper closes such as 
+ *  {@link #retryOperation(ZooKeeperOperation)}
+ *
+ */
+class ProtocolSupport {
+    private static final Logger LOG = LoggerFactory.getLogger(ProtocolSupport.class);
+
+    protected final ZooKeeper zookeeper;
+    private AtomicBoolean closed = new AtomicBoolean(false);
+    private long retryDelay = 500L;
+    private int retryCount = 10;
+    private List&lt;ACL&gt; acl = ZooDefs.Ids.OPEN_ACL_UNSAFE;
+
+    public ProtocolSupport(ZooKeeper zookeeper) {
+        this.zookeeper = zookeeper;
+    }
+
+    /**
+     * Closes this strategy and releases any ZooKeeper resources; but keeps the
+     *  ZooKeeper instance open
+     */
+    public void close() {
+        if (closed.compareAndSet(false, true)) {
+            doClose();
+        }
+    }
+
+    /**
+     * return zookeeper client instance
+     * @return zookeeper client instance
+     */
+    public ZooKeeper getZookeeper() {
+        return zookeeper;
+    }
+
+    /**
+     * return the acl its using
+     * @return the acl.
+     */
+    public List&lt;ACL&gt; getAcl() {
+        return acl;
+    }
+
+    /**
+     * set the acl 
+     * @param acl the acl to set to
+     */
+    public void setAcl(List&lt;ACL&gt; acl) {
+        this.acl = acl;
+    }
+
+    /**
+     * get the retry delay in milliseconds
+     * @return the retry delay
+     */
+    public long getRetryDelay() {
+        return retryDelay;
+    }
+
+    /**
+     * Sets the time waited between retry delays
+     * @param retryDelay the retry delay
+     */
+    public void setRetryDelay(long retryDelay) {
+        this.retryDelay = retryDelay;
+    }
+
+    /**
+     * Allow derived classes to perform 
+     * some custom closing operations to release resources
+     */
+    protected void doClose() {
+    }
+
+    /**
+     * Perform the given operation, retrying if the connection fails
+     * @return object. it needs to be cast to the callee&#39;s expected 
+     * return type.
+     */
+    protected Object retryOperation(ZooKeeperOperation operation) 
+        throws KeeperException, InterruptedException {
+        KeeperException exception = null;
+        for (int i = 0; i &lt; retryCount; i++) {
+            try {
+                return operation.execute();
+            } catch (KeeperException.SessionExpiredException e) {
+                LOG.warn(&quot;Session expired for: &quot; + zookeeper + &quot; so reconnecting due to: &quot; + e, e);
+                throw e;
+            } catch (KeeperException.ConnectionLossException e) {
+                if (exception == null) {
+                    exception = e;
+                }
+                LOG.debug(&quot;Attempt &quot; + i + &quot; failed with connection loss so &quot; +
+                        &quot;attempting to reconnect: &quot; + e, e);
+                retryDelay(i);
+            }
+        }
+        throw exception;
+    }
+
+    /**
+     * Ensures that the given path exists with no data, the current
+     * ACL and no flags
+     * @param path
+     */
+    protected void ensurePathExists(String path) {
+        ensureExists(path, null, acl, CreateMode.PERSISTENT);
+    }
+
+    /**
+     * Ensures that the given path exists with the given data, ACL and flags
+     * @param path
+     * @param acl
+     * @param flags
+     */
+    protected void ensureExists(final String path, final byte[] data,
+            final List&lt;ACL&gt; acl, final CreateMode flags) {
+        try {
+            retryOperation(new ZooKeeperOperation() {
+                public boolean execute() throws KeeperException, InterruptedException {
+                    Stat stat = zookeeper.exists(path, false);
+                    if (stat != null) {
+                        return true;
+                    }
+                    zookeeper.create(path, data, acl, flags);
+                    return true;
+                }
+            });
+        } catch (KeeperException e) {
+            LOG.warn(&quot;Caught: &quot; + e, e);
+        } catch (InterruptedException e) {
+            LOG.warn(&quot;Caught: &quot; + e, e);
+        }
+    }
+
+    /**
+     * Returns true if this protocol has been closed
+     * @return true if this protocol is closed
+     */
+    protected boolean isClosed() {
+        return closed.get();
+    }
+
+    /**
+     * Performs a retry delay if this is not the first attempt
+     * @param attemptCount the number of the attempts performed so far
+     */
+    protected void retryDelay(int attemptCount) {
+        if (attemptCount &gt; 0) {
+            try {
+                Thread.sleep(attemptCount * retryDelay);
+            } catch (InterruptedException e) {
+                LOG.debug(&quot;Failed to sleep: &quot; + e, e);
+            }
+        }
+    }
+}
+</code></pre>
+
+<p>这个类是本客户端获取到 lock 和释放 lock 的时候触发操作的接口：</p>
+
+<pre><code class="language-java">public interface LockListener {
+    /**
+     * call back called when the lock 
+     * is acquired
+     */
+    public void lockAcquired();
+
+    /**
+     * call back called when the lock is 
+     * released.
+     */
+    public void lockReleased();
+}
+</code></pre>
+
+<h3 id="toc_1">队列（Queue）</h3>
+
+<p>分布式队列是通用的数据结构，为了在 Zookeeper 中实现分布式队列，首先需要指定一个 Znode 节点作为队列节点（queue node）， 各个分布式客户端通过调用 create() 函数向队列中放入数据，调用 create() 时节点路径名带 &quot;qn-&quot; 结尾，并设置顺序（_sequence_）节点标志。 由于设置了节点的顺序标志，新的路径名具有以下字符串模式：&quot;_path-to-queue-node_/qn-X&quot;，X 是唯一自增号。需要从队列中获取数据 / 移除数据的客户端首先调用 getChildren() 函数，有数据则获取（获取数据后可以删除也可以不删），没有则在队列节点（queue node）上将 _watch_ 设置为 true，等待触发并处理最小序号的节点（即从序号最小的节点中取数据）。</p>
+
+<p>实现步骤基本如下：</p>
+
+<p>前提：需要一个队列 root 节点 dir</p>
+
+<p>入队：使用 create() 创建节点，将共享数据 data 放在该节点上，节点类型为 PERSISTENT_SEQUENTIAL，永久顺序性的（也可以设置为临时的，看需求）。</p>
+
+<p>出队：因为队列可能为空，2 种方式处理：一种如果为空则 wait 等待，一种返回异常。</p>
+
+<p>等待方式：这里使用了 CountDownLatch 的等待和 Watcher 的通知机制，使用了 TreeMap 的排序获取节点顺序最小的数据（FIFO）。</p>
+
+<p>抛出异常：getChildren() 获取队列数据时，如果 size==0 则抛出异常。</p>
+
+<p>一个分布式 Queue 的实现，详细代码：</p>
+
+<pre><code class="language-java">package org.apache.zookeeper.recipes.queue;
+
+import java.util.List;
+import java.util.NoSuchElementException;
+import java.util.TreeMap;
+import java.util.concurrent.CountDownLatch;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.apache.zookeeper.CreateMode;
+import org.apache.zookeeper.KeeperException;
+import org.apache.zookeeper.WatchedEvent;
+import org.apache.zookeeper.Watcher;
+import org.apache.zookeeper.ZooDefs;
+import org.apache.zookeeper.ZooKeeper;
+import org.apache.zookeeper.data.ACL;
+import org.apache.zookeeper.data.Stat;
+
+/**
+ * 
+ * A &lt;a href=&quot;package.html&quot;&gt;protocol to implement a distributed queue&lt;/a&gt;.
+ * 
+ */
+public class DistributedQueue {
+    private static final Logger LOG = LoggerFactory.getLogger(DistributedQueue.class);
+
+    private final String dir;
+
+    private ZooKeeper zookeeper;
+    private List&lt;ACL&gt; acl = ZooDefs.Ids.OPEN_ACL_UNSAFE;
+
+    private final String prefix = &quot;qn-&quot;;
+
+    public DistributedQueue(ZooKeeper zookeeper, String dir, List&lt;ACL&gt; acl){
+        this.dir = dir;
+
+        if(acl != null){
+            this.acl = acl;
+        }
+        this.zookeeper = zookeeper;
+
+        //Add root dir first if not exists
+        if (zookeeper != null) {
+            try {
+                Stat s = zookeeper.exists(dir, false);
+                if (s == null) {
+                    zookeeper.create(dir, new byte[0], acl, CreateMode.PERSISTENT);
+                }
+            } catch (KeeperException e) {
+                LOG.error(e.toString());
+            } catch (InterruptedException e) {
+                LOG.error(e.toString());
+            }
+        }
+    }
+
+    /**
+     * Returns a Map of the children, ordered by id.
+     * @param watcher optional watcher on getChildren() operation.
+     * @return map from id to child name for all children
+     */
+    private TreeMap&lt;Long,String&gt; orderedChildren(Watcher watcher) throws KeeperException, InterruptedException {
+        TreeMap&lt;Long,String&gt; orderedChildren = new TreeMap&lt;Long,String&gt;();
+
+        List&lt;String&gt; childNames = null;
+        try{
+            childNames = zookeeper.getChildren(dir, watcher);
+        }catch (KeeperException.NoNodeException e){
+            throw e;
+        }
+
+        for(String childName : childNames){
+            try{
+                //Check format
+                if(!childName.regionMatches(0, prefix, 0, prefix.length())){
+                    LOG.warn(&quot;Found child node with improper name: &quot; + childName);
+                    continue;
+                }
+                String suffix = childName.substring(prefix.length());
+                Long childId = new Long(suffix);
+                orderedChildren.put(childId,childName);
+            }catch(NumberFormatException e){
+                LOG.warn(&quot;Found child node with improper format : &quot; + childName + &quot; &quot; + e,e);
+            }
+        }
+
+        return orderedChildren;
+    }
+
+    /**
+     * Find the smallest child node.
+     * @return The name of the smallest child node.
+     */
+    private String smallestChildName() throws KeeperException, InterruptedException {
+        long minId = Long.MAX_VALUE;
+        String minName = &quot;&quot;;
+
+        List&lt;String&gt; childNames = null;
+
+        try{
+            childNames = zookeeper.getChildren(dir, false);
+        }catch(KeeperException.NoNodeException e){
+            LOG.warn(&quot;Caught: &quot; +e,e);
+            return null;
+        }
+
+        for(String childName : childNames){
+            try{
+                //Check format
+                if(!childName.regionMatches(0, prefix, 0, prefix.length())){
+                    LOG.warn(&quot;Found child node with improper name: &quot; + childName);
+                    continue;
+                }
+                String suffix = childName.substring(prefix.length());
+                long childId = Long.parseLong(suffix);
+                if(childId &lt; minId){
+                    minId = childId;
+                    minName = childName;
+                }
+            }catch(NumberFormatException e){
+                LOG.warn(&quot;Found child node with improper format : &quot; + childName + &quot; &quot; + e,e);
+            }
+        }
+
+        if(minId &lt; Long.MAX_VALUE){
+            return minName;
+        }else{
+            return null;
+        }
+    }
+
+    /**
+     * Return the head of the queue without modifying the queue.
+     * @return the data at the head of the queue.
+     * @throws NoSuchElementException
+     * @throws KeeperException
+     * @throws InterruptedException
+     */
+    public byte[] element() throws NoSuchElementException, KeeperException, InterruptedException {
+        TreeMap&lt;Long,String&gt; orderedChildren;
+
+        // element, take, and remove follow the same pattern.
+        // We want to return the child node with the smallest sequence number.
+        // Since other clients are remove()ing and take()ing nodes concurrently, 
+        // the child with the smallest sequence number in orderedChildren might be gone by the time we check.
+        // We don&#39;t call getChildren again until we have tried the rest of the nodes in sequence order.
+        while(true){
+            try{
+                orderedChildren = orderedChildren(null);
+            }catch(KeeperException.NoNodeException e){
+                throw new NoSuchElementException();
+            }
+            if(orderedChildren.size() == 0 ) throw new NoSuchElementException();
+
+            for(String headNode : orderedChildren.values()){
+                if(headNode != null){
+                    try{
+                        return zookeeper.getData(dir+&quot;/&quot;+headNode, false, null);
+                    }catch(KeeperException.NoNodeException e){
+                        //Another client removed the node first, try next
+                    }
+                }
+            }
+
+        }
+    }
+
+    /**
+     * Attempts to remove the head of the queue and return it.
+     * @return The former head of the queue
+     * @throws NoSuchElementException
+     * @throws KeeperException
+     * @throws InterruptedException
+     */
+    public byte[] remove() throws NoSuchElementException, KeeperException, InterruptedException {
+        TreeMap&lt;Long,String&gt; orderedChildren;
+        // Same as for element.  Should refactor this.
+        while(true){
+            try{
+                orderedChildren = orderedChildren(null);
+            }catch(KeeperException.NoNodeException e){
+                throw new NoSuchElementException();
+            }
+            if(orderedChildren.size() == 0) throw new NoSuchElementException();
+
+            for(String headNode : orderedChildren.values()){
+                String path = dir +&quot;/&quot;+headNode;
+                try{
+                    byte[] data = zookeeper.getData(path, false, null);
+                    zookeeper.delete(path, -1);
+                    return data;
+                }catch(KeeperException.NoNodeException e){
+                    // Another client deleted the node first.
+                }
+            }
+        }
+    }
+
+    private class LatchChildWatcher implements Watcher {
+
+        CountDownLatch latch;
+
+        public LatchChildWatcher(){
+            latch = new CountDownLatch(1);
+        }
+
+        public void process(WatchedEvent event){
+            LOG.debug(&quot;Watcher fired on path: &quot; + event.getPath() + &quot; state: &quot; + 
+                    event.getState() + &quot; type &quot; + event.getType());
+            latch.countDown();
+        }
+        public void await() throws InterruptedException {
+            latch.await();
+        }
+    }
+
+    /**
+     * Removes the head of the queue and returns it, blocks until it succeeds.
+     * @return The former head of the queue
+     * @throws NoSuchElementException
+     * @throws KeeperException
+     * @throws InterruptedException
+     */
+    public byte[] take() throws KeeperException, InterruptedException {
+        TreeMap&lt;Long,String&gt; orderedChildren;
+        // Same as for element.  Should refactor this.
+        while(true){
+            LatchChildWatcher childWatcher = new LatchChildWatcher();
+            try{
+                orderedChildren = orderedChildren(childWatcher);
+            }catch(KeeperException.NoNodeException e){
+                zookeeper.create(dir, new byte[0], acl, CreateMode.PERSISTENT);
+                continue;
+            }
+            if(orderedChildren.size() == 0){
+                childWatcher.await();
+                continue;
+            }
+
+            for(String headNode : orderedChildren.values()){
+                String path = dir +&quot;/&quot;+headNode;
+                try{
+                    byte[] data = zookeeper.getData(path, false, null);
+                    zookeeper.delete(path, -1);
+                    return data;
+                }catch(KeeperException.NoNodeException e){
+                    // Another client deleted the node first.
+                }
+            }
+        }
+    }
+
+    /**
+     * Inserts data into queue.
+     * @param data
+     * @return true if data was successfully added
+     */
+    public boolean offer(byte[] data) throws KeeperException, InterruptedException{
+        for(;;){
+            try{
+                zookeeper.create(dir+&quot;/&quot;+prefix, data, acl, CreateMode.PERSISTENT_SEQUENTIAL);
+                return true;
+            }catch(KeeperException.NoNodeException e){
+                zookeeper.create(dir, new byte[0], acl, CreateMode.PERSISTENT);
+            }
+        }
+    }
+
+    /**
+     * Returns the data at the first element of the queue, or null if the queue is empty.
+     * @return data at the first element of the queue, or null.
+     * @throws KeeperException
+     * @throws InterruptedException
+     */
+    public byte[] peek() throws KeeperException, InterruptedException{
+        try{
+            return element();
+        }catch(NoSuchElementException e){
+            return null;
+        }
+    }
+
+    /**
+     * Attempts to remove the head of the queue and return it. Returns null if the queue is empty.
+     * @return Head of the queue or null.
+     * @throws KeeperException
+     * @throws InterruptedException
+     */
+    public byte[] poll() throws KeeperException, InterruptedException {
+        try{
+            return remove();
+        }catch(NoSuchElementException e){
+            return null;
+        }
+    }
+}
+</code></pre>
+
+<p><strong>Apache Curator</strong></p>
+
+<p>Curator 是一个封装 Zookeeper 操作的库，使用这个库的好处是 Curator 帮你管理和 Zookeeper 的连接，当连接有问题时会自动重试（retry）。</p>
+
+<pre><code class="language-java">RetryPolicy retryPolicy = new ExponentialBackoffRetry(1000, 3)
+CuratorFramework client = CuratorFrameworkFactory.newClient(zookeeperConnectionString, retryPolicy);
+client.start();
+</code></pre>
+
+<p>Curator 已经封装了一些常用的 Recipes</p>
+
+<h4 id="toc_2">Distributed Lock</h4>
+
+<pre><code class="language-java">InterProcessMutex lock = new InterProcessMutex(client, lockPath);
+if ( lock.acquire(maxWait, waitUnit) ) 
+{
+    try 
+    {
+        // do some work inside of the critical section here
+    }
+    finally
+    {
+        lock.release();
+    }
+}
+</code></pre>
+
+<h4 id="toc_3">Leader Election</h4>
+
+<pre><code class="language-java">LeaderSelectorListener listener = new LeaderSelectorListenerAdapter()
+{
+    public void takeLeadership(CuratorFramework client) throws Exception
+    {
+        // this callback will get called when you are the leader
+        // do whatever leader work you need to and only exit
+        // this method when you want to relinquish leadership
+    }
+}
+
+LeaderSelector selector = new LeaderSelector(client, path, listener);
+selector.autoRequeue();  // not required, but this is behavior that you will probably expect
+selector.start();
+</code></pre>
+
+<h2 id="toc_4">参考</h2>
 
 <ul>
-<li><p>创建一个线程会消耗有限的资源。以 JAVA JVM 为例，创建一个新的线程 JVM 会单独开放 1MB 的栈内存空间（通过 - Xss 参数可设置），虽然栈内存不受 - Xmx 和 - Xms 两个参数影响，但是可以说明线程的创建是需要消耗额外资源的。</p></li>
-<li><p>多线程工作时，计算机的 CPU 会耗费大量的资源让多线程在不同的状态下进行切换。在后续的文章中本书还会介绍依据这样的原理让计算机的 CPU 呈波形变化的编程方式。</p></li>
-<li><p>在 Linux 操作系统下，单个用户能够创建的线程和进程总数、整个操作系统能够创建的线程总数都是有限的。通过 limit -a 命令，您可以查看相关的内核参数。</p></li>
-<li><p>所以依靠线程来解决 bio 的问题是不靠谱的，只能起到缓解处理并行请求的作用。您可以想象一次并发 10 万个处理请求的问题，是不可能在计算机上同时创建 10 万个线程来解决的。</p></li>
+<li><a href="http://zookeeper.apache.org/doc/trunk/recipes.html">http://zookeeper.apache.org/doc/trunk/recipes.html</a></li>
+<li><a href="http://curator.apache.org/curator-recipes/index.html">http://curator.apache.org/curator-recipes/index.html</a></li>
 </ul>
-
-<p>基于上面的描述，NIO（no blocking I/O）技术就这样诞生了。依靠 event loop 机制（想看这个机制的详细分析，请持续关注我的博客 <sup>_<sup>），单个线程可以同时处理多个</sup></sup> request 请求，并在处理完产生 response 的时候，回调相关的远程事件。根据 NIO 实现机制的不同，技术名称也就不同了。我要说什么，您，应该懂了。</p>
-
-<p>epoll、kqueue 等这些组件都是对多路复用网络 I/O 模型的实现，其中 epoll 是 poll 的升级版本，在 linux 环境下可以使用但限于 linux2.6 及以上版本。kqueue 用在 bsd 上使用。</p>
-
-<h3 id="toc_10"><a></a>3.1.2、worker_processes 和 worker_connections</h3>
-
-<p><strong>worker_processes</strong>：操作系统启动多少个工作进程运行 Nginx。注意是工作进程，不是有多少个 nginx 工程。在 Nginx 运行的时候，会启动两种进程，一种是主进程 master process；一种是工作进程 worker process。例如我在配置文件中将 worker_processes 设置为 4，启动 Nginx 后，使用进程查看命令观察名字叫做 nginx 的进程信息，我会看到如下结果：</p>
-
-<p><img src="https://img-blog.csdn.net/20150707193821782" alt=""/></p>
-
-<p>图中可以看到 1 个 nginx 主进程，master process；还有四个工作进程，worker process。主进程负责监控端口，协调工作进程的工作状态，分配工作任务，工作进程负责进行任务处理。一般这个参数要和操作系统的 CPU 内核数成倍数。</p>
-
-<p><strong>worker_connections</strong>：这个属性是指单个工作进程可以允许同时建立外部连接的数量。无论这个连接是外部主动建立的，还是内部建立的。这里需要注意的是，一个工作进程建立一个连接后，进程将打开一个文件副本。所以这个数量还受<strong>操作系统设定的，进程最大可打开的文件数有关</strong>。网上 50% 的文章告诉了您这个事实，并要求您修改 worker_connections 属性的时候，一定要使用 ulimit -n 修改操作系统对进程最大文件数的限制，但是这样更改只能在当次用户的当次 shell 回话中起作用，并不是永久了。接着您继续 Google / 百度，发现 30% 的文章还告诉您，要想使 “进程最大可打开的文件数” 永久有效，还需要修改 / etc/security/limits.conf 这个主配置文件，但是您应该如何正确检查 “进程的最大可打开文件” 的方式，却没有说。</p>
-
-<p>下面本文告诉您全面的、正确的设置方式:</p>
-
-<ul>
-<li><p><strong>更改操作系统级别的 “进程最大可打开文件数” 的设置</strong>：<br/>
-首先您需要操作系统的 root 权限：</p>
-
-<blockquote>
-<p>叫您的操作系统管理员给您。</p>
-</blockquote>
-
-<p>修改 limits.conf 主配置文件</p>
-
-<blockquote>
-<p>vim /etc/security/limits.conf</p>
-</blockquote>
-
-<p>在主配置文件最后加入下面两句：</p>
-
-<blockquote>
-<ul>
-<li>soft nofile 65535</li>
-<li>hard nofile 65535</li>
-</ul>
-</blockquote>
-
-<p>注意 “_” 是要加到文件里面的。这两句话的含义是 soft（应用软件）级别限制的最大可打开文件数的限制，hard 表示操作系统级别限制的最大可打开文件数的限制，“_” 表示所有用户都生效。保存这个文件（只有 root 用户能够有权限）。</p>
-
-<p>保存这个文件后，配置是不会马上生效的，为了保证本次 shell 会话中的配置马上有效，我们需要通过 ulimit 命令更改本次的 shell 会话设置（当然您如果要重启系统，我也不能说什么）。</p>
-
-<blockquote>
-<p>ulimit -n 65535</p>
-</blockquote>
-
-<p>执行命令后，配置马上生效。您可以用 ulimit -a 查看目前会话中的所有核心配置：</p>
-
-<blockquote>
-<p>ulimit -a<br/>
-core file size (blocks, -c) 0<br/>
-data seg size (kbytes, -d) unlimited<br/>
-scheduling priority (-e) 0<br/>
-file size (blocks, -f) unlimited<br/>
-pending signals (-i) 7746<br/>
-max locked memory (kbytes, -l) 64<br/>
-max memory size (kbytes, -m) unlimited<br/>
-open files (-n) 65535<br/>
-pipe size (512 bytes, -p) 8<br/>
-POSIX message queues (bytes, -q) 819200<br/>
-real-time priority (-r) 0<br/>
-stack size (kbytes, -s) 10240<br/>
-cpu time (seconds, -t) unlimited<br/>
-max user processes (-u) 7746<br/>
-virtual memory (kbytes, -v) unlimited<br/>
-file locks (-x) unlimited</p>
-</blockquote>
-
-<p>请注意 open files 这一项。</p></li>
-<li><p><strong>更改 Nginx 软件级别的 “进程最大可打开文件数” 的设置：</strong><br/>
-刚才更改的只是操作系统级别的 “进程最大可打开文件” 的限制，作为 Nginx 来说，我们还要对这个软件进行更改。打开 nginx.conf 主陪文件。您需要配合 worker_rlimit_nofile 属性。如下：</p>
-
-<blockquote>
-<p>user root root;<br/>
-worker_processes 4;<br/>
-<strong>worker_rlimit_nofile 65535;</strong></p>
-
-<h1 id="toc_11">error_log logs/error.log;</h1>
-
-<h1 id="toc_12">error_log logs/error.log notice;</h1>
-
-<h1 id="toc_13">error_log logs/error.log info;</h1>
-
-<h1 id="toc_14">pid logs/nginx.pid;</h1>
-
-<p>events {<br/>
-use epoll;<br/>
-<strong>worker_connections 65535;</strong><br/>
-}</p>
-</blockquote>
-
-<p>这里只粘贴了部分代码，其他的配置代码和主题无关，也就不需要粘贴了。请注意代码行中加粗的两个配置项，请一定两个属性全部配置。配置完成后，请通过 nginx -s reload 命令重新启动 Nginx。</p></li>
-<li><p><strong>验证 Nginx 的 “进程最大可打开文件数” 是否起作用：</strong></p>
-
-<p>那么我们如何来验证配置是否起作用了呢？在 linux 系统中，所有的进程都会有一个临时的核心配置文件描述，存放路径在 / pro / 进程号 / limit。</p>
-
-<p>首先我们来看一下，没有进行参数优化前的进程配置信息：</p>
-
-<blockquote>
-<p>ps -elf | grep nginx<br/>
-1 S root 1594 1 0 80 0 - 6070 rt_sig 05:06 ? 00:00:00 nginx: master process /usr/nginx-1.8.0/sbin/nginx<br/>
-5 S root 1596 1594 0 80 0 - 6176 ep_pol 05:06 ? 00:00:00 nginx: worker process<br/>
-5 S root 1597 1594 0 80 0 - 6176 ep_pol 05:06 ? 00:00:00 nginx: worker process<br/>
-5 S root 1598 1594 0 80 0 - 6176 ep_pol 05:06 ? 00:00:00 nginx: worker process<br/>
-5 S root 1599 1594 0 80 0 - 6176 ep_pol 05:06 ? 00:00:00 nginx: worker process</p>
-</blockquote>
-
-<p>可以看到，nginx 工作进程的进程号是：1596 1597 1598 1599。我们选择一个进程，查看其核心配置信息：</p>
-
-<blockquote>
-<p>cat /proc/1598/limits</p>
-</blockquote>
-
-<p><img src="https://img-blog.csdn.net/20150707204548230" alt=""/></p>
-
-<p>请注意其中的 Max open files ，分别是 1024 和 4096。那么更改配置信息，并重启 Nginx 后，配置信息就是下图所示了：</p>
-
-<p><img src="https://img-blog.csdn.net/20150707204756789" alt=""/></p></li>
-</ul>
-
-<h3 id="toc_15"><a></a>3.1.3、max client 的计算方式：</h3>
-
-<p>这个小结我们主要来说明两个在网上经常说的公式：</p>
-
-<ul>
-<li><p>max_client = worker_processes * worker_connections</p></li>
-<li><p>max_client = worker_processes * worker_connections / 4</p></li>
-</ul>
-
-<p>这两个公式分别说明，在 Nginx 充当服务器（例如 nginx 上面装载 PHP）的时候，Nginx 可同时承载的连接数量是最大工作线程 * 每个线程允许的连接数量；当 Nginx 充当反向代理服务的时候，其可同时承载的连接数量是最大工作线程 * 每个线程允许的连接数量 / 4。</p>
-
-<p>第一个问题很好理解，关键是第二个问题：为什么会除以 4。网上的帖子给出的答案是。浏览器 -&gt;Nginx、Nginx-&gt; 后端服务器、后端服务器 -&gt;Nginx、Nginx-&gt; 浏览器，所以需要除以四，我想说 TCP 协议是双向全双工协议，为什么需要这样建立连接呢？所以这个说法肯定是错误的。</p>
-
-<p>在 nginx 官方文档上有这样一句话：</p>
-
-<blockquote>
-<p>Since a browser opens 2 connections by default to a server and nginx uses the fds (file descriptors) from the same pool to connect to the upstream backend。</p>
-</blockquote>
-
-<p>翻译成中文的描述就是，浏览器会建立两条连接到 Nginx（注意两条连接都是浏览器建立的），Nginx 也会建立对应的两条连接到后端服务器。这样就是四条连接了。</p>
-
-<h3 id="toc_16"><a></a>3.1.4、gzip</h3>
-
-<p>后文补讲，放在这里算是一个扣子 <sup>_^</sup></p>
-
-<h2 id="toc_17"><a></a>3.2、健康检查模块</h2>
-
-<p>后文补讲，放在这里算是一个扣子 <sup>_^</sup></p>
-
-<h2 id="toc_18"><a></a>3.3、图片处理模块</h2>
-
-<p>后文补讲，放在这里算是一个扣子 <sup>_^</sup></p>
-
-<h2 id="toc_19"><a></a>3.4、Nginx 的 Rewrite 功能</h2>
-
-<p>后文补讲，放在这里算是一个扣子 <sup>_^</sup></p>
-
-<h1 id="toc_20"><a></a>4、后文介绍</h1>
-
-<p>我原本计划一篇文章就把 Nginx 的主要特性都进行介绍，奈何 Nginx 的强大功能确实太多了。为了保证您对知识的全面消化，这边文章就写到这里了。LVS 的讲解再往后拖一周左右吧，下篇文章我们继续讲解 Nginx 的强大功能，包括 gzip 功能、强大的 rewrite 功能，以及两个扩展模块：健康检查模块和图片处理模块，至于 Nginx 集成 PHP 作为服务器的特性，为了保证这个系列文章的中心线络就不再讲了，那又是一套完整的知识体系。敬请期待我的下一篇博客，谢谢。另外，目前一周一篇文章的频率我觉得是比较合适的，后面的文章我争取保持这个速度。</p>
-
-<p><link rel="stylesheet" href="https://csdnimg.cn/release/phoenix/template/css/markdown_views-ea0013b516.css"></p>
 
                         
                       </div>
@@ -504,10 +1131,10 @@ use epoll;<br/>
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/6/28</span>
+                    <span class="date">2018/8/2</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Network.html'>Network</a></span>
+          					    <span class="posted-in"><a href='Orchestrator.html'>Orchestrator</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -597,31 +1224,31 @@ use epoll;<br/>
 	      
 		      
 			      <li class="post">
-			        <a href="15459058392039.html">Reliable Domain Events</a>
+			        <a href="15517999043443.html">The Art of Crafting Architectural Diagrams</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
+			        <a href="15517997955971.html">为什么说我们需要软件架构图？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
+			        <a href="15516128677869.html">DNS Servers That Offer Privacy and Filtering</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
+			        <a href="15516123108194.html">Airbnb's Migration from Monolith to Services</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
+			        <a href="15516097487470.html">Events As First-Class Citizens</a>
 			      </li>
 		     
 		  

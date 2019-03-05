@@ -105,26 +105,234 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15353470248085.html">
+                <a class="clearlink" href="15459772687081.html">
                 
-                  <h1>MySQL</h1>
+                  <h1>Supervisord 管理进程实践</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
-                        	<h2 id="toc_0">JDBC Connect failed</h2>
+                        	<pre><code>发表于 2018-06-01
+</code></pre>
 
 <blockquote>
-<p>Check VPN Global Mode</p>
+<p>原文地址 <a href="https://thief.one/2018/06/01/1/">https://thief.one/2018/06/01/1/</a></p>
 </blockquote>
 
-<h2 id="toc_1">Version 8+</h2>
+<p>今天凑空研究了下 Supervisord，这是一款 linux 进程管理工具，使用 python 开发，主要用于在后台维护进程（类似 master 守护进程），可以实现监控进程的状态、自动重启进程等操作，便于一些服务的维护与监控。<br/>
+<a id="more"></a></p>
 
-<blockquote>
-<p>&quot;Public Key Retrieval is not allowed&quot;</p>
+<h3 id="toc_0"><a href="#%E5%AE%89%E8%A3%85Supervisord" title="安装Supervisord"></a>安装 Supervisord</h3>
 
-<p>/usr/local/var/mysql/ca.pem</p>
-</blockquote>
+<p>由于是用 python 开发的，因此使用 pip 安装最为方便。</p>
+
+<pre><code class="language-sh">pip install supervisor
+</code></pre>
+
+<p>说明：安装完成之后多了 3 个工具：echo_supervisord_conf、supervisorctl 和 supervisord。</p>
+
+<h3 id="toc_1"><a href="#Supervisord%E9%85%8D%E7%BD%AE%E6%96%87%E4%BB%B6" title="Supervisord配置文件"></a>Supervisord 配置文件</h3>
+
+<p>首先可以使用 echo_supervisord_conf 命令获取 supervisor 配置模板：</p>
+
+<pre><code class="language-sh">echo_supervisord_conf &gt; supervisord.conf
+</code></pre>
+
+<p>说明：该命令在当前目录下创建了一个文件名为 supervisord.conf 的配置文件，编辑配置文件：</p>
+
+<pre><code class="language-sh">vim supervisord.conf
+</code></pre>
+
+<p>来看看默认配置文件中的主要配置项：（还有一些配置不常用，可以忽略）</p>
+
+<pre><code class="language-ini">[unix_http_server]
+file=/tmp/supervisor.sock   ; UNIX socket 文件，supervisorctl 会使用
+;chmod=0700                 ; socket 文件的 mode，默认是 0700
+;chown=nobody:nogroup       ; socket 文件的 owner，格式： uid:gid
+;[inet_http_server]         ; HTTP 服务器，提供 web 管理界面
+;port=127.0.0.1:9001        ; Web 管理后台运行的 IP 和端口，如果开放到公网，需要注意安全性
+;username=user              ; 登录管理后台的用户名
+;password=123               ; 登录管理后台的密码
+[supervisord]
+logfile=/tmp/supervisord.log ; 日志文件，默认是 $CWD/supervisord.log
+logfile_maxbytes=50MB        ; 日志文件大小，超出会 rotate，默认 50MB
+logfile_backups=10           ; 日志文件保留备份数量默认 10
+loglevel=info                ; 日志级别，默认 info，其它: debug,warn,trace
+pidfile=/tmp/supervisord.pid ; pid 文件
+nodaemon=false               ; 是否在前台启动，默认是 false，即以 daemon 的方式启动
+minfds=1024                  ; 可以打开的文件描述符的最小值，默认 1024
+minprocs=200                 ; 可以打开的进程数的最小值，默认 200
+; the below section must remain in the config file for RPC
+; (supervisorctl/web interface) to work, additional interfaces may be
+; added by defining them in separate rpcinterface: sections
+[rpcinterface:supervisor]
+supervisor.rpcinterface_factory = supervisor.rpcinterface:make_main_rpcinterface
+[supervisorctl]
+serverurl=unix:///tmp/supervisor.sock ; 通过 UNIX socket 连接 supervisord，路径与 unix_http_server 部分的 file 一致
+;serverurl=http://127.0.0.1:9001 ; 通过 HTTP 的方式连接 supervisord
+; 包含其他的配置文件
+[include]
+files = relative/directory/*.ini    ; 可以是 *.conf 或 *.ini
+</code></pre>
+
+<p>运行以下命令启动 supervisord 进程，可测试 supervisord 是否安装成功并执行。</p>
+
+<pre><code class="language-sh">supervisord -c supervisord.conf
+</code></pre>
+
+<p>查看系统进程中是否多了一个 supervisord：</p>
+
+<pre><code class="language-sh">ps -aux | grep supervisord
+</code></pre>
+
+<h3 id="toc_2"><a href="#%E9%85%8D%E7%BD%AEProgram" title="配置Program"></a>配置 Program</h3>
+
+<p>　　program 就是用来配置监控不同的应用程序进程的，推荐每个应用程序单独写一个 program 配置文件，然后在 supervisord.conf 中通过 include 加载所有应用程序的配置。<br/>
+这里拿创建一个 celery 进程为例，首先在 supervisord.conf 最后一行写入：</p>
+
+<pre><code>;加载/etc/supervisor/目录下所有的配置文件
+[include]
+files = /etc/supervisor/*.conf
+</code></pre>
+
+<p>然后创建 / etc/supervisor 目录，并到目录下创建 / etc/supervisor/celery_touchscan.conf 文件，写入：</p>
+
+<pre><code class="language-ini">;program名称，随便写，但不要重复，是program的唯一标识
+[program:celery_touchscan]
+;指定运行目录
+directory=/root/TouchScanV2/ 
+;运行目录下执行命令
+command=celery -A scan worker --queue=touchscan --pidfile=&quot;./log/pid.txt&quot; --logfile=&quot;./log/scan.log&quot; -c 10
+;进程名称
+process_name=%(program_name)s_%(process_num)02d
+;启动设置
+numprocs=1         ;进程数，注意：（celery进程数量,不是work数量，相当于执行了10个command命令，而不是在celery中指定-c 为10）
+autostart=true      ;当supervisor启动时,程序将会自动启动
+autorestart=true    ;自动重启（当work被kill了之后会重新启动）
+;运行程序的用户
+;user=root
+;startsecs=1 ;程序重启时候停留在runing状态的秒数
+;startretries=10 ;启动失败时的最多重试次数
+;停止信号,默认TERM
+;中断:INT (类似于Ctrl+C)(kill -INT pid)，退出后会将写文件或日志(推荐)
+;终止:TERM (kill -TERM pid)
+;挂起:HUP (kill -HUP pid),注意与Ctrl+Z/kill -stop pid不同
+;从容停止:QUIT (kill -QUIT pid)
+stopsignal=INT
+</code></pre>
+
+<p>重启 supervisord 进程：</p>
+
+<pre><code class="language-sh">supervisorctl -c supervisord.conf reload
+</code></pre>
+
+<p>　　此时查看系统上的进程，发现创建了一个 supervisord 守护进程，10 个 celery 的 work 进程（celery 的 work 进程数量取决于 command 命令中的 - c 参数以及配置文件中的 numprocs 参数，numprocs 参数是指运行几次 command 命令，而在 celery 命令行中指定了需要运行的 work 数量）</p>
+
+<p><img src="media/15459772687081/15459834635808.jpg" alt=""/></p>
+
+<p><img src="media/15459772687081/15459834719686.jpg" alt=""/></p>
+
+<p>说明：此时如果手动 kill 掉 celery 的 work 进程，会发现 celery 的 work 进程会被 supervisord 自动重启，只有当 supervisord 守护进程被 kill 以后，才能真正 kill 掉 celery 的 work 进程。</p>
+
+<h3 id="toc_3"><a href="#supervisord%E5%91%BD%E4%BB%A4%E8%A1%8C%E6%93%8D%E4%BD%9C" title="supervisord命令行操作"></a>supervisord 命令行操作</h3>
+
+<h4 id="toc_4"><a href="#%E5%90%AF%E5%8A%A8supervisord%E8%BF%9B%E7%A8%8B" title="启动supervisord进程"></a>启动 supervisord 进程</h4>
+
+<pre><code class="language-sh">supervisord -c supervisord.conf
+</code></pre>
+
+<h4 id="toc_5"><a href="#%E5%85%B3%E9%97%ADsupervisord%E8%BF%9B%E7%A8%8B" title="关闭supervisord进程"></a>关闭 supervisord 进程</h4>
+
+<pre><code class="language-sh">supervisorctl -c supervisord.conf shutdown #注意这里将supervisord进程关闭，但通过supervisord启动的进程没有关闭
+</code></pre>
+
+<h4 id="toc_6"><a href="#%E9%87%8D%E5%90%AFsupervisord%E8%BF%9B%E7%A8%8B" title="重启supervisord进程"></a>重启 supervisord 进程</h4>
+
+<pre><code class="language-sh">supervisorctl -c supervisord.conf reload
+</code></pre>
+
+<h4 id="toc_7"><a href="#%E6%9F%A5%E7%9C%8B%E8%BF%9B%E7%A8%8B%E7%8A%B6%E6%80%81" title="查看进程状态"></a>查看进程状态</h4>
+
+<pre><code class="language-sh">supervisorctl
+</code></pre>
+
+<p>效果如下：<br/>
+<img src="media/15459772687081/15459834896014.jpg" alt=""/><br/>
+每列分别代表：programe 名称、进程名称，进程状态、进程 id，运行时间</p>
+
+<h4 id="toc_8"><a href="#%E6%9B%B4%E5%A4%9Asupervisorctl%E5%91%BD%E4%BB%A4" title="更多supervisorctl命令"></a>更多 supervisorctl 命令</h4>
+
+<pre><code class="language-sh">supervisorctl status
+supervisorctl stop celery_touchscan # celery_touchscan是一个program的名称
+supervisorctl start celery_touchscan
+supervisorctl restart celery_touchscan
+supervisorctl reread
+supervisorctl update
+</code></pre>
+
+<p>说明：可以直接在系统 shell 中执行，也可以先执行 supervisorctl，进入 supervisorctl_shell 中执行相应的命令。</p>
+
+<h4 id="toc_9"><a href="#%E9%92%88%E5%AF%B9Python%E7%8E%AF%E5%A2%83" title="针对Python环境"></a>针对 Python 环境</h4>
+
+<p>如果项目使用了 python 的 pyenv 模块来设置环境，则 supervisord 配置文件中需要指定 python 环境的路径。其中有两种方式指定程序使用的 Python 环境：</p>
+
+<ul>
+<li>  command 使用绝对路径。</li>
+<li>  通过 environment 配置 PYTHONPATH。</li>
+</ul>
+
+<h3 id="toc_10"><a href="#%E4%BD%BF%E7%94%A8supervisord%E6%B3%A8%E6%84%8F%E7%82%B9" title="使用supervisord注意点"></a>使用 supervisord 注意点</h3>
+
+<h4 id="toc_11"><a href="#%E5%AD%90%E8%BF%9B%E7%A8%8B%E9%97%AE%E9%A2%98" title="子进程问题"></a>子进程问题</h4>
+
+<p>有时候用 Supervisor 托管的程序还会有子进程，如果只杀死主进程，子进程就可能变成孤儿进程。通过以下这两项配置来确保所有子进程都能正确停止：</p>
+
+<pre><code class="language-sh">stopasgroup=true
+killasgroup=true
+</code></pre>
+
+<h4 id="toc_12"><a href="#%E9%85%8D%E7%BD%AE%E6%9B%B4%E6%96%B0" title="配置更新"></a>配置更新</h4>
+
+<p>每次修改 supervisord 配置文件后，需要重启 supervisord 进程。</p>
+
+<h4 id="toc_13"><a href="#%E5%90%8E%E5%8F%B0%E7%A8%8B%E5%BA%8F%E9%97%AE%E9%A2%98" title="后台程序问题"></a>后台程序问题</h4>
+
+<p>Supervisor 只能管理在前台运行的程序，所以如果应用程序有后台运行的选项，需要关闭。</p>
+
+<h3 id="toc_14"><a href="#supervisord%E4%B8%8E%E5%AE%9A%E6%97%B6%E4%BB%BB%E5%8A%A1" title="supervisord与定时任务"></a>supervisord 与定时任务</h3>
+
+<p>supervisord 主要用来管理进程，而不是调度任务，因此如果有定时任务的需求，跟结合 crontab 一起使用。当然如果是管理 celery 服务，可以结合 celery 自身的定时任务功能，具体可移步：<a href="https://thief.one/2017/08/25/1/">https://thief.one/2017/08/25/1/</a></p>
+
+<h3 id="toc_15"><a href="#supervisord-xml-rpc" title="supervisord xml-rpc"></a>supervisord xml-rpc</h3>
+
+<p>前面介绍的都是在本地利用 supervisord 管理进程，那么如何实现在远处管理服务器上的进程呢？supervisord 工具提供了相关的 api。首先需要在配置文件中打开相关配置信息：</p>
+
+<pre><code class="language-ini">[inet_http_server]         ; HTTP 服务器，提供 web 管理界面
+port=127.0.0.1:9001        ; Web 管理后台运行的 IP 和端口，如果开放到公网，需要注意安全性
+username=user              ; 登录管理后台的用户名
+password=123               ; 登录管理后台的密码
+</code></pre>
+
+<p>然后启动 supervisord 后，可以用 web 界面管理进程，打开 <u><a href="http://127.0.0.1:9001">http://127.0.0.1:9001</a></u>。当然也提供了 rpc 接口，可供远程调用，代码样例如下：</p>
+
+<pre><code class="language-py">import xmlrpclib
+server = xmlrpclib.Server(&#39;http://user:123@127.0.0.1:9111/RPC2&#39;) #连接rpc服务
+# print server.system.listMethods() # 查询api支持的方法
+# print server.supervisor.getState() # 获取supervisord进程状态
+# print server.supervisor.shutdown() # 关闭supervisor,慎用
+# print server.supervisor.restart() # 重启supervisor
+print server.supervisor.getProcessInfo(process_name) # 获取指定进程信息
+print server.supervisor.startProcess(process_name) # 启动指定进程
+print server.supervisor.stopProcess(process_name) # 暂停指定进程
+</code></pre>
+
+<p>api 操作比较简单，具体的方法使用文档可以参考：<a href="http://supervisord.org/api.html#xml-rpc">http://supervisord.org/api.html#xml-rpc</a></p>
+
+<h3 id="toc_16"><a href="#%E5%8F%82%E8%80%83" title="参考"></a>参考</h3>
+
+<p><a href="https://pypi.org/project/supervisor/">https://pypi.org/project/supervisor/</a><br/>
+<a href="https://www.jianshu.com/p/9559ab642d88">https://www.jianshu.com/p/9559ab642d88</a><br/>
+<a href="http://liyangliang.me/posts/2015/06/using-supervisor/">http://liyangliang.me/posts/2015/06/using-supervisor/</a></p>
 
                         
                       </div>
@@ -133,10 +341,10 @@
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/8/27</span>
+                    <span class="date">2018/12/28</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Database.html'>Database</a></span>
+          					    <span class="posted-in"><a href='HA.html'>HA</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -226,31 +434,31 @@
 	      
 		      
 			      <li class="post">
-			        <a href="15459058392039.html">Reliable Domain Events</a>
+			        <a href="15517999043443.html">The Art of Crafting Architectural Diagrams</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
+			        <a href="15517997955971.html">为什么说我们需要软件架构图？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
+			        <a href="15516128677869.html">DNS Servers That Offer Privacy and Filtering</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
+			        <a href="15516123108194.html">Airbnb's Migration from Monolith to Services</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
+			        <a href="15516097487470.html">Events As First-Class Citizens</a>
 			      </li>
 		     
 		  

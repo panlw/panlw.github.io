@@ -105,245 +105,614 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15456638361570.html">
+                <a class="clearlink" href="15456691642791.html">
                 
-                  <h1>Spring boot metrics monitoring using TICK stack</h1>
+                  <h1>Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
-                        	<pre><code>Mohammed Aboullaite | 08 Apr 2018 | 6 min (1537 words)
+                        	<pre><code>2017-02-04
 </code></pre>
 
 <blockquote>
-<p>原文地址 <a href="https://aboullaite.me/spring-boot-metrics-monitoring-using-tick-stack/">https://aboullaite.me/spring-boot-metrics-monitoring-using-tick-stack/</a></p>
+<p>原文地址 <a href="https://kazuhira-r.hatenablog.com/entry/20170204/1486194922">https://kazuhira-r.hatenablog.com/entry/20170204/1486194922</a></p>
 </blockquote>
 
-<p>Worth nothing to mention that monitoring the performance and availability of applications is very important. This is one of the many cool features bundled with Spring boot, which since its first days comes with production ready features (i.e Actuator) to help us keeping an eye on apps performance. With the release of spring boot 2, <a href="https://docs.spring.io/spring-boot/docs/current/reference/html/production-ready.html">Actuator</a> got a huge boost, offering dev/ops more application metrics facade that supports numerous monitoring systems.</p>
+<p>Spring の Cache Abstraction では、バックエンドのキャッシュに対する Cache Provider があり、それぞれ CacheManager の<br/>
+実装を提供していますが、複数の CacheManager を組み合わせる CompositeCacheManager というものがあります。</p>
 
-<p>In this post, we&#39;ll see how we can easily monitor Spring boot applications using the <a href="https://www.influxdata.com/time-series-platform/">TICK stack</a>.</p>
+<p><a href="https://docs.spring.io/spring/docs/4.3.6.RELEASE/spring-framework-reference/html/cache.html#cache-annotations">Cache / Dealing with caches without a backing store</a></p>
 
-<p><img src="media/15456638361570/15456639113571.jpg" alt=""/></p>
+<p>※CompositeCacheManager の説明というより、適切なキャッシュが存在しなかった時のフォールバックケースとして書いてありますが…</p>
 
-<h3 id="toc_0">The TICK stack ?!</h3>
+<p><a href="http://docs.spring.io/spring-framework/docs/4.3.6.RELEASE/javadoc-api/org/springframework/cache/support/CompositeCacheManager.html">CompositeCacheManager (Spring Framework 4.3.6.RELEASE API)</a></p>
 
-<p>The TICK stack is a collection of products from the developers of the time-series database InfluxDB. It is made up of the following components:</p>
+<p>こちらを使って、今回は Caffeine と Redis の 2 つのキャッシュを同時に使ってみたいと思います。ひとつ前のエントリで、<br/>
+キャッシュの<a href="http://d.hatena.ne.jp/keyword/%A5%A2%A5%CE%A5%C6%A1%BC%A5%B7%A5%E7%A5%F3">アノテーション</a>の cacheNames に複数のキャッシュを指定しましたが、今回はキャッシュごとにバックエンドの<br/>
+キャッシュを分けてみます。</p>
 
-<ul>
-<li>  <strong>Telegraf</strong>: collects time-series data from a variety of sources.</li>
-<li>  <strong>InfluxDB</strong>: stores time-series data.</li>
-<li>  <strong>Chronograf</strong>: visualizes and graphs the time-series data.</li>
-<li>  <strong>Kapacitor</strong>: provides alerting and detects anomalies in time-series data.</li>
-</ul>
+<p><a href="http://d.hatena.ne.jp/Kazuhira/20170204/1486188414">Spring の Cache Abstraction で、 アノテーションに複数のキャッシュを指定した場合の動きを確認する - CLOVER</a></p>
 
-<p>We can use each of these components separately, but if we use them together, we&#39;ll have a scalable, integrated open-source system for processing time-series data.</p>
+<p>サンプルコードは、この時使ったものと近いものを使用しています。</p>
 
-<h3 id="toc_1">Configuring the TICK stack and spring boot</h3>
+<p>では、試してみましょう。</p>
 
-<p>As I mentioned above, Spring Boot 2 actuator comes bundled with metrics facade easily integrated with many monitoring platforms including the Tick stack.</p>
+<h4 id="toc_0">準備</h4>
 
-<h4 id="toc_2">Configuring Spring Boot</h4>
+<p>まずは <a href="http://d.hatena.ne.jp/keyword/Maven">Maven</a> 依存関係から。</p>
 
-<p>First of all we need, obviously, to add spring boot actuator dependency to our application:</p>
+<pre data-lang="xml" data-unlink="">    <properties>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <java.version>1.8</java.version>
+        <maven.compiler.source>1.8</maven.compiler.source>
+        <maven.compiler.target>1.8</maven.compiler.target>
+        <spring.boot.version>1.5.1.RELEASE</spring.boot.version>
+    </properties>
 
-<pre><code>&lt;dependency&gt;  
-            &lt;groupId&gt;org.springframework.boot&lt;/groupId&gt;
-            &lt;artifactId&gt;spring-boot-starter-actuator&lt;/artifactId&gt;
-            &lt;version&gt;${actuator.version}&lt;/version&gt;
-        &lt;/dependency&gt;
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-dependencies</artifactId>
+                <version>${spring.boot.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
 
-</code></pre>
+    <dependencies>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-cache</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.github.ben-manes.caffeine</groupId>
+            <artifactId>caffeine</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis</artifactId>
+        </dependency>
 
-<p>If you are using spring boot 2, Actuator autoconfigure micrometer magically. if not and you&#39;re using a previous version, please check <a href="https://micrometer.io/docs/ref/spring/1.5">these configuration steps</a>.</p>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+</pre>
 
-<p>On the other hand, <a href="https://www.influxdata.com/time-series-platform/telegraf/">Telegraf</a> is an agent written in Go and accepts StatsD protocol metrics over UDP, then periodically forwards the metrics to InfluxDB. <a href="https://micrometer.io/">Micrometer</a> supports three flavors of StatsD: the original <code>Etsy</code> format plus the <code>Datadog</code> and <code>Telegraf</code> extensions of StatsD that add dimensional support. Obviously we&#39;re going to use this registry to publish metrics to telegraf. For that we need to add these lines to our <code>application.properties</code> file:</p>
+<p>Spring の Cache の依存関係と、Caffeine、Spring Data Redis を追加。</p>
 
-<pre><code>management.metrics.export.statsd.enabled=true  
-management.metrics.export.statsd.flavor=telegraf  
-management.metrics.export.statsd.port=8125  
+<p>Redis は、3.2.7 を<a href="http://d.hatena.ne.jp/keyword/%A5%EA%A5%E2%A1%BC%A5%C8%A5%DB%A5%B9%A5%C8">リモートホスト</a>で起動させています。</p>
 
-</code></pre>
+<h4 id="toc_1">サンプルコードの準備</h4>
 
-<h4 id="toc_3">Configuring the TICK stack</h4>
+<p>では、確認用のサンプルアプリケーションを作成します。</p>
 
-<p>The <code>docker-compose</code> file below configures 4 services:</p>
+<p>キャッシュに格納する用のクラス。</p>
 
-<ul>
-<li>  <code>telegraf</code> service to collect data sent by micrometer. This service is configured using the <code>./etc/telegraf.conf</code> file. this service expose the port <code>8125</code> used by Actuator to send metrics</li>
-<li>  <code>influxdb</code> service that stores data sent from telegraf. we mount a volume to <code>./data/influxdb</code> to save data on host disk. It expose the port <code>8086</code> to access influxdb API.</li>
-<li>  <code>chronograf</code> service to visualize influxdb data, create dashboards and show alerts triggered from kapacitor. this service expose port <code>8888</code> to access this web application.</li>
-<li>  <code>kapacitor</code> service, analyse influxdb data and triggers alerts.</li>
-</ul>
+<pre data-lang="java" data-unlink="">src/main/java/org/littlewings/spring/cache/Message.java 
+package org.littlewings.spring.cache;
 
-<pre><code>version: &#39;3&#39;
+import java.io.Serializable;
+import java.time.LocalDateTime;
 
-services:  
-  # Define a Telegraf service
-  telegraf:
-    image: telegraf:1.5.3
-    volumes:
-      - ./etc/telegraf.conf:/etc/telegraf/telegraf.conf:ro
-    links:
-      - influxdb
-    ports:
-      - &quot;8125:8125/udp&quot;
-  # Define an InfluxDB service
-  influxdb:
-    image: influxdb:1.5.1
-    volumes:
-      - ./data/influxdb:/var/lib/influxdb
-    ports:
-      - &quot;8086:8086&quot;
-  # Define a Chronograf service
-  chronograf:
-    image: chronograf:1.4.3.1
-    environment:
-      INFLUXDB_URL: http://influxdb:8086
-      KAPACITOR_URL: http://kapacitor:9092
-    ports:
-      - &quot;8888:8888&quot;
-    links:
-      - influxdb
-      - kapacitor
-  # Define a Kapacitor service
-  kapacitor:
-    image: kapacitor:1.4.1
-    environment:
-      KAPACITOR_HOSTNAME: kapacitor
-      KAPACITOR_INFLUXDB_0_URLS_0: http://influxdb:8086
-    links:
-      - influxdb
-    ports:
-      - &quot;9092:9092&quot;
+public class Message implements Serializable {
+    private static final long serialVersionUID = 1L;
 
-</code></pre>
+    private String value;
+    private LocalDateTime now;
 
-<p>The <code>telegraf.conf</code> file I&#39;ve used is very minimalist. it configures the telegraf agent properties as well as StatsD as input plugin and influxdb as output plugin:</p>
+    public Message() {
+    }
 
-<pre><code># Telegraf Configuration
-# Global tags can be specified here in key=&quot;value&quot; format.
-[global_tags]
-# Configuration for telegraf agent
-[agent]
-## Default data collection interval for all inputs
-interval = &quot;10s&quot;  
-## Rounds collection interval to &#39;interval&#39;
-round_interval = true  
-## This controls the size of writes that Telegraf sends to output plugins.
-metric_batch_size = 1000  
-## This buffer only fills when writes fail to output plugin(s).
-metric_buffer_limit = 10000  
-## Collection jitter is used to jitter the collection by a random amount.
-collection_jitter = &quot;0s&quot;  
-flush_interval = &quot;10s&quot;  
-flush_jitter = &quot;0s&quot;  
-precision = &quot;&quot;
+    public Message(String value) {
+        this.value = value;
+        now = LocalDateTime.now();
+    }
 
-## Logging configuration:
-debug = false  
-## Run telegraf in quiet mode (error log messages only).
-quiet = false  
-## Specify the log file name. The empty string means to log to stderr.
-logfile = &quot;&quot;  
-## Override default hostname, if empty use os.Hostname()
-hostname = &quot;&quot;  
-## If set to true, do no set the &quot;host&quot; tag in the telegraf agent.
-omit_hostname = false
+    public String getValue() {
+        return value;
+    }
 
-###############################################################################
-#                            OUTPUT PLUGINS                                   #
-###############################################################################
+    public LocalDateTime getNow() {
+        return now;
+    }
+}
+</pre>
 
-# Configuration for influxdb server to send metrics to
-[[outputs.influxdb]]
-## The full HTTP or UDP URL for your InfluxDB instance.
-urls = [&quot;http://influxdb:8086&quot;] # required  
-## The target database for metrics (telegraf will create it if not exists).
-database = &quot;telegraf&quot; # required
+<p>キャッシュ関連の<a href="http://d.hatena.ne.jp/keyword/%A5%A2%A5%CE%A5%C6%A1%BC%A5%B7%A5%E7%A5%F3">アノテーション</a>を付与したクラス。@Cacheable、@CachePut を使い、それぞれ「caffeineCache」と<br/>
+「redisCache」を指定しています。@Cacheable を付与したメソッドは、キャッシュが存在しない場合は 3 秒間スリープします。<br/>
+src/main/<a href="http://d.hatena.ne.jp/keyword/java">java</a>/org/littlewings/spring/cache/MessageService.<a href="http://d.hatena.ne.jp/keyword/java">java</a></p>
 
-## Name of existing retention policy to write to.  Empty string writes to
-## the default retention policy.
-retention_policy = &quot;&quot;  
-## Write consistency (clusters only), can be: &quot;any&quot;, &quot;one&quot;, &quot;quorum&quot;, &quot;all&quot;
-write_consistency = &quot;any&quot;
+<pre data-lang="java" data-unlink="">package org.littlewings.spring.cache;
 
-## Write timeout (for the InfluxDB client), formatted as a string.
-timeout = &quot;5s&quot;
+import java.util.concurrent.TimeUnit;
 
-###############################################################################
-#                            INPUT PLUGINS                                    #
-###############################################################################
+import org.springframework.cache.annotation.CachePut;
+import org.springframework.cache.annotation.Cacheable;
+import org.springframework.stereotype.Service;
 
-# # Statsd UDP/TCP Server
- [[inputs.statsd]]
-#   ## Protocol, must be &quot;tcp&quot;, &quot;udp&quot;, &quot;udp4&quot; or &quot;udp6&quot; (default=udp)
-   protocol = &quot;udp&quot;
-#
-#   ## MaxTCPConnection - applicable when protocol is set to tcp (default=250)
-   max_tcp_connections = 250
-#
-#   ## Address and port to host UDP listener on
-   service_address = &quot;:8125&quot;
-#
-#   ## The following configuration options control when telegraf clears it&#39;s cache
-#   ## of previous values. If set to false, then telegraf will only clear it&#39;s
-#   ## cache when the daemon is restarted.
-#   ## Reset gauges every interval (default=true)
-   delete_gauges = true
-#   ## Reset counters every interval (default=true)
-   delete_counters = true
-#   ## Reset sets every interval (default=true)
-   delete_sets = true
-#   ## Reset timings &amp; histograms every interval (default=true)
-   delete_timings = true
-#
-#   ## Percentiles to calculate for timing &amp; histogram stats
-   percentiles = [90]
-#
-#   ## separator to use between elements of a statsd metric
-   metric_separator = &quot;_&quot;
-#
-#   ## Parses tags in the datadog statsd format
-#   ## http://docs.datadoghq.com/guides/dogstatsd/
-   parse_data_dog_tags = false
-#   ## Number of UDP messages allowed to queue up, once filled,
-#   ## the statsd server will start dropping packets
-   allowed_pending_messages = 10000
-#
-#   ## Number of timing/histogram values to track per-measurement in the
-#   ## calculation of percentiles. Raising this limit increases the accuracy
-#   ## of percentiles but also increases the memory usage and cpu time.
-   percentile_limit = 1000
+@Service
+public class MessageService {
+    @Cacheable(cacheNames = {"caffeineCache", "redisCache"}, key = "#value")
+    public Message build(String value) {
+        try {
+            TimeUnit.SECONDS.sleep(3L);
+        } catch (InterruptedException e) {
+            // ignore
+        }
 
-</code></pre>
+        return new Message(value);
+    }
 
-<h4 id="toc_4">Show me the graphs</h4>
+    @CachePut(cacheNames = {"caffeineCache", "redisCache"}, key = "#message.value")
+    public Message update(Message message) {
+        return message;
+    }
+}
+</pre>
 
-<p>If everything is good, you should see metrics stored in <code>influxdb</code> from the <code>chronograf</code> application. The UX is so fluent and lean. After 5 min only I was able to build this very simple dashboard:<br/>
-<img src="media/15456638361570/15456639407892.jpg" alt=""/><br/>
-Yaaay visibility!</p>
+<p>CacheManager の設定。@EnableCaching <a href="http://d.hatena.ne.jp/keyword/%A5%A2%A5%CE%A5%C6%A1%BC%A5%B7%A5%E7%A5%F3">アノテーション</a>を設定してキャッシュ機能を有効化するとともに、Caffeine と Redis<br/>
+それぞれの CacheManager を作成し、CompositeCacheManager で組み合わせています。<br/>
+src/main/<a href="http://d.hatena.ne.jp/keyword/java">java</a>/org/littlewings/spring/cache/CacheConfig.<a href="http://d.hatena.ne.jp/keyword/java">java</a></p>
 
-<h3 id="toc_5">Configuring alerts</h3>
+<pre data-lang="java" data-unlink="">package org.littlewings.spring.cache;
 
-<p>One of the great features of the TICK stack is the alerting and detecting anomalies in the data. It support many alert endpoints(TCP, HipChat, Slack, SMTP, Talk, log, Telegram ...). The configuration of <code>Kapacitor</code> from <code>chronograf</code> is very easy and straightforward. I&#39;ve set up a <code>Memory usage</code> alert in a matter of seconds. (Well, it&#39;s a very basic alert! configuring real world, complexe alerts will need more time obviously ;))<br/>
-<img src="media/15456638361570/15456639514924.jpg" alt=""/></p>
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.Map;
 
-<p>The <a href="https://docs.influxdata.com/chronograf/v1.4/guides/create-a-kapacitor-alert/">official documentation</a> explains the required step to create your first alert!</p>
+import org.springframework.cache.CacheManager;
+import org.springframework.cache.annotation.EnableCaching;
+import org.springframework.cache.caffeine.CaffeineCacheManager;
+import org.springframework.cache.support.CompositeCacheManager;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.data.redis.cache.RedisCacheManager;
+import org.springframework.data.redis.core.RedisTemplate;
 
-<h3 id="toc_6">Securing Chronograf</h3>
+@Configuration
+@EnableCaching
+public class CacheConfig {
+    CacheManager caffeineCacheManager() {
+        CaffeineCacheManager cacheManager = new CaffeineCacheManager();
 
-<p>The community edition of the TICK stack does not ship with security by default. To secure <code>Chronograf</code> we can put it behind a web server and configure Basic authentication. The second option, which I prefer, would be to use <a href="https://www.keycloak.org/">keycloak</a> proxy as I explained previously in <a href="https://github.com/aboullaite/kibana-keycloak">this post</a>!</p>
+        cacheManager.setCacheSpecification("expireAfterWrite=3s");
+        cacheManager.setCacheNames(Arrays.asList("caffeineCache"));
 
-<hr/>
+        return cacheManager;
+    }
 
-<h5 id="toc_7">Ressources</h5>
+    CacheManager redisCacheManager(RedisTemplate<Object, Object> redisTemplate) {
+        RedisCacheManager cacheManager = new RedisCacheManager(redisTemplate);
 
-<ul>
-<li>  <a href="https://micrometer.io/docs">https://micrometer.io/docs</a></li>
-<li>  <a href="https://docs.spring.io/spring-boot/docs/current/reference/htmlsingle/#production-ready">https://docs.spring.io/spring-boot/docs/current/reference/htmlsingle/#production-ready</a></li>
-<li>  <a href="https://www.influxdata.com/time-series-platform/">https://www.influxdata.com/time-series-platform/</a></li>
-<li>  <a href="https://www.digitalocean.com/community/tutorials/how-to-monitor-system-metrics-with-the-tick-stack-on-centos-7">https://www.digitalocean.com/community/tutorials/how-to-monitor-system-metrics-with-the-tick-stack-on-centos-7</a></li>
-</ul>
+        cacheManager.setUsePrefix(true);
+
+        Map<String, Long> expires = new HashMap<>();
+        expires.put("redisCache", 6L);
+
+        cacheManager.setExpires(expires);
+
+        cacheManager.afterPropertiesSet();
+        return cacheManager;
+    }
+
+    @Bean
+    public CacheManager compositeCacheManager(RedisTemplate<Object, Object> redisTemplate) {
+        CompositeCacheManager cacheManager = new CompositeCacheManager(caffeineCacheManager(), redisCacheManager(redisTemplate));
+        cacheManager.setFallbackToNoOpCache(false);  // キャッシュの定義が見つからない場合は、getCacheがnullを返すようにする
+        cacheManager.afterPropertiesSet();
+        return cacheManager;
+    }
+}
+</pre>
+
+<p>キャッシュの有効期限は、Caffeine は 3 秒、Redis は 6 秒にしています。</p>
+
+<p>CompositeCacheManager を作成する時に、CompositeCacheManager#setFallbackToNoOpCache を true に設定すると<br/>
+CompositeCacheManager が内部的に保持する CacheManager に NoOpCacheManager というものが追加されます。<br/>
+NoOpCacheManager が追加されると、CacheManager#getCache でキャッシュ定義が見つからない時に<br/>
+なにもしないキャッシュが返されるようになり、宣言的キャッシュを使ってキャッシュが見つからない時にエラーに<br/>
+ならなくなります。</p>
+
+<p>デフォルトは false（キャッシュが見つからないと null を返す）です。</p>
+
+<p>@SpringBootApplication を付与したクラスを作成。テスト用です。<br/>
+src/main/<a href="http://d.hatena.ne.jp/keyword/java">java</a>/org/littlewings/spring/cache/App.<a href="http://d.hatena.ne.jp/keyword/java">java</a></p>
+
+<pre data-lang="java" data-unlink="">package org.littlewings.spring.cache;
+
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+@SpringBootApplication
+public class App {
+}
+</pre>
+
+<p>最後に、Redis への接続設定。<br/>
+src/main/resources/application.properties</p>
+
+<pre data-lang="" data-unlink="">spring.redis.host=172.17.0.2
+spring.redis.password=redispass</pre>
+
+<p>ここまでで、準備は完了です。</p>
+
+<h4 id="toc_2">動作確認</h4>
+
+<p>それでは、テストコードを書いて動作確認をしてみます。テストコードの雛形は、こちら。<br/>
+src/test/<a href="http://d.hatena.ne.jp/keyword/java">java</a>/org/littlewings/spring/cache/CompositeCacheTest.<a href="http://d.hatena.ne.jp/keyword/java">java</a></p>
+
+<pre data-lang="java" data-unlink="">package org.littlewings.spring.cache;
+
+import java.util.concurrent.TimeUnit;
+
+import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.cache.CacheManager;
+import org.springframework.test.context.junit4.SpringRunner;
+import org.springframework.util.StopWatch;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+@RunWith(SpringRunner.class)
+@SpringBootTest
+public class CompositeCacheTest {
+    @Autowired
+    CacheManager cacheManager;
+
+    @Autowired
+    MessageService messageService;
+
+    // ここに、テストを書く！
+}
+</pre>
+
+<p>まずは @Cacheable での確認から。テストコードは、こちら。</p>
+
+<pre data-lang="java" data-unlink="">    @Test
+    public void cacheable() throws InterruptedException {
+        StopWatch stopWatch = new StopWatch();
+
+        // 1回目
+        stopWatch.start();
+        Message m1 = messageService.build("Hello World");
+        stopWatch.stop();
+
+        // 低速
+        assertThat((long)stopWatch.getLastTaskInfo().getTimeSeconds())
+                .isGreaterThanOrEqualTo(3L);
+
+        // キャッシュに登録
+        assertThat(cacheManager.getCache("caffeineCache").get("Hello World"))
+                .isNotNull();
+        assertThat(((Message)cacheManager.getCache("caffeineCache").get("Hello World").get()).getNow())
+                .isEqualTo(m1.getNow());
+        assertThat(cacheManager.getCache("redisCache").get("Hello World"))
+                .isNotNull();
+        assertThat(((Message)cacheManager.getCache("redisCache").get("Hello World").get()).getNow())
+                .isEqualTo(m1.getNow());
+
+        // 2回目
+        stopWatch.start();
+        Message m2 = messageService.build("Hello World");
+        stopWatch.stop();
+
+        // 高速
+        assertThat((long)stopWatch.getLastTaskInfo().getTimeSeconds())
+                .isEqualTo(0L);
+
+        // キャッシュにはまだ存在
+        assertThat(cacheManager.getCache("caffeineCache").get("Hello World"))
+                .isNotNull();
+        assertThat(((Message)cacheManager.getCache("caffeineCache").get("Hello World").get()).getNow())
+                .isEqualTo(m2.getNow())
+                .isEqualTo(m1.getNow());
+        assertThat(cacheManager.getCache("redisCache").get("Hello World"))
+                .isNotNull();
+        assertThat(((Message)cacheManager.getCache("redisCache").get("Hello World").get()).getNow())
+                .isEqualTo(m2.getNow())
+                .isEqualTo(m1.getNow());
+
+        // 3秒スリープ
+        TimeUnit.SECONDS.sleep(3L);
+
+        // caffeineCacheのみ有効期限切れ
+        assertThat(cacheManager.getCache("caffeineCache").get("Hello World"))
+                .isNull();
+        assertThat(cacheManager.getCache("redisCache").get("Hello World"))
+                .isNotNull();
+        assertThat(((Message)cacheManager.getCache("redisCache").get("Hello World").get()).getNow())
+                .isEqualTo(m2.getNow())
+                .isEqualTo(m1.getNow());
+
+        // 3回目
+        stopWatch.start();
+        Message m3 = messageService.build("Hello World");
+        stopWatch.stop();
+
+        // 高速
+        assertThat((long)stopWatch.getLastTaskInfo().getTimeSeconds())
+                .isEqualTo(0L);
+
+        // caffeineCacheのみ有効期限切れ
+        assertThat(cacheManager.getCache("caffeineCache").get("Hello World"))
+                .isNull();
+        assertThat(cacheManager.getCache("redisCache").get("Hello World"))
+                .isNotNull();
+        assertThat(((Message)cacheManager.getCache("redisCache").get("Hello World").get()).getNow())
+                .isEqualTo(m3.getNow())
+                .isEqualTo(m1.getNow());
+
+        // 3秒スリープ
+        TimeUnit.SECONDS.sleep(3L);
+
+        // どちらのキャッシュも有効期限切れ
+        assertThat(cacheManager.getCache("caffeineCache").get("Hello World"))
+                .isNull();
+        assertThat(cacheManager.getCache("redisCache").get("Hello World"))
+                .isNull();
+
+        // 再度アクセス
+        messageService.build("Hello World");
+
+        // キャッシュに再登録
+        assertThat(cacheManager.getCache("caffeineCache").get("Hello World"))
+                .isNotNull();
+        assertThat(cacheManager.getCache("redisCache").get("Hello World"))
+                .isNotNull();
+
+        // 後始末
+        cacheManager.getCache("caffeineCache").evict("Hello World");
+        cacheManager.getCache("redisCache").evict("Hello World");
+    }
+</pre>
+
+<p>@Cacheable なメソッドにアクセスすると、キャッシュにエントリが保存されます。この時、Caffeine と Redis の両方に保存されます。</p>
+
+<pre data-lang="java" data-unlink="">        // 1回目
+        stopWatch.start();
+        Message m1 = messageService.build("Hello World");
+        stopWatch.stop();
+
+        // 低速
+        assertThat((long)stopWatch.getLastTaskInfo().getTimeSeconds())
+                .isGreaterThanOrEqualTo(3L);
+
+        // キャッシュに登録
+        assertThat(cacheManager.getCache("caffeineCache").get("Hello World"))
+                .isNotNull();
+        assertThat(((Message)cacheManager.getCache("caffeineCache").get("Hello World").get()).getNow())
+                .isEqualTo(m1.getNow());
+        assertThat(cacheManager.getCache("redisCache").get("Hello World"))
+                .isNotNull();
+        assertThat(((Message)cacheManager.getCache("redisCache").get("Hello World").get()).getNow())
+                .isEqualTo(m1.getNow());
+</pre>
+
+<p>2 回目のアクセスでは、高速になります。</p>
+
+<pre data-lang="java" data-unlink="">        // 2回目
+        stopWatch.start();
+        Message m2 = messageService.build("Hello World");
+        stopWatch.stop();
+
+        // 高速
+        assertThat((long)stopWatch.getLastTaskInfo().getTimeSeconds())
+                .isEqualTo(0L);
+
+        // キャッシュにはまだ存在
+        assertThat(cacheManager.getCache("caffeineCache").get("Hello World"))
+                .isNotNull();
+        assertThat(((Message)cacheManager.getCache("caffeineCache").get("Hello World").get()).getNow())
+                .isEqualTo(m2.getNow())
+                .isEqualTo(m1.getNow());
+        assertThat(cacheManager.getCache("redisCache").get("Hello World"))
+                .isNotNull();
+        assertThat(((Message)cacheManager.getCache("redisCache").get("Hello World").get()).getNow())
+                .isEqualTo(m2.getNow())
+                .isEqualTo(m1.getNow());
+</pre>
+
+<p>ここで、3 秒間スリープすると有効期限の短い Caffeine のキャッシュのみ有効期限切れします。</p>
+
+<pre data-lang="java" data-unlink="">        // 3秒スリープ
+        TimeUnit.SECONDS.sleep(3L);
+
+        // caffeineCacheのみ有効期限切れ
+        assertThat(cacheManager.getCache("caffeineCache").get("Hello World"))
+                .isNull();
+        assertThat(cacheManager.getCache("redisCache").get("Hello World"))
+                .isNotNull();
+        assertThat(((Message)cacheManager.getCache("redisCache").get("Hello World").get()).getNow())
+                .isEqualTo(m2.getNow())
+                .isEqualTo(m1.getNow());
+</pre>
+
+<p>3 回目のアクセス。Caffeine からはキャッシュエントリが消えましたが、Redis には残ったままなので高速です。</p>
+
+<pre data-lang="java" data-unlink="">        // 3回目
+        stopWatch.start();
+        Message m3 = messageService.build("Hello World");
+        stopWatch.stop();
+
+        // 高速
+        assertThat((long)stopWatch.getLastTaskInfo().getTimeSeconds())
+                .isEqualTo(0L);
+
+        // caffeineCacheのみ有効期限切れ
+        assertThat(cacheManager.getCache("caffeineCache").get("Hello World"))
+                .isNull();
+        assertThat(cacheManager.getCache("redisCache").get("Hello World"))
+                .isNotNull();
+        assertThat(((Message)cacheManager.getCache("redisCache").get("Hello World").get()).getNow())
+                .isEqualTo(m3.getNow())
+                .isEqualTo(m1.getNow());
+</pre>
+
+<p>さらに 3 秒間スリープさせると、Redis からもエントリがなくなります。</p>
+
+<pre data-lang="java" data-unlink="">        // 3秒スリープ
+        TimeUnit.SECONDS.sleep(3L);
+
+        // どちらのキャッシュも有効期限切れ
+        assertThat(cacheManager.getCache("caffeineCache").get("Hello World"))
+                .isNull();
+        assertThat(cacheManager.getCache("redisCache").get("Hello World"))
+                .isNull();
+</pre>
+
+<p>もちろん、この状態で再度 @Cachable なメソッドにアクセスすると両方のキャッシュにエントリが入ります。</p>
+
+<pre data-lang="java" data-unlink="">        // 再度アクセス
+        messageService.build("Hello World");
+
+        // キャッシュに再登録
+        assertThat(cacheManager.getCache("caffeineCache").get("Hello World"))
+                .isNotNull();
+        assertThat(cacheManager.getCache("redisCache").get("Hello World"))
+                .isNotNull();
+</pre>
+
+<p>両方のそれぞれのキャッシュを使えてそうですね。</p>
+
+<p>あと、@CachePut も確認しておきましょう。テストコードは、こちら。</p>
+
+<pre data-lang="java" data-unlink="">    @Test
+    public void cachePut() throws InterruptedException {
+        StopWatch stopWatch = new StopWatch();
+
+        // 1回目
+        stopWatch.start();
+        Message m1 = messageService.build("Hello World");
+        stopWatch.stop();
+
+        // 低速
+        assertThat((long)stopWatch.getLastTaskInfo().getTimeSeconds())
+                .isGreaterThanOrEqualTo(3L);
+
+        // キャッシュに登録されている
+        assertThat(cacheManager.getCache("caffeineCache").get("Hello World"))
+                .isNotNull();
+        assertThat(((Message)cacheManager.getCache("caffeineCache").get("Hello World").get()).getNow())
+                .isEqualTo(m1.getNow());
+        assertThat(cacheManager.getCache("redisCache").get("Hello World"))
+                .isNotNull();
+        assertThat(((Message)cacheManager.getCache("redisCache").get("Hello World").get()).getNow())
+                .isEqualTo(m1.getNow());
+
+        // 3秒スリープ
+        TimeUnit.SECONDS.sleep(3L);
+
+        // caffeineCacheのみ有効期限切れ
+        assertThat(cacheManager.getCache("caffeineCache").get("Hello World"))
+                .isNull();
+        assertThat(cacheManager.getCache("redisCache").get("Hello World"))
+                .isNotNull();
+        assertThat(((Message)cacheManager.getCache("redisCache").get("Hello World").get()).getNow())
+                .isEqualTo(m1.getNow());
+
+        // キャッシュを更新
+        Message newMessage = new Message("Hello World");
+        messageService.update(newMessage);
+
+        // キャッシュが更新されたことを確認
+        assertThat(cacheManager.getCache("caffeineCache").get("Hello World"))
+                .isNotNull();
+        assertThat(((Message)cacheManager.getCache("caffeineCache").get("Hello World").get()).getNow())
+                .isEqualTo(newMessage.getNow())
+                .isNotEqualTo(m1.getNow());
+        assertThat(cacheManager.getCache("redisCache").get("Hello World"))
+                .isNotNull();
+        assertThat(((Message)cacheManager.getCache("redisCache").get("Hello World").get()).getNow())
+                .isEqualTo(newMessage.getNow())
+                .isNotEqualTo(m1.getNow());
+    }
+</pre>
+
+<p>とりあえず、キャッシュにエントリを入れます。</p>
+
+<pre data-lang="java" data-unlink="">        // 1回目
+        stopWatch.start();
+        Message m1 = messageService.build("Hello World");
+        stopWatch.stop();
+
+        // 低速
+        assertThat((long)stopWatch.getLastTaskInfo().getTimeSeconds())
+                .isGreaterThanOrEqualTo(3L);
+
+        // キャッシュに登録されている
+        assertThat(cacheManager.getCache("caffeineCache").get("Hello World"))
+                .isNotNull();
+        assertThat(((Message)cacheManager.getCache("caffeineCache").get("Hello World").get()).getNow())
+                .isEqualTo(m1.getNow());
+        assertThat(cacheManager.getCache("redisCache").get("Hello World"))
+                .isNotNull();
+        assertThat(((Message)cacheManager.getCache("redisCache").get("Hello World").get()).getNow())
+                .isEqualTo(m1.getNow());
+</pre>
+
+<p>3 秒間スリープさせ、Caffeine のみ有効期限が切れたところで</p>
+
+<pre data-lang="java" data-unlink="">        // 3秒スリープ
+        TimeUnit.SECONDS.sleep(3L);
+
+        // caffeineCacheのみ有効期限切れ
+        assertThat(cacheManager.getCache("caffeineCache").get("Hello World"))
+                .isNull();
+        assertThat(cacheManager.getCache("redisCache").get("Hello World"))
+                .isNotNull();
+        assertThat(((Message)cacheManager.getCache("redisCache").get("Hello World").get()).getNow())
+                .isEqualTo(m1.getNow());
+</pre>
+
+<p>@CachePut なメソッドを呼び出しキャッシュを更新して、両方のキャッシュに反映されたことを確認。</p>
+
+<pre data-lang="java" data-unlink="">        // キャッシュを更新
+        Message newMessage = new Message("Hello World");
+        messageService.update(newMessage);
+
+        // キャッシュが更新されたことを確認
+        assertThat(cacheManager.getCache("caffeineCache").get("Hello World"))
+                .isNotNull();
+        assertThat(((Message)cacheManager.getCache("caffeineCache").get("Hello World").get()).getNow())
+                .isEqualTo(newMessage.getNow())
+                .isNotEqualTo(m1.getNow());
+        assertThat(cacheManager.getCache("redisCache").get("Hello World"))
+                .isNotNull();
+        assertThat(((Message)cacheManager.getCache("redisCache").get("Hello World").get()).getNow())
+                .isEqualTo(newMessage.getNow())
+                .isNotEqualTo(m1.getNow());
+</pre>
+
+<p>こちらも OK そうです。</p>
+
+<h4 id="toc_3">まとめ</h4>
+
+<p>CompositeCacheManager を使って、複数の CacheManager を組み合わせて使ってみました。</p>
+
+<p>CompositeCacheManager のトリックですが、単に CacheManager#getCache した時に内部で持っている CacheManager から順次 Cache を<br/>
+持っているか確認していき、最初に見つかったものを返すという単純な実装です。<br/>
+<a href="https://github.com/spring-projects/spring-framework/blob/v4.3.6.RELEASE/spring-context/src/main/java/org/springframework/cache/support/CompositeCacheManager.java#L101">https://github.com/spring-projects/spring-framework/blob/v4.3.6.RELEASE/spring-context/src/main/java/org/springframework/cache/support/CompositeCacheManager.java#L101</a></p>
+
+<pre data-lang="java" data-unlink="">   @Override
+    public Cache getCache(String name) {
+        for (CacheManager cacheManager : this.cacheManagers) {
+            Cache cache = cacheManager.getCache(name);
+            if (cache != null) {
+                return cache;
+            }
+        }
+        return null;
+    }
+</pre>
+
+<p>とはいえ、こういうのがあることを知っていると便利さアップですね、と。</p>
 
                         
                       </div>
@@ -352,7 +721,7 @@ Yaaay visibility!</p>
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/12/24</span>
+                    <span class="date">2018/12/25</span>
                     <span>posted in&nbsp;</span> 
           				  
           					    <span class="posted-in"><a href='Spring.html'>Spring</a></span>
@@ -445,31 +814,31 @@ Yaaay visibility!</p>
 	      
 		      
 			      <li class="post">
-			        <a href="15459058392039.html">Reliable Domain Events</a>
+			        <a href="15517999043443.html">The Art of Crafting Architectural Diagrams</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
+			        <a href="15517997955971.html">为什么说我们需要软件架构图？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
+			        <a href="15516128677869.html">DNS Servers That Offer Privacy and Filtering</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
+			        <a href="15516123108194.html">Airbnb's Migration from Monolith to Services</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
+			        <a href="15516097487470.html">Events As First-Class Citizens</a>
 			      </li>
 		     
 		  

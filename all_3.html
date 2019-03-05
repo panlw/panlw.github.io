@@ -105,614 +105,58 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15456691642791.html">
+                <a class="clearlink" href="15516123108194.html">
                 
-                  <h1>Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</h1>
+                  <h1>Airbnb's Migration from Monolith to Services</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
-                        	<pre><code>2017-02-04
+                        	<pre><code>Feb 27, 2019 3 min read
 </code></pre>
 
 <blockquote>
-<p>原文地址 <a href="https://kazuhira-r.hatenablog.com/entry/20170204/1486194922">https://kazuhira-r.hatenablog.com/entry/20170204/1486194922</a></p>
+<p>原文地址 <a href="https://www.infoq.com/news/2019/02/airbnb-monolith-migration-soa">https://www.infoq.com/news/2019/02/airbnb-monolith-migration-soa</a></p>
 </blockquote>
 
-<p>Spring の Cache Abstraction では、バックエンドのキャッシュに対する Cache Provider があり、それぞれ CacheManager の<br/>
-実装を提供していますが、複数の CacheManager を組み合わせる CompositeCacheManager というものがあります。</p>
+<p>Jessica Tai, a self-described &quot;ex-monolith developer&quot; at Airbnb, spoke at the <a href="https://qconsf.com/">2018 QCon San Francisco</a> about her company&#39;s move from a Ruby on Rails monolith architecture to a service-oriented architecture. The company has expanded from 200 engineers in 2015 to 1,000 and has less downtime due to rollbacks and, Tai said, has improved performance with page load times up to 10x faster.</p>
 
-<p><a href="https://docs.spring.io/spring/docs/4.3.6.RELEASE/spring-framework-reference/html/cache.html#cache-annotations">Cache / Dealing with caches without a backing store</a></p>
+<p>As the company grew, the deployments became more complex, providing the motivation for change. Airbnb engineers were delayed from deploying their code to production on average 15 hours each week due to reverts and rollbacks of code.</p>
 
-<p>※CompositeCacheManager の説明というより、適切なキャッシュが存在しなかった時のフォールバックケースとして書いてありますが…</p>
+<p>Airbnb managed the complexity of splitting a monolith, which the company called Monorail, by phasing the migration, comparing Monorail functionality with that of the new services. They would take 1% of the load in new world, and compared the results down both paths. They progressively increased the load towards the services, until comparison is clean against 100% of load.</p>
 
-<p><a href="http://docs.spring.io/spring-framework/docs/4.3.6.RELEASE/javadoc-api/org/springframework/cache/support/CompositeCacheManager.html">CompositeCacheManager (Spring Framework 4.3.6.RELEASE API)</a></p>
+<p>This was a relatively straightforward process with reads, because they are idempotent–simply doing the same read query twice and comparing the results could be done with no side effects. However, write comparisons required a different approach. Airbnb achieved this by having the service write to a shadow database and then issue a read request to both the production database and the shadow one, and compare the results.</p>
 
-<p>こちらを使って、今回は Caffeine と Redis の 2 つのキャッシュを同時に使ってみたいと思います。ひとつ前のエントリで、<br/>
-キャッシュの<a href="http://d.hatena.ne.jp/keyword/%A5%A2%A5%CE%A5%C6%A1%BC%A5%B7%A5%E7%A5%F3">アノテーション</a>の cacheNames に複数のキャッシュを指定しましたが、今回はキャッシュごとにバックエンドの<br/>
-キャッシュを分けてみます。</p>
+<p>Airbnb used open-source tools as part of the new architecture. They developed <a href="https://github.com/airbnb/SpinalTap">Spinaltap</a>, which they have open-sourced, to listen to changes in databases and put them onto a Kafka queue.</p>
 
-<p><a href="http://d.hatena.ne.jp/Kazuhira/20170204/1486188414">Spring の Cache Abstraction で、 アノテーションに複数のキャッシュを指定した場合の動きを確認する - CLOVER</a></p>
+<p>Airbnb ensured standardisation of best practices in coding their services. Airbnb looked to auto-generate the boilerplate code using <a href="https://thrift.apache.org/">Apache Thrift</a>, an open-source framework that auto-generates code in multiple languages, including Ruby and Java.</p>
 
-<p>サンプルコードは、この時使ったものと近いものを使用しています。</p>
+<p>Tai interchanged between the phrases SOA and microservices during her presentation and it&#39;s clear there are a number of concepts borrowed from each architectural style.&quot;Airbnb&#39;s approach is closer to service-oriented architecture (SOA),&quot; Tai told InfoQ after the presentation. &quot;Like traditional SOA, we focus on reusing common components as much as possible, including business functionality and storage,&quot; while more akin to a microservices architecture was the ability of Airbnb engineers to code and deploy their own services independently.</p>
 
-<p>では、試してみましょう。</p>
+<p>Airbnb built their architecture so that all client requests go through an API gateway which routes to the relevant service. Every service is built, deployed and scaled independently. While initially run on EC2 instances in AWS, they moved to a Kubernetes cluster to simplify scaling needs.</p>
 
-<h4 id="toc_0">準備</h4>
+<p>To ensure a standard approach to building services, Airbnb defined a set of tenets to design the architecture and services, as well as a service interaction design. These were created up front before the execution phase of the migration. According to Tai, &quot;these service design principles were inspired by the widespread problems we were seeing with our monolith, especially regarding unclear ownership and tight coupling&quot;.</p>
 
-<p>まずは <a href="http://d.hatena.ne.jp/keyword/Maven">Maven</a> 依存関係から。</p>
+<p>Tai describes four <strong>tenets</strong> in her talk:</p>
 
-<pre data-lang="xml" data-unlink="">    <properties>
-        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <java.version>1.8</java.version>
-        <maven.compiler.source>1.8</maven.compiler.source>
-        <maven.compiler.target>1.8</maven.compiler.target>
-        <spring.boot.version>1.5.1.RELEASE</spring.boot.version>
-    </properties>
+<ol>
+<li> Services should own both reads and writes to their own data. If several services need access to the same data, this is done via the owning service&#39;s API.</li>
+<li> Services should address a specific concern. For Airbnb, this was about trying to find the right granularity when creating services. They wished to avoid services having too much functionality, becoming monoliths in their own right, while also avoiding such fine-grained services that there would be a &quot;polylith&quot; or distributed monolith.</li>
+<li> Avoid duplicate functionality by using shared services and libraries.</li>
+<li> Data mutations should publish via standard events.</li>
+</ol>
 
-    <dependencyManagement>
-        <dependencies>
-            <dependency>
-                <groupId>org.springframework.boot</groupId>
-                <artifactId>spring-boot-dependencies</artifactId>
-                <version>${spring.boot.version}</version>
-                <type>pom</type>
-                <scope>import</scope>
-            </dependency>
-        </dependencies>
-    </dependencyManagement>
+<p>In a nod to traditional SOA service design, Airbnb designed their services to &quot;interact with a specific direction as well to have a strict flow of dependencies&quot;. Below is a diagram for the interaction design they ended up with. Airbnb added the middle tier services type at a later date, as a need for shared validation logic was identified.</p>
 
-    <dependencies>
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-cache</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>com.github.ben-manes.caffeine</groupId>
-            <artifactId>caffeine</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-data-redis</artifactId>
-        </dependency>
+<p><small>[Click on the image to enlarge it]</small></p>
 
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-test</artifactId>
-            <scope>test</scope>
-        </dependency>
-    </dependencies>
-</pre>
+<p><a href="https://res.infoq.com/news/2019/02/airbnb-monolith-migration-soa/en/resources/airbnb_service_types-large-1550818833059.jpg"><img src="https://res.infoq.com/news/2019/02/airbnb-monolith-migration-soa/en/resources/1airbnb_service_types-small-1550818833582.jpg" alt=""/></a></p>
 
-<p>Spring の Cache の依存関係と、Caffeine、Spring Data Redis を追加。</p>
+<p>To avoid changing every database query within the monolith, Airbnb created a custom ActiveRecord adapter that effectively diverts database calls to the new service. Tai described the benefits in her presentation, &quot;by having it at the bottom layer, this allowed product engineers to continue with their interactions of the ActiveRecord methods and not need to change the workflow, while under the hood, we were calling our new service.&quot;</p>
 
-<p>Redis は、3.2.7 を<a href="http://d.hatena.ne.jp/keyword/%A5%EA%A5%E2%A1%BC%A5%C8%A5%DB%A5%B9%A5%C8">リモートホスト</a>で起動させています。</p>
+<p>While <a href="https://github.com/twitter/diffy">Diffy</a> is not a specific SOA tool, Airbnb decided to use it to replay traffic to compare releases. By replaying production traffic to their staging environment they could then compare the effect of the new service against real world traffic, and confirm new services would not degrade customer experience.</p>
 
-<h4 id="toc_1">サンプルコードの準備</h4>
-
-<p>では、確認用のサンプルアプリケーションを作成します。</p>
-
-<p>キャッシュに格納する用のクラス。</p>
-
-<pre data-lang="java" data-unlink="">src/main/java/org/littlewings/spring/cache/Message.java 
-package org.littlewings.spring.cache;
-
-import java.io.Serializable;
-import java.time.LocalDateTime;
-
-public class Message implements Serializable {
-    private static final long serialVersionUID = 1L;
-
-    private String value;
-    private LocalDateTime now;
-
-    public Message() {
-    }
-
-    public Message(String value) {
-        this.value = value;
-        now = LocalDateTime.now();
-    }
-
-    public String getValue() {
-        return value;
-    }
-
-    public LocalDateTime getNow() {
-        return now;
-    }
-}
-</pre>
-
-<p>キャッシュ関連の<a href="http://d.hatena.ne.jp/keyword/%A5%A2%A5%CE%A5%C6%A1%BC%A5%B7%A5%E7%A5%F3">アノテーション</a>を付与したクラス。@Cacheable、@CachePut を使い、それぞれ「caffeineCache」と<br/>
-「redisCache」を指定しています。@Cacheable を付与したメソッドは、キャッシュが存在しない場合は 3 秒間スリープします。<br/>
-src/main/<a href="http://d.hatena.ne.jp/keyword/java">java</a>/org/littlewings/spring/cache/MessageService.<a href="http://d.hatena.ne.jp/keyword/java">java</a></p>
-
-<pre data-lang="java" data-unlink="">package org.littlewings.spring.cache;
-
-import java.util.concurrent.TimeUnit;
-
-import org.springframework.cache.annotation.CachePut;
-import org.springframework.cache.annotation.Cacheable;
-import org.springframework.stereotype.Service;
-
-@Service
-public class MessageService {
-    @Cacheable(cacheNames = {"caffeineCache", "redisCache"}, key = "#value")
-    public Message build(String value) {
-        try {
-            TimeUnit.SECONDS.sleep(3L);
-        } catch (InterruptedException e) {
-            // ignore
-        }
-
-        return new Message(value);
-    }
-
-    @CachePut(cacheNames = {"caffeineCache", "redisCache"}, key = "#message.value")
-    public Message update(Message message) {
-        return message;
-    }
-}
-</pre>
-
-<p>CacheManager の設定。@EnableCaching <a href="http://d.hatena.ne.jp/keyword/%A5%A2%A5%CE%A5%C6%A1%BC%A5%B7%A5%E7%A5%F3">アノテーション</a>を設定してキャッシュ機能を有効化するとともに、Caffeine と Redis<br/>
-それぞれの CacheManager を作成し、CompositeCacheManager で組み合わせています。<br/>
-src/main/<a href="http://d.hatena.ne.jp/keyword/java">java</a>/org/littlewings/spring/cache/CacheConfig.<a href="http://d.hatena.ne.jp/keyword/java">java</a></p>
-
-<pre data-lang="java" data-unlink="">package org.littlewings.spring.cache;
-
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.Map;
-
-import org.springframework.cache.CacheManager;
-import org.springframework.cache.annotation.EnableCaching;
-import org.springframework.cache.caffeine.CaffeineCacheManager;
-import org.springframework.cache.support.CompositeCacheManager;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
-import org.springframework.data.redis.cache.RedisCacheManager;
-import org.springframework.data.redis.core.RedisTemplate;
-
-@Configuration
-@EnableCaching
-public class CacheConfig {
-    CacheManager caffeineCacheManager() {
-        CaffeineCacheManager cacheManager = new CaffeineCacheManager();
-
-        cacheManager.setCacheSpecification("expireAfterWrite=3s");
-        cacheManager.setCacheNames(Arrays.asList("caffeineCache"));
-
-        return cacheManager;
-    }
-
-    CacheManager redisCacheManager(RedisTemplate<Object, Object> redisTemplate) {
-        RedisCacheManager cacheManager = new RedisCacheManager(redisTemplate);
-
-        cacheManager.setUsePrefix(true);
-
-        Map<String, Long> expires = new HashMap<>();
-        expires.put("redisCache", 6L);
-
-        cacheManager.setExpires(expires);
-
-        cacheManager.afterPropertiesSet();
-        return cacheManager;
-    }
-
-    @Bean
-    public CacheManager compositeCacheManager(RedisTemplate<Object, Object> redisTemplate) {
-        CompositeCacheManager cacheManager = new CompositeCacheManager(caffeineCacheManager(), redisCacheManager(redisTemplate));
-        cacheManager.setFallbackToNoOpCache(false);  // キャッシュの定義が見つからない場合は、getCacheがnullを返すようにする
-        cacheManager.afterPropertiesSet();
-        return cacheManager;
-    }
-}
-</pre>
-
-<p>キャッシュの有効期限は、Caffeine は 3 秒、Redis は 6 秒にしています。</p>
-
-<p>CompositeCacheManager を作成する時に、CompositeCacheManager#setFallbackToNoOpCache を true に設定すると<br/>
-CompositeCacheManager が内部的に保持する CacheManager に NoOpCacheManager というものが追加されます。<br/>
-NoOpCacheManager が追加されると、CacheManager#getCache でキャッシュ定義が見つからない時に<br/>
-なにもしないキャッシュが返されるようになり、宣言的キャッシュを使ってキャッシュが見つからない時にエラーに<br/>
-ならなくなります。</p>
-
-<p>デフォルトは false（キャッシュが見つからないと null を返す）です。</p>
-
-<p>@SpringBootApplication を付与したクラスを作成。テスト用です。<br/>
-src/main/<a href="http://d.hatena.ne.jp/keyword/java">java</a>/org/littlewings/spring/cache/App.<a href="http://d.hatena.ne.jp/keyword/java">java</a></p>
-
-<pre data-lang="java" data-unlink="">package org.littlewings.spring.cache;
-
-import org.springframework.boot.autoconfigure.SpringBootApplication;
-
-@SpringBootApplication
-public class App {
-}
-</pre>
-
-<p>最後に、Redis への接続設定。<br/>
-src/main/resources/application.properties</p>
-
-<pre data-lang="" data-unlink="">spring.redis.host=172.17.0.2
-spring.redis.password=redispass</pre>
-
-<p>ここまでで、準備は完了です。</p>
-
-<h4 id="toc_2">動作確認</h4>
-
-<p>それでは、テストコードを書いて動作確認をしてみます。テストコードの雛形は、こちら。<br/>
-src/test/<a href="http://d.hatena.ne.jp/keyword/java">java</a>/org/littlewings/spring/cache/CompositeCacheTest.<a href="http://d.hatena.ne.jp/keyword/java">java</a></p>
-
-<pre data-lang="java" data-unlink="">package org.littlewings.spring.cache;
-
-import java.util.concurrent.TimeUnit;
-
-import org.junit.Test;
-import org.junit.runner.RunWith;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.cache.CacheManager;
-import org.springframework.test.context.junit4.SpringRunner;
-import org.springframework.util.StopWatch;
-
-import static org.assertj.core.api.Assertions.assertThat;
-
-@RunWith(SpringRunner.class)
-@SpringBootTest
-public class CompositeCacheTest {
-    @Autowired
-    CacheManager cacheManager;
-
-    @Autowired
-    MessageService messageService;
-
-    // ここに、テストを書く！
-}
-</pre>
-
-<p>まずは @Cacheable での確認から。テストコードは、こちら。</p>
-
-<pre data-lang="java" data-unlink="">    @Test
-    public void cacheable() throws InterruptedException {
-        StopWatch stopWatch = new StopWatch();
-
-        // 1回目
-        stopWatch.start();
-        Message m1 = messageService.build("Hello World");
-        stopWatch.stop();
-
-        // 低速
-        assertThat((long)stopWatch.getLastTaskInfo().getTimeSeconds())
-                .isGreaterThanOrEqualTo(3L);
-
-        // キャッシュに登録
-        assertThat(cacheManager.getCache("caffeineCache").get("Hello World"))
-                .isNotNull();
-        assertThat(((Message)cacheManager.getCache("caffeineCache").get("Hello World").get()).getNow())
-                .isEqualTo(m1.getNow());
-        assertThat(cacheManager.getCache("redisCache").get("Hello World"))
-                .isNotNull();
-        assertThat(((Message)cacheManager.getCache("redisCache").get("Hello World").get()).getNow())
-                .isEqualTo(m1.getNow());
-
-        // 2回目
-        stopWatch.start();
-        Message m2 = messageService.build("Hello World");
-        stopWatch.stop();
-
-        // 高速
-        assertThat((long)stopWatch.getLastTaskInfo().getTimeSeconds())
-                .isEqualTo(0L);
-
-        // キャッシュにはまだ存在
-        assertThat(cacheManager.getCache("caffeineCache").get("Hello World"))
-                .isNotNull();
-        assertThat(((Message)cacheManager.getCache("caffeineCache").get("Hello World").get()).getNow())
-                .isEqualTo(m2.getNow())
-                .isEqualTo(m1.getNow());
-        assertThat(cacheManager.getCache("redisCache").get("Hello World"))
-                .isNotNull();
-        assertThat(((Message)cacheManager.getCache("redisCache").get("Hello World").get()).getNow())
-                .isEqualTo(m2.getNow())
-                .isEqualTo(m1.getNow());
-
-        // 3秒スリープ
-        TimeUnit.SECONDS.sleep(3L);
-
-        // caffeineCacheのみ有効期限切れ
-        assertThat(cacheManager.getCache("caffeineCache").get("Hello World"))
-                .isNull();
-        assertThat(cacheManager.getCache("redisCache").get("Hello World"))
-                .isNotNull();
-        assertThat(((Message)cacheManager.getCache("redisCache").get("Hello World").get()).getNow())
-                .isEqualTo(m2.getNow())
-                .isEqualTo(m1.getNow());
-
-        // 3回目
-        stopWatch.start();
-        Message m3 = messageService.build("Hello World");
-        stopWatch.stop();
-
-        // 高速
-        assertThat((long)stopWatch.getLastTaskInfo().getTimeSeconds())
-                .isEqualTo(0L);
-
-        // caffeineCacheのみ有効期限切れ
-        assertThat(cacheManager.getCache("caffeineCache").get("Hello World"))
-                .isNull();
-        assertThat(cacheManager.getCache("redisCache").get("Hello World"))
-                .isNotNull();
-        assertThat(((Message)cacheManager.getCache("redisCache").get("Hello World").get()).getNow())
-                .isEqualTo(m3.getNow())
-                .isEqualTo(m1.getNow());
-
-        // 3秒スリープ
-        TimeUnit.SECONDS.sleep(3L);
-
-        // どちらのキャッシュも有効期限切れ
-        assertThat(cacheManager.getCache("caffeineCache").get("Hello World"))
-                .isNull();
-        assertThat(cacheManager.getCache("redisCache").get("Hello World"))
-                .isNull();
-
-        // 再度アクセス
-        messageService.build("Hello World");
-
-        // キャッシュに再登録
-        assertThat(cacheManager.getCache("caffeineCache").get("Hello World"))
-                .isNotNull();
-        assertThat(cacheManager.getCache("redisCache").get("Hello World"))
-                .isNotNull();
-
-        // 後始末
-        cacheManager.getCache("caffeineCache").evict("Hello World");
-        cacheManager.getCache("redisCache").evict("Hello World");
-    }
-</pre>
-
-<p>@Cacheable なメソッドにアクセスすると、キャッシュにエントリが保存されます。この時、Caffeine と Redis の両方に保存されます。</p>
-
-<pre data-lang="java" data-unlink="">        // 1回目
-        stopWatch.start();
-        Message m1 = messageService.build("Hello World");
-        stopWatch.stop();
-
-        // 低速
-        assertThat((long)stopWatch.getLastTaskInfo().getTimeSeconds())
-                .isGreaterThanOrEqualTo(3L);
-
-        // キャッシュに登録
-        assertThat(cacheManager.getCache("caffeineCache").get("Hello World"))
-                .isNotNull();
-        assertThat(((Message)cacheManager.getCache("caffeineCache").get("Hello World").get()).getNow())
-                .isEqualTo(m1.getNow());
-        assertThat(cacheManager.getCache("redisCache").get("Hello World"))
-                .isNotNull();
-        assertThat(((Message)cacheManager.getCache("redisCache").get("Hello World").get()).getNow())
-                .isEqualTo(m1.getNow());
-</pre>
-
-<p>2 回目のアクセスでは、高速になります。</p>
-
-<pre data-lang="java" data-unlink="">        // 2回目
-        stopWatch.start();
-        Message m2 = messageService.build("Hello World");
-        stopWatch.stop();
-
-        // 高速
-        assertThat((long)stopWatch.getLastTaskInfo().getTimeSeconds())
-                .isEqualTo(0L);
-
-        // キャッシュにはまだ存在
-        assertThat(cacheManager.getCache("caffeineCache").get("Hello World"))
-                .isNotNull();
-        assertThat(((Message)cacheManager.getCache("caffeineCache").get("Hello World").get()).getNow())
-                .isEqualTo(m2.getNow())
-                .isEqualTo(m1.getNow());
-        assertThat(cacheManager.getCache("redisCache").get("Hello World"))
-                .isNotNull();
-        assertThat(((Message)cacheManager.getCache("redisCache").get("Hello World").get()).getNow())
-                .isEqualTo(m2.getNow())
-                .isEqualTo(m1.getNow());
-</pre>
-
-<p>ここで、3 秒間スリープすると有効期限の短い Caffeine のキャッシュのみ有効期限切れします。</p>
-
-<pre data-lang="java" data-unlink="">        // 3秒スリープ
-        TimeUnit.SECONDS.sleep(3L);
-
-        // caffeineCacheのみ有効期限切れ
-        assertThat(cacheManager.getCache("caffeineCache").get("Hello World"))
-                .isNull();
-        assertThat(cacheManager.getCache("redisCache").get("Hello World"))
-                .isNotNull();
-        assertThat(((Message)cacheManager.getCache("redisCache").get("Hello World").get()).getNow())
-                .isEqualTo(m2.getNow())
-                .isEqualTo(m1.getNow());
-</pre>
-
-<p>3 回目のアクセス。Caffeine からはキャッシュエントリが消えましたが、Redis には残ったままなので高速です。</p>
-
-<pre data-lang="java" data-unlink="">        // 3回目
-        stopWatch.start();
-        Message m3 = messageService.build("Hello World");
-        stopWatch.stop();
-
-        // 高速
-        assertThat((long)stopWatch.getLastTaskInfo().getTimeSeconds())
-                .isEqualTo(0L);
-
-        // caffeineCacheのみ有効期限切れ
-        assertThat(cacheManager.getCache("caffeineCache").get("Hello World"))
-                .isNull();
-        assertThat(cacheManager.getCache("redisCache").get("Hello World"))
-                .isNotNull();
-        assertThat(((Message)cacheManager.getCache("redisCache").get("Hello World").get()).getNow())
-                .isEqualTo(m3.getNow())
-                .isEqualTo(m1.getNow());
-</pre>
-
-<p>さらに 3 秒間スリープさせると、Redis からもエントリがなくなります。</p>
-
-<pre data-lang="java" data-unlink="">        // 3秒スリープ
-        TimeUnit.SECONDS.sleep(3L);
-
-        // どちらのキャッシュも有効期限切れ
-        assertThat(cacheManager.getCache("caffeineCache").get("Hello World"))
-                .isNull();
-        assertThat(cacheManager.getCache("redisCache").get("Hello World"))
-                .isNull();
-</pre>
-
-<p>もちろん、この状態で再度 @Cachable なメソッドにアクセスすると両方のキャッシュにエントリが入ります。</p>
-
-<pre data-lang="java" data-unlink="">        // 再度アクセス
-        messageService.build("Hello World");
-
-        // キャッシュに再登録
-        assertThat(cacheManager.getCache("caffeineCache").get("Hello World"))
-                .isNotNull();
-        assertThat(cacheManager.getCache("redisCache").get("Hello World"))
-                .isNotNull();
-</pre>
-
-<p>両方のそれぞれのキャッシュを使えてそうですね。</p>
-
-<p>あと、@CachePut も確認しておきましょう。テストコードは、こちら。</p>
-
-<pre data-lang="java" data-unlink="">    @Test
-    public void cachePut() throws InterruptedException {
-        StopWatch stopWatch = new StopWatch();
-
-        // 1回目
-        stopWatch.start();
-        Message m1 = messageService.build("Hello World");
-        stopWatch.stop();
-
-        // 低速
-        assertThat((long)stopWatch.getLastTaskInfo().getTimeSeconds())
-                .isGreaterThanOrEqualTo(3L);
-
-        // キャッシュに登録されている
-        assertThat(cacheManager.getCache("caffeineCache").get("Hello World"))
-                .isNotNull();
-        assertThat(((Message)cacheManager.getCache("caffeineCache").get("Hello World").get()).getNow())
-                .isEqualTo(m1.getNow());
-        assertThat(cacheManager.getCache("redisCache").get("Hello World"))
-                .isNotNull();
-        assertThat(((Message)cacheManager.getCache("redisCache").get("Hello World").get()).getNow())
-                .isEqualTo(m1.getNow());
-
-        // 3秒スリープ
-        TimeUnit.SECONDS.sleep(3L);
-
-        // caffeineCacheのみ有効期限切れ
-        assertThat(cacheManager.getCache("caffeineCache").get("Hello World"))
-                .isNull();
-        assertThat(cacheManager.getCache("redisCache").get("Hello World"))
-                .isNotNull();
-        assertThat(((Message)cacheManager.getCache("redisCache").get("Hello World").get()).getNow())
-                .isEqualTo(m1.getNow());
-
-        // キャッシュを更新
-        Message newMessage = new Message("Hello World");
-        messageService.update(newMessage);
-
-        // キャッシュが更新されたことを確認
-        assertThat(cacheManager.getCache("caffeineCache").get("Hello World"))
-                .isNotNull();
-        assertThat(((Message)cacheManager.getCache("caffeineCache").get("Hello World").get()).getNow())
-                .isEqualTo(newMessage.getNow())
-                .isNotEqualTo(m1.getNow());
-        assertThat(cacheManager.getCache("redisCache").get("Hello World"))
-                .isNotNull();
-        assertThat(((Message)cacheManager.getCache("redisCache").get("Hello World").get()).getNow())
-                .isEqualTo(newMessage.getNow())
-                .isNotEqualTo(m1.getNow());
-    }
-</pre>
-
-<p>とりあえず、キャッシュにエントリを入れます。</p>
-
-<pre data-lang="java" data-unlink="">        // 1回目
-        stopWatch.start();
-        Message m1 = messageService.build("Hello World");
-        stopWatch.stop();
-
-        // 低速
-        assertThat((long)stopWatch.getLastTaskInfo().getTimeSeconds())
-                .isGreaterThanOrEqualTo(3L);
-
-        // キャッシュに登録されている
-        assertThat(cacheManager.getCache("caffeineCache").get("Hello World"))
-                .isNotNull();
-        assertThat(((Message)cacheManager.getCache("caffeineCache").get("Hello World").get()).getNow())
-                .isEqualTo(m1.getNow());
-        assertThat(cacheManager.getCache("redisCache").get("Hello World"))
-                .isNotNull();
-        assertThat(((Message)cacheManager.getCache("redisCache").get("Hello World").get()).getNow())
-                .isEqualTo(m1.getNow());
-</pre>
-
-<p>3 秒間スリープさせ、Caffeine のみ有効期限が切れたところで</p>
-
-<pre data-lang="java" data-unlink="">        // 3秒スリープ
-        TimeUnit.SECONDS.sleep(3L);
-
-        // caffeineCacheのみ有効期限切れ
-        assertThat(cacheManager.getCache("caffeineCache").get("Hello World"))
-                .isNull();
-        assertThat(cacheManager.getCache("redisCache").get("Hello World"))
-                .isNotNull();
-        assertThat(((Message)cacheManager.getCache("redisCache").get("Hello World").get()).getNow())
-                .isEqualTo(m1.getNow());
-</pre>
-
-<p>@CachePut なメソッドを呼び出しキャッシュを更新して、両方のキャッシュに反映されたことを確認。</p>
-
-<pre data-lang="java" data-unlink="">        // キャッシュを更新
-        Message newMessage = new Message("Hello World");
-        messageService.update(newMessage);
-
-        // キャッシュが更新されたことを確認
-        assertThat(cacheManager.getCache("caffeineCache").get("Hello World"))
-                .isNotNull();
-        assertThat(((Message)cacheManager.getCache("caffeineCache").get("Hello World").get()).getNow())
-                .isEqualTo(newMessage.getNow())
-                .isNotEqualTo(m1.getNow());
-        assertThat(cacheManager.getCache("redisCache").get("Hello World"))
-                .isNotNull();
-        assertThat(((Message)cacheManager.getCache("redisCache").get("Hello World").get()).getNow())
-                .isEqualTo(newMessage.getNow())
-                .isNotEqualTo(m1.getNow());
-</pre>
-
-<p>こちらも OK そうです。</p>
-
-<h4 id="toc_3">まとめ</h4>
-
-<p>CompositeCacheManager を使って、複数の CacheManager を組み合わせて使ってみました。</p>
-
-<p>CompositeCacheManager のトリックですが、単に CacheManager#getCache した時に内部で持っている CacheManager から順次 Cache を<br/>
-持っているか確認していき、最初に見つかったものを返すという単純な実装です。<br/>
-<a href="https://github.com/spring-projects/spring-framework/blob/v4.3.6.RELEASE/spring-context/src/main/java/org/springframework/cache/support/CompositeCacheManager.java#L101">https://github.com/spring-projects/spring-framework/blob/v4.3.6.RELEASE/spring-context/src/main/java/org/springframework/cache/support/CompositeCacheManager.java#L101</a></p>
-
-<pre data-lang="java" data-unlink="">   @Override
-    public Cache getCache(String name) {
-        for (CacheManager cacheManager : this.cacheManagers) {
-            Cache cache = cacheManager.getCache(name);
-            if (cache != null) {
-                return cache;
-            }
-        }
-        return null;
-    }
-</pre>
-
-<p>とはいえ、こういうのがあることを知っていると便利さアップですね、と。</p>
+<p>A video recording of the presentation, slides, and a full transcript are <a href="https://www.infoq.com/presentations/airbnb-soa-migration">available on InfoQ</a>.</p>
 
                         
                       </div>
@@ -721,10 +165,10 @@ public class CompositeCacheTest {
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/12/25</span>
+                    <span class="date">2019/3/3</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Spring.html'>Spring</a></span>
+          					    <span class="posted-in"><a href='Microservice.html'>Microservice</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -814,31 +258,31 @@ public class CompositeCacheTest {
 	      
 		      
 			      <li class="post">
-			        <a href="15459058392039.html">Reliable Domain Events</a>
+			        <a href="15517999043443.html">The Art of Crafting Architectural Diagrams</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
+			        <a href="15517997955971.html">为什么说我们需要软件架构图？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
+			        <a href="15516128677869.html">DNS Servers That Offer Privacy and Filtering</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
+			        <a href="15516123108194.html">Airbnb's Migration from Monolith to Services</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
+			        <a href="15516097487470.html">Events As First-Class Citizens</a>
 			      </li>
 		     
 		  

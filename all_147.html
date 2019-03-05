@@ -105,349 +105,277 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15282782041132.html">
+                <a class="clearlink" href="15309739332194.html">
                 
-                  <h1>Enabling Centralized Logging</h1>
+                  <h1>Spring WebFlux and rxjava2-jdbc</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://dzone.com/articles/centralized-logging">https://dzone.com/articles/centralized-logging</a></p>
+<p><a href="https://medium.com/netifi/spring-webflux-and-rxjava2-jdbc-83a94e71ba04">https://medium.com/netifi/spring-webflux-and-rxjava2-jdbc-83a94e71ba04</a></p>
 </blockquote>
 
-<p>An essential requirement for microservices architecture is the ability to look through the request propagation between multiple microservices. If you have only few microservices, you might be able to ssh to all the servers and tail the logs. However, if you happen to have multiple servers per service, this is not something that is easy to do. The solution is to build a centralized logging system that could gather all our application logs into a single service. The logging system should meet the following requirements:</p>
+<p>Spring <a href="https://docs.spring.io/spring/docs/current/spring-framework-reference/web-reactive.html#spring-webflux">WebFlux</a> is a great way to create a non-blocking REST application. One issue that you run into when start working with WebFlux is JDBC. JDBC is blocking. New school databases like <a href="http://cassandra.apache.org/">Cassandra</a> or <a href="https://www.couchbase.com/">Couchbase</a> have non-blocking drivers. In Couchbase’s case its driver uses <a href="https://github.com/ReactiveX/RxJava">RXJava</a>. NoSQL databases are great, but you can’t always use one for various reasons. There is some effort going into creating asynchronous drivers for databases, as well as Oracle’s effort to create <a href="https://blogs.oracle.com/java/jdbc-next:-a-new-asynchronous-api-for-connecting-to-a-database">ADBA</a>. Unfortunately, these are early days, and if you want to talk to a SQL database on the JVM you’re stuck with a blocking driver. This is a problem when you’re building a non-blocking application with Spring WebFlux . Luckily reactor-core and rxjava2 both implement <a href="http://www.reactive-streams.org/">ReactiveStreams</a>.</p>
 
-<ol>
-<li> It should work in real-time.</li>
-<li> It should be easy to search.</li>
-<li> It should help developers correlate requests between microservices.</li>
-<li> It should be application agnostic.</li>
-<li> It should place very little overhead on the application.</li>
-</ol>
+<p>This means that you can use David Moten’s <a href="https://github.com/davidmoten/rxjava2-jdbc">rxjava2-jdbc</a> library. It takes a normal JDBC driver and allows you to interact with it in a way that won’t block your application. It does this by scheduling potentially blocking work on different threads. Additionally, it has DSL that lets you model your SQL statements and results into streams. This makes integrating into your reactive application a snap.</p>
 
-<p>There are some helpful tools which can be used for building the logging system.</p>
+<p>Rxjava2-jdbc also provides non-blocking connection pooling. Normally in a blocking application threads are blocked until a connection is available to make a query. This is a problem for a non-blocking application as you will quickly exhaust all database connection threads and turn your wonderful non-blocking application into a clunky blocking application. In rxjava2-jdbc its connection pool returns a <a href="http://reactivex.io/RxJava/javadoc/io/reactivex/Single.html">Single</a> that is controlled by the connection pool. This means that instead of assigning threads to each query, queries subscribe to the connection pool and receive a connection when one is available — no blocked threads!</p>
 
-<ul>
-<li>  <strong>Spring Cloud Sleuth -</strong> Library from Spring cloud project that provides automatic instrumentation of communication channels. It lets you track the progress of subsequent microservices by adding the appropriate headers to the HTTP requests.</li>
-<li>  <strong>Zipkin</strong> - Zipkin is a distributed tracing system. It helps gather timing data needed to troubleshoot latency problems in microservice architectures. It manages both the collection and lookup of this data. Zipkin’s design is based on the Google Dapper paper.</li>
-<li>  <strong>Splunk -</strong> Splunk is centralized logs analysis tool for machine generated data, unstructured/structured and complex multi-line data which provides the following features such as Easy Search/Navigate, Real-Time Visibility, Historical Analytics, Reports, Alerts, Dashboards and Visualization.</li>
-<li>  <strong>ELK -</strong> Elasticsearch, Logstash, Kibana: three different tools usually used together. They are used for searching, analyzing, and visualizing log data in a real time.</li>
-</ul>
+<p>Nothing is better than an example, so I created one that uses Spring WebFlux, rxjava2-jdbc, and H2. The example is a simple REST application that uses an embedded H2 database. It can be found <a href="https://github.com/netifi/webflux-rxjava2-jdbc-example">here</a>. The example has two objects. The first is an Employee object which contains information about the employee including: first name, last name, and department id. The second object is the Department object, which contains information about different departments. The application has restful endpoints for basic create, read, delete and list operations for the Employee and list operations for Department.</p>
 
-<h2 id="toc_0">Architecture</h2>
+<h4 id="toc_0">Running the Example</h4>
 
-<p><img src="https://dzone.com/storage/temp/6480958-image001v1.png" alt=""/></p>
+<p>Running the example is simple and can be done with following command:</p>
 
-<h2 id="toc_1">Instrument Your Application</h2>
-
-<p>The first step is to instrument your application so that each log statement includes traceId and spanId that will help in tracing a call as it propagates through different microservices. In the following sections, instructions are provided for instrumenting Spring Boot, NodeJS and Python applications.</p>
-
-<h2 id="toc_2">Enabling Tracing for SpringBoot Applications With the Sleuth Library</h2>
-
-<p>1. Update the POM file to include the Sleuth Spring Boot starter library:</p>
-
-<p><strong>pom.xml</strong></p>
-
-<pre><code class="language-xml">&lt;dependencyManagement&gt;
-    &lt;dependencies&gt;
-        &lt;dependency&gt;
-            &lt;groupId&gt;org.springframework.cloud&lt;/groupId&gt;
-            &lt;artifactId&gt;spring-cloud-sleuth&lt;/artifactId&gt;
-            &lt;version&gt;1.2.2.RELEASE&lt;/version&gt;
-            &lt;type&gt;pom&lt;/type&gt;
-            &lt;scope&gt;import&lt;/scope&gt;
-        &lt;/dependency&gt;
-    &lt;/dependencies&gt;
-&lt;/dependencyManagement&gt;
-&lt;dependency&gt;
-&lt;groupId&gt;org.springframework.cloud&lt;/groupId&gt;
-    &lt;artifactId&gt;spring-cloud-starter-sleuth&lt;/artifactId&gt;
-&lt;/dependency&gt;
+<pre><code class="language-sh">./gradlew clean run
 </code></pre>
 
-<p>2. Update application.properties to include spring.application.name and logging.file.</p>
+<p>This command will configure the database and start the WebFlux application using Spring Boot. The example doesn’t need a servlet container to run, and instead uses <a href="http://netty.io">Netty</a> to serve traffic. If you want to test and see if the example is up and running you can run the following curl command:</p>
 
-<p><strong>application.properties</strong></p>
-
-<pre><code class="language-properties">spring.application.name=&quot;Spring Boot 1&quot;
-logging.file=/var/log/logs/springboot1.log
+<pre><code class="language-sh">curl localhost:8080/employees
 </code></pre>
 
-<p>3. Use SLF4J for logging.</p>
+<p>You should see a JSON employee list if it’s running properly.</p>
 
-<p><strong>Application.java</strong></p>
+<h4 id="toc_1">Routing Requests</h4>
 
-<pre><code class="language-java">import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-private static final Logger logger = LoggerFactory.getLogger(Application.class);
-logger.info(quote.toString());
-</code></pre>
+<p>Let’s take look inside the application and see what it’s doing. The first thing to take a look at is the <u>EmployeeRouter</u> class. This class routes incoming HTTP requests to the appropriate handler based on URL and HTTP method.</p>
 
-<p>4. Use a RestTemplate object that is autowired by Spring. This is necessary because Spring Cloud Sleuth adds the trace id and span id via headers in the request.</p>
+<p><a href="https://gist.github.com/robertroeser/e7ce97c4fc7d69de449925e7a3f2b7e1#file-employeerouter-java">EmployeeRouter.java hosted with ❤ by GitHub</a></p>
 
-<p><strong>Application.java</strong></p>
-
-<pre><code class="language-java">import org.springframework.web.client.RestTemplate;
-@Bean
-RestTemplate restTemplate() {
-return new RestTemplate();
+<pre><code class="language-java">@Configuration
+public class EmployeeRouter {
+  @Bean
+  public RouterFunction&lt;ServerResponse&gt; route(EmployeeHandler handler) {
+    return RouterFunctions.route(
+            GET(&quot;/employees&quot;).and(RequestPredicates.accept(MediaType.APPLICATION_JSON)),
+            handler::getAllEmployees)
+        .andRoute(
+            GET(&quot;/employee/fn/{fn}/ln/{ln}&quot;)
+                .and(RequestPredicates.accept(MediaType.APPLICATION_JSON)),
+            handler::getEmployee)
+        .andRoute(
+            PUT(&quot;/employee&quot;).and(RequestPredicates.accept(MediaType.APPLICATION_JSON)),
+            handler::createNewEmployee)
+        .andRoute(
+            DELETE(&quot;/employee/id/{id}&quot;).and(RequestPredicates.accept(MediaType.APPLICATION_JSON)),
+            handler::deleteEmployee)
+        .andRoute(
+            GET(&quot;/departments&quot;).and(RequestPredicates.accept(MediaType.APPLICATION_JSON)),
+            handler::getAllDepartments);
+  }
 }
-@Autowired
-RestTemplate restTemplate;
-    Quote quote = restTemplate.getForObject(&quot;http://localhost:8082/quote&quot;, Quote.class);
 </code></pre>
 
-<p>As an example, let&#39;s say we have a case like the following:</p>
+<p>In Spring WebFlux because it’s non-blocking these handlers must return a Mono<T>.</p>
 
-<p><img src="https://dzone.com/storage/temp/6461026-image002.png" alt=""/></p>
+<h4 id="toc_2">Handling Requests</h4>
 
-<p>Now, if you run the microservices and hit the endpoint, you should see your logging statement printed in the in the log file of Microservice 1:</p>
+<p>The next class to take a look at is the class that is handling the requests, <u>EmployeeHandler</u>.</p>
 
-<pre><code class="language-log">2017-08-21 06:09:41.925  INFO [&quot;Spring Boot 1&quot;,945690e8fc53b5b5,945690e8fc53b5b5,false] 25841 --- [http-nio-8080-exec-10] c.b.l.controller.LoggingController       : Quote{type=&#39;success&#39;, value=Value{id=10, quote=&#39;Really loving Spring Boot, makes stand alone Spring apps easy.&#39;}}
-2017-08-21 06:29:44.244  INFO [&quot;Spring Boot 1&quot;,b9184768fa226280,b9184768fa226280,false] 25841 --- [http-nio-8080-exec-2] c.b.l.controller.LoggingController       : Quote{type=&#39;success&#39;, value=Value{id=11, quote=&#39;I have two hours today to build an app from scratch. @springboot to the rescue!&#39;}}
-2017-08-21 06:36:13.698  INFO [&quot;Spring Boot 1&quot;,f21c03b4f86f31a8,f21c03b4f86f31a8,false] 25841 --- [http-nio-8080-exec-4] c.b.l.controller.LoggingController       : Quote{type=&#39;success&#39;, value=Value{id=4, quote=&#39;Previous to Spring Boot, I remember XML hell, confusing set up, and many hours of frustration.&#39;}}
+<p><a href="https://gist.github.com/robertroeser/5d4ab5386e5b2e7301c33551ead8ada8#file-employeehandler-java">EmployeeHandler.java hosted with ❤ by GitHub</a></p>
+
+<pre><code class="language-java">@Component
+public class EmployeeHandler {
+  private final EmployeeRepository repository;
+
+  public EmployeeHandler(EmployeeRepository repository) {
+    this.repository = repository;
+  }
+
+  public Mono&lt;ServerResponse&gt; getAllEmployees(ServerRequest request) {
+    Flux&lt;Employee&gt; employees = repository.getAllEmployees();
+    return ServerResponse.ok()
+        .contentType(MediaType.APPLICATION_JSON)
+        .body(employees, Employee.class);
+  }
+
+  public Mono&lt;ServerResponse&gt; getEmployee(ServerRequest request) {
+    String firstName = request.pathVariable(&quot;fn&quot;);
+    String lastName = request.pathVariable(&quot;ln&quot;);
+    Mono&lt;Employee&gt; employee = repository.getEmployee(firstName, lastName);
+
+    return ServerResponse.ok()
+        .contentType(MediaType.APPLICATION_JSON)
+        .body(employee, Employee.class);
+  }
+
+  public Mono&lt;ServerResponse&gt; createNewEmployee(ServerRequest request) {
+    Mono&lt;Employee&gt; employeeMono = request.bodyToMono(Employee.class);
+    Mono&lt;Employee&gt; employee = repository.createNewEmployee(employeeMono);
+
+    return ServerResponse.ok()
+        .contentType(MediaType.APPLICATION_JSON)
+        .body(employee, Employee.class);
+  }
+
+  public Mono&lt;ServerResponse&gt; deleteEmployee(ServerRequest request) {
+    String id = request.pathVariable(&quot;id&quot;);
+    Mono&lt;Void&gt; employee = repository.deleteEmployee(id);
+
+    return ServerResponse.ok().contentType(MediaType.APPLICATION_JSON).build(employee);
+  }
+
+  public Mono&lt;ServerResponse&gt; getAllDepartments(ServerRequest request) {
+    Flux&lt;Department&gt; allDepartments = repository.getAllDepartments();
+    return ServerResponse.ok()
+        .contentType(MediaType.APPLICATION_JSON)
+        .body(allDepartments, Department.class);
+  }
+}
 </code></pre>
 
-<p>and Microservice 2:</p>
+<p>This is the class that is responsible for handling incoming requests. Each handle method returns a <u>Mono<ServerResponse></u>. The ServerResponse object has a builder that is used to create the response, and has methods that take Fluxes and Monos for responses. The <u>ServerResponse</u> object will also automatically serialize your results to JSON. Additionally, if you return a stream of responses, WebFlux will automatically turn the response into a JSON list. You can can see this in the <u>getAllEmployees</u> and <u>getAllDepoartment</u> methods. A method to look closer at is the <u>deleteEmployee</u> method. The <u>deleteEmployee</u> method is a little different then the other methods. You’ll notice that most methods use the <u>body</u> method to create a response. The <u>deleteEmployee</u> doesn’t have a body so it uses the <u>build</u> method instead which takes a Mono<Void>.</p>
 
-<pre><code class="language-log">2017-08-21 06:29:44.238  INFO [&quot;Spring Boot 2&quot;,b9184768fa226280,7a80e050a5c4aa2c,false] 25867 --- [http-nio-8082-exec-5] c.b.l.controller.LoggingController       : Quote{type=&#39;success&#39;, value=Value{id=11, quote=&#39;I have two hours today to build an app from scratch. @springboot to the rescue!&#39;}}
-2017-08-21 06:36:13.693  INFO [&quot;Spring Boot 2&quot;,f21c03b4f86f31a8,cbeb473567ccd74a,false] 25867 --- [http-nio-8082-exec-6] c.b.l.controller.LoggingController       : Quote{type=&#39;success&#39;, value=Value{id=4, quote=&#39;Previous to Spring Boot, I remember XML hell, confusing set up, and many hours of frustration.&#39;}}
-</code></pre>
+<h4 id="toc_3">Interacting with the Database</h4>
 
-<p>The portion of the log statement that Sleuth adds is [&quot;Spring Boot 1&quot;, 945690e8fc53b5b5, 945690e8fc53b5b5, false]. The first part is the application name (whatever you set spring.application.name to in application.properties). The second value is the trace id. The third value is the span id. Finally, the last value indicates whether the span should be exported to Zipkin. The trace ids are the same but the span ids are different. The trace ids are what is going to allow you to trace a request as it travels from one service to the next. The span ids are different because we have two different “units of work” occurring, one for each request.</p>
+<p>To create our responses we need to get the information from our database. The object that takes care of that is the the <u>EmployeeRepository</u> which is being injected into the handler. This is normally where things start to fall apart because you’re accessing a blocking database. In our case though we’re using rxjava2-jdbc and it’s no longer an issue. While this does turn a JDBC driver into a non-blocking driver and deals with the difficulties of scheduling potentially blocking work off the event loop, this isn’t as efficient as a purely non-blocking approach. However, it is sufficient for all but the highest throughput applications. Lets take a look at the <u>EmployeeRepository</u> class:</p>
 
-<h2 id="toc_3">Enabling Tracing for NodeJS Applications</h2>
+<p><a href="https://gist.github.com/robertroeser/580116df0045187e4850bd4016704ce1#file-employeerepository-java">EmployeeRepository.java hosted with ❤ by GitHub</a></p>
 
-<p>The instrumentation to include traceId and spanId in logs for NodeJS and JavaScript is manual unlike in case of Spring Boot applications where these are added to each log by Spring Cloud Sleuth.</p>
+<pre><code class="language-java">@Component
+public class EmployeeRepository {
+  private Database db;
 
-<p>1. Instrument the NodeJS application following the steps listed here - <a href="https://github.com/openzipkin/zipkin-js-example">https://github.com/openzipkin/zipkin-js-example</a>. This project shows an example of how to use Zipkin in JavaScript.</p>
+  public EmployeeRepository() throws Exception {
+    Connection connection = DriverManager.getConnection(&quot;jdbc:h2:./build/mydatabase&quot;, &quot;sa&quot;, &quot;sa&quot;);
+    NonBlockingConnectionPool pool =
+        Pools.nonBlocking()
+            .maxPoolSize(Runtime.getRuntime().availableProcessors() * 5)
+            .connectionProvider(ConnectionProvider.from(connection))
+            .build();
 
-<p>2. Add a logger to include traceId and spanId in the logs.</p>
+    this.db = Database.from(pool);
+  }
 
-<p><strong>logger.js</strong></p>
+  Flux&lt;Employee&gt; getAllEmployees() {
+    String sql = &quot;SELECT * FROM employee e JOIN department d ON e.department_id = d.department_id&quot;;
 
-<pre><code class="language-js">const winston = require(&#39;winston&#39;),
-  moment = require(&#39;moment&#39;);
-var logger = new winston.Logger({
-  transports: [
-    new winston.transports.Console({
-      formatter: (options) =&gt; {
-        const traceId = options.meta.TraceId;
-        const spanId = options.meta.SpanId;
-        const service = options.meta.serviceName;
-        const logLevel = options.level.toUpperCase();
-        const time = moment();
-        const message = options.message || &#39;&#39;;
-        return JSON.stringify({
-          timestamp: time.toISOString(),
-          logLevel,
-          message,
-          traceId,
-          spanId,
-          service
+    Flowable&lt;Employee&gt; employeeFlowable =
+        db.select(sql)
+            .get(
+                rs -&gt; {
+                  Employee employee = new Employee();
+                  employee.setId(rs.getInt(&quot;employee_id&quot;));
+                  employee.setFirstName(rs.getString(&quot;employee_firstname&quot;));
+                  employee.setLastName(rs.getString(&quot;employee_lastname&quot;));
+                  employee.setDepartment(rs.getString(&quot;department_name&quot;));
+
+                  return employee;
+                });
+
+    return Flux.from(employeeFlowable);
+  }
+
+  Mono&lt;Employee&gt; getEmployee(String firstName, String lastName) {
+    String sql =
+        &quot;SELECT employee_id, employee_firstname, employee_lastname, department_name FROM employee e &quot;
+            + &quot;JOIN department d ON e.department_id = d.department_id &quot;
+            + &quot;WHERE employee_firstname = ? AND &quot;
+            + &quot;employee_lastname = ?&quot;;
+
+    Flowable&lt;Employee&gt; employeeFlowable =
+        db.select(sql)
+            .parameters(firstName, lastName)
+            .get(
+                rs -&gt; {
+                  Employee employee = new Employee();
+                  employee.setId(rs.getInt(&quot;employee_id&quot;));
+                  employee.setFirstName(rs.getString(&quot;employee_firstname&quot;));
+                  employee.setLastName(rs.getString(&quot;employee_lastname&quot;));
+                  employee.setDepartment(rs.getString(&quot;department_name&quot;));
+
+                  return employee;
+                });
+
+    return Mono.from(employeeFlowable);
+  }
+
+  Mono&lt;Employee&gt; createNewEmployee(Mono&lt;Employee&gt; employeeMono) {
+
+    String createSql =
+        &quot;INSERT INTO employee (employee_firstname, employee_lastname, department_id) VALUES (?, ?, ?)&quot;;
+    String selectDepartmentId = &quot;SELECT department_id from department where department_name = ?&quot;;
+    String selectSql =
+        &quot;SELECT employee_id, employee_firstname, employee_lastname, department_name FROM employee e &quot;
+            + &quot;JOIN department d ON e.department_id = d.department_id &quot;
+            + &quot;WHERE employee_id = ?&quot;;
+
+    return employeeMono.flatMap(
+        newEmployee -&gt; {
+          Flowable&lt;Integer&gt; employeeIds =
+              db.select(selectDepartmentId)
+                  .parameters(newEmployee.getDepartment())
+                  .getAs(Integer.class)
+                  .flatMap(
+                      departmentId -&gt;
+                          db.update(createSql)
+                              .parameters(
+                                  newEmployee.getFirstName(),
+                                  newEmployee.getLastName(),
+                                  departmentId)
+                              .returnGeneratedKeys()
+                              .getAs(Integer.class));
+
+          Flowable&lt;Employee&gt; employeeFlowable =
+              db.select(selectSql)
+                  .parameterStream(employeeIds)
+                  .get(
+                      rs -&gt; {
+                        Employee employee = new Employee();
+                        employee.setId(rs.getInt(&quot;employee_id&quot;));
+                        employee.setFirstName(rs.getString(&quot;employee_firstname&quot;));
+                        employee.setLastName(rs.getString(&quot;employee_lastname&quot;));
+                        employee.setDepartment(rs.getString(&quot;department_name&quot;));
+
+                        return employee;
+                      });
+
+          return Mono.from(employeeFlowable);
         });
-      }
-    }),
-    new winston.transports.File({
-      filename: &#39;frontend.log&#39;,
-      formatter: (options) =&gt; {
-        const traceId = options.meta.TraceId;
-        const spanId = options.meta.SpanId;
-        const service = options.meta.serviceName;
-        const logLevel = options.level.toUpperCase();
-        const time = moment();
-        const message = options.message || &#39;&#39;;
-        return JSON.stringify({
-          timestamp: time.toISOString(),
-          logLevel,
-          message,
-          traceId,
-          spanId,
-          service
-        });
-      }
-    })
-  ]
-}); 
-module.exports.logger = logger;
+  }
+
+  Mono&lt;Void&gt; deleteEmployee(String id) {
+    String sql = &quot;DELETE FROM employee WHERE employee_id = ?&quot;;
+    Flowable&lt;Integer&gt; counts = db.update(sql).parameter(id).counts();
+    return Flux.from(counts).then();
+  }
+
+  Flux&lt;Department&gt; getAllDepartments() {
+    return Flux.from(db.select(Department.class).get());
+  }
+}
 </code></pre>
 
-<p>3. Use the logger to log.</p>
+<p>The first thing to look at here is the constructor. The main class in rxjava2-jdbc is the Database class. This is what you use to interact with the database and run queries. Before you can do that you need to create a connection to the database. For our example, we’re creating a connection to an H2 database. Many databases allow you to pass in user credentials and other information in there connection string. If they do then you can use just create a database like so:</p>
 
-<p><strong>frontend.js</strong></p>
-
-<pre><code class="language-js">const {logger} = require(&#39;./logger&#39;);
-app.get(&#39;/&#39;, (req, res) =&gt; {
-  zipkinRest(&#39;http://localhost:9000/api&#39;)
-    .then(response =&gt; {
-      logger.log(&#39;info&#39;, &#39;Hello distributed log files!&#39;, 
-        { &#39;serviceName&#39;:&#39;frontend&#39;, &#39;TraceId&#39;: req.header(&#39;X-B3-TraceId&#39;), &#39;SpanId&#39;: req.header(&#39;X-B3-SpanId&#39;) });
-      res.send(response.entity);
-    })
-    .catch(err =&gt; logger.error(&#39;Error&#39;, err.stack));
-});
+<pre><code class="language-java">Database db = Database.from(“&lt;connection_string”&gt;, &lt;pool_size&gt;);
 </code></pre>
 
-<p><strong>backend.js</strong></p>
+<p>However, H2 doesn’t allow you to do this, so you need to create a Connection object in order to pass in credentials. You then have to use the Pools builder to create a pool. Once you’ve created the your pool you can create the database object.</p>
 
-<pre><code class="language-js">const {logger} = require(&#39;./logger&#39;);
-app.get(&#39;/api&#39;, (req, res) =&gt; {
-  logger.log(&#39;info&#39;, &#39;Hello distributed log files!&#39;, 
-    { &#39;serviceName&#39;:&#39;backend&#39;, &#39;TraceId&#39;: req.header(&#39;X-B3-TraceId&#39;), &#39;SpanId&#39;: req.header(&#39;X-B3-SpanId&#39;) });
-  res.send(new Date().toString())
-});
-</code></pre>
+<p>The great thing about rxjava2-jdbc is that any JDBC driver can used. You can switch any standard JDBC database like Oracle, SQL Server, DB2, etc.</p>
 
-<p>The logfile will have traceId and spanId with the log message.</p>
+<p>I’m not going to go into too much detail about how rxjava2-jdbc works here because David Moten’s github page has great <a href="https://github.com/davidmoten/rxjava2-jdbc/blob/master/README.adoc">documentation</a>.</p>
 
-<p><strong>frontend.log</strong></p>
+<p>I will point out a few things though about using Spring WebFlux and rxjava2-jdbc together. The good news is they both implement <a href="http://www.reactive-streams.org/">ReactiveStreams</a> so it’s transparent for them to interoperate. The way to do this with reactor-core is to use the <u>Flux.from</u> or <u>Mono.from</u> methods. These can take any publisher. It is important to note that in the Mono version it can only emit one item or it will throw an exception. Another thing to take a look at is the <u>deleteEmployee</u> method. This method returns a Mono<Void> which is a special convention in reactor-core. This roughly equivalent to a Completable in rxjava2. To mimic this behavior in reactor-core, call the <u>then</u> method on a Flux or a Mono. This will ignore all elements that are emitted from the stream, and either complete or emit an exception.</p>
 
-<pre><code class="language-log">{&quot;level&quot;:&quot;info&quot;,&quot;message&quot;:&quot;Frontend listening on port 8085!&quot;,&quot;timestamp&quot;:&quot;2017-08-24T06:26:58.536Z&quot;}
-{&quot;serviceName&quot;:&quot;frontend&quot;,&quot;TraceId&quot;:&quot;2c97a4bac4820ef8&quot;,&quot;SpanId&quot;:&quot;2c97a4bac4820ef8&quot;,&quot;level&quot;:&quot;info&quot;,&quot;message&quot;:&quot;Hello distributed log files!&quot;,&quot;timestamp&quot;:&quot;2017-08-24T06:27:02.990Z&quot;}
-{&quot;serviceName&quot;:&quot;backend&quot;,&quot;TraceId&quot;:&quot;2c97a4bac4820ef8&quot;,&quot;SpanId&quot;:&quot;7a0eff44fc42fde9&quot;,&quot;level&quot;:&quot;info&quot;,&quot;message&quot;:&quot;Hello distributed log files!&quot;,&quot;timestamp&quot;:&quot;2017-08-24T06:27:02.977Z&quot;}
-</code></pre>
+<h4 id="toc_4">Write some Code</h4>
 
-<p>Notice that the traceId is the same across two microservices.</p>
+<p>To really get a feel for how this works, the next step is to write some code. One idea I would suggest are to port the sample app to the database of your choice. Another idea is to create endpoints for creating a new department and deleting one. You can use the <u>createNewEmployee</u> and <u>deleteEmployee</u> methods as references.</p>
 
-<h2 id="toc_4">Enabling Tracing for Python Applications</h2>
+<h4 id="toc_5">Conclusion</h4>
 
-<p>We&#39;ll be using the py_zipkin python package to instrument our Python applications. Here again, the instrumentation is manual.</p>
-
-<p>1. Install py_zipkin and use the examples from <a href="https://github.com/Yelp/py_zipkin">https://github.com/Yelp/py_zipkin</a> to instrument your Python application.</p>
-
-<p>2. Add service_name, span_id and trace_id in your logging configuration.</p>
-
-<p><strong>logging.conf</strong></p>
-
-<pre><code class="language-conf">[formatter_myFormatter]
-format=%(asctime)s - %(name)s - %(levelname)s - %(service_name)s - %(trace_id)s - %(span_id)s - %(message)s
-</code></pre>
-
-<p>3. Trace a service call.</p>
-
-<p><strong>demo.py</strong></p>
-
-<pre><code class="language-py">from py_zipkin.zipkin import zipkin_span, create_http_headers_for_new_span
-@zipkin_span(service_name=&#39;webapp&#39;, span_name=&#39;do_stuff&#39;)
-def do_stuff():
-    headers = create_http_headers_for_new_span()
-    app.logger.info(&#39;From demo app&#39;, extra={&#39;service_name&#39;:&#39;demo&#39;, &#39;trace_id&#39;:headers[&#39;X-B3-TraceId&#39;], &#39;span_id&#39;:headers[&#39;X-B3-SpanId&#39;]})
-    requests.get(&#39;http://localhost:6000/service1/&#39;, headers=headers)
-return &#39;OK&#39;
-</code></pre>
-
-<p><strong>service1.py</strong></p>
-
-<pre><code class="language-py">@app.route(&#39;/service1/&#39;)
-def index():
-    with zipkin_span(
-        service_name=&#39;service1&#39;,
-        zipkin_attrs=ZipkinAttrs(
-            trace_id=request.headers[&#39;X-B3-TraceID&#39;],
-            span_id=request.headers[&#39;X-B3-SpanID&#39;],
-            parent_span_id=request.headers[&#39;X-B3-ParentSpanID&#39;],
-            flags=request.headers[&#39;X-B3-Flags&#39;],
-            is_sampled=request.headers[&#39;X-B3-Sampled&#39;],
-        ),
-        span_name=&#39;index_service1&#39;,
-        transport_handler=http_transport,
-        port=6000,
-        sample_rate=100, #0.05, # Value between 0.0 and 100.0
-    ) as zipkin_context:
-        headers = create_http_headers_for_new_span()
-        app.logger.info(&#39;From service1 app&#39;, extra={&#39;service_name&#39;:&#39;service1&#39;, &#39;trace_id&#39;:headers[&#39;X-B3-TraceId&#39;], &#39;span_id&#39;:headers[&#39;X-B3-SpanId&#39;]})
-        do_stuff()
-    return &#39;OK&#39;, 200
-</code></pre>
-
-<p>4. The log file will have traceId and spanId from the calls.</p>
-
-<p><strong>demo.log</strong></p>
-
-<pre><code class="language-log">2017-08-29 08:29:36,065 - __main__ - INFO - demo - 884f9f20a9172104 - 2352d7d1fadd521c - From demo app
-2017-08-29 08:29:36,069 - __main__ - INFO - service1 - 884f9f20a9172104 - d7867b21585a9ba1 - From service1 app
-</code></pre>
-
-<p>Note that the traceId is the same across the two services.</p>
-
-<h2 id="toc_5">Aggregate Logs</h2>
-
-<p>Once you have instrumented your application to automatically include tracing information in the logs, now let us look at Splunk and ELK for aggregating logs at a central place and correlating requests as it propagates through various services.</p>
-
-<h2 id="toc_6">Enabling Centralized Logging Using Splunk</h2>
-
-<p>Splunk works on the client-server model. Splunk Forwarder is used to collect the machine-generated data from the client side and forward it to the Splunk server. We tested with the Splunk free license for a low volume of logs; it provides a maximum 500 MB of indexing per day.</p>
-
-<p><img src="https://dzone.com/storage/temp/6461050-image003.jpg" alt=""/></p>
-
-<p>1. Download and install Splunk server.</p>
-
-<pre><code class="language-sh">wget -O splunk-6.6.2-4b804538c686-Linux-x86_64.tgz &#39;https://www.splunk.com/bin/splunk/DownloadActivityServlet?architecture=x86_64&amp;platform=linux&amp;version=6.6.2&amp;product=splunk&amp;filename=splunk-6.6.2-4b804538c686-Linux-x86_64.tgz&amp;wget=true&#39;
-sudo cp splunk-6.6.2-4b804538c686-Linux-x86_64.tgz /opt
-cd /opt
-sudo tar xvzf splunk-6.6.2-4b804538c686-Linux-x86_64.tgz
-cd splunk
-cd bin
-sudo ./splunk start --accept-license
-</code></pre>
-
-<p>Splunk will be available at: http://<ip>:8000 (admin/admin)</p>
-
-<p>2. Enable the receiving port to get logs from Splunk Forwarder. We can do this from GUI and CLI as well. Port 9997 is the default and it can be changed.</p>
-
-<p>3. Download and install Splunk Forwarder.</p>
-
-<pre><code class="language-sh">wget -O splunkforwarder-6.6.2-4b804538c686-Linux-x86_64.tgz &#39;https://www.splunk.com/bin/splunk/DownloadActivityServlet?architecture=x86_64&amp;platform=linux&amp;version=6.6.2&amp;product=universalforwarder&amp;filename=splunkforwarder-6.6.2-4b804538c686-Linux-x86_64.tgz&amp;wget=true&#39;
-sudo cp splunkforwarder-6.6.2-4b804538c686-Linux-x86_64.tgz /opt
-cd /opt
-sudo tar xvzf splunkforwarder-6.6.2-4b804538c686-Linux-x86_64.tgz
-cd splunkforwarder
-cd bin
-sudo ./splunk enable boot-start --accept-license
-sudo ./splunk add forward-server &lt;ip&gt;:9997
-sudo ./splunk list forward-server
-sudo ./splunk add monitor /var/log
-sudo ./splunk restart
-</code></pre>
-
-<p>Now login into Splunk web console and search for configured logs.<br/>
-<img src="https://dzone.com/storage/temp/6461051-image004.jpg" alt=""/></p>
-
-<h2 id="toc_7">Enabling Centralized Logging Using ELK</h2>
-
-<p>There are three options that you have if you want Elasticsearch on AWS:</p>
+<p>The reality is that many applications today use SQL databases, and reactive application developers did not have an easy way to access them without turning their non-blocking application into a blocking application. Hopefully in the future there will be great solutions around truly non-blocking JDBC drivers. Until that time, I hope you can see with this blog post, that while not perfect, there is an effective solution.</p>
 
 <ul>
-<li>  Get an EC2, install on your own, Elastic.co has written a simple and comprehensive article on this.</li>
-<li>  Get a third party managed Elastic search as a service, again Elastic.co is pretty good for that.</li>
-<li>  Get the AWS Elasticsearch as a service.</li>
+<li>  <a href="https://medium.com/tag/java?source=post">Java</a></li>
+<li>  <a href="https://medium.com/tag/rxjava?source=post">Rxjava</a></li>
+<li>  <a href="https://medium.com/tag/spring?source=post">Spring</a></li>
+<li>  <a href="https://medium.com/tag/reactive?source=post">Reactive</a></li>
+<li>  <a href="https://medium.com/tag/rest?source=post">Rest</a></li>
 </ul>
-
-<p>We have installed ELK on our AWS. Learn how to access Kibana <a href="https://www.elastic.co/guide/en/kibana/current/access.html">here</a>.</p>
-
-<p>1. To send application logs to the central Elasticsearch, follow <a href="https://www.elastic.co/guide/en/beats/filebeat/5.3/filebeat-getting-started.html">these steps</a> on each server. </p>
-
-<p><strong>/etc/filebeat/filebeat.yml</strong></p>
-
-<pre><code class="language-yml">filebeat.prospectors:
-- input_type: log
-  # Paths that should be crawled and fetched. Glob based paths.
-  paths:
-    - /var/log/logs/*.log
-    #- c:\programdata\elasticsearch\logs\*
-output.logstash:
-  # The Logstash hosts
-  hosts: [&quot;&lt;ip&gt;:5044&quot;]
-</code></pre>
-
-<p>2. FileBeat sends the logs to logstash, which has been configured to send the logs to Elasticsearch. Kibana has been configured to query indices in Elasticsearch.</p>
-
-<p><img src="https://dzone.com/storage/temp/6461053-image005.png" alt=""/></p>
-
-<p>3. By default, Kibana does not require login credentials. Hit the url http://<ip>:5601 in the browser, and search for logs.</p>
-
-<p><img src="https://dzone.com/storage/temp/6461055-image006.jpg" alt=""/></p>
 
                         
                       </div>
@@ -456,10 +384,10 @@ output.logstash:
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/6/6</span>
+                    <span class="date">2018/7/7</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Logging.html'>Logging</a></span>
+          					    <span class="posted-in"><a href='Java.html'>Java</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -549,31 +477,31 @@ output.logstash:
 	      
 		      
 			      <li class="post">
-			        <a href="15459058392039.html">Reliable Domain Events</a>
+			        <a href="15517999043443.html">The Art of Crafting Architectural Diagrams</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
+			        <a href="15517997955971.html">为什么说我们需要软件架构图？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
+			        <a href="15516128677869.html">DNS Servers That Offer Privacy and Filtering</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
+			        <a href="15516123108194.html">Airbnb's Migration from Monolith to Services</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
+			        <a href="15516097487470.html">Events As First-Class Citizens</a>
 			      </li>
 		     
 		  

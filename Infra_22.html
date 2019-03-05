@@ -105,452 +105,279 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15301811361753.html">
+                <a class="clearlink" href="15342611126076.html">
                 
-                  <h1>架构设计：负载均衡层设计方案（5）——LVS单节点安装</h1>
+                  <h1>InnoDB并发如此高，原因竟然在这？</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://blog.csdn.net/yinwenjie/article/details/47010569">https://blog.csdn.net/yinwenjie/article/details/47010569</a></p>
+<p>原文地址 <a href="https://mp.weixin.qq.com/s/R3yuitWpHHGWxsUcE0qIRQ">https://mp.weixin.qq.com/s/R3yuitWpHHGWxsUcE0qIRQ</a></p>
+
+<p>原创： 58沈剑  架构师之路  2018-08-14</p>
 </blockquote>
 
-<h1 id="toc_0"><a></a>1、概述</h1>
+<p>《<a href="http://mp.weixin.qq.com/s?__biz=MjM5ODYxMDA5OQ==&amp;mid=2651961431&amp;idx=1&amp;sn=4f46fbada3d99ca6cf74b305d06c1ac6&amp;chksm=bd2d0d8b8a5a849d8cb5a616c957abde7a6485cd2624372b84a5459eed081bd95429a09572f8&amp;scene=21#wechat_redirect">InnoDB 行锁，如何锁住一条不存在的记录？</a>》埋了一个坑，没想到评论反响剧烈，大家都希望深挖下去。原计划写写 InnoDB 的锁结束这个 case，既然呼声这么高，干脆全盘<strong>系统性</strong>的写写 InnoDB 的<strong>并发控制</strong>，<strong>锁</strong>，<strong>事务模型</strong>好了。</p>
 
-<p>上篇文章《架构设计：负载均衡层设计方案（4）——LVS 原理》（<a href="http://blog.csdn.net/yinwenjie/article/details/46845997">http://blog.csdn.net/yinwenjie/article/details/46845997</a>），我们介绍了 LVS 的工作模式，和每一种模式的具体工作过程。这篇文章中，我们将介绍单一 LVS 节点的安装方式。比起上一篇文章，这一片要提到的安装和配置就是非常简单的了，只要您了解原理，实践就是从容的事情。</p>
+<p>体系相对宏大，一篇肯定写不完，容我娓娓道来，通俗地说清楚来龙去脉。</p>
 
-<p>您可以在您的电脑上使用 VMware 虚拟机，按照下面介绍的过程一步一步实践。我们将采用两台虚拟机，一台作为 LVS 节点，另外一台安装了 Nginx 的服务器作为 Real Server 节点。</p>
+<p><strong>一、并发控制</strong></p>
 
-<h1 id="toc_1"><a></a>2、LVS-NAT 模式安装</h1>
+<p><strong>为啥要进行并发控制？</strong></p>
 
-<h2 id="toc_2"><a></a>2.1、准备工作——LVS Server：</h2>
+<p>并发的任务对同一个临界资源进行操作，如果不采取措施，可能导致不一致，故必须进行<strong>并发控制</strong>（Concurrency Control）。</p>
 
-<p>LVS Server：LSV Server 有两张网卡。</p>
+<p><strong>技术上，通常如何进行并发控制？</strong></p>
 
-<ul>
-<li>  eth0：192.168.100.10：这张网卡对应一个封闭的内网，不能访问外网资源，外网也不能直接通过这个 IP 访问这台主机</li>
-<li><p>eth1：192.168.220.100：这张网卡设置的 IP 可以访问外网，也可以被外网访问。eth1 的网关：192.168.220.1。</p>
-
-<pre><code>以下是设置的eth0    ip信息，
-[root@lvs1 ~]# cat /etc/sysconfig/network-scripts/ifcfg-eth0
-DEVICE=&quot;eth0&quot;
-BOOTPROTO=&quot;static&quot;
-HWADDR=&quot;00:0C:29:3E:4A:4F&quot;
-ONBOOT=&quot;yes&quot;
-TYPE=&quot;Ethernet&quot;
-IPADDR=&quot;192.168.100.10&quot;
-NETMASK=&quot;255.255.255.0&quot;
-====================================
-以下是设置的eth1  ip信息
-[root@lvs1 ~]# cat /etc/sysconfig/network-scripts/ifcfg-eth1
-DEVICE=&quot;eth1&quot;
-BOOTPROTO=&quot;static&quot;
-HWADDR=&quot;00:0C:29:3E:4A:59&quot;
-ONBOOT=&quot;yes&quot;
-TYPE=&quot;Ethernet&quot;
-IPADDR=&quot;192.168.220.100&quot;
-NETMASK=&quot;255.255.255.0&quot;
-GATEWAY=&quot;192.168.220.1&quot;
-
-</code></pre></li>
-</ul>
-
-<p>记得设置完成后，要重启 network 服务：</p>
-
-<pre><code>[root@lvs1 ~]# service network restart
-
-</code></pre>
-
-<p>ping ping 更健康（说明到外网的网管工作是正常的）：</p>
-
-<pre><code>[root@lvs1 ~]# ping 192.168.220.1
-PING 192.168.220.1 (192.168.220.1) 56(84) bytes of data.
-64 bytes from 192.168.220.1: icmp_seq=1 ttl=128 time=0.447 ms
-64 bytes from 192.168.220.1: icmp_seq=2 ttl=128 time=0.154 ms
-
-</code></pre>
-
-<p>另外还可以通过 route 命令检查：</p>
-
-<pre><code>[root@lvs1 ~]# route
-Kernel IP routing table
-Destination     Gateway         Genmask         Flags Metric Ref    Use Iface
-192.168.100.0   *               255.255.255.0   U     1      0        0 eth0
-192.168.220.0   *               255.255.255.0   U     1      0        0 eth1
-default         192.168.220.1   0.0.0.0         UG    0      0        0 eth1
-
-</code></pre>
-
-<p>注意，route 表中有一项 eth1 的 default 的信息，指向 192.168.220.1。说明路由配置是正确的。</p>
-
-<h2 id="toc_3"><a></a>2.2、准备工作——Real Server：</h2>
-
-<p>Real Server：Real Server 有一张网卡，在一个封闭的内网环境中。</p>
+<p>通过并发控制保证数据一致性的常见手段有：</p>
 
 <ul>
-<li><p>eth0:192.168.100.11：这样 LVS Server 和 Real Server 就组成了一个相对封闭的局域网络。注意按照我们介绍的 NAT 原理，Real Server 的 eth0 的默认网关要设置成 Lvs Server：192.168.100.10.</p></li>
-<li><p>在 Real Server 上运行了一个 Nginx 程序，在 80 端口上。这样以便在后续的过程中，测试 LVS-NAT 的工作是否正常。</p></li>
+<li><p>锁（Locking）</p></li>
+<li><p>数据多版本（Multi Versioning）</p></li>
 </ul>
 
-<p>以下是设置的 Real Server eth0 的 IP 信息：</p>
+<p><strong>二、锁</strong></p>
 
-<pre><code>[root@vm1 ~]# cat /etc/sysconfig/network-scripts/ifcfg-eth0 
-DEVICE=&quot;eth0&quot;
-BOOTPROTO=&quot;static&quot;
-HWADDR=&quot;00:0C:29:45:04:32&quot;
-ONBOOT=&quot;yes&quot;
-TYPE=&quot;Ethernet&quot;
-IPADDR=192.168.100.11
-NETMASK=255.255.255.0
-GATEWAY=&quot;192.168.100.10&quot;
+<p><strong>如何使用普通锁保证一致性？</strong></p>
 
-</code></pre>
+<p>普通锁，被使用最多：</p>
 
-<p>一定注意 Real Server 的网管要设置到 LVS 的 IP：192.168.100.10。接着，看看 Nginx 是不是工作正常的：</p>
+<p>(1) 操作数据前，锁住，实施互斥，不允许其他的并发任务操作；</p>
 
-<p><img src="https://img-blog.csdn.net/20150725111742203" alt=""/></p>
+<p>(2) 操作完成后，释放锁，让其他任务执行；</p>
 
-<p>当然，同样的 ping ping 更健康：</p>
+<p>如此这般，来保证一致性。</p>
 
-<pre><code>[root@vm1 ~]# ping 192.168.100.10
-PING 192.168.100.10 (192.168.100.10) 56(84) bytes of data.
-64 bytes from 192.168.100.10: icmp_seq=1 ttl=64 time=0.259 ms
-64 bytes from 192.168.100.10: icmp_seq=2 ttl=64 time=0.215 ms
-64 bytes from 192.168.100.10: icmp_seq=3 ttl=64 time=0.227 ms
+<p><strong>普通锁存在什么问题？</strong></p>
 
-</code></pre>
+<p>简单的锁住太过粗暴，连 “读任务” 也无法并行，任务执行过程本质上是串行的。</p>
 
-<p>另外一个检查方式，也可以通过 route 命令：</p>
-
-<pre><code>[root@vm1 ~]# route
-Kernel IP routing table
-Destination     Gateway         Genmask         Flags Metric Ref    Use Iface
-192.168.100.0   *               255.255.255.0   U     1      0        0 eth0
-default         192.168.100.10  0.0.0.0         UG    0      0        0 eth0
-
-</code></pre>
-
-<p>注意，默认的路由指向 192.168.100.10。<br/>
-<strong>完成准备工作后，我们可以开始安装和配置 LVS 了。</strong></p>
-
-<h2 id="toc_4"><a></a>2.3、开始安装和配置 LVS-NAT 模式：</h2>
-
-<p>ipvsadm 是一个 LVS 的管理程序。我们队 LVS 的配置都是通过这个管理程序进行实现的。首先我们要安装 ipvsadm：</p>
-
-<pre><code>yum -y install ipvsadm
-
-</code></pre>
-
-<p>然后开始配置。首先我们要设置 LVS 机器支持 IP 转发功能。注意默认 IP 转发功能是关闭的，重启机器后，又会关闭：</p>
-
-<pre><code>[root@lvs1 ~]# echo 1 &gt;&gt; /proc/sys/net/ipv4/ip_forward
-
-</code></pre>
-
-<p>然后我们查看一下，是否改写成功：</p>
-
-<pre><code>[root@lvs1 ~]# cat /proc/sys/net/ipv4/ip_forward 
-1
-
-</code></pre>
-
-<p>注意，如果您使用 vim 或者 vi 命令，改写文件，是不会成功的。因为这个文件存在于内存。不在硬盘上。所以只能通过 echo 这样的命令改写。</p>
-
-<p>接下来执行如下的命令：</p>
-
-<pre><code>[root@lvs1 ~]# ipvsadm -At 192.168.220.100:80 -s rr
-[root@lvs1 ~]# ipvsadm -at 192.168.220.100:80 -r 192.168.100.11 -m
-
-</code></pre>
-
-<p>我们来解释一下其中的参数：</p>
-
-<pre><code>-A --add-service 在内核的虚拟服务器表中添加一条新的虚拟服务器记录。也就是增加一台新的虚拟服务器。
--t --tcp-service service-address 说明虚拟服务器提供的是tcp 的服务。
--s --scheduler scheduler 使用的调度算法，可选项包括：rr|wrr|lc|wlc|lblc|lblcr|dh|sh|sed|nq（关于调度算法我们在上篇文章中已经详细介绍了）
--r --real-server server-address 真实的服务器[Real-Server:port]。
--m --masquerading 指定LVS 的工作模式为NAT 模式。
-
-</code></pre>
-
-<p>当然 ipvsadm 还包括很多参数，后面慢慢讲，然后再本文章的最后部分，会给出一个比较完整的参数汇总。最后我们测试一下：</p>
-
-<p><img src="https://img-blog.csdn.net/20150725115900158" alt=""/></p>
-
-<p>我们在相对于 Real Server 的外网，通过 192.168.220.100 的 LVS Server IP 访问到了 Real Server 上的 Nginx 服务。安装和配置成功。</p>
-
-<h2 id="toc_5"><a></a>2.4、关于 iptables 和重启服务的说明</h2>
-
-<p>在配置 LVA-NAT 过程中，建议关闭 LVS 和 Real Server 的防火墙服务。这样可以避免不必要的错误发生，增加一次配置成功的几率。但是正常生产环境中，LVS 的防火墙根据实际情况最好还是要打开。</p>
-
-<p><strong>请注意，刚才使用 ipvsadm 配置的信息，在 LVS 服务器重启后，就会失效。包括 ip_forward 的配置</strong>。所以，最好制作一个脚本文件，并加入到 / etc/profile 中：</p>
-
-<pre><code>vim /usr/lvsshell.sh
-
-#!/bin/bash
-echo 1 &gt; /proc/sys/net/ipv4/ip_forward 
-ipvsadm -C
-ipvsadm -At 192.168.220.100:80 -s rr
-ipvsadm -at 192.168.220.100:80 -r 192.168.100.11 -m
-
-</code></pre>
-
-<h1 id="toc_6"><a></a>3、LVS-DR 模式安装</h1>
-
-<h2 id="toc_7"><a></a>3.1、准备工作——LVS Server</h2>
-
-<p>为了让您了解 LVS 的另外设置方式，本次我们使用 VIP 的方式，而不是两张网卡的方式（当然您也可以用两张网卡的方式）。VIP 的方式是后面我们将讲到的 LVS + Keepalived 组合工作模式的常用方式。所谓 VIP 就死虚拟 IP，是指这个 IP 不会固定捆绑到某一个网卡设备，而是通过 ifconfig 命令绑定，并在 “适当时候” 这种绑定关系会随之变化：</p>
-
-<p>DIP：192.168.220.137<br/>
-VIP：192.168.220.100</p>
-
-<p>首先我们看看在没有设置 VIP 之前，LVS 主机上的 IP 信息：</p>
-
-<pre><code>[root@lvs1 ~]# ifconfig 
-eth1      Link encap:Ethernet  HWaddr 00:0C:29:3E:4A:59  
-          inet addr:192.168.220.137  Bcast:192.168.220.255  Mask:255.255.255.0
-          inet6 addr: fe80::20c:29ff:fe3e:4a59/64 Scope:Link
-          UP BROADCAST RUNNING MULTICAST  MTU:1500  Metric:1
-          RX packets:2612 errors:0 dropped:0 overruns:0 frame:0
-          TX packets:117 errors:0 dropped:0 overruns:0 carrier:0
-          collisions:0 txqueuelen:1000 
-          RX bytes:159165 (155.4 KiB)  TX bytes:8761 (8.5 KiB)
-
-lo        Link encap:Local Loopback  
-          inet addr:127.0.0.1  Mask:255.0.0.0
-          inet6 addr: ::1/128 Scope:Host
-          UP LOOPBACK RUNNING  MTU:16436  Metric:1
-          RX packets:210 errors:0 dropped:0 overruns:0 frame:0
-          TX packets:210 errors:0 dropped:0 overruns:0 carrier:0 
-          collisions:0 txqueuelen:0 
-          RX bytes:16944 (16.5 KiB)  TX bytes:16944 (16.5 KiB)
-
-</code></pre>
-
-<p>然后我们来设置 VIP 信息：</p>
-
-<pre><code>[root@lvs1 ~]# ifconfig eth1:0 192.168.220.100 broadcast 192.168.220.100 netmask 255.255.255.255 up
-[root@lvs1 ~]# route add -host 192.168.220.100 dev eth1:0
-
-</code></pre>
-
-<p>路由表会有新的路由信息：</p>
-
-<pre><code>[root@lvs1 ~]# route
-Kernel IP routing table
-Destination     Gateway         Genmask         Flags Metric Ref    Use Iface
-192.168.220.100 *               255.255.255.255 UH    0      0        0 eth1
-192.168.100.0   *               255.255.255.0   U     1      0        0 eth0
-192.168.220.0   *               255.255.255.0   U     1      0        0 eth1
-default         192.168.220.1   0.0.0.0         UG    0      0        0 eth1
-
-</code></pre>
-
-<p>这时，通过一个外网 IP，可以 ping 通这个 VIP（下面这个 DOS 系统是 VM 的母机）：</p>
-
-<pre><code>C:\Users\yinwenjie&gt;  ping 192.168.220.100
-正在 Ping 192.168.220.100 具有 32 字节的数据:
-来自 192.168.220.100 的回复: 字节=32 时间&lt;1ms TTL=64
-来自 192.168.220.100 的回复: 字节=32 时间&lt;1ms TTL=64
-
-</code></pre>
-
-<p>以上，我们完成了 LVS 主机设置 LVS-DR 工作模式的准备工作。注意：</p>
+<p>于是出现了<strong>共享锁</strong>与<strong>排他锁</strong>：</p>
 
 <ul>
-<li>  <strong>在您设置过程中，防火前最好关闭，但在正式生产环境中，LVS 的防火强最好打开。</strong></li>
-<li>  <strong>VIP 信息在 LVS 主机重启后，会消失。所以您最好将设置 VIP 的命令做成一个脚本。</strong></li>
+<li><p>共享锁（<strong>S</strong>hare Locks，记为 S 锁），读取数据时加 S 锁</p></li>
+<li><p>排他锁（e<strong>X</strong>clusive Locks，记为 X 锁），修改数据时加 X 锁</p></li>
 </ul>
 
-<h2 id="toc_8"><a></a>3.2、准备工作——Real Server</h2>
-
-<p>RIP：192.168.220.132</p>
-
-<p>真实服务器的准备工作，需要保证真实服务器能够访问外网网关，并且保证由 LVS 改写的报文能够被 Real Server 处理（请参见我的上一篇介绍 LVS 原理的博文），这就需要做一个回环 IP。首先我们看看没有开始设置之前的 IP 信息：</p>
-
-<pre><code>[root@localhost ~]# ifconfig 
-eth0      Link encap:Ethernet  HWaddr 00:0C:29:FC:91:FC  
-          inet addr:192.168.220.132  Bcast:192.168.220.255  Mask:255.255.255.0
-          inet6 addr: fe80::20c:29ff:fefc:91fc/64 Scope:Link
-          UP BROADCAST RUNNING MULTICAST  MTU:1500  Metric:1
-          RX packets:2384 errors:0 dropped:0 overruns:0 frame:0
-          TX packets:1564 errors:0 dropped:0 overruns:0 carrier:0
-          collisions:0 txqueuelen:1000 
-          RX bytes:1551652 (1.4 MiB)  TX bytes:144642 (141.2 KiB)
-
-lo        Link encap:Local Loopback  
-          inet addr:127.0.0.1  Mask:255.0.0.0
-          inet6 addr: ::1/128 Scope:Host
-          UP LOOPBACK RUNNING  MTU:65536  Metric:1
-          RX packets:44 errors:0 dropped:0 overruns:0 frame:0
-          TX packets:44 errors:0 dropped:0 overruns:0 carrier:0
-          collisions:0 txqueuelen:0 
-          RX bytes:3361 (3.2 KiB)  TX bytes:3361 (3.2 KiB)
-
-</code></pre>
-
-<p>使用 route 命令，查看原始 route 信息：</p>
-
-<pre><code>[root@localhost ~]# route
-Kernel IP routing table
-Destination     Gateway         Genmask         Flags Metric Ref    Use Iface
-192.168.220.0   *               255.255.255.0   U     1      0        0 eth0
-default         192.168.220.1   0.0.0.0         UG    0      0        0 eth0
-
-</code></pre>
-
-<p>另外，这台 Real Server 上有一个 Nginx，以保证我们观测 LVS-DR 的运行情况。我们在外网使用 192.168.220.132 这个 IP，能够访问到 Nginx 的页面：</p>
-
-<p><img src="https://img-blog.csdn.net/20150726085859705" alt=""/></p>
-
-<p>接下来，我们开始设置 Real Server 上的回环 IP，首先关闭这台机器进行 ARP 查询的功能，否则，Real Server 会在路由器或者交换机上去查询 192.168.220.100 这个 IP 对应的 MAC 地址（注意，以下的信息都会被还原）：</p>
-
-<pre><code>echo &quot;1&quot; &gt;/proc/sys/net/ipv4/conf/lo/arp_ignore
-echo &quot;2&quot; &gt;/proc/sys/net/ipv4/conf/lo/arp_announce
-echo &quot;1&quot; &gt;/proc/sys/net/ipv4/conf/all/arp_ignore
-echo &quot;2&quot; &gt;/proc/sys/net/ipv4/conf/all/arp_announce
-
-</code></pre>
-
-<p>然后可以设置回环 IP 了：</p>
-
-<pre><code>[root@vm3 ~]# ifconfig lo:0 192.168.220.100 broadcast 192.168.220.100 netmask 255.255.255.255 up
-[root@vm3 ~]# route add -host 192.168.220.100 dev lo:0
-
-</code></pre>
-
-<p>检查新的路由信息：</p>
-
-<pre><code>[root@vm3 ~]# route 
-Kernel IP routing table
-Destination     Gateway         Genmask         Flags Metric Ref    Use Iface
-192.168.220.100 *               255.255.255.255 UH    0      0        0 lo
-192.168.220.0   *               255.255.255.0   U     1      0        0 eth0
-default         192.168.220.1   0.0.0.0         UG    0      0        0 eth0
-
-</code></pre>
-
-<p>以上设置完成。<strong>完成后，您需要通过 ping 命令，检查一下网关是否可用（最好可以瓶 ping 一下外网的某个地址，例如 163.com）。LVS-DR 模式下，Real Server 是直接向请求方返回结果，所以一定要保证网关时可用的。</strong></p>
-
-<h2 id="toc_9"><a></a>3.3、开始安装和配置 LVS-DR 模式</h2>
-
-<p>在验证了 LVS Server 和 Real Server 都准备好以后，就可以进行 LVS-DR 模式的设置了。LVS 管理软件 ipvsadm 的安装我们就不敷述了，在 LVS-NAT 的小结中有关于 LVS 管理软件安装的介绍。</p>
-
-<pre><code>[root@lvs1 ~]# echo 1 &gt; /proc/sys/net/ipv4/ip_forward
-[root@lvs1 ~]# cat /proc/sys/net/ipv4/ip_forward
-1
-[root@lvs1 ~]# ipvsadm -C
-[root@lvs1 ~]# ipvsadm -At 192.168.220.100:81 -s rr 
-[root@lvs1 ~]# ipvsadm -at 192.168.220.100:81 -r 192.168.220.132 -g
-
-</code></pre>
-
-<p>介绍一下新出现的参数：</p>
+<p>共享锁与排他锁的玩法是：</p>
 
 <ul>
-<li>  -g –gatewaying 指定 LVS 的工作模式为直接路由模式 DR 模式（也是 LVS 默认的模式）</li>
+<li><p>共享锁之间不互斥，简记为：读读可以并行</p></li>
+<li><p>排他锁与任何锁互斥，简记为：写读，写写不可以并行</p></li>
 </ul>
 
-<p>配置完成，是不是很简单。接下来，我们就可以在外网，通过 192.168.220.100 这个 IP 访问 132 这台 Real Server 上的 Nginx 服务了：</p>
+<p>可以看到，一旦写数据的任务没有完成，数据是不能被其他任务读取的，这对并发度有较大的影响。</p>
 
-<p><img src="https://img-blog.csdn.net/20150726091844324" alt=""/></p>
+<p><u>画外音：对应到数据库，可以理解为，写事务没有提交，读相关数据的 select 也会被阻塞。</u></p>
 
-<h1 id="toc_10"><a></a>4、LVS-TUN 模式安装</h1>
+<p><strong>有没有可能，进一步提高并发呢？</strong></p>
 
-<p>LVS-TUN 模式的安装我不打算再花很大的篇幅讲了，在您通过上一篇文章了解了 DR 和 TUN 的不同以后，其配置的过程都是差不多的，只不过一个可以跨越子网，一个不能。所以 LVS-TUN 模式的安装和配置请首先参考 LVS-DR 模式。</p>
+<p>即使写任务没有完成，其他读任务也可能并发，这就引出了数据多版本。</p>
 
-<h1 id="toc_11"><a></a>5、IPVSADM 参数汇总</h1>
+<p><strong>三、数据多版本</strong></p>
 
-<p>-A –add-service 在内核的虚拟服务器表中添加一条新的虚拟服务器记录。也就是增加一台新的虚拟服务器。</p>
+<p>数据多版本是一种能够进一步提高并发的方法，它的<strong>核心原理</strong>是：</p>
 
-<p>-E –edit-service 编辑内核虚拟服务器表中的一条虚拟服务器记录。</p>
+<p>（1）写任务发生时，将数据克隆一份，以版本号区分；</p>
 
-<p>-D –delete-service 删除内核虚拟服务器表中的一条虚拟服务器记录。</p>
+<p>（2）写任务操作新克隆的数据，直至提交；</p>
 
-<p>-C –clear 清除内核虚拟服务器表中的所有记录。</p>
+<p>（3）并发读任务可以继续读取旧版本的数据，不至于阻塞；</p>
 
-<p>-R –restore 恢复虚拟服务器规则</p>
+<p><img src="https://mmbiz.qpic.cn/mmbiz_png/YrezxckhYOxqYZaEWwXRwibTg8vNtNIPG7Hfiat5wx6D353IIxWmOKJawOcJ84QFu2WYicElTUeTsy9Am0MQZpcyg/640?wx_fmt=png" alt=""/></p>
 
-<p>-S –save 保存虚拟服务器规则，输出为 - R 选项可读的格式</p>
+<p>如上图：</p>
 
-<p>-a –add-server 在内核虚拟服务器表的一条记录里添加一条新的真实服务器记录。也就是在一个虚拟服务器中增加一台新的真实服务器</p>
+<p>1. 最开始数据的版本是 V0；</p>
 
-<p>-e –edit-server 编辑一条虚拟服务器记录中的某条真实服务器记录</p>
+<p>2. T1 时刻发起了一个写任务，这是把数据 clone 了一份，进行修改，版本变为 V1，但任务还未完成；</p>
 
-<p>-d –delete-server 删除一条虚拟服务器记录中的某条真实服务器记录</p>
+<p>3. T2 时刻并发了一个读任务，依然可以读 V0 版本的数据；</p>
 
-<p>-L –list 显示内核虚拟服务器表</p>
+<p>4. T3 时刻又并发了一个读任务，依然不会阻塞；</p>
 
-<p>-Z –zero 虚拟服务表计数器清零（清空当前的连接数量等）</p>
+<p>可以看到，数据多版本，通过 “读取旧版本数据” 能够极大提高任务的并发度。</p>
 
-<p>–set tcp tcpfin udp 设置连接超时值</p>
-
-<p>–start-daemon 启动同步守护进程。他后面可以是 master 或 backup，用来说明 LVS Router 是 master 或是 backup。在这个功能上也可以采用 keepalived 的 VRRP 功能。</p>
-
-<p>–stop-daemon 停止同步守护进程</p>
-
-<p>-t –tcp-service service-address 说明虚拟服务器提供的是 tcp 的服务 [vip:port] or [real-server-ip:port]</p>
-
-<p>-u –udp-service service-address 说明虚拟服务器提供的是 udp 的服务 [vip:port] or [real-server-ip:port]</p>
-
-<p>-f –fwmark-service fwmark 说明是经过 iptables 标记过的服务类型。</p>
-
-<p>-s –scheduler scheduler 使用的调度算法，选项：rr|wrr|lc|wlc|lblc|lblcr|dh|sh|sed|nq, 默认的调度算法是： wlc.</p>
-
-<p>-p –persistent [timeout] 持久稳固的服务。这个选项的意思是来自同一个客户的多次请求，将被同一台真实的服务器处理。timeout 的默认值为 300 秒。</p>
-
-<p>-M –netmask netmask persistent granularity mask</p>
-
-<p>-r –real-server server-address 真实的服务器 [Real-Server:port]</p>
-
-<p>-g –gatewaying 指定 LVS 的工作模式为直接路由模式 DR 模式（也是 LVS 默认的模式）</p>
-
-<p>-i –ipip 指定 LVS 的工作模式为隧道模式</p>
-
-<p>-m –masquerading 指定 LVS 的工作模式为 NAT 模式</p>
-
-<p>-w –weight weight 真实服务器的权值</p>
-
-<p>–mcast-interface interface 指定组播的同步接口</p>
-
-<p>-c</p>
-
-<p>–connection 显示 LVS 目前的连接 如：ipvsadm -L -c</p>
-
-<p>–timeout 显示 tcp tcpfin udp 的 timeout 值 如：ipvsadm -L –timeout</p>
-
-<p>–daemon 显示同步守护进程状态</p>
-
-<p>–stats 显示统计信息</p>
-
-<p>–rate 显示速率信息</p>
-
-<p>–sort 对虚拟服务器和真实服务器排序输出</p>
-
-<p>–numeric -n 输出 IP 地址和端口的数字形式</p>
-
-<p>好吧，这个就是我网上抄的。</p>
-
-<h1 id="toc_12"><a></a>6、后文介绍</h1>
-
-<p><strong>LVS 的设置实际上没有什么难度，充其量是一个高级玩意儿，是解决特定问题的特定方法</strong>。您需要的基础知识涉及到 IP 协议、子网分割、IP 映射、Linux 脚本等基本知识。打通任督二脉才是您的根本。</p>
-
-<p>LVS 的设置过程中肯定会遇到实际问题，特别是您头几次配置。别慌，别怕，透过现象猜测本质，一个一个的解决问题。就我的经验总结，无非几种问题分类：</p>
+<p>提高并发的演进思路，就在如此：</p>
 
 <ul>
-<li>  网关不通</li>
-<li>  回环 IP 设置问题</li>
-<li>  防火墙问题</li>
-<li>  VIP 设置问题</li>
-<li>  网段或者子网问题</li>
+<li><p><strong>普通锁</strong>，本质是串行执行</p></li>
+<li><p><strong>读写锁</strong>，可以实现读读并发</p></li>
+<li><p><strong>数据多版本</strong>，可以实现读写并发</p></li>
 </ul>
 
-<p>通过包括这篇博客在内的这几篇文章，您已经分别了解了 Nginx、LVS 的功能、原理、特 点和工作模式。后面一篇文章，我们将把这些负载层的技术混合在一起，介绍 Nginx + Keepalived、LVS + Keepalived、LVS + Keepalived + Nginx 的安装和配置方式。</p>
+<p><u>画外音：这个思路，比整篇文章的其他技术细节更重要，希望大家牢记。</u></p>
 
-<p>（本人这个月 “持之以恒” 奖已经拿到了，笑一个：哈哈哈）</p>
+<p>好，对应到 InnoDB 上，具体是怎么玩的呢？</p>
 
-<p>补充一下：由于工作的原因，期间可能还会推出一篇关于 Apache Camel 的文章，就算提前进入业务通信层的讨论吧。不过这个看当时的时间安排。目前情况下还是以负载均衡层的讨论为主线。</p>
+<p><strong>四、redo, undo,</strong> <strong>回滚段</strong></p>
+
+<p>在进一步介绍 InnoDB 如何使用 “读取旧版本数据” 极大提高任务的并发度之前，有必要先介绍下 redo 日志，undo 日志，回滚段（rollback segment）。</p>
+
+<p><strong>为什么要有 redo</strong> <strong>日志？</strong></p>
+
+<p>数据库事务提交后，必须将更新后的数据刷到磁盘上，以保证 ACID 特性。磁盘<strong>随机写</strong>性能较低，如果每次都刷盘，会极大影响数据库的吞吐量。</p>
+
+<p>优化方式是，将修改行为先写到 redo 日志里（此时变成了<strong>顺序写</strong>），再定期将数据刷到磁盘上，这样能极大提高性能。</p>
+
+<p><u>画外音：这里的架构设计方法是，<strong>随机写优化为顺序写</strong>，思路更重要。</u></p>
+
+<p>假如某一时刻，数据库崩溃，还没来得及刷盘的数据，在数据库重启后，会重做 redo 日志里的内容，以保证已提交事务对数据产生的影响都刷到磁盘上。</p>
+
+<p><strong>一句话</strong>，redo 日志用于保障，已提交事务的 ACID 特性。</p>
+
+<p><strong>为什么要有 undo</strong> <strong>日志？</strong></p>
+
+<p>数据库事务未提交时，会将事务修改数据的镜像（即修改前的旧版本）存放到 undo 日志里，当事务回滚时，或者数据库奔溃时，可以利用 undo 日志，即旧版本数据，撤销未提交事务对数据库产生的影响。</p>
+
+<p><u>画外音：更细节的，</u></p>
+
+<p><u>对于 <strong>insert 操作</strong>，undo 日志记录新数据的 PK(ROW</u>ID)，回滚时直接删除；_</p>
+
+<p><u>对于 <strong>delete/update 操作</strong>，undo 日志记录旧数据 row，回滚时直接恢复；</u></p>
+
+<p><u>他们分别存放在不同的 buffer 里。</u></p>
+
+<p><strong>一句话</strong>，undo 日志用于保障，未提交事务不会对数据库的 ACID 特性产生影响。</p>
+
+<p><strong>什么是回滚段？</strong></p>
+
+<p>存储 undo 日志的地方，是回滚段。</p>
+
+<p>undo 日志和回滚段和 InnoDB 的 MVCC 密切相关，这里举个例子展开说明一下。</p>
+
+<p><strong>栗子</strong>：</p>
+
+<p>t(id PK, name);</p>
+
+<p>数据为：</p>
+
+<p>1, shenjian</p>
+
+<p>2, zhangsan</p>
+
+<p>3, lisi</p>
+
+<p><img src="https://mmbiz.qpic.cn/mmbiz_png/YrezxckhYOxqYZaEWwXRwibTg8vNtNIPGhicRJvTpNR0lzoZticJ8BLAWEAbMzC9pgZ0yYZ29IdWKekoqiaxuf6Neg/640?wx_fmt=png" alt=""/></p>
+
+<p>此时没有事务未提交，故回滚段是空的。</p>
+
+<p>接着启动了一个事务：</p>
+
+<p>start trx;</p>
+
+<p>delete (1, shenjian);</p>
+
+<p>update set(3, lisi) to (3, xxx);</p>
+
+<p>insert (4, wangwu);</p>
+
+<p>并且事务处于未提交的状态。</p>
+
+<p><img src="https://mmbiz.qpic.cn/mmbiz_png/YrezxckhYOxqYZaEWwXRwibTg8vNtNIPGLSOOJDKXmdHqkgdeXFibUI0bNhuQN0qb0E5BiaR00gwaS0IU7vzz0tSA/640?wx_fmt=png" alt=""/></p>
+
+<p>可以看到：</p>
+
+<p>(1) 被删除前的 (1, shenjian) 作为旧版本数据，进入了回滚段；</p>
+
+<p>(2) 被修改前的 (3, lisi) 作为旧版本数据，进入了回滚段；</p>
+
+<p>(3) 被插入的数据，PK(4) 进入了回滚段；</p>
+
+<p>接下来，假如事务 rollback，此时可以通过回滚段里的 undo 日志回滚。</p>
+
+<p><u>画外音：假设事务提交，回滚段里的 undo 日志可以删除。</u></p>
+
+<p><img src="https://mmbiz.qpic.cn/mmbiz_png/YrezxckhYOxqYZaEWwXRwibTg8vNtNIPGMuEql2dsc2US7uwMaP9fBic9dPeod96CqwcaN6Qd75icNssicNHkaaMzw/640?wx_fmt=png" alt=""/></p>
+
+<p>可以看到：</p>
+
+<p>(1) 被删除的旧数据恢复了；</p>
+
+<p>(2) 被修改的旧数据也恢复了；</p>
+
+<p>(3) 被插入的数据，删除了；</p>
+
+<p><img src="https://mmbiz.qpic.cn/mmbiz_png/YrezxckhYOxqYZaEWwXRwibTg8vNtNIPGry9tyIxsGfql43eEhWoYHg6ibS1S4th1dMjj6JKTwt8XWnIt0iaS71jw/640?wx_fmt=png" alt=""/></p>
+
+<p>事务回滚成功，一切如故。</p>
+
+<p><strong>四、InnoDB</strong> <strong>是基于多版本并发控制的存储引擎</strong></p>
+
+<p>《<a href="http://mp.weixin.qq.com/s?__biz=MjM5ODYxMDA5OQ==&amp;mid=2651961428&amp;idx=1&amp;sn=31a9eb967941d888fbd4bb2112e9602b&amp;chksm=bd2d0d888a5a849e7ebaa7756a8bc1b3d4e2f493f3a76383fc80f7e9ce7657e4ed2f6c01777d&amp;scene=21#wechat_redirect">大数据量，高并发量的互联网业务，一定要使用 InnoDB</a>》提到，InnoDB 是高并发互联网场景最为推荐的存储引擎，根本原因，就是其<strong>多版本并发控制</strong>（Multi Version Concurrency Control, MVCC）。行锁，并发，事务回滚等多种特性都和 MVCC 相关。</p>
+
+<p>MVCC 就是通过 “读取旧版本数据” 来降低并发事务的锁冲突，提高任务的并发度。</p>
+
+<p><strong>核心问题：</strong></p>
+
+<p><strong>旧版本数据存储在哪里？</strong></p>
+
+<p><strong>存储旧版本数据，对 MySQL</strong> <strong>和 InnoDB</strong> <strong>原有架构是否有巨大冲击？</strong></p>
+
+<p>通过上文 undo 日志和回滚段的铺垫，这两个问题就非常好回答了：</p>
+
+<p>(1) 旧版本数据存储在回滚段里；</p>
+
+<p>(2) 对 MySQL 和 InnoDB 原有架构体系冲击不大；</p>
+
+<p>InnoDB 的内核，会对所有 row 数据增加三个内部属性：</p>
+
+<p>(1)<strong>DB_TRX_ID</strong>，6 字节，记录每一行最近一次修改它的事务 ID；</p>
+
+<p>(2)<strong>DB_ROLL_PTR</strong>，7 字节，记录指向回滚段 undo 日志的指针；</p>
+
+<p>(3)<strong>DB_ROW_ID</strong>，6 字节，单调递增的行 ID；</p>
+
+<p><strong>InnoDB</strong> <strong>为何能够做到这么高的并发？</strong></p>
+
+<p>回滚段里的数据，其实是历史数据的快照（snapshot），这些数据是不会被修改，select 可以肆无忌惮的并发读取他们。</p>
+
+<p><strong>快照读</strong>（Snapshot Read），这种<strong>一致性不加锁的读</strong>（Consistent Nonlocking Read），就是 InnoDB 并发如此之高的核心原因之一。</p>
+
+<p>这里的<strong>一致性</strong>是指，事务读取到的数据，要么是事务开始前就已经存在的数据（当然，是其他已提交事务产生的），要么是事务自身插入或者修改的数据。</p>
+
+<p><strong>什么样的 select</strong> <strong>是快照读？</strong></p>
+
+<p>除非显示加锁，普通的 select 语句都是快照读，例如：</p>
+
+<p>select * from t where id&gt;2;</p>
+
+<p>这里的显示加锁，非快照读是指：</p>
+
+<p>select * from t where id&gt;2 <strong>lock in share mode</strong>;</p>
+
+<p>select * from t where id&gt;2 <strong>for update</strong>;</p>
+
+<p>问题来了，这些显示加锁的读，是什么读？会加什么锁？和事务的隔离级别又有什么关系？</p>
+
+<p>本节的内容已经够多了，且听下回分解。</p>
+
+<p><strong>总结</strong></p>
+
+<p>(1) 常见并发控制保证数据一致性的方法有<strong>锁</strong>，<strong>数据多版本</strong>；</p>
+
+<p>(2) <strong>普通锁</strong>串行，<strong>读写锁</strong>读读并行，<strong>数据多版本</strong>读写并行；</p>
+
+<p>(3)<strong>redo 日志</strong>保证已提交事务的 ACID 特性，设计思路是，通过顺序写替代随机写，提高并发；</p>
+
+<p>(4)<strong>undo 日志</strong>用来回滚未提交的事务，它存储在回滚段里；</p>
+
+<p>(5)InnoDB 是基于 <strong>MVCC</strong> 的存储引擎，它利用了存储在回滚段里的 undo 日志，即数据的旧版本，提高并发；</p>
+
+<p>(6)InnoDB 之所以并发高，快照读不加锁；</p>
+
+<p>(7)InnoDB 所有普通 select 都是快照读；</p>
+
+<p><u>画外音：本文的知识点均基于 MySQL5.6。</u></p>
+
+<p>希望大家有收获，下一篇继续深入 InnoDB 的<strong>锁</strong>。</p>
+
+<p>希望通俗的技术文被更多人看到，求帮<strong>转</strong>。</p>
+
+<p>相关文章：</p>
+
+<p>《<a href="http://mp.weixin.qq.com/s?__biz=MjM5ODYxMDA5OQ==&amp;mid=2651961428&amp;idx=1&amp;sn=31a9eb967941d888fbd4bb2112e9602b&amp;chksm=bd2d0d888a5a849e7ebaa7756a8bc1b3d4e2f493f3a76383fc80f7e9ce7657e4ed2f6c01777d&amp;scene=21#wechat_redirect">InnoDB，5 项最佳实践，知其所以然？</a>》</p>
 
                         
                       </div>
@@ -559,10 +386,10 @@ default         192.168.220.1   0.0.0.0         UG    0      0        0 eth0
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/6/28</span>
+                    <span class="date">2018/8/14</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Network.html'>Network</a></span>
+          					    <span class="posted-in"><a href='Database.html'>Database</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -652,31 +479,31 @@ default         192.168.220.1   0.0.0.0         UG    0      0        0 eth0
 	      
 		      
 			      <li class="post">
-			        <a href="15459058392039.html">Reliable Domain Events</a>
+			        <a href="15517999043443.html">The Art of Crafting Architectural Diagrams</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
+			        <a href="15517997955971.html">为什么说我们需要软件架构图？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
+			        <a href="15516128677869.html">DNS Servers That Offer Privacy and Filtering</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
+			        <a href="15516123108194.html">Airbnb's Migration from Monolith to Services</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
+			        <a href="15516097487470.html">Events As First-Class Citizens</a>
 			      </li>
 		     
 		  

@@ -105,374 +105,132 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15301811967181.html">
+                <a class="clearlink" href="15301813999205.html">
                 
-                  <h1>架构设计：负载均衡层设计方案（6）——Nginx + Keepalived构建高可用的负载层</h1>
+                  <h1>架构设计：负载均衡层设计方案（9）——负载均衡层总结下篇</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://blog.csdn.net/yinwenjie/article/details/47130609">https://blog.csdn.net/yinwenjie/article/details/47130609</a></p>
+<p><a href="https://blog.csdn.net/yinwenjie/article/details/48101869">https://blog.csdn.net/yinwenjie/article/details/48101869</a></p>
 </blockquote>
 
-<h1 id="toc_0"><a></a>1、概述</h1>
+<p>(接上一篇<a href="http://blog.csdn.net/yinwenjie/article/details/47211641%20%E8%B4%9F%E8%BD%BD%E5%9D%87%E8%A1%A1%E5%B1%82%E8%AE%BE%E8%AE%A1%E6%96%B9%E6%A1%88%EF%BC%888%EF%BC%89%E2%80%94%E2%80%94%E8%B4%9F%E8%BD%BD%E5%9D%87%E8%A1%A1%E5%B1%82%E6%80%BB%E7%BB%93%E4%B8%8B%E7%AF%87">《架构设计：负载均衡层设计方案（8）——负载均衡层总结上篇》</a>)</p>
 
-<p>前两遍文章中，我们一直在说后文要介绍 Nginx + Keepalived 的搭建方式。这篇文章开始，我们就来兑现前文的承诺，后续的两篇文章我们将介绍 Nginx + Keepalived 和 LVS + Keepalived 搭建高可用的负载层系统。如果你还不了解 Nginx 和 LVS 的相关知识，请参见我之前的两篇文章《架构设计：负载均衡层设计方案（2）——Nginx 安装》（<a href="http://blog.csdn.net/yinwenjie/article/details/46620711">http://blog.csdn.net/yinwenjie/article/details/46620711</a>）、《架构设计：负载均衡层设计方案（4）——LVS 原理》（<a href="http://blog.csdn.net/yinwenjie/article/details/46845997">http://blog.csdn.net/yinwenjie/article/details/46845997</a>）</p>
+<h1 id="toc_0"><a></a>3、负载均衡层技术汇总</h1>
 
-<h1 id="toc_1"><a></a>2、准备工作</h1>
+<h2 id="toc_1"><a></a>3-4、Keepalived 技术</h2>
 
-<h2 id="toc_2"><a></a>2.1、准备两台独立工作的 Nginx 系统</h2>
+<p>Keepalived 在我的博客文章《架构设计：负载均衡层设计方案（7）》（<a href="http://blog.csdn.net/yinwenjie/article/details/47211551">http://blog.csdn.net/yinwenjie/article/details/47211551</a>）、《架构设计：负载均衡层设计方案（6）》（<a href="http://blog.csdn.net/yinwenjie/article/details/47130609">http://blog.csdn.net/yinwenjie/article/details/47130609</a>）中都有介绍。大家可能注意到，在这些文章中从来没有单独介绍 Keepalived。这是因为 Keepalived 是为了监控集群节点的工作状态，在因为某种原因不能正常提供服务的前提下，完成备机的切换。这里面有两个关键点：<strong>监控节点上提供的服务</strong>、<strong>完成网络切换</strong>。keepalived 本身是不提供业务服务的，只是监控提供的服务是否正常工作，那么既然都没有可以监控的服务，那么 Keepalived 有什么独立使用的必要呢？</p>
 
-<p>准备两台 Nginx 的主机，如果您不知道为什么需要准备两台，没关系，准备就行。保证两台 Nginx 主机能够被外网访问。在我这里，安装两台 Nginx 的虚拟机 IP 地址分别是：</p>
+<p>下图是曾经在博文中展现过的 Nginx + Keepalived 的工作结构和 LVS + Keepalived 的工作结构：</p>
 
-<ul>
-<li>  Nginx VM1：192.168.61.129:80</li>
-<li>  Nginx VM2：192.168.61.130:80</li>
-</ul>
+<p><img src="http://img.blog.csdn.net/20150730143806220" alt=""/><br/>
+Nginx + Keepalived 的工作方式</p>
 
-<p>访问相关的地址，确保两台 Nginx 都是可用的：</p>
-
-<ul>
-<li><p>VM1：<br/>
-<img src="https://img-blog.csdn.net/20150730141119869" alt=""/></p></li>
-<li><p>VM2：<br/>
-<img src="https://img-blog.csdn.net/20150730141305112" alt=""/></p></li>
-</ul>
-
-<p>Nginx 的安装在我的前文《架构设计：负载均衡层设计方案（2）——Nginx 安装》（<a href="http://blog.csdn.net/yinwenjie/article/details/46620711">http://blog.csdn.net/yinwenjie/article/details/46620711</a>）中已经进行了详细的讲解，所以这里的讲解就一笔带过。</p>
-
-<h2 id="toc_3"><a></a>2.2、再分别独立安装 Keepalived 系统</h2>
-
-<p>我们的目标是 “<strong>在一台工作的 Nginx 崩溃的情况下，系统能够检测到，并自动将请求切换到另外一台备份的 Nginx 服务器上</strong>”。所以，之前安装的两台 Nginx，一台是 Master 服务器是主要的工作服务器，另一台是备份服务器，在 Master 服务器出现问题后，由后者接替其工作。如下图所示（外网的请求使用一个由 keepalived 控制的虚拟的浮动 IP 进行访问）：</p>
-
-<p><img src="https://img-blog.csdn.net/20150730143806220" alt=""/></p>
+<p><img src="http://img.blog.csdn.net/20150822113121644" alt=""/><br/>
+LVS + Keepalived + Nginx 的工作方式</p>
 
 <ul>
-<li><p>请到 <a href="http://www.keepalived.org">www.keepalived.org</a> 下载 keepalived 的稳定版本，我下载的是 1.2.17 版本。</p></li>
-<li><p>解压，并且安装。注意，我在这里制定了 perfix 参数，指定安装位置，这是为了我自己便于管理。您在安装的时候，可以根据自己的情况来决定是不是加这个参数：</p>
-
-<pre><code>tar -zxvf keepalived-1.2.17.tar.gz
-
-./configure --perfix=/usr/keepalived-1.2.17
-
-make &amp; make install 
-
-</code></pre></li>
-<li><p>如果您不是安装到默认路径，那么为了将 keepalived 做成系统服务，您需要拷贝一些文件到指定的路径下，如下：</p>
-
-<pre><code>cp /usr/keepalived-1.2.17/etc/sysconfig/keepalived  /etc/sysconfig/keepalived
-
-cp /usr/keepalived-1.2.17/sbin/keepalived /usr/sbin/keepalived
-
-cp /usr/keepalived-1.2.17/etc/rc.d/init.d/keepalived  /etc/rc.d/init.d/keepalived
-
-mkdir /etc/keepalived
-
-cp /usr/keepalived-1.2.17/etc/keepalived/keepalived.conf /etc/keepalived/keepalived.conf
-
-</code></pre></li>
-<li><p>然后您可以将 keepalived 做成服务了：</p>
-
-<pre><code>/etc/rc.d/init.d/keepalived
-
-chkconfig keepalived on
-
-</code></pre></li>
+<li>  <strong>相关技术还有</strong>：
+Heartbeat 是 Linux-HA 计划中的一个重要项目，它的功能比 Keepalived 更强大，安装和管理也相对复杂。网络上有很多资料介绍 Heartbeat 和 Keepalived 的优缺点和使用对比。但就我自己的使用经验来说，个人更喜欢使用 Keepalived，原因很简单：Keepalived 安装和配置更简单，而且够用。另外 Redhat Rhcs 套件也可以搭建类似的 HA 集群，但是说实话本人没有尝试过。</li>
 </ul>
 
-<h1 id="toc_4"><a></a>3、检查 Nginx 状态</h1>
+<h2 id="toc_2"><a></a>3-5、DNS 轮询和智能 DNS</h2>
 
-<p>在正式介绍 Nginx + Keepalived 的配置前，我们首先介绍一下如何检查 Nginx 的状态。是的，这是为下一小节做准备。<strong>我们只有能够正确检查 Nginx 的状态，才说得上在 Nginx 节点出现问题的情况下，切换到另一台 Nginx 上接替其工作</strong>。</p>
+<p>//TODO DNS 技术还没有介绍</p>
 
-<p>Nginx 为什么会停止响应呢？在我的工作经验中，无非有以下几种情况：</p>
+<h2 id="toc_3"><a></a>3-6、硬件负载</h2>
+
+<p>在这个系列的 “负载均衡层设计方案” 博文中，我们所提到的诸如 Nginx、LVS 等技术，没有详细讲述的 Haproxy、Squid 等技术，都是基于软件的负载技术。F5 是一家公司，它的 BIG-IP LTM 技术是基于硬件负载的。硬件负载方案提供了软件负载技术无法提供了性能空间，并且集成了 NAT 映射功能、SSL 加速、Cookie 加密、高速缓存、攻击过滤、包过滤、动态 Session 保持等等很多软件负载无法提供的功能（或者需要多个软件组合使用才能提供的功能）。</p>
+
+<p>但是硬件负载方案也有其缺点，主要就是建设费用比较高昂，它不像软负载可以根据系统的吞吐量的持续增加进行持续扩展。当然您可以根据系统的吞吐量需求，在前期采用软负载，后期采用硬件负载的方案。除了 F5 公司提供的硬件负载技术，还有 Citrix 公司的硬负载方案、A10 公司的硬件负载方案。</p>
+
+<p><img src="http://img.blog.csdn.net/20150902093134033" alt=""/></p>
+
+<h1 id="toc_4"><a></a>4、常见负载均衡技术组合</h1>
+
+<p>这里我们在重新回顾一下这个系列博文中，提到的目前常用的负载均衡技术的组合方式。</p>
+
+<h2 id="toc_5"><a></a>4-1、独立的 Nginx/Haproxy</h2>
+
+<p><img src="http://img.blog.csdn.net/20150630091204501" alt=""/><br/>
+一般的 WEB 系统，前段假设一个 Nginx 或者 Haproxy 服务器，基本上可以解决包括负载分发在内的很多问题了。</p>
+
+<h2 id="toc_6"><a></a>4-2、Nginx + Keepalived 或 Haproxy + Keepalived 或 + Heartbeat</h2>
+
+<p><img src="http://img.blog.csdn.net/20150630091331246" alt=""/></p>
+
+<p>为了保证 Nginx 或者 HaProxy 服务器的稳定性，可以使用 Keepalived 或者 Heartbeat 做一个简单的热备方案。</p>
+
+<h2 id="toc_7"><a></a>4-3、LVS + (Keepalived | Heartbeat) + (Nginx | Haproxy)</h2>
+
+<p><img src="http://img.blog.csdn.net/20150630091527570" alt=""/></p>
+
+<p>随着访问压力的增大，我们开始采用多层负载方案，在 Nginx 或者 Haproxy 的前段架设 LVS 服务，并通过 Keepalived 或者 Heartbeat 保证 Keepalived 的持续工作。</p>
+
+<h2 id="toc_8"><a></a>4-4、加如 DNS 轮询技术或者智能 DNS 路由技术</h2>
+
+<p><img src="http://img.blog.csdn.net/20150627232428537" alt=""/></p>
+
+<p>技术方案扩展到这一步，日千万级 PV 是完全可以支撑了。前提条件是：程序没有问题 <sup>_<sup>。</sup></sup></p>
+
+<p>如果您站点的流量还要大甚至高出几个数量级，那么恭喜您，您肯定是全球排名前 100 位互联网公司工作；但是从另一个角度来说，您遇到的问题可能只能根据贵公司的业务特点，自己寻求解决方案了。这样的例子有很多，例如 YouTube 发现市面上的商用 CDN 网络无法满足他们对视频加速的需求，于是 YouTube 的工程师们自己动手写了一专门针对自己业务的 CDN 加速技术；再例如，淘宝发现市面上已经没有一款分布式文件系统能够满足他们对小文件存储的需求，于是动手写了一个 TFS。</p>
+
+<h1 id="toc_9"><a></a>5、负载均衡技术的其他运用</h1>
+
+<p>在这个系列的文章中，我们全在将用于客户端使用 HTTP 协议请求服务器端进行处理的情况，这里的客户端可以使最终用户，也可以是某个一第三方系统。但实际上负载均衡技术在信息处理领域内，不是只有这样的请求响应层才使用，在其它的技术领域也大量使用，这个小节，我们就来梳理这些技术，作为一个扩展话题。</p>
+
+<h2 id="toc_10"><a></a>5-1、关系型数据库系统的负载均衡</h2>
+
+<p>一说到关系型数据库，大家自然会联想到 Oracle、MS SQL、DB2 和 Mysql。在移动互联网领域，通常很多公司在走去 OEI 的路程。这里我们不去讨论去 OEI 是否是正确的，也不去讨论怎样走去 OEI 这条路才合理，一个不可争辩的事实是，目前很多移动互联网公司在使用 Mysql 数据库。</p>
+
+<p>单台 Mysql 数据库的处理能力确实赶不上 Oracle，甚至赶不上 MS SQL 这些商用数据库，但是我们可以为 Mysql 做集群来提高整个数据服务的性能。Mysql 从 5.1.X 版本开始，就已经支持单数据节点的 “表分区” 功能了，但这个支持仅限于每个节点的配置，提高单个 Mysql 上的读写性能（还要配合底层的块存储选型，例如 DAS）。而想要实现整个 Mysql 集群性能，就需要从更高级别实现读写分离了。</p>
+
+<p>其中有一种成熟的 Mysql 集群读写分离的做法，是一台写节点做成 Master 节点（Master 节点单机性能可以做得较高，后端可以使用 DAS 系统）；然后多台读节点做成 Salve 节点，并接受来源于 Master 节点的同步日志（MySQL Replication 技术），并通过另一个 LVS 进行读请求的负载，而且可以再配合单个节点上的 “表分区” 功能。这个做法在 80% 以上都是读请求的任何系统上，都可以大大增强数据库系统的整体性能，如下图所示：</p>
+
+<p><img src="http://img.blog.csdn.net/20150902154444273" alt=""/></p>
+
+<p>从上图可以看到，来源于程序的 “写” 操作通过一个数据源提交给了 Mysql Master，而所有的读操作则通过 LVS-DR 模式分发给 3 个 Mysql Salve。这里要说明几个问题：</p>
 
 <ul>
-<li><p>Nginx 的所有进程被强行终止（或管理进程）。<br/>
-这种情况，是我们需要检查和切换的。无论什么情况下进程被终止了，如果它不能重启，我们就要切换到备机。</p></li>
-<li><p>Nginx 日志盘的挂载点崩溃或者磁盘写满。<br/>
-这个也是我们需要检查和切换的。</p></li>
-<li><p>Nginx 已经达到设置的最大连接数，暂时停止响应。<br/>
-这种情况下，我们不能进行备机切换，因为通过 VIP:192.168.61.100 连接过来的用户请求比较多（在我们优化参数后，可以达到 65535 / 4 的数量），一旦我们进行备机切换，这些用户请求将全部异常。这个问题的解决需要靠增加负载机器，而不是主备切换。</p></li>
-<li><p>Nginx 物理机异常关机。<br/>
-这个肯定是需要进行检查和切换的。</p></li>
+<li><p>Mysql Master 和 Mysql Salve 的数据同步是通过 MySQL Replication 同步技术来实现的，这是一种基于操作日志的异步同步，虽然响应时间不能达到 “毫秒” 级，但是基本上还是很快很快的。如果不是银行系统、或者 “秒杀系统” 基本上可以满足事实性</p></li>
+<li><p>MySQL Replication 会降低 Mysql Master 节点的 20% 的工作性能，但是转移了原来 Mysql Master 负责的所有读操作。当然，我们以后介绍 “多主” 方式和使用 HiveDB 横向切分的时候，还会重点介绍如何提高 Mysql 的写性能。</p></li>
+<li><p>事实上正式的开发架构中，我们不会给程序员两个数据源，这样既不利于代码的管理，也增加了开发难度。我们会采用类似 Mysql-Proxy、Amoeba 之类的软件实现数据源的整个。</p></li>
+<li><p>后面在介绍数据存储层架构的时候，我还会介绍多种成熟的可靠的 Mysql 集群、Mysql 读写分离、Mysql 横向扩展方式，和读者讨论如何实现几十台 Mysql 节点的运行和管理。</p></li>
 </ul>
 
-<p>我们来看一段 Linux 脚本：</p>
+<h2 id="toc_11"><a></a>5-2、分布式存储系统的负载均衡</h2>
 
-<pre><code>#!/bin/sh
-if [ $(ps -C nginx --no-header | wc -l) -eq 0 ]; then
-    /usr/nginx-1.6.2/sbin/nginx
-fi
-
-sleep 2
-if [ $(ps -C nginx --no-header | wc -l) -eq 0 ]; then
-    service keepalived stop
-fi
-
-</code></pre>
-
-<p>我们大致讲解一下 “ps -C nginx –no-header | wc -l” 这个命令：<br/>
-- ps 这个命令用来进行 Linux 中进程相关的查询，-C 意思是按照进程名称进行查询。查询出来后的结果如下：</p>
-
-<pre><code>[root@vm2 ~]# ps -C nginx
-  PID TTY          TIME CMD
- 3374 ?        00:00:00 nginx
- 3375 ?        00:00:01 nginx
-
-</code></pre>
+<p>分布式存储系统目前有很多，Ceph、Swift、MFS、HDFS。他们有的是基于对象存储的，有的是基于快存储的（在<a href="http://blog.csdn.net/yinwenjie/article/details/46480485%20%E6%A0%87%E5%87%86Web%E7%B3%BB%E7%BB%9F%E7%9A%84%E6%9E%B6%E6%9E%84%E5%88%86%E5%B1%82">《标准 Web 系统的架构分层》</a>这篇博文中，我对块存储、文件存储和对象存储做了较详细的介绍，后文我们还将详细介绍存储系统）。但是他们有一个或者多个主控节点（有的叫 namenode、有的叫 master、有的叫 Metadata），无论怎么叫，他们都有一些相同的功能：</p>
 
 <ul>
-<li><p>如果要去掉统计出来的结果表的头部，那么要使用 –no-header 参数，加上参数后，查询结果如下：</p>
-
-<pre><code>[root@vm2 ~]# ps -C nginx  --no-header
- 3374 ?        00:00:00 nginx
- 3375 ?        00:00:01 nginx
-
-</code></pre></li>
-<li><p>“|”，这是 Linux 中的管道流命令，将上一个命令的输出结果作为下一个命令的输入。</p></li>
-<li><p>wc 统计命令，-l 参数，代表按行数进行统计。所以整个命令的输出结果为：</p>
-
-<pre><code>[root@vm2 ~]# ps -C nginx --no-header | wc -l
-2
-
-</code></pre></li>
+<li>  计算 “数据该存储在哪里” 的问题</li>
+<li>  协调控制 “数据是否正确存储” 的问题</li>
+<li>  监控 “数据节点” 的健康状态</li>
+<li>  转移数据</li>
+<li>  回答客户端 “到哪里取数据” 的问题</li>
+<li>  。。。。。</li>
 </ul>
 
-<p>清楚了其中最关键的命令，我们再来讲解一下整个脚本的含义：<br/>
-第一个判断说明的是，如果当前 nginx 的进程数量 == 0，那么执行 nginx 的启动命令，试图重新启动 nginx；接下来等待 2 秒（这是为了给 nginx 一定的启动时间），然后再次查看 Nginx 的进程数量，如果仍然 == 0，那么停止这台机器的 keepalived 服务，以便备用的 Keepalived 节点检查到 Keepalived 已经停止这个事件，并将浮动 IP 切换到备用服务器上。</p>
+<p>在处理问题的过程中，这些控制节点实际上起到的就是负载分发的作用，他们的基本原理都是通过 “一致性 hash 算法”，对“数据该存储在” 哪里的问题进行分析（用来做 hash 的属性依据不同而已）：</p>
 
-<p><strong>注意，这段脚本是和我机器上的 Nginx 安装路径、Keepalived 服务的状态有关的，您如果要用的话，请进行相应的更改</strong>。</p>
+<p><img src="http://img.blog.csdn.net/20150703172857890" alt=""/></p>
 
-<h1 id="toc_5"><a></a>4、Nginx + Keepalived 最简配置</h1>
+<h2 id="toc_12"><a></a>5-3、更广义的负载均衡系统</h2>
 
-<h2 id="toc_6"><a></a>4.1、请再次确认前提</h2>
+<p>相同的客流量下，银行多个窗口排队的等待时间肯定比一个窗口排队的时间短；同样的车流量，8 车道肯定比 6 车道的通过率高；把一个任务拆分成多个任务由多个人负责处理其中的一部分，肯定比一个人做一个大任务的时间短；</p>
 
-<p>（首先，为了保证不会出现额外的问题，请首先关闭防火墙，当然正式环境里面，防火墙不能关闭）</p>
+<p><strong>负载均衡的核心思想在于分流、关键问题在于如何分流、评价标准在于分流后的吞吐量。</strong></p>
 
-<p>外网进行 Nginx 访问的浮动 IP：192.168.61.100</p>
+<h1 id="toc_13"><a></a>6、后文介绍</h1>
 
-<ul>
-<li><p>我们将 192.168.61.129 这台服务器上运行的 Nginx 作为主要的 Nginx，其上的 keepalived 服务我们设置成 Master 方式。</p></li>
-<li><p>我们将 192.168.61.129 这台服务器上运行的 Nginx 作为备用的 Nginx 服务，其上的 keepalived 服务我们设置为 Backup 方式。</p></li>
-</ul>
+<p>终于，负载均衡层设计方案算是告一段落了。在这个过程中有很多网友给我提了建议，帮助我进行讲解改进和知识点梳理，在此感谢了。我知道在这几天文章我，我留了很多扣子，无奈本人写作时间有限，能力也不高，所以待到后面的空余时间，我们再进行相关话题的整理。</p>
 
-<h2 id="toc_7"><a></a>4.2、正式开始设置</h2>
+<p>从下篇文章开始，我们将开始介绍 “业务系统间通信” 的相关技术、原理和方案，当然也会形成一个系列博文。欢迎各位继续关注我的博客。</p>
 
-<p>注意，经过安装，您的 keepalived 配置文件的位置在 “/etc/keepalived/keepalived.conf”（如果没有，请创建一个，但是经过之前的步骤，这个位置肯定是有文件的，如果没有可能是之前您的步骤出现了什么问题）。</p>
-
-<h2 id="toc_8"><a></a>4.2.1、设置 192.168.61.129 上的 MASTER</h2>
-
-<p>我们先来看看 192.168.61.129 上的原始 ip 信息：</p>
-
-<p><img src="https://img-blog.csdn.net/20150730181017823" alt=""/></p>
-
-<p>注意，这个 129 机器上的网卡设备号是 eth1，而不是 eth0，这个参数我们将在配置 keepalived 的时候使用到。</p>
-
-<p>下面是 129 上 keepalived 的最简配置：</p>
-
-<pre><code>! Configuration File for keepalived
-# global setting , notify email setting
-global_defs {
-   #存在于同一个网段中，一组keepalived的各个节点都有不同的名字
-   #在全局设置中，我们还可以设置管理员的email信息等。
-   router_id LVS_V1
-}
-
-#这个是我们在上一小结讲到的nginx检查脚本，我们保存在这个文件中（注意文件权限）
-vrrp_script chknginx {
-    script &quot;/usr/keepalived-1.2.17/bin/checknginx.sh&quot;
-    #每10秒钟，检查一次
-    interval 10
-}
-
-#keepalived实例设置，是最重要的设置信息
-vrrp_instance VI_1 {
-    #state状态MASTER表示是主要工作节点。
-    #一个keepalived组中，最多只有一个MASTER节点，当然也可以没有
-    state MASTER
-    #实例所绑定的网卡设备，我的网卡设备是eth1。您按照您自己的来
-    interface eth1
-    #同一个keepalived组，节点的设置必须一样，这样才会被识别
-    virtual_router_id 52
-    #节点优先级，BACKUP的优先级一定要比MASTER的优先级低
-    priority 100
-    #组播信息发送间隔，两个节点设置必须一样
-    advert_int 1
-    #实际的eth1上的固定ip地址
-    mcast_src_ip=192.168.61.129
-    #验证信息，只有验证信息相同，才能被加入到一个组中。
-    authentication {
-        auth_type PASS
-        auth_pass 1111
-    }
-    #虚拟地址和绑定的端口，如果有多个，就绑定多个
-    #dev 是指定浮动IP要绑定的网卡设备号
-    virtual_ipaddress {
-        192.168.61.100 dev eth1
-    }
-
-    #设置的检查脚本
-    #关联上方的“vrrp_script chknginx”
-    track_script {
-        chknginx
-    }
-}
-
-</code></pre>
-
-<h2 id="toc_9"><a></a>4.2.2、设置 192.168.61.130 上的 BACKUP</h2>
-
-<p>再来看看 192.168.61.130 这个备用节点上 keepalived 的设置：</p>
-
-<pre><code>! Configuration File for keepalived
-# global setting , notify email setting
-global_defs {
-   #这里和master节点不同
-   router_id LVS_V2
-}
-
-#check nginx
-vrrp_script chknginx {
-    script &quot;/usr/keepalived-1.2.17/bin/checknginx.sh&quot;
-    interval 10
-}
-
-# instance setting
-vrrp_instance VI_1 {
-    # 这里和Master节点不一样
-    state BACKUP
-    interface eth1
-    # 这里一定是一样的
-    virtual_router_id 52
-    # 这里的优先级比Master节点低
-    priority 99
-    advert_int 1
-    # 这里和Master节点不一样
-    mcast_src_ip=192.168.61.130
-    authentication {
-        auth_type PASS
-        auth_pass 1111
-    }
-    virtual_ipaddress {
-        192.168.61.100 dev eth1
-    }
-
-    track_script {
-        chknginx
-    }
-}
-
-</code></pre>
-
-<h2 id="toc_10"><a></a>4.3、启动主节点和备用节点</h2>
-
-<p>以上配置中请注意几个关键点：</p>
-
-<ul>
-<li>  注意 nginx 状态检查的脚本的位置，根据自己创建文件的位置不一样，脚本检查的指定位置也不一样</li>
-<li>  注意优先级，MASTER 节点的优先级一定要高于所有的 BACKUP 节点。</li>
-<li>  <strong>注意局域网的组播地址，一定要可用</strong>。局域网内所有 keepalived 节点都是利用组播方式寻找对方。</li>
-<li>  谁说 BACKUP 节点只能有一个！？</li>
-<li>  最后，keepalived 一定要注册成服务形式，您可以想象上面所有脚本、配置、命令如果重启后再来一次，会是什么情况。</li>
-</ul>
-
-<p>接下来，我们要开始启动 Master 节点和 Backup 节点了，为了准确的查看日志状态，您需要观察系统日志。系统日志所在的位置：</p>
-
-<pre><code>tail -f /var/log/messages
-
-</code></pre>
-
-<p>先启动 Master 节点：</p>
-
-<pre><code>service keepalived start
-
-</code></pre>
-
-<p>再启动 Backup 节点：</p>
-
-<pre><code>service keepalived start
-
-</code></pre>
-
-<p><strong>如果设置和启动都是成功的，您不会在日志信息中收到任何的 keepalived 报错信息</strong>。接下来您就可以使用 192.168.61.100 这个 IP 访问 Nginx 了：</p>
-
-<p><img src="https://img-blog.csdn.net/20150730210724952" alt=""/></p>
-
-<p>另外，这个绑定在 192.168.61.129 上的浮动 ip：192.168.61.100，您通过 ipconfig 命令一般是看不到的，要使用 ip addr 命令进行查看：</p>
-
-<p><img src="https://img-blog.csdn.net/20150730211138410" alt=""/></p>
-
-<p>为了试验，我们主动停止 Master 节点上的 keepalived 服务（注意，杀 Nginx 进程不起作用，因为我们的检查脚本会试图重新启动 Nginx 进程），接下来我们可以看到浮动 IP 漂移到了 130 备机上：</p>
-
-<p><img src="https://img-blog.csdn.net/20150730211530195" alt=""/></p>
-
-<h1 id="toc_11"><a></a>5、Nginx + Keepalived 非抢占模式</h1>
-
-<p>通过第 4 节的详细介绍，相信您对 Nginx + Keepalived 的安装方式有了一个明确的理解。keepalived 的切换可以是自动的，但是却做不到毫秒级别，他怎么都需要几秒钟的时间进行切换。</p>
-
-<p>这就有一个问题，虽然在主节点出现问题我们转向备份节点时，这个延时无可避免，但是在我们修复主节点后，实际上并没有必要再马上做一次切换，所以 Keepalived 提供了一种非抢占模式，来满足这个要求。</p>
-
-<p>下面我们就来介绍一下 Keepalived 的非抢占模式的配置（无 MASTER 节点，全部依据优先级确定哪个节点进行工作）：</p>
-
-<h2 id="toc_12"><a></a>5.1、原来主节点的配置改动</h2>
-
-<pre><code>! Configuration File for keepalived
-# global setting , notify email setting
-global_defs {
-   router_id LVS_V1
-}
-
-vrrp_script chknginx {
-    script &quot;/usr/keepalived-1.2.17/bin/checknginx.sh&quot;
-    interval 10
-    # 一旦节点失效，节点的优先级就减少2
-    # 有多少个keepalived节点，就填写多少数量。
-    # 这样保证这个节点的优先级比其他节点都低
-    weight -2
-    # fall 表示多少次检查失败，就算节点失效。默认1
-    #fall 1
-}
-
-vrrp_instance VI_1 {
-    #state状态都是BACKUP表示是主要工作节点。
-    state BACKUP
-    interface eth1
-    virtual_router_id 52
-    # 这个关键配置项，设置为“非抢占”模式
-    nopreempt
-    # 每个节点的优先级一定要不一样
-    priority 100
-    advert_int 1
-    mcast_src_ip=192.168.61.129
-    authentication {
-        auth_type PASS
-        auth_pass 1111
-    }
-    #虚拟地址和绑定的端口，如果有多个，就绑定多个
-    #dev 是指定浮动IP要绑定的网卡设备号
-    virtual_ipaddress {
-        192.168.61.100 dev eth1
-    }
-
-    #设置的检查脚本
-    #关联上方的“vrrp_script chknginx”
-    track_script {
-        chknginx
-    }
-}
-
-</code></pre>
-
-<p>原来的主节点设置更改完成。</p>
-
-<h2 id="toc_13"><a></a>5.2、原来备份节点的配置改动</h2>
-
-<p>加入 “非抢占” 模式的关键字、更改一个确定的优先级，设置检查失败后优先级的递减量，就行了。</p>
-
-<h1 id="toc_14"><a></a>6、后文介绍</h1>
-
-<p>这是我 8 月份的首篇文章，后文我们将介绍 LVS + Keepalived + Nginx 的安装和配置方式。注意，LVS 被 Keepalived 后，就没有必要在对 Nginx 做 Keepalived 了。</p>
+<p>明天就是 70 周年胜利日了，祝我大中华！</p>
 
                         
                       </div>
@@ -574,31 +332,31 @@ vrrp_instance VI_1 {
 	      
 		      
 			      <li class="post">
-			        <a href="15459058392039.html">Reliable Domain Events</a>
+			        <a href="15517999043443.html">The Art of Crafting Architectural Diagrams</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
+			        <a href="15517997955971.html">为什么说我们需要软件架构图？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
+			        <a href="15516128677869.html">DNS Servers That Offer Privacy and Filtering</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
+			        <a href="15516123108194.html">Airbnb's Migration from Monolith to Services</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
+			        <a href="15516097487470.html">Events As First-Class Citizens</a>
 			      </li>
 		     
 		  

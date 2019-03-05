@@ -105,365 +105,65 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15301812452579.html">
+                <a class="clearlink" href="15367181153217.html">
                 
-                  <h1>架构设计：负载均衡层设计方案（7）——LVS + Keepalived + Nginx安装及配置</h1>
+                  <h1>LDAP DNs and RDNs</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://blog.csdn.net/yinwenjie/article/details/47211551">https://blog.csdn.net/yinwenjie/article/details/47211551</a></p>
+<p><a href="https://ldap.com/ldap-dns-and-rdns/">https://ldap.com/ldap-dns-and-rdns/</a></p>
 </blockquote>
 
-<h2 id="toc_0"><a></a>1、概述</h2>
+<p>A distinguished name (usually just shortened to “DN”) uniquely identifies an entry and describes its position in the DIT. A DN is much like an absolute path on a filesystem, except whereas filesystem paths usually start with the root of the filesystem and descend the tree from left to right, LDAP DNs ascend the tree from left to right. For example, the DN “uid=john.doe,ou=People,dc=example,dc=com” represents an entry that is immediately subordinate to “ou=People,dc=example,dc=com” which is itself immediately subordinate to the entry “dc=example,dc=com”.</p>
 
-<p>上篇文章《架构设计：负载均衡层设计方案（6）——Nginx + Keepalived 构建高可用的负载层》(<a href="http://blog.csdn.net/yinwenjie/article/details/47130609">http://blog.csdn.net/yinwenjie/article/details/47130609</a>) 我们讲解了 Nginx 的故障切换，并且承诺各位读者会尽快讲解 LVS + Keepalived + Nginx 的安装和配置。在中间由于工作的原因，我又插写了三篇关于 zookeeper 的原理使用的文章。今天这边文章我们回归主题，为各位读者讲解 LVS + Keepalived + Nginx 的安装及配置。</p>
+<p>DNs are comprised of zero or more comma-separated components called relative distinguished names, or RDNs. For example, the DN “uid=john.doe,ou=People,dc=example,dc=com” has four RDNs:</p>
 
-<h2 id="toc_1"><a></a>2、安装计划和准备工作</h2>
+<ul>
+<li>  uid=john.doe</li>
+<li>  ou=People</li>
+<li>  dc=example</li>
+<li>  dc=com</li>
+</ul>
 
-<p>下图，我们表示了本篇文章要搭建的整个集成架构的抽象结构：</p>
+<p>Each RDN is comprised of name-value pairs. Every RDN must contain at least one pair (an attribute name followed by an equal sign and the value for that attribute), but you can include multiple name-value pairs in the same RDN by separating them with plus signs. For example, the RDN “cn=John Doe+telephoneNumber=+1 123-456-7890” has a “cn” value of “John Doe” and a “telephoneNumber” value of “+1 123-456-7890”. RDNs with multiple name-value pairs are called multivalued RDNs, and they are primarily used for cases in which it is not possible to guarantee that an RDN with a single component could be unique among entries at a given level of the hierarchy (e.g., there may be multiple users with a name of “John Doe” but they probably all have different telephone numbers).</p>
 
-<p><img src="https://img-blog.csdn.net/20150822113121644" alt=""/></p>
+<p>Note that even though each component of a DN is in itself an RDN, it is a common practice to refer to the leftmost component of an entry’s DN as the RDN for that entry, and to refer to the attributes included in that RDN component as naming attributes. So in the DN “uid=john.doe,ou=People,dc=example,dc=com”, the component “uid=john.doe” is often referred to as the RDN for that entry. The attribute name-value pairs in this leftmost component must be present in the entry (so the entry “uid=john.doe,ou=People,dc=example,dc=com” must contain a uid attribute with a value of “john.doe”).</p>
 
-<p>我们采用两个 LVS 节点（141 和 142），但是一个时间工作的只有一个 LVS 节点，另一个始终处于热备 standby 状态，由 keepalived 监控这两个节点的工作状态并完成切换。</p>
+<p>As previously noted, DNs can be comprised of zero or more components, which means that it is legal to have a DN without any components at all. This DN, whose string representation doesn’t have any characters, is often called the zero-length DN or the null DN. The null DN may be used to reference a special entry called the root DSE, which provides a lot of useful information about the directory server (e.g., the features supported by that server, the server software version, etc.). The root DSE will be described in more detail elsewhere.</p>
 
-<p>在 LVS 节点下，我们采用 LVS-DR 工作模式挂载了两个 Nginx 节点（131、132）。并最终将外网请求交由这两个节点进行处理。<strong>注意：在实际工作中，Nginx 下面一般就是访问静态资源、动态资源的配置了。</strong></p>
+<p>It’s also worth pointing out that there is no requirement for the topmost entry in an LDAP tree to contain a single component. For example, it is entirely legal for a directory server to be configured such that it has an entry with DN “dc=example,dc=com” but not an entry with DN “dc=com”. The DN of the entry that is at the top of an LDAP tree is called a naming context (or sometimes referred to as a suffix).</p>
 
-<h2 id="toc_2"><a></a>2-1、准备两个 keepalived 节点</h2>
+<p>Whenever a DN needs to be transferred in LDAP, that is generally done using its string representation. The string representation of a DN is simply the string representations of each of its RDNs, with each RDN separated by a comma. Usually, an RDN consists of an attribute type name (never including attribute options) followed by an equal sign and the string representation of the corresponding attribute value, with the plus sign used to separate the name-value pairs in a multivalued RDN. However, there are special cases in which it is necessary to escape one or more characters in an RDN. Some of those cases include:</p>
 
-<p>首先我们在将要安装 LVS 的两个节点上，先安装 keepalived，并保证这两个 keepalived 节点能够正常工作（监控批次的状态）。当然，您也可以先准备 LVS，在准备 keepalived。</p>
+<ul>
+<li><p>If a value starts or ends with a space, then that space character needs to be escaped. It can be escaped as either “<tt>&lt;/tt&gt; ” (i.e., a backslash followed by a space) or “<tt>\20</tt>” (i.e., a backslash followed by the digits two and zero, which is the hexadecimal representation of the ASCII character code for a space). Note that any space which occurs anywhere except the first or last character of a value does not need to be escaped (but it would be legal to escape it anyway).</p></li>
+<li><p>If a value starts with the octothorpe character (<tt>#</tt>), then that character needs to be escaped as either “<tt>#</tt>” or “<tt>\23</tt>”. Note that any occurrence of the octothorpe character that is not the first character of the value does not need to be escaped (but it would be legal to escape it anyway).</p></li>
+<li><p>All occurrences of the double quote character (<tt>&quot;</tt>) must be escaped as either “<tt>&quot;</tt>” or “<tt>\22</tt>”.</p></li>
+<li><p>All occurrences of the plus sign character (<tt>+</tt>) must be escaped as either “<tt>+</tt>” or “<tt>\2b</tt>”.</p></li>
+<li><p>All occurrences of the comma character (<tt>,</tt>) must be escaped as either “<tt>\,</tt>” or “<tt>\2c</tt>”.</p></li>
+<li><p>All occurrences of the semicolon character (<tt>;</tt>) must be escaped as either “<tt>\;</tt>” or “<tt>\3b</tt>”.</p></li>
+<li><p>All occurrences of the less-than character (<tt>&lt;</tt>) must be escaped as either “<tt>&lt;</tt>” or “<tt>\3c</tt>”.</p></li>
+<li><p>All occurrences of the greater-than character (<tt>&gt;</tt>) must be escaped as either “<tt>&gt;</tt>” or “<tt>\3e</tt>”.</p></li>
+<li><p>All occurrences of the backslash character (<tt>&lt;/tt&gt;) must be escaped as either “<tt>\</tt>” or “<tt>\5c</tt>”.</p></li>
+<li><p>Although it is not required, it is common for characters whose UTF-8 representation consists of multiple bytes (i.e., non-ASCII characters) to be escaped by placing a backslash character in front of the hexadecimal representation of each byte in the value. For example, the character “<tt>ñ</tt>” (a lowercase letter n with a tilde over it) could be escaped as “<tt>\c3\b1</tt>”.</p></li>
+<li><p>Although it is not common, it is entirely legal to escape any ASCII character with a backslash character followed by the two-digit hexadecimal representation for that character. For example, the character “<tt>a</tt>” could be escaped as “<tt>\61</tt>”.</p></li>
+</ul>
 
-<p>我想准备 keepalived 节点，大家应该轻车熟路了吧，在<a href="http://blog.csdn.net/yinwenjie/article/details/47130609#t5%20%E6%9E%B6%E6%9E%84%E8%AE%BE%E8%AE%A1%EF%BC%9A%E8%B4%9F%E8%BD%BD%E5%9D%87%E8%A1%A1%E5%B1%82%E8%AE%BE%E8%AE%A1%E6%96%B9%E6%A1%88%EF%BC%886%EF%BC%89%E2%80%94%E2%80%94Nginx%20+%20Keepalived%E6%9E%84%E5%BB%BA%E9%AB%98%E5%8F%AF%E7%94%A8%E7%9A%84%E8%B4%9F%E8%BD%BD%E5%B1%82">《架构设计：负载均衡层设计方案（6）——Nginx + Keepalived 构建高可用的负载层》</a>这篇文章中详细介绍了 keepalived 的最简配置方式。为了大家阅读方便，我们在这里再进行依次简要说明。准备 keepalived 的整个过程包括：</p>
+<p>The complete specification describing how to properly construct the string representation of an LDAP DN is contained in <a href="https://docs.ldap.com/specs/rfc4514.txt">RFC 4514</a>.</p>
 
-<ol>
-<li> 安装必要的支撑组件，源码安装 keepalived</li>
-<li> 将 keepalived 注册成节点的服务，以便保证 keepalived 在节点启动时就开始工作</li>
-<li> 更改 keepalived 的配置文件，让其可以正常工作</li>
-<li> 验证准备工作</li>
-</ol>
+<p>LDAP DNs may actually have multiple string representations. You can have any number of spaces around the commas separating RDN components. You can have any number of spaces around the equal signs separating RDN attributes from their values. You can have any number of spaces around the plus signs separating the elements of a multivalued RDN. The attributes in a multivalued RDN may appear in any order. You can use any kind of capitalization for attribute names. You can use the OID to reference an attribute instead of the attribute name, and some attributes may have multiple names. There may be multiple ways of representing some or all of the values of the RDN components (e.g., differences in capitalization may be considered insignificant). For example, all of the following are valid ways of representing the same DN:</p>
 
-<p>============= 安装 keepalived</p>
+<ul>
+<li>  dc=example,dc=com</li>
+<li>  dc=example, dc=com</li>
+<li>  dc = example , dc = com</li>
+<li>  DC=EXAMPLE,DC=COM</li>
+<li>  0.9.2342.19200300.100.1.25=Example,0.9.2342.19200300.100.1.25=Com</li>
+</ul>
 
-<pre><code>[root@lvs1 ~]# yum install -y zlib zlib-devel gcc gcc-c++ openssl openssl-devel openssh
-[root@lvs1 ~]# tar -zxvf keepalived-1.2.17.tar.gz
-[root@lvs1 ~]# cd keepalived-1.2.17
-[root@lvs1 ~]# ./configure --perfix=/usr/keepalived-1.2.17
-[root@lvs1 ~]# make &amp; make install 
-</code></pre>
-
-<p>============= 将 keepalived 注册成服务（如果您使用的默认路径安装，就不需要 cp 命令了）</p>
-
-<pre><code>[root@lvs1 ~]# cp /usr/keepalived-1.2.17/etc/sysconfig/keepalived  /etc/sysconfig/keepalived 
-[root@lvs1 ~]# cp /usr/keepalived-1.2.17/sbin/keepalived /usr/sbin/keepalived
-[root@lvs1 ~]# cp /usr/keepalived-1.2.17/etc/rc.d/init.d/keepalived  /etc/rc.d/init.d/keepalived
-[root@lvs1 ~]# mkdir /etc/keepalived
-[root@lvs1 ~]# cp /usr/keepalived-1.2.17/etc/keepalived/keepalived.conf /etc/keepalived/keepalived.conf
-[root@lvs1 ~]# 可以做成服务了（不要拷贝，没用的）
-[root@lvs1 ~]# chkconfig keepalived on
-</code></pre>
-
-<p>做成服务后，先不要急着启动，因为配置文件还没有改好。<br/>
-======== 配置 keepalived（配置文件在：/etc/keepalived/keepalived.conf）</p>
-
-<pre><code>! Configuration File for keepalived
-
-global_defs {
-   #notification_email {
-   #  acassen@firewall.loc
-   #  failover@firewall.loc
-   #  sysadmin@firewall.loc
-   #}
-   #notification_email_from Alexandre.Cassen@firewall.loc
-   #smtp_server 192.168.200.1
-   #smtp_connect_timeout 30
-   router_id LVS_DEVEL
-}
-
-vrrp_instance VI_1 {
-    #141节点设置为MASTER，142或者还有其他的节点设置为BACKUP
-    #还记得我们前面文章讲到的无抢占设置吗？这里也可以用哦。
-    state MASTER
-    #网络适配器名称
-    interface eth0
-    virtual_router_id 51
-    #所有的SLAVE节点的优先级都要比这个设置值低
-    priority 120
-    advert_int 1
-    #真实ip，142要改成相应的lvs节点真实ip
-    mcast_src_ip=192.168.220.141
-    authentication {
-        auth_type PASS
-        auth_pass 1111
-    }
-    #虚拟/浮动IP
-    virtual_ipaddress {
-        192.168.220.140
-    }
-}
-</code></pre>
-
-<p>以上配置还是最简单的 keepalived 配置，因为我们还没有加上配合 LVS 使用的虚拟 ip 监测设置和下层真实 ip 监测的设置。最简配置主要是为了保证 keepalived 节点是工作正常的。</p>
-
-<p><strong>将以上的配置分别对应到 LVS 的两个节点（注意要改动的地方哦）</strong></p>
-
-<p>========== 进行 keepalived 工作状态的检查：</p>
-
-<pre><code>[root@lvs1 ~]# /etc/init.d/keepalived start
-</code></pre>
-
-<p>现在设置为 MASTER 的 keepalived 节点（或者在非抢占模式下，优先级最高的那个节点），已经绑定了 140 这个虚拟 ip 了：</p>
-
-<pre><code>[root@lvs2 ~]# ip addr
-1: lo: &lt;LOOPBACK,UP,LOWER_UP&gt; mtu 16436 qdisc noqueue state UNKNOWN 
-    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00
-    inet 127.0.0.1/8 scope host lo
-    inet6 ::1/128 scope host 
-       valid_lft forever preferred_lft forever
-2: eth0: &lt;BROADCAST,MULTICAST,UP,LOWER_UP&gt; mtu 1500 qdisc pfifo_fast state UP qlen 1000
-    link/ether 00:0c:29:39:75:9f brd ff:ff:ff:ff:ff:ff
-    inet 192.168.220.141/24 brd 192.168.220.255 scope global eth0
-    inet 192.168.220.140/32 scope global eth0
-    inet6 fe80::20c:29ff:fe39:759f/64 scope link 
-       valid_lft forever preferred_lft forever
-</code></pre>
-
-<p>当然您也可以通过 /var/log/message 的日志进行 keepalived 是否正常工作的验证。</p>
-
-<h2 id="toc_3"><a></a>2-2、继续两个 keepalived 节点上准备 LVS</h2>
-
-<p>准备 lvs 的工作就太简单了，因为 centos6.4、6.5、6.6 都已经集成了 LVS 的核心，我们只需要安装 LVS 的管理工具就行了：</p>
-
-<p>两个 LVS 节点都执行：</p>
-
-<pre><code>yum -y install ipvsadm
-</code></pre>
-
-<p>还记得 lvs 管理工具怎么使用吗？请参见我介绍 LVS 单节点安装的博文：<a href="http://blog.csdn.net/yinwenjie/article/details/47010569%20%E6%9E%B6%E6%9E%84%E8%AE%BE%E8%AE%A1%EF%BC%9A%E8%B4%9F%E8%BD%BD%E5%9D%87%E8%A1%A1%E5%B1%82%E8%AE%BE%E8%AE%A1%E6%96%B9%E6%A1%88%EF%BC%885%EF%BC%89%E2%80%94%E2%80%94LVS%E5%8D%95%E8%8A%82%E7%82%B9%E5%AE%89%E8%A3%85">《架构设计：负载均衡层设计方案（5）——LVS 单节点安装》</a>。这里为了方便阅读，给出主要参数的含义列表：</p>
-
-<pre><code>-A –add-service 在内核的虚拟服务器表中添加一条新的虚拟服务器记录。也就是增加一台新的虚拟服务器。
--E –edit-service 编辑内核虚拟服务器表中的一条虚拟服务器记录。
--D –delete-service 删除内核虚拟服务器表中的一条虚拟服务器记录。
--C –clear 清除内核虚拟服务器表中的所有记录。
--R –restore 恢复虚拟服务器规则
--S –save 保存虚拟服务器规则，输出为-R 选项可读的格式
--a –add-server 在内核虚拟服务器表的一条记录里添加一条新的真实服务器记录。也就是在一个虚拟服务器中增加一台新的真实服务器
--e –edit-server 编辑一条虚拟服务器记录中的某条真实服务器记录
--d –delete-server 删除一条虚拟服务器记录中的某条真实服务器记录
--L –list 显示内核虚拟服务器表
--Z –zero 虚拟服务表计数器清零（清空当前的连接数量等）
-–set tcp tcpfin udp 设置连接超时值
-–start-daemon 启动同步守护进程。他后面可以是master 或backup，用来说明LVS Router 是master 或是backup。在这个功能上也可以采用keepalived 的VRRP 功能。
-–stop-daemon 停止同步守护进程
--t –tcp-service service-address 说明虚拟服务器提供的是tcp 的服务[vip:port] or [real-server-ip:port]
--u –udp-service service-address 说明虚拟服务器提供的是udp 的服务[vip:port] or [real-server-ip:port]
--f –fwmark-service fwmark 说明是经过iptables 标记过的服务类型。
--s –scheduler scheduler 使用的调度算法，选项：rr|wrr|lc|wlc|lblc|lblcr|dh|sh|sed|nq, 默认的调度算法是： wlc.
--p –persistent [timeout] 持久稳固的服务。这个选项的意思是来自同一个客户的多次请求，将被同一台真实的服务器处理。timeout 的默认值为300 秒。
--M –netmask netmask persistent granularity mask
--r –real-server server-address 真实的服务器[Real-Server:port]
--g –gatewaying 指定LVS 的工作模式为直接路由模式DR模式（也是LVS默认的模式）
--i –ipip 指定LVS 的工作模式为隧道模式
--m –masquerading 指定LVS 的工作模式为NAT 模式
--w –weight weight 真实服务器的权值
-–mcast-interface interface 指定组播的同步接口
-–connection 显示LVS 目前的连接 如：ipvsadm -L -c
-–timeout 显示tcp tcpfin udp 的timeout 值 如：ipvsadm -L –timeout
-–daemon 显示同步守护进程状态
-–stats 显示统计信息
-–rate 显示速率信息
-–sort 对虚拟服务器和真实服务器排序输出
-–numeric -n 输出IP 地址和端口的数字形式
-</code></pre>
-
-<p>到后面正式启动 LVS 的时候，就不要问我参数含义咯。<sup>_^</sup></p>
-
-<h2 id="toc_4"><a></a>2-3、准备两个 Nginx 节点并保证可用</h2>
-
-<p>在《架构设计：负载均衡层设计方案（5）——LVS 单节点安装》(<a href="http://blog.csdn.net/yinwenjie/article/details/47010569">http://blog.csdn.net/yinwenjie/article/details/47010569</a>) 这篇文章中，我们详细讲解了 Nginx 节点的准备工作，但是为了方便各位读者阅读，这里我们大致再讲一下。</p>
-
-<p>Nginx 节点的准备工作主要由以下步骤构成（这个不是本文的重点，点到即可）：</p>
-
-<ol>
-<li> 安装 Nginx（当然，正式系统中，还涉及到 Nginx 的参数调优，可以参见<a href="http://blog.csdn.net/yinwenjie/article/details/46620711#t7%20%E6%9E%B6%E6%9E%84%E8%AE%BE%E8%AE%A1%EF%BC%9A%E8%B4%9F%E8%BD%BD%E5%9D%87%E8%A1%A1%E5%B1%82%E8%AE%BE%E8%AE%A1%E6%96%B9%E6%A1%88%EF%BC%882%EF%BC%89%E2%80%94%E2%80%94Nginx%E5%AE%89%E8%A3%85">《架构设计：负载均衡层设计方案（2）——Nginx 安装》这篇文章</a>）</li>
-<li> 打开 Nginx 所在服务器的 “路由” 功能、关闭 “ARP 查询” 功能</li>
-<li> 将 VIP：192.168.220.140 设置成 Nginx 所在节点的回环 IP</li>
-</ol>
-
-<p>============= 安装 Nginx</p>
-
-<pre><code>[root@vm1 ~]# yum -y install make zlib zlib-devel gcc gcc-c++ ssh libtool
-[root@vm1 ~]# 下载nginx（别拷贝，不能执行的）
-[root@vm1 ~]# 解压nginx（别拷贝，不能执行的）
-[root@vm1 ~]# ./configure –prefix=/usr/nginx-1.8.0 
-[root@vm1 ~]# make &amp;&amp; make install 
-[root@vm1 ~]# 设置环境变量（别拷贝，不能执行的）
-[root@vm1 ~]# 启动nginx
-</code></pre>
-
-<p>============= 打开 Nginx 所在服务器的 “路由” 功能、关闭 “ARP 查询” 功能</p>
-
-<pre><code>[root@vm1 ~]# echo &quot;1&quot; &gt;/proc/sys/net/ipv4/conf/lo/arp_ignore
-[root@vm1 ~]# echo &quot;2&quot; &gt;/proc/sys/net/ipv4/conf/lo/arp_announce
-[root@vm1 ~]# echo &quot;1&quot; &gt;/proc/sys/net/ipv4/conf/all/arp_ignore
-[root@vm1 ~]# echo &quot;2&quot; &gt;/proc/sys/net/ipv4/conf/all/arp_announce
-</code></pre>
-
-<p>============= 设置回环 IP</p>
-
-<pre><code>[root@vm1 ~]# ifconfig lo:0 192.168.220.140 broadcast 192.168.220.140 netmask 255.255.255.255 up
-[root@vm1 ~]# route add -host 192.168.220.140 dev lo:0
-</code></pre>
-
-<p>两台 Nginx 的节点都按照这样的方法去设置。然后使用浏览器，看看这两个节点的 Nginx 是否工作正常：</p>
-
-<p><img src="https://img-blog.csdn.net/20150822115708460" alt=""/></p>
-
-<h1 id="toc_5"></h1>
-
-<p><img src="https://img-blog.csdn.net/20150822115814724" alt=""/></p>
-
-<h2 id="toc_6"><a></a>2-4、其他说明</h2>
-
-<p>keepalived 和 LVS 是天生配合完美的一对，<strong>LVS 负责进行请求转发不负责任何节点的健康监测；keepalived 负责监控整个环境中，包括虚拟 ip，真实 ip 对应的下层节点的健康状态监测</strong>。</p>
-
-<h2 id="toc_7"><a></a>3、开始配置：LVS-DR 工作模式</h2>
-
-<h2 id="toc_8"><a></a>3-1、keepalived 的更改——健康监测</h2>
-
-<p>首先我们要更改之前配置的 “最简 keepalived” 配置，让 keepalived 能够对结构中所有节点和虚拟 ip 的健康状态进行监测。更改配置和含义如下：</p>
-
-<pre><code>! Configuration File for keepalived
-
-global_defs {
-   #notification_email {
-   #  acassen@firewall.loc
-   #  failover@firewall.loc
-   #  sysadmin@firewall.loc
-   #}
-   #notification_email_from Alexandre.Cassen@firewall.loc
-   #smtp_server 192.168.200.1
-   #smtp_connect_timeout 30
-   router_id LVS_DEVEL
-}
-
-vrrp_instance VI_1 {
-    #141节点设置为MASTER，142或者还有其他的节点设置为BACKUP
-    #还记得我们前面文章讲到的无抢占设置吗？这里也可以用哦。
-    state MASTER
-    #网络适配器名称
-    interface eth0
-    virtual_router_id 51
-    #所有的SLAVE节点的优先级都要比这个设置值低
-    priority 120
-    advert_int 1
-    #真实ip，142要改成相应的lvs节点真实ip
-    mcast_src_ip=192.168.220.141
-    authentication {
-        auth_type PASS
-        auth_pass 1111
-    }
-    #虚拟/浮动IP
-    virtual_ipaddress {
-        192.168.220.140
-    }
-}
-
-virtual_server 192.168.220.140 80 {
-    #健康时间检查，单位秒
-    delay_loop 6
-    #负载均衡调度算法wlc|rr，和您将使用的LVS的调度算法保持原则一致
-    lb_algo rr
-    #负载均衡转发规则 DR NAT TUN。和您将启动的LVS的工作模式设置一致
-    lb_kind DR
-    #虚拟地址的子网掩码
-    nat_mask 255.255.255.0
-    #会话保持时间，因为我们经常使用的是无状态的集群架构，所以这个设置可有可无
-    #persistence_timeout 50
-    #转发协议，当然是TCP
-    protocol TCP
-
-    #真实的下层Nginx节点的健康监测
-    real_server 192.168.220.131 80 {
-        #节点权重，
-        weight 10
-        #设置检查方式，可以设置HTTP_GET | SSL_GET
-        HTTP_GET {
-            url {
-              path /
-              digest ff20ad2481f97b1754ef3e12ecd3a9cc
-            }
-            #超时时间，秒。如果在这个时间内没有返回，则说明一次监测失败
-            connect_timeout 3
-            #设置多少次监测失败，就认为这个真实节点死掉了
-            nb_get_retry 3
-            #重试间隔
-            delay_before_retry 3
-        }
-    }
-
-    real_server 192.168.220.132 80 {
-        weight 10
-        HTTP_GET {
-            url {
-              path /
-              digest 640205b7b0fc66c1ea91c463fac6334d
-            }
-            connect_timeout 3
-            nb_get_retry 3
-            delay_before_retry 3
-        }
-    }
-}
-</code></pre>
-
-<p>这样一来，keepalived 就可以检查整个架构中的所有节点状态了。<strong>另外要说明的是，这个检查过程并不是必须的，您使用 keepalived 的最简配置也是可以的，不过您就需要自己写监测脚本了（道理是一样的）</strong>。</p>
-
-<h2 id="toc_9"><a></a>3-2、启动两个 LVS 节点</h2>
-
-<p>启动 LVS 的过程就太简单了（两个节点都是一样的启动方式）：</p>
-
-<pre><code>[root@lvs2 ~]# ipvsadm -C
-[root@lvs2 ~]# ipvsadm -At 192.168.220.140:80 -s rr 
-[root@lvs2 ~]# ipvsadm -at 192.168.220.140:80 -r 192.168.220.131 -g
-[root@lvs2 ~]# ipvsadm -at 192.168.220.140:80 -r 192.168.220.132 -g
-[root@lvs2 ~]# 然后我们可以使用ipvsadm 监控目前LVS的状态
-[root@lvs2 ~]# ipvsadm
-</code></pre>
-
-<p><strong>注意：处于 standby 的 lvs1 节点也要这样进行设置。</strong><br/>
-<strong>还有，以上的 LVS 的设置，和 real server 上的设置，在重启后都会消失，所以一定要做成脚本哦。</strong></p>
-
-<h2 id="toc_10"><a></a>4、验证工作</h2>
-
-<p>这样 LVS + Keepalived + Nginx 方式的配置就做完了。现在我们进行搭建效果的监测：</p>
-
-<h2 id="toc_11"><a></a>4-1、验证 Master-LVS 节点的工作</h2>
-
-<p>我们使用两个不同的浏览器，验证 Master-LVS 节点的工作：</p>
-
-<p>========= 浏览器 1：<br/>
-<img src="https://img-blog.csdn.net/20150822160827352" alt=""/></p>
-
-<p>========= 浏览器 2：<br/>
-<img src="https://img-blog.csdn.net/20150822160919601" alt=""/></p>
-
-<p>看来 140 这个 VIP 下的 LVS 工作是正常的。</p>
-
-<h2 id="toc_12"><a></a>4-2、验证 Master-LVS 节点停止后的效果</h2>
-
-<p>下面我们停止 Master-LVS1：</p>
-
-<pre><code>[root@lvs2 ~]# service keepalived stop
-</code></pre>
-
-<p>在经历了一些访问停顿后，浏览器 1 显示的效果如下（这就是为什么 keepalived 最好设置为非抢占模式）：</p>
-
-<p><img src="https://img-blog.csdn.net/20150822161511700" alt=""/></p>
-
-<h2 id="toc_13"><a></a>5、后文介绍</h2>
-
-<p>好了，到这里负载均衡层所使用的几个标准工具就介绍完了。下一篇文章我们将进行总结，然后进入架构设计：业务层设计方案 的系列文章。在下一个系列文章中，我们将介绍至少两套 SOA 的实现、至少两套系统间通信使用的消息队列。哦，应我朋友的要求，我会专门写几篇文章，介绍 java 中线程的基础知识和进阶知识。</p>
+<p>You must therefore be careful to take all of these things into account when trying to compare DNs, and you should avoid using simple string comparisons. Most LDAP client APIs offer some mechanism for comparing DNs (e.g., to determine whether they are equal, or to determine whether they are hierarchically related) or to generate some kind of “normalized” representation of a DN (e.g., with all extraneous spaces removed, with all case-insensitive characters converted to either all lowercase or all uppercase, etc.) that can be more safely compared using simple string processing. Note, however, that even these methods are not necessarily safe unless the client is able to use schema information retrieved from the server (e.g., so that it can learn all of the names and OIDs for the attribute types, and the syntaxes and matching rules for the attribute values).</p>
 
                         
                       </div>
@@ -472,7 +172,7 @@ virtual_server 192.168.220.140 80 {
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/6/28</span>
+                    <span class="date">2018/9/12</span>
                     <span>posted in&nbsp;</span> 
           				  
           					    <span class="posted-in"><a href='Network.html'>Network</a></span>
@@ -565,31 +265,31 @@ virtual_server 192.168.220.140 80 {
 	      
 		      
 			      <li class="post">
-			        <a href="15459058392039.html">Reliable Domain Events</a>
+			        <a href="15517999043443.html">The Art of Crafting Architectural Diagrams</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
+			        <a href="15517997955971.html">为什么说我们需要软件架构图？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
+			        <a href="15516128677869.html">DNS Servers That Offer Privacy and Filtering</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
+			        <a href="15516123108194.html">Airbnb's Migration from Monolith to Services</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
+			        <a href="15516097487470.html">Events As First-Class Citizens</a>
 			      </li>
 		     
 		  

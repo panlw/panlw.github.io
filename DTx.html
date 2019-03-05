@@ -105,234 +105,136 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15459058392039.html">
+                <a class="clearlink" href="15476537234880.html">
                 
-                  <h1>Reliable Domain Events</h1>
+                  <h1>我说分布式事务之消息最终一致性事务（一）：原理及实现</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
-                        	<pre><code>Written on April 23, 2016
+                        	<pre><code>SnoWalker  程序猿DD  2019-01-09
 </code></pre>
 
 <blockquote>
-<p>原文地址 <a href="http://pillopl.github.io/reliable-domain-events/">http://pillopl.github.io/reliable-domain-events/</a></p>
+<p>原文地址 <a href="https://mp.weixin.qq.com/s/gL3LSkxzZ7I97zXvPs6r6Q">https://mp.weixin.qq.com/s/gL3LSkxzZ7I97zXvPs6r6Q</a></p>
 </blockquote>
 
-<p>We already know that domain events are a great tool to integrate different parts of your system (so called bounded contexts) and decouple them. Instead of directly calling outside component, we can notify our infrastructure, which in turn informs interested parties about what has just occurred. This another form of <strong>Inversion of Control</strong> helps us to achieve our goal. Consider following piece of code:</p>
+<p>在之前的文章中，我们已经学习总结了分布式事务的两种解决方案。</p>
 
-<pre><code>    class User {
+<ul>
+<li><p><a href="http://mp.weixin.qq.com/s?__biz=MzAxODcyNjEzNQ==&amp;mid=2247486503&amp;idx=2&amp;sn=dc399f739638bcde958a5e8b4f08cb06&amp;chksm=9bd0a1bfaca728a95303998df4f52e58565f8aa0974e4f1d649939027f0faee7b7131cbba0e6&amp;scene=21#wechat_redirect">我说分布式事务之 TCC</a></p></li>
+<li><p><a href="http://mp.weixin.qq.com/s?__biz=MzAxODcyNjEzNQ==&amp;mid=2247486519&amp;idx=2&amp;sn=76c3c8f0bc1fd40986d68b8c45110a17&amp;chksm=9bd0a1afaca728b932eb2947866ac8651bf20700bd3be8f206491ae7d89f408e1f388da00495&amp;scene=21#wechat_redirect">我说分布式事务之最大努力通知型事务</a></p></li>
+</ul>
 
-        //...
+<p>本文我们将学习到另一种常见的柔性事务解决方案：消息一致性事务方案。</p>
 
-        @Transactional
-        public void register(LocalDateTime at, RegisteredBy by) {
-            markRegistered();
-            markSuspiciousIfAtNight(at);
-            DomainEventsPublisher.publish(new UserRegistered(this.id(), at));
-        }
+<p>对于 TCC 型事务，跨系统的调用均是基于服务间的直接调用，即很大程度上是同步调用。基于 TCC 方案能够保证主子事务同时成功，同时失败。</p>
 
-    }
+<p>但实际开发中，由于多方面的考虑，我们会将服务拆分为异步方式，一般是基于 MQ 进行服务间的解耦，服务发起方执行完本地业务操作后发送一条消息给到消息中间件（比如：RocketMQ、RabbitMQ、Kafka、ActiveMQ 等），被动方服务从 MQ 中消费该消息并进行业务处理，从而形成业务上的闭环。</p>
 
-    public class UserRegistered implements DomainEvent {
+<p>这种场景下，我们还是希望异步的多个业务操作同时成功，同时失败，基于 TCC 的同步型事务解决方案就不可行了，这时就需要祭出可靠消息最终一致性方案。</p>
 
-        private final UserRegistered userId;
-        private final LocalDateTime at;
+<h2 id="toc_0">实现可靠消息服务</h2>
 
-        //getters, constructor
+<p>首先按照惯例我们先看一下该方案的简略的结构图，如下</p>
 
-    }
+<p><img src="https://mmbiz.qpic.cn/mmbiz_png/R3InYSAIZkHGYqZ3fCnFjDyZHjhyc1ibEAfYgkSceZjMsK5niaybTbBLuQ3Zia75vlMUXdFDTgibLbJYtbFibdJEIyg/640?wx_fmt=png" alt=""/></p>
 
-    class DomainEventsPublisher {
+<h3 id="toc_1"><strong>核心流程 1：上游投递消息</strong></h3>
 
-        //...
+<p>基于上图，我们分析一下如果要实现一个可靠消息一致性的服务，需要实现哪些功能，要走哪些流程。</p>
 
-        private final Register handlersRegistry;
+<p>调用开始，业务主动方（之后称为主动方）预先发送一条消息到消息服务（图中中间的部分）中，消息中包含后续的业务操作所必须的业务参数，消息服务接收到该消息后存储消息到消息存储中，并设置消息状态为 <strong>“待确认”</strong>。</p>
 
-        public static void publish(DomainEvent event) {
-            handlersRegistry
-                .getHandlers(event.getClass())
-                .forEach(handler -&gt; handler.handle(event));
-        }
+<p>如果消息存储失败则直接返回消息持久化失败，本次业务操作结束。</p>
 
-    }
+<p>当主动方接收到消息存储结果后，开始执行本地的业务操作，根据本地事务提交的结果，调用消息服务的接口。这里分为两种状态：</p>
 
-    class SendCommunicationOnUserRegistered implements DomainEventHandler&lt;UserRegistered&gt; {
+<ol>
+<li><p>如果本地事务执行成功，就调用消息服务确认消息状态，更新为 <strong>待发送</strong>。</p></li>
+<li><p>如果本地事务执行失败，就调用消息服务删除消息（一般是逻辑删除，更新消息状态为 <strong>已回滚</strong>）</p></li>
+</ol>
 
-    @Override
-    public void handle(UserRegistered event) {
-        Communication c = sendRegistrationEmail(event.getUserId());
-        storeCommunication(c);
-    }
+<blockquote>
+<p>当状态为第 1 种，消息服务就将该消息发送到 MQ 中，并更新消息状态为 <strong>“已发送”</strong>。</p>
+</blockquote>
 
-</code></pre>
+<p><strong>注意</strong>：对于消息状态的更新和投递消息到 MQ 中间件的操作应在同一个方法中，并开启本地事务。为什么要这么做呢？</p>
 
-<p>There is a big problem with this simple <strong>Observer</strong> pattern in above example. Namely, everything happens in the same database transaction, which has started at the time of calling <u>register</u> method. This has several implications. First of all, we did not decouple user registration from e-mail sending and we just have mentioned this is what domain events are for. If our mail server is down, registration fails. Why would our user care about an email? He correctly filled registration form and does not even know there is an email coming.</p>
+<p>因为我们的目的是：保证消息发送和本地事务同时成功同时失败。</p>
 
-<p>From the <strong>use case</strong> point of view, sending an email should not imply successful invocation. Secondly, even though it looks like the code deals only with users (it registers and marks as suspicious when needed), it modifies another aggregate - communications (communication would be probably modeled as a Generic Subdomain, but to simplify things consider it as another bounded context). The rule of thumb says that we should not modify several aggregates in one transaction, because these concepts should not be so directly related. Sending an email (or any other action done as a consequence of registering user) may take a lot of time, do I/O calls, etc.</p>
+<p>这里还是有两种情况：</p>
 
-<p>But things get worse. Consider situation when everything was fine with our mail server, we want to save user to database and something fails and transaction rollbacks. Now we have a big problem, because confused user got error page as a response, but seconds later successful email with registration greetings.</p>
+<ol>
+<li><p>如果更新消息状态失败，则应当抛出异常回滚事务，不投递消息到 MQ 中。</p></li>
+<li><p>如果投递 MQ 失败，（需要捕获异常），需要主动抛出异常触发本地事务回滚。</p></li>
+<li><p>1.2 要同时成功同时失败</p></li>
+</ol>
 
-<p>This clearly shows that those concepts should be unrelated. One may come with an idea to fire all handlers asynchronously (so outside current transaction) but that solves only one issue: we could register users when we cannot send emails. We need something better. Fortunately, we can fire our emails just after transaction commit. Thus, we are sure everything was fine during registration and without doubts we can send the welcoming message. Spring gives us possibility to do that in a few lines of code with <a href="http://docs.spring.io/spring/docs/3.0.6.RELEASE_to_3.1.0.BUILD-SNAPSHOT/3.0.6.RELEASE/org/springframework/transaction/support/TransactionSynchronizationManager.html">TransactionSynchronizationManager</a>:</p>
+<blockquote>
+<p>当状态是第 2 种，即本地事务执行失败</p>
+</blockquote>
 
-<pre><code>    class DomainEventsPublisher {
+<p>业务主动方需要调用可靠消息事务的删除消息操作，消息服务从消息持久化存储中删除该消息（设置消息状态为<strong>已回滚</strong>）</p>
 
-        //...
+<h3 id="toc_2"><strong>核心流程 2：被动方应用接收消息</strong></h3>
 
-        public static void publish(DomainEvent event) {
-            handlersRegistry
-                .getHandlers(event.getClass())
-                .forEach(handler -&gt; handleAsynchronously(event, handlers));
-        }
+<p>被动方服务订阅主题后只需要等待 MQ 投递消息即可。</p>
 
-        private static void handleAsynchronously(DomainEvent event, DomainEventHandler handler) {
-            if (TransactionSynchronizationManager.isActualTransactionActive()) {
-                processAfterCommit(event, handler);
-            } else {
-                processNow(event, handler);
-            }
-        }
+<p>当消息投递，被动方服务消费该消息并执行本地业务操作，当本地业务执行成功，被动方服务调用消息服务，返回本地业务执行成功。</p>
 
-        private static void processNow(final DomainEvent event, DomainEventHandler handler) {
-            handler.handle(event);
-        }
+<p>可靠消息服务根据业务唯一参数（订单号结合消息 id）设置消息状态为 <strong>“已完成”</strong></p>
 
-        private static void processAfterCommit(final DomainEvent event, DomainEventHandler handler) {
-            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronizationAdapter() {
-                @Override
-                public void afterCommit() {
-                    handler.handle(event);
-                }
-            });
-        }
-   }
+<p>整个过程中，作为被动方服务需要尽最大努力将业务向最终状态推进，最终成功或者失败并通知消息服务置消息状态为完成的终态。</p>
 
-</code></pre>
+<h3 id="toc_3"><strong>1. 如何保证消息不丢失–即保证消息可靠投递</strong></h3>
 
-<p></p></p>
+<p>这里分为多种情况进行讨论。</p>
 
-<p>This example could be simplified with Spring 4.2 and <a href="http://docs.spring.io/spring/docs/current/spring-framework-reference/htmlsingle/#transaction-event">@TransactionalEventListener</a>. Thanks to this code, we are fine with cause and effect relationship. Taking advantage of java memory model nomenclature: we know that successful registration <strong>happens before</strong> sending an email. One may argue that there is a slight window of time when we are not consistent. As stated at the beginning, we don&#39;t need to be consistent when working with several bounded context. The important is that they will be <strong>eventually consistent</strong>. Anyway, we still did not solve the problem with unresponsive mail server. When it fails, the information is lost. We can implement something which will retry this operation with a reasonable back-off, but when our application crashes, we still don&#39;t have any mean to recover to former state. We need to deal with that issue.</p>
+<p>开始阶段，主动方应用提交 <strong>待确认</strong> 消息时出错，此时主动方会直接感知到提交失败，业务直接返回失败，不处理后续的流程</p>
 
-<p>It gets clearer that we need to store somewhere the <strong>intent</strong> of sending the email. The intent was of course <u>UserRegistered</u> event. By exposing this intent to for example JMS infrastructure, we can implement the retry mechanism. We can go further and store any event coming from a given bounded context. Repository of all domain events is in fact called <strong>Event Store</strong>. Below example contains code that serializes events to JSON and publishes them to JMS. We could publish them anywhere else, for example to a file on a local disk or to an Akka actor.</p>
+<p>主动方应用执行完成本地事务之后，通知可靠消息服务确认或者删除消息阶段，出了问题：例如通知可靠消息服务失败、本地业务执行异常、可靠消息接收到提交请求后投递消息到 MQ 中失败等问题，如何解决？</p>
 
-<pre><code>class ExternalEventStore {
+<blockquote>
+<p>这类情况即出现业务卡在中间态，其实没关系，因为此时消息持久化状态会一直处于 <strong>“待确认”</strong> 状态。</p>
+</blockquote>
 
-    //...
+<p>对于这种情况，我们只需要在可靠消息服务后台开启一个定时任务，定时扫描 <strong>“待确认”</strong> 状态的中间状态消息，当消息处于 <strong>“待确认”</strong> 状态，表明主动方应用已经开始执行本地业务操作，但业务状态未知，因此我们需要对主动方本地业务执行进行回查操作。</p>
 
-    private final ProducerTemplate producerTemplate;
-    private final ObjectMapper objectMapper = new ObjectMapper();
+<p>这个阶段我们要在主动方应用中暴露一个回调查询接口，可靠消息服务会调用该接口，根据消息中的业务参数回查本地事务执行状态。如果主动方业务返回执行成功，则表明当前消息可以投递，此时可靠消息服务更新消息状态为 <strong>“待发送”</strong>，同时投递消息到 MQ，并更新消息状态为 <strong>已发送</strong>。</p>
 
-    void publish(DomainEvent event) throws JsonProcessingException {
-        final String body = objectMapper.writeValueAsString(event);
-        producerTemplate.sendBody(&quot;queue.url&quot;, InOnly, body);
-    }
-}
+<p>如果，可靠消息服务（通过回查接口）询问主动方业务执行结果，返回执行失败，那么可靠消息服务需要删除该消息（逻辑删除，设置消息状态为<strong>已回滚</strong>）。</p>
 
-</code></pre>
+<p>通过上述的流程，我们可以保证可靠消息服务一定会努力尝试完成消息到 MQ 的投递过程，即主动方业务执行与消息发送一定同时成功，同时失败。</p>
 
-<p>We could invoke <u>ExternalEventStore</u> from our <u>handleNow</u> method from previous example and make some other component consume those messages and send emails. But that would be just delegating the problem from mail server to another part of infrastructure - our queue. Putting a message to a queue might fail and the message would be lost. Moreover, our application can fail somewhere in between commit and invoking this asynchronous transaction listener. We also cannot move this code back to the transaction, because that would make us stuck at the beginning of our problem and queue failures would result in our users not being able to register.</p>
+<h3 id="toc_4"><strong>2. 如何保证消息不丢失–业务被动方对消息 100% 接收成功</strong></h3>
 
-<p>We have to develop a consistent solution in which an <strong>occurrence of an event reflects that it really happened in our system</strong>. Also <strong>when it really happens, it should be followed by an event</strong>. In other words, those two statements should be in bi-conditional logical connective.</p>
+<p>如果消息投递成功，但业务被动方消费消息出现问题，如：消费失败、未收到消息投递（传说中的丢消息）等，该如何处理呢？</p>
 
-<p>The problem is that our JMS component is not backed by the same data source as our domain model. One solution is to use global transaction and two-phase commits. The problem is that it might decrease performance significantly. Plus, not every part of our infrastructure must support that mechanism. More clever idea is to share the same data source for our messaging infrastructure and domain model (if those two parts support this kind of data soure). The side effect here is that we need to share the same schema, which might not be the nicest solution.</p>
+<p>因为 “未收到消息投递” 的情况在消息服务高可用的情况下机会不会出现，而消费失败是业务级别的异常，因此我们同样可以采用在可靠消息服务后台起定时任务的方式，检查消息状态。</p>
 
-<p>In my opinion the best option is to translate our events to our domain model storage and save them in the same transaction. Later on, another pool of threads should process them and publish somewhere else. Now our event store would look as follows:</p>
+<p>对长时间处于 <strong>“已发送”</strong> 未变更状态为 <strong>“已完成”</strong> 的消息进行重新投递操作，这个扫描的时间我们要根据业务执行时间自行调整，比如：1min。</p>
 
-<pre><code>
-public class InternalEventStore {
+<p>对这类型消息重新投递到 MQ 之后，MQ 会推送消息给消费方重新进行业务的处理操作。这个过程要在业务层实现消费的 <strong>幂等性</strong>，保证同一条消息在多次投递之后，只会进行一次完整的业务逻辑处理。关于幂等性，可以参考这篇文章 <strong><a href="http://mp.weixin.qq.com/s?__biz=MzAxODcyNjEzNQ==&amp;mid=2247486580&amp;idx=1&amp;sn=7b97af5b67ae020ef285be3b76c630a3&amp;chksm=9bd0a1ecaca728facb97015874ee4f4b34303545870eed544ad29caa6dde9b2acb17ce8baa5d&amp;scene=21#wechat_redirect">幂等的实现方案</a></strong>, 后续我也会针对业务层的幂等性写一篇文章出来。</p>
 
-    //...
+<blockquote>
+<p>整个流程中，从消息的发送，到消息的消费阶段都能保证消息与本地事务执行状态一致，即使上下游会有短暂的状态不一致，在经过一个处理的时间窗口之后，在全局上，数据能够实现最终一致性。</p>
+</blockquote>
 
-    private final ObjectMapper eventSerializer;
-    private final SessionFactory sessionFactory;
+<h2 id="toc_5">阶段小结</h2>
 
-    void store(DomainEvent event) throws JsonProcessingException  {
-        session().save(serialized(event));
-    }
+<p>在上文，我从原理及业务上，分析了如何基于已有的消息中间件实现可靠消息服务，并实现基于可靠消息的最终一致性。</p>
 
-    private PersistentEvent serialized(DomainEvent event) throws JsonProcessingException   {
-        return new PersistentEvent(eventSerializer.writeValueAsString(event));
-    }
+<p>整个流程中，我们能保证：</p>
 
-    List&lt;PersistentEvent&gt; listPending(int limit) {
-       //...
-    }
-}
+<ol>
+<li><p>业务主动方本地事务提交失败，业务被动方不会收到消息的投递。</p></li>
+<li><p>只要业务主动方本地事务执行成功，那么消息服务一定会投递消息给下游的业务被动方，并最终保证业务被动方一定能成功消费该消息（消费成功或失败，即最终一定会有一个最终态）。</p></li>
+</ol>
 
-public class PersistentEvent {
+<p>这个机制就是基于消息中间件的异步流程中的最终一致性保证方案。</p>
 
-    public enum Status {
-        PENDING, SENT
-    }
-
-    private Long id;
-
-    private String uuid = UUID.randomUUID().toString();
-
-    private LocalDateTime occuredAt = LocalDateTime.now();
-
-    private LocalDateTime sentAt;
-
-    private String body;
-
-    private Status status = PENDING;
-
-    public void sent(LocalDateTime at) {
-        this.sentAt = at;
-        this.status = SENT;
-    }
-
-    //...
-
-}
-
-</code></pre>
-
-<p>and it would be invoked from <u>DomainEventProcessor</u> in the same transaction (so we came back to synchronous observator pattern):</p>
-
-<pre><code>
- class DomainEventsPublisher {
-
-    //...
-
-    private final Register handlersRegistry;
-    private final EventStore eventStore;
-
-    public void publish(DomainEvent event) {
-        handlersRegistry
-            .getHandlers(event.getClass())
-            .forEach(handler -&gt; handler.handle(event));
-        eventStore.store(event);
-    }
-}
-
-</code></pre>
-
-<p>Note that we left the register with handlers working under the same transaction. It is fine, because we may need to listen to this event somewhere else in the same bounded context. That way we won&#39;t modify another aggregates.</p>
-
-<p>But we still want our events to appear in our JMS infrastructure. We can run a periodic job which scans list of our events and sends them to a queue or a topic: </p></p>
-
-<pre><code>class PublishPendingEventsScheduler {
-
-    private final ExternalEventStore eventStore;
-    private final ExternalEventStore publisher;
-
-    @Scheduled(initialDelay = 3000, fixedDelayString = &quot;${events.publisher.freq:3000}&quot;)
-    public void sendEvents() {
-        eventStore.listPending(100).forEach(this::publish);
-    }
-
-    private void publish(PersistentEvent event) {
-        publisher.publish(event); // publisher needs to have publish(PersistentEvent event) method
-        event.sent(now());
-    }
-}
-
-</code></pre>
-
-<p>We mark every event as sent, so that it won&#39;t be picked up in further invocation. If our message infrastructure fails, we try again soon. We might argue that this code suffers from the same problem as the whole example. Our database might fails at the time we want to save this event as sent. That is a fair concern, because we already have sent it to JMS. That means it can arrive at consumer side several times. It is important that consumer handles those events in an idempotent way - by for example storing PersistentEvent&#39;s uuid and doing de-duplication. Resending at producer side and idempotency at consumer side gives us <strong>at most once delivery.</strong></p>
-
-<p>In this post I tried to describe reliable domain events mechanism by implementing simple event store. Actually, events stores have much more benefits: we can examine every historical result of commands invoked in our system, run some forecasting algorithms, do event sourcing (reconstructing an aggregate by composing events it has produced) in different bounded contexts.</p>
+<p><strong>·END·</strong></p>
 
                         
                       </div>
@@ -341,7 +243,7 @@ public class PersistentEvent {
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/12/27</span>
+                    <span class="date">2019/1/16</span>
                     <span>posted in&nbsp;</span> 
           				  
           					    <span class="posted-in"><a href='DTx.html'>DTx</a></span>
@@ -434,31 +336,31 @@ public class PersistentEvent {
 	      
 		      
 			      <li class="post">
-			        <a href="15459058392039.html">Reliable Domain Events</a>
+			        <a href="15517999043443.html">The Art of Crafting Architectural Diagrams</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
+			        <a href="15517997955971.html">为什么说我们需要软件架构图？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
+			        <a href="15516128677869.html">DNS Servers That Offer Privacy and Filtering</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
+			        <a href="15516123108194.html">Airbnb's Migration from Monolith to Services</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
+			        <a href="15516097487470.html">Events As First-Class Citizens</a>
 			      </li>
 		     
 		  

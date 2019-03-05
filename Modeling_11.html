@@ -105,200 +105,983 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15281306050002.html">
+                <a class="clearlink" href="15283864664932.html">
                 
-                  <h1>分布式之 redis 复习精讲</h1>
+                  <h1>手把手教你搭建一个基于 Java 的分布式爬虫系统</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="http://www.cnblogs.com/rjzheng/p/9096228.html">http://www.cnblogs.com/rjzheng/p/9096228.html</a></p>
+<p>原创： 叶泳豪  51CTO技术栈  5月8日<br/>
+<a href="http://developer.51cto.com/art/201805/572935.htm">http://developer.51cto.com/art/201805/572935.htm</a></p>
 </blockquote>
 
-<h2 id="toc_0">引言</h2>
+<p>在不用爬虫框架的情况下，我经过多方学习，尝试实现了一个分布式爬虫系统，并且可以将数据保存到不同地方，类似 MySQL、HBase 等。</p>
 
-<h3 id="toc_1">为什么写这篇文章?</h3>
+<p>【51CTO.com 原创稿件】在不用爬虫框架的情况下，我经过多方学习，尝试实现了一个分布式爬虫系统，并且可以将数据保存到不同地方，类似 MySQL、HBase 等。</p>
 
-<p>博主的<a href="http://www.cnblogs.com/rjzheng/p/8994962.html">《分布式之消息队列复习精讲》</a>得到了大家的好评，内心诚惶诚恐，想着再出一篇关于复习精讲的文章。但是还是要说明一下，复习精讲的文章偏面试准备，真正在开发过程中，还是脚踏实地，一步一个脚印，不要投机取巧。<br/>
-考虑到绝大部分写业务的程序员，在实际开发中使用 redis 的时候，只会 setvalue 和 getvalue 两个操作，对 redis 整体缺乏一个认知。又恰逢博主某个同事下周要去培训 redis，所以博主斗胆以 redis 为题材，对 redis 常见问题做一个总结，希望能够弥补大家的知识盲点。</p>
+<p>因为此系统基于面向接口的编码思想来开发，所以具有一定的扩展性，有兴趣的朋友直接看一下代码，就能理解其设计思想。</p>
 
-<h3 id="toc_2">复习要点?</h3>
+<p>虽然代码目前来说很多地方还是比较紧耦合，但只要花些时间和精力，很多都是可抽取出来并且可配置化的。</p>
 
-<p>本文围绕以下几点进行阐述<br/>
-1、为什么使用 redis<br/>
-2、使用 redis 有什么缺点<br/>
-3、单线程的 redis 为什么这么快<br/>
-4、redis 的数据类型，以及每种数据类型的使用场景<br/>
-5、redis 的过期策略以及内存淘汰机制<br/>
-6、redis 和数据库双写一致性问题<br/>
-7、如何应对缓存穿透和缓存雪崩问题<br/>
-8、如何解决 redis 的并发竞争问题</p>
+<p>因为时间的关系，我只写了京东和苏宁易购两个网站的爬虫，但是完全可以实现不同网站爬虫的随机调度，基于其代码结构，再写国美、天猫等的商品爬取，难度不大，但是估计需要花些时间和精力。</p>
 
-<h2 id="toc_3">正文</h2>
+<p>因为在解析网页的数据时，比如我在爬取苏宁易购商品的价格时，价格是异步获取的，并且其 API 是一长串的数字组合，我花了几个小时的时间才发现其规律，当然也承认，我的经验不足。</p>
 
-<h3 id="toc_4">1、为什么使用 redis</h3>
-
-<p><strong>分析</strong>: 博主觉得在项目中使用 redis，主要是从两个角度去考虑: <strong>性能</strong>和<strong>并发</strong>。当然，redis 还具备可以做分布式锁等其他功能，但是如果只是为了分布式锁这些其他功能，完全还有其他中间件 (如 zookpeer 等) 代替，并不是非要使用 redis。因此，这个问题主要从性能和并发两个角度去答。<br/>
-<strong>回答</strong>: 如下所示，分为两点<br/>
-<strong>（一）性能</strong><br/>
-如下图所示，我们在碰到需要执行耗时特别久，且结果不频繁变动的 SQL，就特别适合将运行结果放入缓存。这样，后面的请求就去缓存中读取，使得请求能够<strong>迅速响应</strong>。<br/>
-<img src="https://images.cnblogs.com/cnblogs_com/rjzheng/1202350/o_redis1.png" alt=""/><br/>
-<strong>题外话：</strong>忽然想聊一下这个<strong>迅速响应</strong>的标准。其实根据交互效果的不同，这个响应时间没有固定标准。不过曾经有人这么告诉我:&quot; 在理想状态下，我们的页面跳转需要在<strong>瞬间</strong>解决，对于页内操作则需要在<strong>刹那</strong>间解决。另外，超过<strong>一弹指</strong>的耗时操作要有进度提示，并且可以随时中止或取消，这样才能给用户最好的体验。&quot;<br/>
-那么<strong>瞬间、刹那、一弹指</strong>具体是多少时间呢？<br/>
-根据《摩诃僧祗律》记载</p>
-
-<pre><code>一刹那者为一念，二十念为一瞬，二十瞬为一弹指，二十弹指为一罗预，二十罗预为一须臾，一日一夜有三十须臾。
-</code></pre>
-
-<p>那么，经过周密的计算，一<strong>瞬间</strong>为 0.36 秒, 一<strong>刹那</strong>有 0.018 秒. 一<strong>弹指</strong>长达 7.2 秒。<br/>
-<strong>（二）并发</strong><br/>
-如下图所示，在大并发的情况下，所有的请求直接访问数据库，数据库会出现连接异常。这个时候，就需要使用 redis 做一个缓冲操作，让请求先访问到 redis，而不是直接访问数据库。<br/>
-<img src="https://images.cnblogs.com/cnblogs_com/rjzheng/1202350/o_redis2.png" alt=""/></p>
-
-<h3 id="toc_5">2、使用 redis 有什么缺点</h3>
-
-<p><strong>分析</strong>: 大家用 redis 这么久，这个问题是必须要了解的，基本上使用 redis 都会碰到一些问题，常见的也就几个。<br/>
-<strong>回答</strong>: 主要是四个问题<br/>
-(一) 缓存和数据库双写一致性问题<br/>
-(二) 缓存雪崩问题<br/>
-(三) 缓存击穿问题<br/>
-(四) 缓存的并发竞争问题<br/>
-这四个问题，我个人是觉得在项目中，比较常遇见的，具体解决方案，后文给出。</p>
-
-<h3 id="toc_6">3、单线程的 redis 为什么这么快</h3>
-
-<p><strong>分析</strong>: 这个问题其实是对 redis 内部机制的一个考察。其实根据博主的面试经验，很多人其实都不知道 redis 是单线程工作模型。所以，这个问题还是应该要复习一下的。<br/>
-<strong>回答</strong>: 主要是以下三点<br/>
-(一) 纯内存操作<br/>
-(二) 单线程操作，避免了频繁的上下文切换<br/>
-(三) 采用了非阻塞 <strong>I/O 多路复用机制</strong></p>
-
-<p><strong>题外话：</strong>我们现在要仔细的说一说 I/O 多路复用机制，因为这个说法实在是太通俗了，通俗到一般人都不懂是什么意思。博主打一个比方：小曲在 S 城开了一家快递店，负责同城快送服务。小曲因为资金限制，雇佣了<strong>一批</strong>快递员，然后小曲发现资金不够了，只够买<strong>一辆</strong>车送快递。<br/>
-<strong>经营方式一</strong><br/>
-客户每送来一份快递，小曲就让一个快递员盯着，然后快递员开车去送快递。慢慢的小曲就发现了这种经营方式存在下述问题</p>
+<p>这个系统的设计，除了基本的数据爬取以外，更关注以下几个方面的问题：</p>
 
 <ul>
-<li>  几十个快递员基本上时间都花在了抢车上了，大部分快递员都处在闲置状态，谁抢到了车，谁就能去送快递</li>
-<li>  随着快递的增多，快递员也越来越多，小曲发现快递店里越来越挤，没办法雇佣新的快递员了</li>
-<li>  快递员之间的协调很花时间</li>
+<li>  如何实现分布式？同一个程序打包后分发到不同的节点运行时，不影响整体的数据爬取。</li>
+<li>  如何实现 URL 随机循环调度？核心是针对不同的顶级域名做随机。</li>
+<li>  如何定时向 URL 仓库中添加种子 URL？达到不让爬虫系统停下来的目的。</li>
+<li>  如何实现对爬虫节点程序的监控，并能够发邮件报警？</li>
+<li>  如何实现一个随机 IP 代理库？目的跟第 2 点有点类似，都是为了反反爬虫。</li>
 </ul>
 
-<p>综合上述缺点，小曲痛定思痛，提出了下面的经营方式<br/>
-<strong>经营方式二</strong><br/>
-小曲只雇佣一个快递员。然后呢，客户送来的快递，小曲按<strong>送达地点</strong>标注好，然后<strong>依次</strong>放在一个地方。最后，那个快递员<strong>依次</strong>的去取快递，一次拿一个，然后开着车去送快递，送好了就回来拿下一个快递。</p>
+<p>下面会针对这个系统来做一个整体的基本介绍，我在代码中都有非常详细的注释，有兴趣的朋友可以参考一下代码，最后我会给出一些我爬虫时的数据分析。</p>
 
-<p><strong>对比</strong><br/>
-上述两种经营方式对比，是不是明显觉得第二种，效率更高，更好呢。在上述比喻中:</p>
+<p>另外需要注意的是，这个爬虫系统是基于 Java 实现的，但是语言本身仍然不是最重要的，有兴趣的朋友可以尝试用 Python 实现。</p>
+
+<p><strong>分布式爬虫系统架构</strong></p>
+
+<p>整体系统架构如下：</p>
+
+<p><a href="http://s3.51cto.com/oss/201805/09/1ec03f13dff96ba2a1cb42795b7a1ba1.jpg"><img src="http://s3.51cto.com/oss/201805/09/1ec03f13dff96ba2a1cb42795b7a1ba1.jpg" alt=""/></a></p>
+
+<p>从上面的架构可以看出，整个系统主要分为三个部分：</p>
 
 <ul>
-<li>  每个快递员 ------------------&gt; 每个线程</li>
-<li>  每个快递 --------------------&gt; 每个 socket(I/O 流)</li>
-<li>  快递的送达地点 --------------&gt;socket 的不同状态</li>
-<li>  客户送快递请求 --------------&gt; 来自客户端的请求</li>
-<li>  小曲的经营方式 --------------&gt; 服务端运行的代码</li>
-<li>  一辆车 ----------------------&gt;CPU 的核数</li>
+<li>  爬虫系统</li>
+<li>  URL 调度系统</li>
+<li>  监控报警系统</li>
 </ul>
 
-<p>于是我们有如下结论<br/>
-1、经营方式一就是传统的并发模型，每个 I/O 流 (快递) 都有一个新的线程 (快递员) 管理。<br/>
-2、经营方式二就是 I/O 多路复用。只有单个线程 (一个快递员)，通过跟踪每个 I/O 流的状态 (每个快递的送达地点)，来管理多个 I/O 流。</p>
+<p>爬虫系统是用来爬取数据的，因为系统设计为分布式，因此，爬虫程序本身可以运行在不同的服务器节点上。</p>
 
-<p>下面类比到真实的 redis 线程模型，如图所示<br/>
-<img src="https://images.cnblogs.com/cnblogs_com/rjzheng/1202350/o_redis3.png" alt=""/><br/>
-参照上图，简单来说，就是。我们的 redis-client 在操作的时候，会产生具有不同事件类型的 socket。在服务端，有一段 I/0 多路复用程序，将其置入队列之中。然后，文件事件分派器，依次去队列中取，转发到不同的事件处理器中。<br/>
-需要说明的是，这个 I/O 多路复用机制，redis 还提供了 select、epoll、evport、kqueue 等多路复用函数库，大家可以自行去了解。</p>
+<p>URL 调度系统核心在于 URL 仓库，所谓的 URL 仓库其实就是用 Redis 保存了需要爬取的 URL 列表，并且在我们的 URL 调度器中根据一定的策略来消费其中的 URL。从这个角度考虑，URL 仓库其实也是一个 URL 队列。</p>
 
-<h3 id="toc_7">4、redis 的数据类型，以及每种数据类型的使用场景</h3>
+<p>监控报警系统主要是对爬虫节点进行监控，虽然并行执行的爬虫节点中的某一个挂掉了对整体数据爬取本身没有影响（只是降低了爬虫的速度），但是我们还是希望能够主动接收到节点挂掉的通知，而不是被动地发现。</p>
 
-<p><strong>分析</strong>：是不是觉得这个问题很基础，其实我也这么觉得。然而根据面试经验发现，至少百分八十的人答不上这个问题。建议，在项目中用到后，再类比记忆，体会更深，不要硬记。基本上，一个合格的程序员，五种类型都会用到。<br/>
-<strong>回答</strong>：一共五种<br/>
-(一)String<br/>
-这个其实没啥好说的，最常规的 set/get 操作，value 可以是 String 也可以是数字。一般做<strong>一些复杂的计数功能的缓存。</strong><br/>
-(二)hash<br/>
-这里 value 存放的是结构化的对象，比较方便的就是操作其中的某个字段。博主在做<strong>单点登录</strong>的时候，就是用这种数据结构存储用户信息，以 cookieId 作为 key，设置 30 分钟为缓存过期时间，能很好的模拟出类似 session 的效果。<br/>
-(三)list<br/>
-使用 List 的数据结构，可以<strong>做简单的消息队列的功能</strong>。另外还有一个就是，可以利用 lrange 命令，<strong>做基于 redis 的分页功能</strong>，性能极佳，用户体验好。<br/>
-(四)set<br/>
-因为 set 堆放的是一堆不重复值的集合。所以可以做<strong>全局去重的功能</strong>。为什么不用 JVM 自带的 Set 进行去重？因为我们的系统一般都是集群部署，使用 JVM 自带的 Set，比较麻烦，难道为了一个做一个全局去重，再起一个公共服务，太麻烦了。<br/>
-另外，就是利用交集、并集、差集等操作，可以<strong>计算共同喜好，全部的喜好，自己独有的喜好等功能</strong>。<br/>
-(五)sorted set<br/>
-sorted set 多了一个权重参数 score, 集合中的元素能够按 score 进行排列。可以做<strong>排行榜应用，取 TOP N 操作</strong>。另外，参照另一篇<a href="https://www.cnblogs.com/rjzheng/p/8972725.html">《分布式之延时任务方案解析》</a>，该文指出了 sorted set 可以用来做<strong>延时任务</strong>。最后一个应用就是可以做<strong>范围查找</strong>。</p>
+<p>下面将针对以上三个方面并结合部分代码片段来对整个系统的设计思路做一些基本的介绍。</p>
 
-<h3 id="toc_8">5、redis 的过期策略以及内存淘汰机制</h3>
+<p><strong>爬虫系统</strong></p>
 
-<p><strong>分析</strong>: 这个问题其实相当重要，到底 redis 有没用到家，这个问题就可以看出来。比如你 redis 只能存 5G 数据，可是你写了 10G，那会删 5G 的数据。怎么删的，这个问题思考过么？还有，你的数据已经设置了过期时间，但是时间到了，内存占用率还是比较高，有思考过原因么?<br/>
-<strong>回答</strong>:<br/>
-redis 采用的是定期删除 + 惰性删除策略。<br/>
-<strong>为什么不用定时删除策略?</strong><br/>
-定时删除, 用一个定时器来负责监视 key, 过期则自动删除。虽然内存及时释放，但是十分消耗 CPU 资源。在大并发请求下，CPU 要将时间应用在处理请求，而不是删除 key, 因此没有采用这一策略.<br/>
-<strong>定期删除 + 惰性删除是如何工作的呢?</strong><br/>
-定期删除，redis 默认每个 100ms 检查，是否有过期的 key, 有过期 key 则删除。需要说明的是，redis 不是每个 100ms 将所有的 key 检查一次，而是随机抽取进行检查 (如果每隔 100ms, 全部 key 进行检查，redis 岂不是卡死)。因此，如果只采用定期删除策略，会导致很多 key 到时间没有删除。<br/>
-于是，惰性删除派上用场。也就是说在你获取某个 key 的时候，redis 会检查一下，这个 key 如果设置了过期时间那么是否过期了？如果过期了此时就会删除。<br/>
-<strong>采用定期删除 + 惰性删除就没其他问题了么?</strong><br/>
-不是的，如果定期删除没删除 key。然后你也没即时去请求 key，也就是说惰性删除也没生效。这样，redis 的内存会越来越高。那么就应该采用<strong>内存淘汰机制</strong>。<br/>
-在 redis.conf 中有一行配置</p>
+<p><a href="http://s3.51cto.com/oss/201805/09/17cd163d986b85ed00354f60c90e8ca6.jpg"><img src="http://s3.51cto.com/oss/201805/09/17cd163d986b85ed00354f60c90e8ca6.jpg" alt=""/></a></p>
 
-<pre><code># maxmemory-policy volatile-lru
+<p>爬虫系统是一个独立运行的进程，我们把我们的爬虫系统打包成 jar 包，然后分发到不同的节点上执行，这样并行爬取数据可以提高爬虫的效率。（说明：ZooKeeper 监控属于监控报警系统，URL 调度器属于 URL 调度系统）</p>
+
+<p><strong>随机 IP 代理器</strong></p>
+
+<p>加入随机 IP 代理主要是为了反反爬虫，因此如果有一个 IP 代理库，并且可以在构建 http 客户端时随机地使用不同的代理，那么对我们进行反反爬虫会有很大的帮助。</p>
+
+<p>在系统中使用 IP 代理库，需要先在文本文件中添加可用的代理地址信息：</p>
+
+<pre><code class="language-txt"># IPProxyRepository.txt 
+58.60.255.104:8118 
+219.135.164.245:3128 
+27.44.171.27:9999 
+219.135.164.245:3128 
+58.60.255.104:8118 
+58.252.6.165:9000 
+...... 
 </code></pre>
 
-<p>该配置就是配内存淘汰策略的 (什么，你没配过？好好反省一下自己)<br/>
-1）noeviction：当内存不足以容纳新写入数据时，新写入操作会报错。<strong>应该没人用吧。</strong><br/>
-2）allkeys-lru：当内存不足以容纳新写入数据时，在键空间中，移除最近最少使用的 key。<strong>推荐使用，目前项目在用这种。</strong><br/>
-3）allkeys-random：当内存不足以容纳新写入数据时，在键空间中，随机移除某个 key。<strong>应该也没人用吧，你不删最少使用 Key, 去随机删。</strong><br/>
-4）volatile-lru：当内存不足以容纳新写入数据时，在设置了过期时间的键空间中，移除最近最少使用的 key。<strong>这种情况一般是把 redis 既当缓存，又做持久化存储的时候才用。不推荐</strong><br/>
-5）volatile-random：当内存不足以容纳新写入数据时，在设置了过期时间的键空间中，随机移除某个 key。<strong>依然不推荐</strong><br/>
-6）volatile-ttl：当内存不足以容纳新写入数据时，在设置了过期时间的键空间中，有更早过期时间的 key 优先移除。<strong>不推荐</strong><br/>
-ps：如果没有设置 expire 的 key, 不满足先决条件 (prerequisites); 那么 volatile-lru, volatile-random 和 volatile-ttl 策略的行为, 和 noeviction(不删除) 基本上一致。</p>
+<p>需要注意的是，上面的代理 IP 是我在西刺代理上拿到的一些代理 IP，不一定可用，建议是自己花钱购买一批代理 IP，这样可以节省很多时间和精力去寻找代理 IP。</p>
 
-<h3 id="toc_9">6、redis 和数据库双写一致性问题</h3>
+<p>然后在构建 http 客户端的工具类中，当第一次使用工具类时，会把这些代理 IP 加载进内存中，加载到 Java 的一个 HashMap：</p>
 
-<p><strong>分析</strong>: 一致性问题是分布式常见问题，还可以再分为最终一致性和强一致性。数据库和缓存双写，就必然会存在不一致的问题。答这个问题，先明白一个前提。就是<strong>如果对数据有强一致性要求，不能放缓存。</strong>我们所做的一切，只能保证最终一致性。另外，我们所做的方案其实从根本上来说，只能说<strong>降低不一致发生的概率</strong>，无法完全避免。因此，有强一致性要求的数据，不能放缓存。<br/>
-<strong>回答</strong>:<a href="https://www.cnblogs.com/rjzheng/p/9041659.html">《分布式之数据库和缓存双写一致性方案解析》</a>给出了详细的分析，在这里简单的说一说。首先，采取正确更新策略，先更新数据库，再删缓存。其次，因为可能存在删除缓存失败的问题，提供一个补偿措施即可，例如利用消息队列。</p>
+<pre><code class="language-java">// IP地址代理库Map 
+private static Map&lt;String, Integer&gt; IPProxyRepository = new HashMap&lt;&gt;(); 
+private static String[] keysArray = null;   // keysArray是为了方便生成随机的代理对象 
+ 
+/** 
+ * 初次使用时使用静态代码块将IP代理库加载进set中 
+ */ 
+static { 
+    InputStream in = HttpUtil.class.getClassLoader().getResourceAsStream(&quot;IPProxyRepository.txt&quot;);  // 加载包含代理IP的文本 
+    // 构建缓冲流对象 
+    InputStreamReader isr = new InputStreamReader(in); 
+    BufferedReader bfr = new BufferedReader(isr); 
+    String line = null; 
+    try { 
+        // 循环读每一行，添加进map中 
+        while ((line = bfr.readLine()) != null) { 
+            String[] split = line.split(&quot;:&quot;);   // 以:作为分隔符，即文本中的数据格式应为192.168.1.1:4893 
+            String host = split[0]; 
+            int port = Integer.valueOf(split[1]); 
+            IPProxyRepository.put(host, port); 
+        } 
+        Set&lt;String&gt; keys = IPProxyRepository.keySet(); 
+        keysArray = keys.toArray(new String[keys.size()]);  // keysArray是为了方便生成随机的代理对象 
+    } catch (IOException e) { 
+        e.printStackTrace(); 
+    }
+} 
+</code></pre>
 
-<h3 id="toc_10">7、如何应对缓存穿透和缓存雪崩问题</h3>
+<p>之后，在每次构建 http 客户端时，都会先到 map 中看是否有代理 IP，有则使用，没有则不使用代理：</p>
 
-<p><strong>分析</strong>: 这两个问题，说句实在话，一般中小型传统软件企业，很难碰到这个问题。如果有大并发的项目，流量有几百万左右。这两个问题一定要深刻考虑。<br/>
-<strong>回答</strong>: 如下所示<br/>
-<strong>缓存穿透</strong>，即黑客故意去请求缓存中不存在的数据，导致所有的请求都怼到数据库上，从而数据库连接异常。<br/>
-<strong>解决方案</strong>:<br/>
-(一) 利用互斥锁，缓存失效的时候，先去获得锁，得到锁了，再去请求数据库。没得到锁，则休眠一段时间重试<br/>
-(二) 采用异步更新策略，无论 key 是否取到值，都直接返回。value 值中维护一个缓存失效时间，缓存如果过期，异步起一个线程去读数据库，更新缓存。需要做<strong>缓存预热</strong> (项目启动前，先加载缓存) 操作。<br/>
-(三) 提供一个能迅速判断请求是否有效的拦截机制，比如，利用布隆过滤器，内部维护一系列合法有效的 key。迅速判断出，请求所携带的 Key 是否合法有效。如果不合法，则直接返回。<br/>
-<strong>缓存雪崩</strong>，即缓存同一时间大面积的失效，这个时候又来了一波请求，结果请求都怼到数据库上，从而导致数据库连接异常。<br/>
-<strong>解决方案</strong>:<br/>
-(一) 给缓存的失效时间，加上一个随机值，避免集体失效。<br/>
-(二) 使用互斥锁，但是该方案吞吐量明显下降了。<br/>
-(三) 双缓存。我们有两个缓存，缓存 A 和缓存 B。缓存 A 的失效时间为 20 分钟，缓存 B 不设失效时间。自己做缓存预热操作。然后细分以下几个小点</p>
+<pre><code class="language-java">/** 
+ * 随机返回一个代理对象 
+ * 
+ * @return 
+ */ 
+public static HttpHost getRandomProxy() { 
+    // 随机获取host:port，并构建代理对象 
+    Random random = new Random(); 
+    String host = keysArray[random.nextInt(keysArray.length)]; 
+    int port = IPProxyRepository.get(host); 
+    HttpHost proxy = new HttpHost(host, port);  // 设置http代理 
+    return proxy; 
+} 
+</code></pre>
+
+<p>随机代理对象则通过下面的方法生成：</p>
+
+<pre><code class="language-java">/** 
+     * 随机返回一个代理对象 
+     * 
+     * @return 
+     */ 
+public static HttpHost getRandomProxy() { 
+    // 随机获取host:port，并构建代理对象 
+    Random random = new Random(); 
+    String host = keysArray[random.nextInt(keysArray.length)]; 
+    int port = IPProxyRepository.get(host); 
+    HttpHost proxy = new HttpHost(host, port);  // 设置http代理 
+    return proxy; 
+} 
+</code></pre>
+
+<p>这样，通过上面的设计，基本就实现了随机 IP 代理器的功能，当然，其中还有很多可以完善的地方。</p>
+
+<p>比如，当使用这个 IP 代理而请求失败时，是否可以把这一情况记录下来；当超过一定次数时，再将其从代理库中删除，同时生成日志供开发人员或运维人员参考，这是完全可以实现的，不过我就不做这一步功能了。</p>
+
+<p><strong>网页下载器</strong></p>
+
+<p>网页下载器就是用来下载网页中的数据，主要基于下面的接口开发：</p>
+
+<pre><code class="language-java">/** 
+ * 网页数据下载 
+ */ 
+public interface IDownload { 
+    /** 
+     * 下载给定url的网页数据 
+     * @param url 
+     * @return 
+     */ 
+    public Page download(String url); 
+} 
+</code></pre>
+
+<p>基于此，在系统中只实现了一个 http get 的下载器，但是也可以完成我们所需要的功能了：</p>
+
+<pre><code class="language-java">/** 
+ * 数据下载实现类 
+ */ 
+public class HttpGetDownloadImpl implements IDownload { 
+ 
+    @Override 
+    public Page download(String url) { 
+        Page page = new Page(); 
+        String content = HttpUtil.getHttpContent(url);  // 获取网页数据 
+        page.setUrl(url); 
+        page.setContent(content); 
+        return page; 
+    } 
+} 
+</code></pre>
+
+<p><strong>网页解析器</strong></p>
+
+<p>网页解析器就是把下载的网页中我们感兴趣的数据解析出来，并保存到某个对象中，供数据存储器进一步处理以保存到不同的持久化仓库中，其基于下面的接口进行开发：</p>
+
+<pre><code class="language-java">/** 
+ * 网页数据解析 
+ */ 
+public interface IParser { 
+    public void parser(Page page); 
+} 
+</code></pre>
+
+<p>网页解析器在整个系统的开发中也算是比较重头戏的一个组件，功能不复杂，主要是代码比较多，针对不同的商城不同的商品，对应的解析器可能就不一样了。</p>
+
+<p>因此需要针对特别的商城的商品进行开发，因为很显然，京东用的网页模板跟苏宁易购的肯定不一样，天猫用的跟京东用的也肯定不一样。</p>
+
+<p>所以这个完全是看自己的需要来进行开发了，只是说，在解析器开发的过程当中会发现有部分重复代码，这时就可以把这些代码抽象出来开发一个工具类了。</p>
+
+<p>目前在系统中爬取的是京东和苏宁易购的手机商品数据，因此就写了这两个实现类：</p>
+
+<pre><code class="language-java">/** 
+ * 解析京东商品的实现类 
+ */ 
+public class JDHtmlParserImpl implements IParser { 
+    ...... 
+} 
+ 
+/** 
+ * 苏宁易购网页解析 
+ */ 
+public class SNHtmlParserImpl implements IParser { 
+    ...... 
+} 
+</code></pre>
+
+<p><strong>数据存储器</strong></p>
+
+<p><a href="http://s4.51cto.com/oss/201805/09/2979ac425e0fbcfcf2f078e6f97842f5.jpg-wh_600x-s_1985411508.jpg"><img src="http://s4.51cto.com/oss/201805/09/2979ac425e0fbcfcf2f078e6f97842f5.jpg-wh_600x-s_1985411508.jpg" alt=""/></a></p>
+
+<p>数据存储器主要是将网页解析器解析出来的数据对象保存到不同的表格，而对于本次爬取的手机商品，数据对象是下面一个 Page 对象：</p>
+
+<pre><code class="language-java">/** 
+ * 网页对象，主要包含网页内容和商品数据 
+ */ 
+public class Page { 
+    private String content;              // 网页内容 
+ 
+    private String id;                    // 商品Id 
+    private String source;               // 商品来源 
+    private String brand;                // 商品品牌 
+    private String title;                // 商品标题 
+    private float price;                // 商品价格 
+    private int commentCount;        // 商品评论数 
+    private String url;                  // 商品地址 
+    private String imgUrl;             // 商品图片地址 
+    private String params;              // 商品规格参数 
+ 
+    private List&lt;String&gt; urls = new ArrayList&lt;&gt;();  // 解析列表页面时用来保存解析的商品url的容器 
+} 
+</code></pre>
+
+<p>对应的，在 MySQL 中，表数据结构如下：</p>
+
+<pre><code class="language-sql">-- ---------------------------- 
+-- Table structure for phone 
+-- ---------------------------- 
+DROP TABLE IF EXISTS `phone`; 
+CREATE TABLE `phone` ( 
+  `id` varchar(30) CHARACTER SET armscii8 NOT NULL COMMENT &#39;商品id&#39;, 
+  `source` varchar(30) NOT NULL COMMENT &#39;商品来源，如jd suning gome等&#39;, 
+  `brand` varchar(30) DEFAULT NULL COMMENT &#39;手机品牌&#39;, 
+  `title` varchar(255) DEFAULT NULL COMMENT &#39;商品页面的手机标题&#39;, 
+  `price` float(10,2) DEFAULT NULL COMMENT &#39;手机价格&#39;, 
+  `comment_count` varchar(30) DEFAULT NULL COMMENT &#39;手机评论&#39;, 
+  `url` varchar(500) DEFAULT NULL COMMENT &#39;手机详细信息地址&#39;, 
+  `img_url` varchar(500) DEFAULT NULL COMMENT &#39;图片地址&#39;, 
+  `params` text COMMENT &#39;手机参数，json格式存储&#39;, 
+  PRIMARY KEY (`id`,`source`) 
+) ENGINE=InnoDB DEFAULT CHARSET=utf8; 
+</code></pre>
+
+<p>而在 HBase 中的表结构则为如下：</p>
+
+<pre><code class="language-log">## cf1 存储 id source price comment brand url 
+## cf2 存储 title params imgUrl 
+create &#39;phone&#39;, &#39;cf1&#39;, &#39;cf2&#39; 
+ 
+## 在HBase shell中查看创建的表 
+hbase(main):135:0&gt; desc &#39;phone&#39; 
+Table phone is ENABLED                                                                                                 
+phone                                                                                                                  
+COLUMN FAMILIES DESCRIPTION                                                                                            
+{NAME =&gt; &#39;cf1&#39;, BLOOMFILTER =&gt; &#39;ROW&#39;, VERSIONS =&gt; &#39;1&#39;, IN_MEMORY =&gt; &#39;false&#39;, KEEP_DELETED_CELLS =&gt; &#39;FALSE&#39;, DATA_BLOCK 
+_ENCODING =&gt; &#39;NONE&#39;, TTL =&gt; &#39;FOREVER&#39;, COMPRESSION =&gt; &#39;NONE&#39;, MIN_VERSIONS =&gt; &#39;0&#39;, BLOCKCACHE =&gt; &#39;true&#39;, BLOCKSIZE =&gt;  
+&#39;65536&#39;, REPLICATION_SCOPE =&gt; &#39;0&#39;}                                                                                     
+{NAME =&gt; &#39;cf2&#39;, BLOOMFILTER =&gt; &#39;ROW&#39;, VERSIONS =&gt; &#39;1&#39;, IN_MEMORY =&gt; &#39;false&#39;, KEEP_DELETED_CELLS =&gt; &#39;FALSE&#39;, DATA_BLOCK 
+_ENCODING =&gt; &#39;NONE&#39;, TTL =&gt; &#39;FOREVER&#39;, COMPRESSION =&gt; &#39;NONE&#39;, MIN_VERSIONS =&gt; &#39;0&#39;, BLOCKCACHE =&gt; &#39;true&#39;, BLOCKSIZE =&gt;  
+&#39;65536&#39;, REPLICATION_SCOPE =&gt; &#39;0&#39;}                                                                                     
+2 row(s) in 0.0350 seconds 
+</code></pre>
+
+<p>即在 HBase 中建立了两个列族，分别为 cf1、cf2，其中 cf1 用来保存 id source price comment brand url 字段信息；cf2 用来保存 title params imgUrl 字段信息。</p>
+
+<p>不同的数据存储用的是不同的实现类，但是其都是基于下面同一个接口开发的：</p>
+
+<pre><code class="language-java">/** 
+ * 商品数据的存储 
+ */ 
+public interface IStore { 
+    public void store(Page page); 
+} 
+</code></pre>
+
+<p>然后基于此开发了 MySQL 的存储实现类、HBase 的存储实现类还有控制台的输出实现类，如 MySQL 的存储实现类，其实就是简单的数据插入语句：</p>
+
+<pre><code class="language-java">/** 
+ * 使用dbc数据库连接池将数据写入mysql表中 
+ */ 
+public class MySQLStoreImpl implements IStore { 
+    private QueryRunner queryRunner = new QueryRunner(DBCPUtil.getDataSource()); 
+ 
+    @Override 
+    public void store(Page page) { 
+        String sql = &quot;insert into phone(id, source, brand, title, price, comment_count, url, img_url, params) values(?, ?, ?, ?, ?, ?, ?, ?, ?)&quot;; 
+        try { 
+            queryRunner.update(sql, page.getId(), 
+                    page.getSource(), 
+                    page.getBrand(), 
+                    page.getTitle(), 
+                    page.getPrice(), 
+                    page.getCommentCount(), 
+                    page.getUrl(), 
+                    page.getImgUrl(), 
+                    page.getParams()); 
+        } catch (SQLException e) { 
+            e.printStackTrace(); 
+        } 
+    } 
+} 
+</code></pre>
+
+<p>而 HBase 的存储实现类，则是 HBase Java API 的常用插入语句代码：</p>
+
+<pre><code class="language-java">...... 
+// cf1:price 
+Put pricePut = new Put(rowKey); 
+// 必须要做是否为null判断，否则会有空指针异常 
+pricePut.addColumn(cf1, &quot;price&quot;.getBytes(), page.getPrice() != null ? String.valueOf(page.getPrice()).getBytes() : &quot;&quot;.getBytes()); 
+puts.add(pricePut); 
+// cf1:comment 
+Put commentPut = new Put(rowKey); 
+commentPut.addColumn(cf1, &quot;comment&quot;.getBytes(), page.getCommentCount() != null ? String.valueOf(page.getCommentCount()).getBytes() : &quot;&quot;.getBytes()); 
+puts.add(commentPut); 
+// cf1:brand 
+Put brandPut = new Put(rowKey); 
+brandPut.addColumn(cf1, &quot;brand&quot;.getBytes(), page.getBrand() != null ? page.getBrand().getBytes() : &quot;&quot;.getBytes()); 
+puts.add(brandPut); 
+...... 
+</code></pre>
+
+<p>当然，至于要将数据存储在哪个地方，在初始化爬虫程序时，是可以手动选择的：</p>
+
+<pre><code class="language-java">// 3.注入存储器 
+iSpider.setStore(new HBaseStoreImpl()); 
+</code></pre>
+
+<p>目前还没有把代码写成可以同时存储在多个地方，按照目前代码的架构，要实现这一点也比较简单，修改一下相应代码就好了。</p>
+
+<p>实际上，是可以先把数据保存到 MySQL 中，然后通过 Sqoop 导入到 HBase 中，详细操作可以参考我写的 Sqoop 文章。</p>
+
+<p>仍然需要注意的是，如果确定需要将数据保存到 HBase 中，请保证你有可用的集群环境，并且需要将如下配置文档添加到 classpath 下：</p>
+
+<pre><code class="language-txt">core-site.xml 
+hbase-site.xml 
+hdfs-site.xml 
+</code></pre>
+
+<p>对大数据感兴趣的同学可以折腾一下这一点，如果之前没有接触过的，直接使用 MySQL 存储就好了，只需要在初始化爬虫程序时注入 MySQL 存储器即可：</p>
+
+<pre><code class="language-java">// 3.注入存储器 
+iSpider.setStore(new MySQLStoreImpl()); 
+</code></pre>
+
+<p>URL 调度系统</p>
+
+<p><a href="http://s1.51cto.com/oss/201805/09/ae7addb90d2c16385a177bac153cfcf5.jpg"><img src="http://s1.51cto.com/oss/201805/09/ae7addb90d2c16385a177bac153cfcf5.jpg" alt=""/></a></p>
+
+<p>URL 调度系统是实现整个爬虫系统分布式的桥梁与关键，正是通过 URL 调度系统的使用，才使得整个爬虫系统可以较为高效（Redis 作为存储）随机地获取 URL，并实现整个系统的分布式。</p>
+
+<p><strong>URL 仓库</strong></p>
+
+<p>通过架构图可以看出，所谓的 URL 仓库不过是 Redis 仓库，即在我们的系统中使用 Redis 来保存 URL 地址列表。</p>
+
+<p>正是这样，才能保证我们的程序实现分布式，只要保存了 URL 是唯一的，这样不管我们的爬虫程序有多少个，最终保存下来的数据都是只有唯一一份的，而不会重复。</p>
+
+<p>同时 URL 仓库中的 URL 地址在获取时的策略是通过队列的方式来实现的，待会通过 URL 调度器的实现即可知道。</p>
+
+<p>另外，在我们的 URL 仓库中，主要保存了下面的数据：</p>
+
+<p><strong>种子 URL 列表，Redis 的数据类型为 list</strong></p>
+
+<p>种子 URL 是持久化存储的，一定时间后，由 URL 定时器通过种子 URL 获取 URL，并将其注入到我们的爬虫程序需要使用的高优先级 URL 队列中。</p>
+
+<p>这样就可以保证我们的爬虫程序可以源源不断地爬取数据而不需要中止程序的执行。</p>
+
+<p><strong>高优先级 URL 队列，Redis 的数据类型为 set</strong></p>
+
+<p>什么是高优先级 URL 队列？其实它就是用来保存列表 URL 的。那么什么是列表 URL 呢？</p>
+
+<p>说白了就是一个列表中含有多个商品，以京东为例，我们打开一个手机列表：</p>
+
+<p>该地址中包含的不是一个具体商品的 URL，而是包含了多个我们需要爬取的数据（手机商品）的列表。</p>
+
+<p><a href="http://s4.51cto.com/oss/201805/09/797107def9ba8263c95d8d7d632fce1c.jpg"><img src="http://s4.51cto.com/oss/201805/09/797107def9ba8263c95d8d7d632fce1c.jpg" alt=""/></a></p>
+
+<p>通过对每个高级 URL 的解析，我们可以获取到非常多的具体商品 URL，而具体的商品 URL，就是低优先 URL，其会保存到低优先级 URL 队列中。</p>
+
+<p>那么以这个系统为例，保存的数据类似如下：</p>
+
+<pre><code class="language-log">jd.com.higher 
+    --https://list.jd.com/list.html?cat=9987,653,655&amp;page=1 
+    ...  
+suning.com.higher 
+    --https://list.suning.com/0-20006-0.html 
+    ... 
+</code></pre>
+
+<p><strong>低优先级 URL 队列，Redis 的数据类型为 set</strong></p>
+
+<p>低优先级 URL 其实就是具体某个商品的 URL，如下面一个手机商品：</p>
+
+<p><a href="http://s2.51cto.com/oss/201805/09/71ae2263e5ba4b9caa567fd704d659dc.jpg"><img src="http://s2.51cto.com/oss/201805/09/71ae2263e5ba4b9caa567fd704d659dc.jpg" alt=""/></a></p>
+
+<p>通过下载该 URL 的数据，并对其进行解析，就能够获取到我们想要的数据。</p>
+
+<p>那么以这个系统为例，保存的数据类似如下：</p>
+
+<pre><code class="language-log">jd.com.lower 
+    --https://item.jd.com/23545806622.html 
+    ... 
+suning.com.lower 
+    --https://product.suning.com/0000000000/690128156.html 
+    ... 
+</code></pre>
+
+<p><strong>URL 调度器</strong></p>
+
+<p>所谓 URL 调度器，就是 URL 仓库 Java 代码的调度策略，不过因为其核心在于调度，所以将其放到 URL 调度器中来进行说明，目前其调度基于以下接口开发：</p>
+
+<pre><code class="language-java">/** 
+ * url 仓库 
+ * 主要功能： 
+ *      向仓库中添加url（高优先级的列表，低优先级的商品url） 
+ *      从仓库中获取url（优先获取高优先级的url，如果没有，再获取低优先级的url） 
+ * 
+ */ 
+public interface IRepository { 
+ 
+    /** 
+     * 获取url的方法 
+     * 从仓库中获取url（优先获取高优先级的url，如果没有，再获取低优先级的url） 
+     * @return 
+     */ 
+    public String poll(); 
+ 
+    /** 
+     * 向高优先级列表中添加商品列表url 
+     * @param highUrl 
+     */ 
+    public void offerHigher(String highUrl); 
+ 
+    /** 
+     * 向低优先级列表中添加商品url 
+     * @param lowUrl 
+     */ 
+    public void offerLower(String lowUrl); 
+ 
+}
+</code></pre>
+
+<p>其基于 Redis 作为 URL 仓库的实现如下：</p>
+
+<pre><code class="language-java">/** 
+ * 基于Redis的全网爬虫，随机获取爬虫url： 
+ * 
+ * Redis中用来保存url的数据结构如下： 
+ * 1.需要爬取的域名集合（存储数据类型为set，这个需要先在Redis中添加） 
+ *      key 
+ *          spider.website.domains 
+ *      value(set) 
+ *          jd.com  suning.com  gome.com 
+ *      key由常量对象SpiderConstants.SPIDER_WEBSITE_DOMAINS_KEY 获得 
+ * 2.各个域名所对应的高低优先url队列（存储数据类型为list，这个由爬虫程序解析种子url后动态添加） 
+ *      key 
+ *          jd.com.higher 
+ *          jd.com.lower 
+ *          suning.com.higher 
+ *          suning.com.lower 
+ *          gome.com.higher 
+ *          gome.come.lower 
+ *      value(list) 
+ *          相对应需要解析的url列表 
+ *      key由随机的域名 + 常量 SpiderConstants.SPIDER_DOMAIN_HIGHER_SUFFIX或者SpiderConstants.SPIDER_DOMAIN_LOWER_SUFFIX获得 
+ * 3.种子url列表 
+ *      key 
+ *          spider.seed.urls 
+ *      value(list) 
+ *          需要爬取的数据的种子url 
+ *       key由常量SpiderConstants.SPIDER_SEED_URLS_KEY获得 
+ * 
+ *       种子url列表中的url会由url调度器定时向高低优先url队列中 
+ */ 
+public class RandomRedisRepositoryImpl implements IRepository { 
+ 
+    /** 
+     * 构造方法 
+     */ 
+    public RandomRedisRepositoryImpl() { 
+        init(); 
+    } 
+ 
+    /** 
+     * 初始化方法，初始化时，先将redis中存在的高低优先级url队列全部删除 
+     * 否则上一次url队列中的url没有消耗完时，再停止启动跑下一次，就会导致url仓库中有重复的url 
+     */ 
+    public void init() { 
+        Jedis jedis = JedisUtil.getJedis(); 
+        Set&lt;String&gt; domains = jedis.smembers(SpiderConstants.SPIDER_WEBSITE_DOMAINS_KEY); 
+        String higherUrlKey; 
+        String lowerUrlKey; 
+        for(String domain : domains) { 
+            higherUrlKey = domain + SpiderConstants.SPIDER_DOMAIN_HIGHER_SUFFIX; 
+            lowerUrlKey = domain + SpiderConstants.SPIDER_DOMAIN_LOWER_SUFFIX; 
+            jedis.del(higherUrlKey, lowerUrlKey); 
+        } 
+        JedisUtil.returnJedis(jedis); 
+    } 
+ 
+    /** 
+     * 从队列中获取url，目前的策略是： 
+     *      1.先从高优先级url队列中获取 
+     *      2.再从低优先级url队列中获取 
+     *  对应我们的实际场景，应该是先解析完列表url再解析商品url 
+     *  但是需要注意的是，在分布式多线程的环境下，肯定是不能完全保证的，因为在某个时刻高优先级url队列中 
+     *  的url消耗完了，但实际上程序还在解析下一个高优先级url，此时，其它线程去获取高优先级队列url肯定获取不到 
+     *  这时就会去获取低优先级队列中的url，在实际考虑分析时，这点尤其需要注意 
+     * @return 
+     */ 
+    @Override 
+    public String poll() { 
+        // 从set中随机获取一个顶级域名 
+        Jedis jedis = JedisUtil.getJedis(); 
+        String randomDomain = jedis.srandmember(SpiderConstants.SPIDER_WEBSITE_DOMAINS_KEY);    // jd.com 
+        String key = randomDomain + SpiderConstants.SPIDER_DOMAIN_HIGHER_SUFFIX;                // jd.com.higher 
+        String url = jedis.lpop(key); 
+        if(url == null) {   // 如果为null，则从低优先级中获取 
+            key = randomDomain + SpiderConstants.SPIDER_DOMAIN_LOWER_SUFFIX;    // jd.com.lower 
+            url = jedis.lpop(key); 
+        } 
+        JedisUtil.returnJedis(jedis); 
+        return url; 
+    } 
+ 
+    /** 
+     * 向高优先级url队列中添加url 
+     * @param highUrl 
+     */ 
+    @Override 
+    public void offerHigher(String highUrl) { 
+        offerUrl(highUrl, SpiderConstants.SPIDER_DOMAIN_HIGHER_SUFFIX); 
+    } 
+ 
+    /** 
+     * 向低优先url队列中添加url 
+     * @param lowUrl 
+     */ 
+    @Override 
+    public void offerLower(String lowUrl) { 
+        offerUrl(lowUrl, SpiderConstants.SPIDER_DOMAIN_LOWER_SUFFIX); 
+    } 
+ 
+    /** 
+     * 添加url的通用方法，通过offerHigher和offerLower抽象而来 
+     * @param url   需要添加的url 
+     * @param urlTypeSuffix  url类型后缀.higher或.lower 
+     */ 
+    public void offerUrl(String url, String urlTypeSuffix) { 
+        Jedis jedis = JedisUtil.getJedis(); 
+        String domain = SpiderUtil.getTopDomain(url);   // 获取url对应的顶级域名，如jd.com 
+        String key = domain + urlTypeSuffix;            // 拼接url队列的key，如jd.com.higher 
+        jedis.lpush(key, url);                          // 向url队列中添加url 
+        JedisUtil.returnJedis(jedis); 
+    } 
+} 
+</code></pre>
+
+<p>通过代码分析也可以知道，其核心就在如何调度 URL 仓库（Redis）中的 URL。</p>
+
+<p><strong>URL 定时器</strong></p>
+
+<p>一段时间后，高优先级 URL 队列和低优先 URL 队列中的 URL 都会被消费完。</p>
+
+<p>为了让程序可以继续爬取数据，同时减少人为的干预，可以预先在 Redis 中插入种子 URL，之后定时让 URL 定时器从种子 URL 中取出 URL 存放到高优先级 URL 队列中，以此达到程序定时不间断爬取数据的目的。</p>
+
+<p>URL 消费完毕后，是否需要循环不断爬取数据根据个人业务需求而不同，因此这一步不是必需的，只是也提供了这样的操作。</p>
+
+<p>因为事实上，我们需要爬取的数据也是每隔一段时间就会更新的，如果希望我们爬取的数据也跟着定时更新，那么这时定时器就有非常重要的作用了。</p>
+
+<p>不过需要注意的是，一旦决定需要循环重复爬取数据，则在设计存储器实现时需要考虑重复数据的问题，即重复数据应该是更新操作。</p>
+
+<p>目前在我设计的存储器不包括这个功能，有兴趣的朋友可以自己实现，只需要在插入数据前判断数据库中是否存在该数据即可。</p>
+
+<p>另外需要注意的一点是，URL 定时器是一个独立的进程，需要单独启动。</p>
+
+<p>定时器基于 Quartz 实现，下面是其 job 的代码：</p>
+
+<pre><code class="language-java">/** 
+ * 每天定时从url仓库中获取种子url，添加进高优先级列表 
+ */ 
+public class UrlJob implements Job { 
+ 
+    // log4j日志记录 
+    private Logger logger = LoggerFactory.getLogger(UrlJob.class); 
+ 
+    @Override 
+    public void execute(JobExecutionContext context) throws JobExecutionException { 
+        /** 
+         * 1.从指定url种子仓库获取种子url 
+         * 2.将种子url添加进高优先级列表 
+         */ 
+        Jedis jedis = JedisUtil.getJedis(); 
+        Set&lt;String&gt; seedUrls = jedis.smembers(SpiderConstants.SPIDER_SEED_URLS_KEY);  // spider.seed.urls Redis数据类型为set，防止重复添加种子url 
+        for(String seedUrl : seedUrls) { 
+            String domain = SpiderUtil.getTopDomain(seedUrl);   // 种子url的顶级域名 
+            jedis.sadd(domain + SpiderConstants.SPIDER_DOMAIN_HIGHER_SUFFIX, seedUrl); 
+            logger.info(&quot;获取种子:{}&quot;, seedUrl); 
+        } 
+        JedisUtil.returnJedis(jedis); 
+//        System.out.println(&quot;Scheduler Job Test...&quot;); 
+    } 
+ 
+} 
+</code></pre>
+
+<p>调度器的实现如下：</p>
+
+<pre><code class="language-java">/** 
+ * url定时调度器，定时向url对应仓库中存放种子url 
+ * 
+ * 业务规定：每天凌晨1点10分向仓库中存放种子url 
+ */ 
+public class UrlJobScheduler { 
+ 
+    public UrlJobScheduler() { 
+        init(); 
+    } 
+ 
+    /** 
+     * 初始化调度器 
+     */ 
+    public void init() { 
+        try { 
+            Scheduler scheduler = StdSchedulerFactory.getDefaultScheduler(); 
+ 
+            // 如果没有以下start方法的执行，则是不会开启任务的调度 
+            scheduler.start(); 
+ 
+            String name = &quot;URL_SCHEDULER_JOB&quot;; 
+            String group = &quot;URL_SCHEDULER_JOB_GROUP&quot;; 
+            JobDetail jobDetail = new JobDetail(name, group, UrlJob.class); 
+            String cronExpression = &quot;0 10 1 * * ?&quot;; 
+            Trigger trigger = new CronTrigger(name, group, cronExpression); 
+ 
+            // 调度任务 
+            scheduler.scheduleJob(jobDetail, trigger); 
+ 
+        } catch (SchedulerException e) { 
+            e.printStackTrace(); 
+        } catch (ParseException e) { 
+            e.printStackTrace(); 
+        } 
+    } 
+ 
+    public static void main(String[] args) { 
+        UrlJobScheduler urlJobScheduler = new UrlJobScheduler(); 
+        urlJobScheduler.start(); 
+    } 
+ 
+    /** 
+     * 定时调度任务 
+     * 因为我们每天要定时从指定的仓库中获取种子url，并存放到高优先级的url列表中 
+     * 所以是一个不间断的程序，所以不能停止 
+     */ 
+    private void start() { 
+        while (true) { 
+ 
+        } 
+    } 
+}
+</code></pre>
+
+<p><strong>监控报警系统</strong></p>
+
+<p><a href="http://s1.51cto.com/oss/201805/09/b88be51ee744baefd70f4fdb7b4b6891.jpg"><img src="http://s1.51cto.com/oss/201805/09/b88be51ee744baefd70f4fdb7b4b6891.jpg" alt=""/></a></p>
+
+<p>监控报警系统的加入主要是为了让使用者可以主动发现节点宕机，而不是被动地发现，因为实际中爬虫程序可能是持续不断运行的。</p>
+
+<p>并且我们会在多个节点上部署我们的爬虫程序，因此很有必要对节点进行监控，并且在节点出现问题时可以及时发现并修正，需要注意的是，监控报警系统是一个独立的进程，需要单独启动。</p>
+
+<p><strong>基本原理</strong></p>
+
+<p>首先需要先在 ZooKeeper 中创建一个 /ispider 节点：</p>
+
+<pre><code class="language-log">[zk: localhost:2181(CONNECTED) 1] create /ispider ispider 
+Created /ispider 
+</code></pre>
+
+<p>监控报警系统的开发主要依赖于 ZooKeeper 实现，监控程序对 ZooKeeper  下面的这个节点目录进行监听：</p>
+
+<pre><code class="language-log">[zk: localhost:2181(CONNECTED) 0] ls /ispider  
+[] 
+</code></pre>
+
+<p>爬虫程序启动时会在该节点目录下注册一个临时节点目录：</p>
+
+<pre><code class="language-log">[zk: localhost:2181(CONNECTED) 0] ls /ispider  
+[192.168.43.166] 
+</code></pre>
+
+<p>当节点出现宕机时，该临时节点目录就会被 ZooKeeper 删除。</p>
+
+<pre><code class="language-log">[zk: localhost:2181(CONNECTED) 0] ls /ispider 
+[]
+</code></pre>
+
+<p>同时因为我们监听了节点目录 /ispider，所以当 ZooKeeper 删除其下的节点目录时（或增加一个节点目录），ZooKeeper 会给我们的监控程序发送通知。</p>
+
+<p>即我们的监控程序会得到回调，这样便可以在回调程序中执行报警的系统动作，从而完成监控报警的功能。</p>
+
+<p><strong>ZooKeeper Java API 使用说明</strong></p>
+
+<p>可以使用 ZooKeeper 原生的 Java API，我在另外写的一个 RPC 框架（底层基于 Netty 实现远程通信）中就是使用原生的 API。</p>
+
+<p>不过显然代码会复杂很多，并且本身需要对 ZooKeeper 有更多的学习和了解，这样用起来才会容易一些。</p>
+
+<p>所以为了降低开发的难度，这里使用第三方封装的 API，即 curator，来进行 ZooKeeper 客户端程序的开发。</p>
+
+<p><strong>爬虫系统 ZooKeeper 注册</strong></p>
+
+<p>在启动爬虫系统时，我们的程序都会启动一个 ZooKeeper 客户端来向 ZooKeeper 来注册自身的节点信息，主要是 IP 地址。</p>
+
+<p>并在 /ispider 节点目录创建一个以该爬虫程序所在的节点 IP 地址命名的节点，如 /ispider/192.168.43.116，实现的代码如下：</p>
+
+<pre><code class="language-java">/** 
+ * 注册zk 
+ */ 
+private void registerZK() { 
+    String zkStr = &quot;uplooking01:2181,uplooking02:2181,uplooking03:2181&quot;; 
+    int baseSleepTimeMs = 1000; 
+    int maxRetries = 3; 
+    RetryPolicy retryPolicy = new ExponentialBackoffRetry(baseSleepTimeMs, maxRetries); 
+    CuratorFramework curator = CuratorFrameworkFactory.newClient(zkStr, retryPolicy); 
+    curator.start(); 
+    String ip = null; 
+    try { 
+        // 向zk的具体目录注册 写节点 创建节点 
+        ip = InetAddress.getLocalHost().getHostAddress(); 
+        curator.create().withMode(CreateMode.EPHEMERAL).forPath(&quot;/ispider/&quot; + ip, ip.getBytes()); 
+    } catch (UnknownHostException e) { 
+        e.printStackTrace(); 
+    } catch (Exception e) { 
+        e.printStackTrace(); 
+    } 
+} 
+</code></pre>
+
+<p>应该注意到的是，我们创建的节点为临时节点，要想实现监控报警功能，必须要为临时节点。</p>
+
+<p><strong>监控程序</strong></p>
+
+<p>首先需要先监听 ZooKeeper 中的一个节点目录，在我们的系统中，设计是监听 /ispider 这个节点目录：</p>
+
+<pre><code class="language-java">public SpiderMonitorTask() { 
+    String zkStr = &quot;uplooking01:2181,uplooking02:2181,uplooking03:2181&quot;; 
+    int baseSleepTimeMs = 1000; 
+    int maxRetries = 3; 
+    RetryPolicy retryPolicy = new ExponentialBackoffRetry(baseSleepTimeMs, maxRetries); 
+    curator = CuratorFrameworkFactory.newClient(zkStr, retryPolicy); 
+    curator.start(); 
+    try { 
+        previousNodes = curator.getChildren().usingWatcher(this).forPath(&quot;/ispider&quot;); 
+    } catch (Exception e) { 
+        e.printStackTrace(); 
+    } 
+} 
+</code></pre>
+
+<p>在上面注册了 ZooKeeper 中的 watcher，也就是接收通知的回调程序，在该程序中，执行我们报警的逻辑：</p>
+
+<pre><code class="language-java">/** 
+ * 这个方法，当监控的zk对应的目录一旦有变动，就会被调用 
+ * 得到当前最新的节点状态，将最新的节点状态和初始或者上一次的节点状态作比较，那我们就知道了是由谁引起的节点变化 
+ * @param event 
+ */ 
+@Override 
+public void process(WatchedEvent event) { 
+    try { 
+        List&lt;String&gt; currentNodes = curator.getChildren().usingWatcher(this).forPath(&quot;/ispider&quot;); 
+        //            HashSet&lt;String&gt; previousNodesSet = new HashSet&lt;&gt;(previousNodes); 
+        if(currentNodes.size() &gt; previousNodes.size()) { // 最新的节点服务，超过之前的节点服务个数，有新的节点增加进来 
+            for(String node : currentNodes) { 
+                if(!previousNodes.contains(node)) { 
+                    // 当前节点就是新增节点 
+                    logger.info(&quot;----有新的爬虫节点{}新增进来&quot;, node); 
+                } 
+            } 
+        } else if(currentNodes.size() &lt; previousNodes.size()) {  // 有节点挂了    发送告警邮件或者短信 
+            for(String node : previousNodes) { 
+                if(!currentNodes.contains(node)) { 
+                    // 当前节点挂掉了 得需要发邮件 
+                    logger.info(&quot;----有爬虫节点{}挂掉了&quot;, node); 
+                    MailUtil.sendMail(&quot;有爬虫节点挂掉了，请人工查看爬虫节点的情况，节点信息为：&quot;, node); 
+                } 
+            } 
+        } // 挂掉和新增的数目一模一样，上面是不包括这种情况的，有兴趣的朋友可以直接实现包括这种特殊情况的监控 
+        previousNodes = currentNodes;   // 更新上一次的节点列表，成为最新的节点列表 
+    } catch (Exception e) { 
+        e.printStackTrace(); 
+    } 
+    // 在原生的API需要再做一次监控，因为每一次监控只会生效一次，所以当上面发现变化后，需要再监听一次，这样下一次才能监听到 
+    // 但是在使用curator的API时则不需要这样做 
+} 
+</code></pre>
+
+<p>当然，判断节点是否挂掉，上面的逻辑还是存在一定的问题的，按照上面的逻辑，假如某一时刻新增节点和删除节点事件同时发生，那么其就不能判断出来，所以如果需要更精准的话，可以将上面的程序代码修改一下。</p>
+
+<p><strong>邮件发送模块</strong></p>
+
+<p>使用模板代码就可以了，不过需要注意的是，在使用时，发件人的信息请使用自己的邮箱。</p>
+
+<p><a href="http://s2.51cto.com/oss/201805/09/b712e7d28dd46deef7ca2d44c853d548.jpg"><img src="http://s2.51cto.com/oss/201805/09/b712e7d28dd46deef7ca2d44c853d548.jpg" alt=""/></a></p>
+
+<p>下面是爬虫节点挂掉时接收到的邮件：</p>
+
+<p>实际上，如果购买了短信服务，那么通过短信 API 也可以向我们的手机发送短信。</p>
+
+<p><strong>实战：爬取京东、苏宁易购全网手机商品数据</strong></p>
+
+<p>因为前面在介绍这个系统的时候也提到了，我只写了京东和苏宁易购的网页解析器，所以接下来也就是爬取其全网的手机商品数据。</p>
+
+<p><strong>环境说明</strong></p>
+
+<p>需要确保 Redis、ZooKeeper 服务可用，另外如果需要使用 HBase 来存储数据，需要确保 Hadoop 集群中的 HBase 可用，并且相关配置文件已经加入到爬虫程序的 classpath 中。</p>
+
+<p>还有一点需要注意的是，URL 定时器和监控报警系统是作为单独的进程来运行的，并且也是可选的。</p>
+
+<p><strong>爬虫结果</strong></p>
+
+<p>进行了两次爬取，分别尝试将数据保存到 MySQL 和 HBase 中，给出如下数据情况。</p>
+
+<p><strong>保存到 MySQL</strong></p>
+
+<pre><code class="language-log">mysql&gt; select count(*) from phone; 
++----------+ 
+| count(*) | 
++----------+ 
+|    12052 | 
++----------+ 
+1 row in set 
+ 
+mysql&gt; select count(*) from phone where source=&#39;jd.com&#39;; 
++----------+ 
+| count(*) | 
++----------+ 
+|     9578 | 
++----------+ 
+1 row in set 
+ 
+mysql&gt; select count(*) from phone where source=&#39;suning 
+.com&#39;; 
++----------+ 
+| count(*) | 
++----------+ 
+|     2474 | 
++----------+ 
+1 row in set 
+</code></pre>
+
+<p>在可视化工具中查看数据情况：</p>
+
+<p><a href="http://s4.51cto.com/oss/201805/09/a8e4c845fd594da5c2b4683c11bcc6b9.jpg"><img src="http://s4.51cto.com/oss/201805/09/a8e4c845fd594da5c2b4683c11bcc6b9.jpg" alt=""/></a></p>
+
+<p><strong>保存到 HBase</strong></p>
+
+<pre><code class="language-log">hbase(main):225:0* count &#39;phone&#39; 
+Current count: 1000, row: 11155386088_jd.com 
+Current count: 2000, row: 136191393_suning.com 
+Current count: 3000, row: 16893837301_jd.com 
+Current count: 4000, row: 19036619855_jd.com 
+Current count: 5000, row: 1983786945_jd.com 
+Current count: 6000, row: 1997392141_jd.com 
+Current count: 7000, row: 21798495372_jd.com 
+Current count: 8000, row: 24154264902_jd.com 
+Current count: 9000, row: 25687565618_jd.com 
+Current count: 10000, row: 26458674797_jd.com 
+Current count: 11000, row: 617169906_suning.com 
+Current count: 12000, row: 769705049_suning.com                  
+12348 row(s) in 1.5720 seconds 
+=&gt; 12348 
+</code></pre>
+
+<p>在 HDFS 中查看数据情况：</p>
+
+<p><a href="http://s1.51cto.com/oss/201805/09/ba11fe651d6475f644c075a3785644ae.jpg"><img src="http://s1.51cto.com/oss/201805/09/ba11fe651d6475f644c075a3785644ae.jpg" alt=""/></a></p>
+
+<p><strong>数据量与实际情况分析</strong></p>
+
+<p><a href="http://s2.51cto.com/oss/201805/09/74dc0bac52bd31c289be2c137db670a7.jpg"><img src="http://s2.51cto.com/oss/201805/09/74dc0bac52bd31c289be2c137db670a7.jpg" alt=""/></a></p>
+
+<p>京东：京东手机的列表大概有 160 多页，每个列表有 60 个商品数据，所以总量在 9600 左右，我们的数据基本是符合的。</p>
+
+<p>后面通过日志分析可以知道，一般丢失的数据为连接超时导致的，所以在选取爬虫的环境时，更建议在网络环境好的主机上进行。</p>
+
+<p>同时如果可以有 IP 代理地址库就更好了，另外对于连接超时的情况，可以进一步在我们的程序中加以控制。</p>
+
+<p>一旦出现爬取数据失败的 URL，可以将其加入到重试 URL 队列中，目前这一点功能我是没有做，有兴趣的同学可以试一下。</p>
+
+<p>苏宁易购：再来看看苏宁的数据，其有 100 页左右的手机列表，每页也是 60 个商品数据，所以总量在 6000 左右。</p>
+
+<p>但可以看到，我们的数据却只有 3000 这样的数量级（缺少的依然是频繁爬取造成的连接失败问题），这是为什么呢？</p>
+
+<p>这是因为，打开苏宁的某个列表页面后，其是先加载 30 个商品，当鼠标向下滑动时，才会通过另外的 API 去加载其他的 30 个商品数据，每一个列表页面都是如此，所以，实际上，我们是缺少了一半的商品数据没有爬取。</p>
+
+<p>知道这个原因之后，实现也不难，但是因为时间关系，我就没有做了，有兴趣的朋友折腾一下吧。</p>
+
+<p><strong>通过日志分析爬虫系统的性能</strong></p>
+
+<p>在我们的爬虫系统中，每个关键的地方，如网页下载、数据解析等都是有打 logger 的，所以通过日志，可以大概分析出相关的时间参数。</p>
+
+<pre><code class="language-log">2018-04-01 21:26:03 [pool-1-thread-1] [cn.xpleaf.spider.utils.HttpUtil] [INFO] - 下载网页：https://list.jd.com/list.html?cat=9987,653,655&amp;page=1，消耗时长：590 ms，代理信息：null:null 
+2018-04-01 21:26:03 [pool-1-thread-1] [cn.xpleaf.spider.core.parser.Impl.JDHtmlParserImpl] [INFO] - 解析列表页面:https://list.jd.com/list.html?cat=9987,653,655&amp;page=1, 消耗时长:46ms 
+2018-04-01 21:26:03 [pool-1-thread-3] [cn.xpleaf.spider.core.parser.Impl.SNHtmlParserImpl] [INFO] - 解析列表页面:https://list.suning.com/0-20006-0.html, 消耗时长:49ms 
+2018-04-01 21:26:04 [pool-1-thread-5] [cn.xpleaf.spider.utils.HttpUtil] [INFO] - 下载网页：https://item.jd.com/6737464.html，消耗时长：219 ms，代理信息：null:null 
+2018-04-01 21:26:04 [pool-1-thread-2] [cn.xpleaf.spider.utils.HttpUtil] [INFO] - 下载网页：https://list.jd.com/list.html?cat=9987,653,655&amp;page=2&amp;sort=sort_rank_asc&amp;trans=1&amp;JL=6_0_0，消耗时长：276 ms，代理信息：null:null 
+2018-04-01 21:26:04 [pool-1-thread-4] [cn.xpleaf.spider.utils.HttpUtil] [INFO] - 下载网页：https://list.suning.com/0-20006-99.html，消耗时长：300 ms，代理信息：null:null 
+2018-04-01 21:26:04 [pool-1-thread-4] [cn.xpleaf.spider.core.parser.Impl.SNHtmlParserImpl] [INFO] - 解析列表页面:https://list.suning.com/0-20006-99.html, 消耗时长:4ms 
+...... 
+2018-04-01 21:27:49 [pool-1-thread-3] [cn.xpleaf.spider.utils.HttpUtil] [INFO] - 下载网页：https://club.jd.com/comment/productCommentSummaries.action?referenceIds=23934388891，消耗时长：176 ms，代理信息：null:null 
+2018-04-01 21:27:49 [pool-1-thread-3] [cn.xpleaf.spider.core.parser.Impl.JDHtmlParserImpl] [INFO] - 解析商品页面:https://item.jd.com/23934388891.html, 消耗时长:413ms 
+2018-04-01 21:27:49 [pool-1-thread-2] [cn.xpleaf.spider.utils.HttpUtil] [INFO] - 下载网页：https://review.suning.com/ajax/review_satisfy/general-00000000010017793337-0070079092-----satisfy.htm，消耗时长：308 ms，代理信息：null:null 
+2018-04-01 21:27:49 [pool-1-thread-2] [cn.xpleaf.spider.core.parser.Impl.SNHtmlParserImpl] [INFO] - 解析商品页面:https://product.suning.com/0070079092/10017793337.html, 消耗时长:588ms 
+...... 
+</code></pre>
+
+<p>平均下来，下载一个商品网页数据的时间在 200~500 毫秒不等，当然这个还需要取决于当时的网络情况。</p>
+
+<p>另外，如果想要真正计算爬取一个商品的时间数据，可以通过日志下面的数据来计算：</p>
 
 <ul>
-<li>  I 从缓存 A 读数据库，有则直接返回</li>
-<li>  II A 没有数据，直接从 B 读数据，直接返回，并且异步启动一个更新线程。</li>
-<li>  III 更新线程同时更新缓存 A 和缓存 B。</li>
+<li>  下载一个商品页面数据的时间</li>
+<li>  获取价格数据的时间</li>
+<li>  获取评论数据的时间</li>
 </ul>
 
-<h3 id="toc_11">8、如何解决 redis 的并发竞争 key 问题</h3>
+<p>在我的主机上（CPU：E5 10 核心，内存：32GB，分别开启 1 个虚拟机和 3 个虚拟机），情况如下：</p>
 
-<p><strong>分析</strong>: 这个问题大致就是，同时有多个子系统去 set 一个 key。这个时候要注意什么呢？大家思考过么。需要说明一下，博主提前百度了一下，发现答案基本都是推荐用 redis 事务机制。博主<strong>不推荐使用 redis 的事务机制。</strong>因为我们的生产环境，基本都是 redis 集群环境，做了数据分片操作。你一个事务中有涉及到多个 key 操作的时候，这多个 key 不一定都存储在同一个 redis-server 上。因此，<strong>redis 的事务机制，十分鸡肋。</strong><br/>
-<strong>回答:</strong> 如下所示<br/>
-(1) 如果对这个 key 操作，<strong>不要求顺序</strong><br/>
-这种情况下，准备一个分布式锁，大家去抢锁，抢到锁就做 set 操作即可，比较简单。<br/>
-(2) 如果对这个 key 操作，<strong>要求顺序</strong><br/>
-假设有一个 key1, 系统 A 需要将 key1 设置为 valueA, 系统 B 需要将 key1 设置为 valueB, 系统 C 需要将 key1 设置为 valueC.<br/>
-期望按照 key1 的 value 值按照 valueA--&gt;valueB--&gt;valueC 的顺序变化。这种时候我们在数据写入数据库的时候，需要保存一个时间戳。假设时间戳如下</p>
+<p><a href="http://s3.51cto.com/oss/201805/09/8d3ba912a8b3845ea1943d97c66b5e80.jpg"><img src="http://s3.51cto.com/oss/201805/09/8d3ba912a8b3845ea1943d97c66b5e80.jpg" alt=""/></a></p>
 
-<pre><code>系统A key 1 {valueA  3:00}
-系统B key 1 {valueB  3:05}
-系统C key 1 {valueC  3:10}
-</code></pre>
+<p>可以看到，当使用 3 个节点时，时间并不会相应地缩小为原来的 1/3，这是因为此时影响爬虫性能的问题主要是网络问题，节点数量多，线程数量大，网络请求也多。</p>
 
-<p>那么，假设这会系统 B 先抢到锁，将 key1 设置为 {valueB 3:05}。接下来系统 A 抢到锁，发现自己的 valueA 的时间戳早于缓存中的时间戳，那就不做 set 操作了。以此类推。</p>
+<p>但是带宽一定，并且在没有使用代理的情况，请求频繁，连接失败的情况也会增多，对时间也有一定的影响，如果使用随机代理库，情况将会好很多。</p>
 
-<p>其他方法，比如利用队列，将 set 方法变成串行访问也可以。总之，灵活变通。</p>
+<p>但可以肯定的是，在横向扩展增加爬虫节点之后，确实可以大大缩小我们的爬虫时间，这也是分布式爬虫系统的好处。</p>
 
-<h2 id="toc_12">总结</h2>
+<p><strong>爬虫系统中使用的反反爬虫策略</strong></p>
 
-<p>本文对 redis 的常见问题做了一个总结。大部分是博主自己在工作中遇到，以及以前面试别人的时候，爱问的一些问题。另外，<strong>不推荐大家临时抱佛脚</strong>，真正碰到一些有经验的工程师，其实几下就能把你问懵。最后，希望大家有所收获吧。</p>
+<p>在整个爬虫系统的设计中，主要使用下面的策略来达到反反爬虫的目的：</p>
+
+<ul>
+<li>  使用代理来访问 --&gt;IP 代理库，随机 IP 代理。</li>
+<li>  随机顶级域名 url 访问 --&gt;url 调度系统。</li>
+<li>  每个线程每爬取完一条商品数据 sleep 一小段时间再进行爬取。</li>
+</ul>
+
+<p><strong>总结</strong></p>
+
+<p>需要说明的是，本系统是基于 Java 实现的，但个人觉得，语言本身依然不是问题，核心在于对整个系统的设计以及理解上。</p>
+
+<p>写此文章是希望分享这样一种分布式爬虫系统的架构给大家，如果对源代码感兴趣，可以到我的 GitHub 上查看。</p>
 
                         
                       </div>
@@ -307,7 +1090,7 @@ ps：如果没有设置 expire 的 key, 不满足先决条件 (prerequisites); �
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/6/5</span>
+                    <span class="date">2018/6/7</span>
                     <span>posted in&nbsp;</span> 
           				  
           					    <span class="posted-in"><a href='Modeling.html'>Modeling</a></span>
@@ -400,31 +1183,31 @@ ps：如果没有设置 expire 的 key, 不满足先决条件 (prerequisites); �
 	      
 		      
 			      <li class="post">
-			        <a href="15459058392039.html">Reliable Domain Events</a>
+			        <a href="15517999043443.html">The Art of Crafting Architectural Diagrams</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
+			        <a href="15517997955971.html">为什么说我们需要软件架构图？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
+			        <a href="15516128677869.html">DNS Servers That Offer Privacy and Filtering</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
+			        <a href="15516123108194.html">Airbnb's Migration from Monolith to Services</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
+			        <a href="15516097487470.html">Events As First-Class Citizens</a>
 			      </li>
 		     
 		  

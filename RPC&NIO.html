@@ -105,429 +105,183 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15401080666894.html">
+                <a class="clearlink" href="15503695043576.html">
                 
-                  <h1>Thread Pools in NGINX Boost Performance 9x!</h1>
+                  <h1>Netty 的资源泄露探测机制</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
-                        	<blockquote>
-<p><a href="https://www.nginx.com/blog/thread-pools-boost-performance-9x/">https://www.nginx.com/blog/thread-pools-boost-performance-9x/</a></p>
-</blockquote>
-
-<p>It’s well known that NGINX uses an <a href="http://nginx.com/blog/inside-nginx-how-we-designed-for-performance-scale/">asynchronous, event‑driven approach to handling connections</a>. This means that instead of creating another dedicated process or thread for each request (like servers with a traditional architecture), it handles multiple connections and requests in one worker process. To achieve this, NGINX works with sockets in a non‑blocking mode and uses efficient methods such as <a href="http://man7.org/linux/man-pages/man7/epoll.7.html">epoll</a> and <a href="https://www.freebsd.org/cgi/man.cgi?query=kqueue">kqueue</a>.</p>
-
-<p>Because the number of full‑weight processes is small (usually only one per CPU core) and constant, much less memory is consumed and CPU cycles aren’t wasted on task switching. The advantages of such an approach are well‑known through the example of NGINX itself. It successfully handles millions of simultaneous requests and scales very well.</p>
-
-<p><img src="media/15401080666894/15401081464365.jpg" alt=""/></p>
+                        	<pre><code>2017/11/11
+</code></pre>
 
 <blockquote>
-<p>Each process consumes additional memory, and each switch between them consumes CPU cycles and trashes L‑caches</p>
+<p>原文地址 <a href="https://ylgrgyq.github.io/2017/11/11/netty-resource-leack-detector/">https://ylgrgyq.github.io/2017/11/11/netty-resource-leack-detector/</a></p>
 </blockquote>
 
-<p>But the asynchronous, event‑driven approach still has a problem. Or, as I like to think of it, an “enemy”. And the name of the enemy is: <strong>blocking</strong>. Unfortunately, many third‑party modules use blocking calls, and users (and sometimes even the developers of the modules) aren’t aware of the drawbacks. Blocking operations can ruin NGINX performance and must be avoided at all costs.</p>
+<p>这里资源泄露主要是指某个对象占用有某些资源，比如连接、内存等，在这个对象被 GC 之前，必须主动执行一个方法，如 close、release 之类的，将其占用的资源释放出来，该对象才能被安全的 GC。否则就会出现资源泄露，比如连接没有关闭，内存没有释放。随着服务的运行，泄露的资源由于无法被释放，整个服务占用的资源就会越来越多，最终让服务无法分配新资源，导致服务异常。</p>
 
-<p>Even in the current official NGINX code it’s not possible to avoid blocking operations in every case, and to solve this problem the new “thread pools” mechanism was <a href="http://hg.nginx.org/nginx/rev/466bd63b63d1">implemented in NGINX version 1.7.11</a> and <a href="http://nginx.com/blog/nginx-plus-r7-released/#thread-pools">NGINX Plus Release 7</a>. What it is and how it supposed to be used, we will cover later. Now let’s meet face to face with our enemy.</p>
+<p>Netty 中有个 ResourceLeakDetector，能对占用资源的对象进行监控，如果对象被 GC 之前没有主动释放资源，则 ResourceLeakDetector 会发现这个泄露，并会以打印日志的方式告知给开发者。ResourceLeakDetector 可以保护任何一个可能出现泄露的资源，不过在 Netty 中 ResourceLeakDetector 最主要的使用场所还是去保护、记录 Netty 使用的各种 ByteBuf。无论是 Pooled 还是 Unpooled，无论是 Direct 还是 Heap，所有的 ByteBuf 都要被 ResourceLeakDetector 记录起来，从而在开发者出现忘记为 ByteBuf 调用 release 的时候，通过日志告知开发者有泄露，要求开发者来排查问题。如果出现泄露，就可能会出现比如 Pooled ByteBuf 对象没有放入 Pool 中就被 GC，或者 Direct ByteBuf 没有执行释放内存的方法就被 GC 的情况。因为 Netty 大量使用 ByteBuf，如果 ByteBuf 出现泄露，则服务很容易出现 OOM。</p>
 
-<p><u>Editor – For an overview of NGINX Plus R7, see <a href="https://www.nginx.com/blog/nginx-plus-r7-released/">Announcing NGINX Plus R7</a> on our blog.</u></p>
+<h2 id="toc_0">老版本的 ResourceLeakDetector 的使用</h2>
 
-<p>_For detailed discussions of other new features in NGINX Plus R7, see these related blog posts:</p>
+<p>在大概 2016 年 12 月的时候，Netty 对 ResourceLeakDetector 做了改动，修复了一个隐藏很久的 Bug。对于这个稍后再说，新老版本在使用上差别不大，所以我们还是先看老版本的 ResourceLeakDetector，先看看它是怎么使用的，之后再说说这个 Bug 是怎么回事，怎么被修复的。</p>
+
+<p>首先，你需要有个待保护的 Resource，这个 Resource 可以有各种功能，但肯定要有个 close 或者 release 方法，需要在不再使用这个 Resource 的时候记得执行一下，释放资源。忘记释放就会造成资源泄露。</p>
+
+<pre><code class="language-java">interface Resource {
+  boolean close();
+}
+</code></pre>
+
+<p>为了提醒我们要记得释放资源，我们用 ResourceLeakDetector 协助我们做检查。比如我们有个资源 DefaultResource:</p>
+
+<pre><code class="language-java">class DefaultResource implements Resource {
+  static final ResourceLeakDetector&lt;Resource&gt; leakDetector = new ResourceLeakDetector&lt;Resource&gt;(Resource.class);
+  public boolean close() {
+    // .... 有一堆释放资源的工作
+  }
+}
+</code></pre>
+
+<p>我们需要在申请出资源之后，将资源交给 DefaultResource 内的 leakDetector 做登记：</p>
+
+<pre><code class="language-java">// 比如我们就这么拿到一个资源
+DefaultResource rsc = ResourceFactory.get();
+// 交给 leakDetector 做登记
+ResourceLeak leak = DefaultResource.leakDetector.open(rsc)
+</code></pre>
+
+<p>相当于每申请一个资源后，就将资源交给 leakDetector 做登记，并且在释放资源的时候，不但要执行 rsc.close() 清理资源，还要执行 leak.close() 将 leakDetector 登记的记录销毁，所以最好是不直接使用 DefaultResource 而是对其用 Decorator 包装一下，从而将这两步 close 操作封装为一步操作，用户使用 Decorator 去执行 close 时就将 leak 和资源都 close，从而完成资源清理和 leakDetector 的注销。</p>
+
+<pre><code class="language-java">class LeakAwareResource implements Resource {
+  Resource rsc;
+  ResourceLeak leak;
+  LeakAwareResource(Resource rsc, ResourceLeak leak){
+    this.rsc = rsc;
+    this.leak = leak
+  }
+  @Override
+  public boolean close() {
+    boolean closed = this.rsc.close()
+    if (closed){
+      // 需要 rsc 释放完了之后再 close leak
+      this.leak.close();
+    }
+    return closed;
+  }
+}
+</code></pre>
+
+<p>用户使用的时候直接使用 LeakAwareResource 即可，释放资源时执行它的 close 方法，将资源释放，也将 leakDetector 登记的记录清理。忘记执行 LeakAwareResource 的 close 的话，该对象在被 GC 的时候，leakDetector 会有一定概率能发现这个泄露并打印日志。一定概率是因为 ResourceLeakDetector 记录资源泄露是有开销的，所以是抽样的做记录，不是所有泄露都能被抓住，但基本上如果有泄露使用久了总能被发现。</p>
+
+<h2 id="toc_1">老版本的 ResourceLeakDetector 实现</h2>
+
+<p>ResourceLeakDetector 使用虽然是有一些额外工作需要做，但总体来看不算太麻烦，再看看其实现方法。上面 <code>DefaultResource.leakDetector.open(rsc)</code> 返回的 ResourceLeak 是一个 PhantomReference，它指向被检查的资源 rsc，也就是一个 DefaultResource 对象。如下图：</p>
+
+<p><img src="media/15503695043576/15503753321677.jpg" alt=""/></p>
+
+<p>PhantomReference 不影响 DefaultResource 的 GC，DefaultResource 被 GC 后，指向它的 PhantomReference (即 ResourceLeak) 会被塞到一个指定队列里，消费这个队列就能拿到 PhantomReference 。如果按照上面 LeakAwareResource 的实现，DefaultResource 总是和 PhantomReference 一起创建，并且 DefaultResource close 时也会执行与其绑定的 PhantomReference 的 close。就能在这个 PhantomReference (ResourceLeak) 内记录有没有执行过 close 这个事情，等 DefaultResource 被 GC 后，从队列中依次读取所有 PhantomReference，并判断里面 close 标识是否置位，发现没置位的 close 就说明该 PhantomReference 曾经指向的 DefaultResource 没有执行 close 就被 GC 了，就存在泄漏，需要打日志报警。</p>
+
+<p>从 PhantomReference 拿不到 DefaultResource 状态，但是在 DefaultResource 被 GC 后，队列内取到 PhantomReference 内部状态是全的。为了在 DefaultResource 出现泄露时候报警打日志，可以在 PhantomReference 里记录所有操作 DefaultResource 的 Stack，从而在有泄露的时候将这些 Stack 打印出来，以追踪问题。</p>
+
+<p>打印堆栈开销很大，并且这个 Leak Detector 是即使服务工作正常，最好也开着以捕获意外的泄露，所以上面提到了 Netty 内部以采样的方式为 ByteBuf 设置 Detector，并提供了很多 Detection 级别，默认是 SIMPLE，还有 ADVANCE，PARANOID，级别越高采样比率越大，记录 Stack 的开销也越大。调整方法是调整 <code>io.netty.leakDetection.level</code> 这个参数，或者老版本 Netty 是这个 <code>-Dio.netty.leakDetectionLevel</code> 。这个参数一般没有泄露不会调整。</p>
+
+<p>每次操作 Resource 留下的 Stack 记录叫做 record，除了采样比率之外，Netty 还能调整 Record 数量。比如一个 ByteBuf 操作次数比较多，默认的最大 record 数量 4 个不够，就需要调整 record 数，从而排查问题。调整的参数是 <code>-Dio.netty.leakDetection.maxRecords</code> 。这个参数比 detection level 更少调整，只有在发现有泄露，并且提示说 record 数量不足，不足以定位问题的时候才需要调整，正常情况下完全不用动。</p>
+
+<h3 id="toc_2">保证 PhantomReference 不会提前被 GC</h3>
+
+<p>上面提到，DefaultReference 被 GC 后，Phantom Reference 队列能取到指向它的 PhantomReference，并且 PhantomReference 如果内部有其它字段、状态的话此时都是能读取到的。但这个保证是需要有前提的，前提就是有 GC Root 能指向这个 PhantomReference，不能出现 DefaultReference 还未被 GC 或者 DefaultResource 被 GC 还未来得及处理 Phantom Reference 队列时，PhantomReference 自己就因为没有 GC Root 指向而被 GC 掉。</p>
+
+<p>所以，ReferenceDetector 内是有个 static 的链表，每次执行 <code>DefaultResource.leakDetector.open(rsc)</code> 构造出新的 PhantomReference 的时候，会将这个 Reference 塞到这个 static 的链表当中，只有调用 leak.close() 时，才会将 PhantomReference 从链表上摘下，才能被 GC。从而保证了如果出现泄露忘记执行 LeakAwareResource 的 close，则 PhantomReference 不会在其指向的 DefaultResource 被 GC 前 GC。从而实现 ReferenceDetector 的功能。</p>
+
+<h2 id="toc_3">老版本 ResourceLeakDetector 的 Bug</h2>
+
+<p>这个 Bug 藏的非常隐晦，所以很多很多年都没有被发现。Bug 的现象是即使记得调用了 LeakAwareResource 的 close，释放了 Resource，但 Netty 的 ReferenceDetector 还是会错误报出发现内存泄露。也就是说 DefaultReference 执行了 close，但在 <code>leak.close()</code> 执行之前，DefaultResource 就被 GC 了，且指向它的 PhantomReference 被从队列中拿了出来，发现该 PhantomReference (其实是 ResourceLeak) 内的 closed 标识未置位，从而错误报出有内存泄露。</p>
+
+<p>来看看之前 LeakAwareResource 的实现。LeakAwareResource 是 Netty 内 SimpleLeakAwareByteBuf 的简化版本，和 Netty 的实现逻辑是一样的。</p>
+
+<pre><code class="language-java">class LeakAwareResource implements Resource {
+  // ..... 和前面一样
+  @Override
+  public boolean close() {
+    boolean closed = this.rsc.close()
+    if (closed){
+      // 需要 rsc 释放完了之后再 close leak
+      this.leak.close();
+    }
+    return closed;
+  }
+}
+</code></pre>
+
+<p>看上去只要 <code>this.rsc.close()</code> 成功，则一定会执行 this.leak.close()。但是由于 JIT/GC 的存在，在 <code>this.rsc.close()</code> 执行后，JVM 会推算出代码不再需要 this.rsc 所指的对象了，所以在执行 <code>this.leak.close()</code> 之前就将 <code>this.rsc</code> 指向的对象 DefaultResource 直接 GC 掉，此时如果有另外的线程在执行处理 PhantomReference 队列的逻辑，就会从队列中拿到指向刚被 GC 掉的 DefaultResource 的 PhantomReference。此时 <code>this.leak.close()</code> 还未执行，所以会报出内存泄露，而实际上 <code>this.leak.close()</code>终究是会被执行的。并且 DefaultReference 也已经成功执行过 <code>close()</code> 方法。</p>
+
+<p>这种 Bug 感觉就是传说中的 Heisenbug，如果你手工调试，或者在执行 <code>this.leak.close()</code>之前检查 this.rsc 的状态，你一定无法发现这个 Bug，因为会影响 JIT/GC 的工作。你的探测会导致程序行为变化，使 Bug 隐藏起来，不探测的时候 Bug 又会出现。想眼睁睁的看着 Bug 一步一步的复现是不可能的。这个 Bug 修复之后 Netty 也增加了测试，测试也只是调整线程数，调整 ReferenceDetector 探测级别，让一堆线程不断的重复构造 Resource 又释放，看看是否出现误报。</p>
+
+<h2 id="toc_4">新版本的 ResourceLeakDetector</h2>
+
+<p>该怎么修上面那个 Bug 呢？修复就是要保证 <code>this.rsc.close()</code> 执行完，还要骗过 JVM 让它误认为你还需要 <code>this.rsc</code> 指向的对象，不要将其 GC 掉。需要再说明一下，我这里所说的老版本代码基于 v4.0.28，新版本代码基于 v4.1.9。在 v4.1.9 后，ResourceLeakDetector 又做了很多性能上的优化，只是这里为了不引入太多东西看着复杂，所以不再说后来优化的事情了，在最下边参考里有列出性能优化的 PR，有兴趣的可以看看。</p>
+
+<p>老版本 ResourceLeakDetector 内 ResourceLeak 的 close 实现大致如下：</p>
+
+<pre><code class="language-java">public boolean close() {
+  if (markFreed()) {
+    synchronized (link) {
+      removeThisReferenceFromLink(link)
+    }
+    return true;
+  }
+  return false
+}
+</code></pre>
+
+<p>即先标记 ResourceLeak 为 free，再将其从 ResourceLeakDetector 内 static 的链表上移除。移除后 ResourceLeak 这个 PhantomReference 就能被安全 GC 了。</p>
+
+<p>新版本 ResourceLeakDetector 的实现大致是：</p>
+
+<pre><code class="language-java">public boolean close() {
+  allLeaks.remove(this, LeakEntry.INSTANCE);
+}
+public boolean close(T trackedObject) {
+  close() &amp;&amp; trackedObject != null;
+}
+</code></pre>
+
+<p>一方面 ResourceLeakDetector 内存放 PhantomReference 的不再是链表，而是一个 ConcurrentHashMap。并发时清理 PhantomReference 效率有所提升。</p>
+
+<p>再一个就是对使用者来说，都要使用带参数的 close，即需要将被保护的 Resource 传入 close。LeakAwareResource 需要改为：</p>
+
+<pre><code class="language-java">class LeakAwareResource implements Resource {
+  // .... 与之前一致
+  @Override
+  public boolean close() {
+    boolean closed = this.rsc.close()
+    if (closed){
+      // 只改了这里
+      this.leak.close(this.rsc);
+    }
+    return closed;
+  }
+}
+</code></pre>
+
+<p>从而保证在执行 <code>boolean closed = this.rsc.close()</code> 后，<code>this.rsc</code> 不能被清理，因为 <code>this.leak.close(this.rsc)</code> 还要用到 <code>this.rsc</code>。并且在 ResourceLeak 内， 执行完 <code>allLeaks.remove(this, LeakEntry.INSTANCE);</code> 后因为还要检查 <code>trackedObject != null</code> ，所以在 ResourceLeak 从 ResourceLeakDetector 的 static 的 ConcurrentHashMap 移除之前，被保护的 Resource 也就是 trackedObject 不能被 GC 掉。</p>
+
+<p>是不是有点感觉不可靠？因为这个修复最关键的点就是 <code>close() &amp;&amp; trackedObject != null;</code> 即 <code>close()</code> 之后通过再检查一下 trackedObject 是不是 null 来保证 trackedObject 不会在 <code>close()</code> 执行之前被 GC。有没有可能 JVM 一开始就判断 trackedObject != null 并将结果记录下来，再去执行 close() 从而又会出现 close() 执行之前就能判断出 trackedObject 再也用不上了，从而再次出现之前的 Bug。</p>
+
+<p>个人理解是因为 <code>close() &amp;&amp; trackedObject != null;</code> 这里用了 &amp;&amp;，JVM 不确定 &amp;&amp; 后面的计算到底有多复杂，按照短路执行原则，应该先执行 <code>close()</code> 从而根据 <code>close()</code> 执行结果判断要不要再执行 <code>trackedObject != null</code>。因为有短路执行机制存在，有可能执行完 <code>close()</code> 不用再执行 <code>trackedObject != null</code>，省一次操作，所以 JVM 会先执行 <code>close()</code> 再执行 <code>trackedObject != null</code>。</p>
+
+<p>但是 <code>trackedObject != null</code> 毕竟是个非常简单的语句，不知道未来 JVM 有没有可能发现这个语句很简单而直接先执行了，好处是能将 trackedObject 提前 GC 掉。</p>
+
+<h2 id="toc_5">参考</h2>
 
 <ul>
-<li>  <a href="https://www.nginx.com/blog/http2-r7/">HTTP/2 Now Fully Supported in NGINX Plus</a></li>
-<li>  <a href="https://www.nginx.com/blog/socket-sharding-nginx-release-1-9-1/">Socket Sharding in NGINX</a></li>
-<li>  <a href="https://www.nginx.com/blog/dashboard-r7">The New NGINX Plus Dashboard in Release 7</a></li>
-<li>  <a href="https://www.nginx.com/blog/tcp-load-balancing-r7">TCP Load Balancing in NGINX Plus R7</a>_ </li>
+<li>修复 ResourceLeakDetector 问题的 PR：
+<a href="https://github.com/netty/netty/pull/6087">Fix false-positives when using ResourceLeakDetector. by normanmaurer · Pull Request #6087 · netty/netty · GitHub</a></li>
+<li>对 ResourceLeakDetector 性能优化的 PR，虽然本文没有说跟它相关的事情，但是确实挺值得看看的:
+<a href="https://github.com/netty/netty/pull/7217">Reduce performance overhead of ResourceLeakDetector by normanmaurer · Pull Request #7217 · netty/netty · GitHub</a></li>
 </ul>
-
-<h2 id="toc_0">The Problem</h2>
-
-<p>First, for better understanding of the problem a few words about how NGINX works.</p>
-
-<p>In general, NGINX is an event handler, a controller that receives information from the kernel about all events occurring on connections and then gives commands to the operating system about what to do. In fact, NGINX does all the hard work by orchestrating the operating system, while the operating system does the routine work of reading and sending bytes. So it’s very important for NGINX to respond fast and in a timely manner.</p>
-
-<p><img src="media/15401080666894/15401081641234.jpg" alt=""/></p>
-
-<blockquote>
-<p>The worker process listens for and processes events from the kernel</p>
-</blockquote>
-
-<p>The events can be timeouts, notifications about sockets ready to read or to write, or notifications about an error that occurred. NGINX receives a bunch of events and then processes them one by one, doing the necessary actions. Thus all the processing is done in a simple loop over a queue in one thread. NGINX dequeues an event from the queue and then reacts to it by, for example, writing or reading a socket. In most cases, this is extremely quick (perhaps just requiring a few CPU cycles to copy some data in memory) and NGINX proceeds through all of the events in the queue in an instant.</p>
-
-<p><img src="media/15401080666894/15401081758160.jpg" alt=""/></p>
-
-<blockquote>
-<p>All processing is done in a simple loop by one thread</p>
-</blockquote>
-
-<p>But what will happen if some long and heavy operation has occurred? The whole cycle of event processing will get stuck waiting for this operation to finish.</p>
-
-<p>So, by saying “a blocking operation” we mean any operation that stops the cycle of handling events for a significant amount of time. Operations can be blocking for various reasons. For example, NGINX might be busy with lengthy, CPU‑intensive processing, or it might have to wait to access a resource (such as a hard drive, or a mutex or library function call that gets responses from a database in a synchronous manner, etc.). The key point is that while processing such operations, the worker process cannot do anything else and cannot handle other events, even if there are more system resources available and some events in the queue could utilize those resources.</p>
-
-<p>Imagine a salesperson in a store with a long queue in front of him. The first guy in the queue asks for something that is not in the store but is in the warehouse. The salesperson goes to the warehouse to deliver the goods. Now the entire queue must wait a couple of hours for this delivery and everyone in the queue is unhappy. Can you imagine the reaction of the people? The waiting time of every person in the queue is increased by these hours, but the items they intend to buy might be right there in the shop.</p>
-
-<p><img src="media/15401080666894/15401081890992.jpg" alt=""/></p>
-
-<blockquote>
-<p>Everyone in the queue has to wait for the first person’s order</p>
-</blockquote>
-
-<p>Nearly the same situation happens with NGINX when it asks to read a file that isn’t cached in memory, but needs to be read from disk. Hard drives are slow (especially the spinning ones), and while the other requests waiting in the queue might not need access to the drive, they are forced to wait anyway. As a result, latencies increase and system resources are not fully utilized.</p>
-
-<p><img src="media/15401080666894/15401082010258.jpg" alt=""/></p>
-
-<blockquote>
-<p>Just one blocking operation can delay all following operations for a significant time</p>
-</blockquote>
-
-<p>Some operating systems provide an asynchronous interface for reading and sending files and NGINX can use this interface (see the <a href="http://nginx.org/en/docs/http/ngx_http_core_module.html#aio">aio</a> directive). A good example here is FreeBSD. Unfortunately, we can’t say the same about Linux. Although Linux provides a kind of asynchronous interface for reading files, it has a couple of significant drawbacks. One of them is alignment requirements for file access and buffers, but NGINX handles that well. But the second problem is worse. The asynchronous interface requires the <code>O_DIRECT</code> flag to be set on the file descriptor, which means that any access to the file will bypass the cache in memory and increase load on the hard disks. That definitely doesn’t make it optimal for many cases.</p>
-
-<p>To solve this problem in particular, thread pools were introduced in NGINX 1.7.11 and NGINX Plus Release 7.</p>
-
-<p>Now let’s dive into what thread pools are about and how they work.</p>
-
-<h2 id="toc_1">Thread Pools</h2>
-
-<p>Let’s return to our poor sales assistant who delivers goods from a faraway warehouse. But he has become smarter (or maybe he became smarter after being beaten by the crowd of angry clients?) and hired a delivery service. Now when somebody asks for something from the faraway warehouse, instead of going to the warehouse himself, he just drops an order to a delivery service and they will handle the order while our sales assistant will continue serving other customers. Thus only those clients whose goods aren’t in the store are waiting for delivery, while others can be served immediately.</p>
-
-<p><img src="media/15401080666894/15401082115635.jpg" alt=""/></p>
-
-<blockquote>
-<p>Passing an order to the delivery service unblocks the queue</p>
-</blockquote>
-
-<p>In terms of NGINX, the thread pool is performing the functions of the delivery service. It consists of a task queue and a number of threads that handle the queue. When a worker process needs to do a potentially long operation, instead of processing the operation by itself it puts a task in the pool’s queue, from which it can be taken and processed by any free thread.</p>
-
-<p><img src="media/15401080666894/15401082238769.jpg" alt=""/></p>
-
-<blockquote>
-<p>The worker process offloads blocking operations to the thread pool</p>
-</blockquote>
-
-<p>It seems then we have another queue. Right. But in this case the queue is limited by a specific resource. We can’t read from a drive faster than the drive is capable of producing data. Now at least the drive doesn’t delay processing of other events and only the requests that need to access files are waiting.</p>
-
-<p>The “reading from disk” operation is often used as the most common example of a blocking operation, but actually the thread pools implementation in NGINX can be used for any tasks that aren’t appropriate to process in the main working cycle.</p>
-
-<p>At the moment, offloading to thread pools is implemented only for three essential operations: the <code>read()</code> syscall on most operating systems, <code>sendfile()</code> on Linux, and <code>aio_write()</code> on Linux which is used when writing some temporary files such as those for the cache. We will continue to test and benchmark the implementation, and we may offload other operations to the thread pools in future releases if there’s a clear benefit.</p>
-
-<p><u>Editor – Support for the</u> <code>aio_write()</code> <u>syscall was added in <a href="http://hg.nginx.org/nginx/rev/fc72784b1f52">NGINX 1.9.13</a> and <a href="https://www.nginx.com/blog/nginx-plus-r9-released/#aio-write">NGINX Plus R9</a>.</u></p>
-
-<h2 id="toc_2">Benchmarking</h2>
-
-<p>It’s time to move from theory to practice. To demonstrate the effect of using thread pools we are going to perform a synthetic benchmark that simulates the worst mix of blocking and nonblocking operations.</p>
-
-<p>It requires a data set that is guaranteed not to fit in memory. On a machine with 48 GB of RAM, we have generated 256 GB of random data in 4‑MB files, and then have configured NGINX 1.9.0 to serve it.</p>
-
-<p>The configuration is pretty simple:</p>
-
-<pre><code>worker_processes 16;
-
-events {
-    accept_mutex off;
-}
-
-http {
-    include mime.types;
-    default_type application/octet-stream;
-
-    access_log off;
-    sendfile on;
-    sendfile_max_chunk 512k;
-
-    server {
-        listen 8000;
-
-        location / {
-            root /storage;
-        }
-    }
-}
-</code></pre>
-
-<p>As you can see, to achieve better performance some tuning was done: <code>[logging](http://nginx.org/en/docs/http/ngx_http_log_module.html#access_log)</code> and <code>[accept_mutex](http://nginx.org/en/docs/ngx_core_module.html#accept_mutex)</code> were disabled, <code>[sendfile](http://nginx.org/en/docs/http/ngx_http_core_module.html#sendfile)</code> was enabled, and <code>[sendfile_max_chunk](http://nginx.org/en/docs/http/ngx_http_core_module.html#sendfile_max_chunk)</code> was set. The last directive can reduce the maximum time spent in blocking <code>sendfile()</code> calls, since NGINX won’t try to send the whole file at once, but will do it in 512‑KB chunks.</p>
-
-<p>The machine has two Intel Xeon E5645 (12 cores, 24 HT‑threads in total) processors and a 10‑Gbps network interface. The disk subsystem is represented by four Western Digital WD1003FBYX hard drives arranged in a RAID10 array. All of this hardware is powered by Ubuntu Server 14.04.1 LTS.</p>
-
-<p><img src="media/15401080666894/15401082447034.jpg" alt=""/></p>
-
-<blockquote>
-<p>Configuration of load generators and NGINX for the benchmark</p>
-</blockquote>
-
-<p>The clients are represented by two machines with the same specifications. On one of these machines, <a href="https://github.com/wg/wrk"><code>wrk</code></a> creates load using a Lua script. The script requests files from our server in a random order using 200 parallel connections, and each request is likely to result in a cache miss and a blocking read from disk. Let’s call this load the <u>random</u> load.</p>
-
-<p>On the second client machine we will run another copy of <code>wrk</code> that will request the same file multiple times using 50 parallel connections. Since this file will be frequently accessed, it will remain in memory all the time. In normal circumstances, NGINX would serve these requests very quickly, but performance will fall if the worker processes are blocked by other requests. Let’s call this load the <u>constant</u> load.</p>
-
-<p>The performance will be measured by monitoring throughput of the server machine using <code>ifstat</code> and by obtaining <code>wrk</code> results from the second client.</p>
-
-<p>Now, the first run without thread pools does not give us very exciting results:</p>
-
-<pre><code>% ifstat -bi eth2
-eth2
-Kbps in  Kbps out
-5531.24  1.03e+06
-4855.23  812922.7
-5994.66  1.07e+06
-5476.27  981529.3
-6353.62  1.12e+06
-5166.17  892770.3
-5522.81  978540.8
-6208.10  985466.7
-6370.79  1.12e+06
-6123.33  1.07e+06
-</code></pre>
-
-<p>As you can see, with this configuration the server is able to produce about 1 Gbps of traffic in total. In the output from <code>top</code>, we can see that all of worker processes spend most of the time in blocking I/O (they are in a <code>D</code> state):</p>
-
-<pre><code>top - 10:40:47 up 11 days,  1:32,  1 user,  load average: 49.61, 45.77 62.89
-Tasks: 375 total,  2 running, 373 sleeping,  0 stopped,  0 zombie
-%Cpu(s):  0.0 us,  0.3 sy,  0.0 ni, 67.7 id, 31.9 wa,  0.0 hi,  0.0 si,  0.0 st
-KiB Mem:  49453440 total, 49149308 used,   304132 free,    98780 buffers
-KiB Swap: 10474236 total,    20124 used, 10454112 free, 46903412 cached Mem
-
-  PID USER     PR  NI    VIRT    RES     SHR S  %CPU %MEM    TIME+ COMMAND
- 4639 vbart    20   0   47180  28152     496 D   0.7  0.1  0:00.17 nginx
- 4632 vbart    20   0   47180  28196     536 D   0.3  0.1  0:00.11 nginx
- 4633 vbart    20   0   47180  28324     540 D   0.3  0.1  0:00.11 nginx
- 4635 vbart    20   0   47180  28136     480 D   0.3  0.1  0:00.12 nginx
- 4636 vbart    20   0   47180  28208     536 D   0.3  0.1  0:00.14 nginx
- 4637 vbart    20   0   47180  28208     536 D   0.3  0.1  0:00.10 nginx
- 4638 vbart    20   0   47180  28204     536 D   0.3  0.1  0:00.12 nginx
- 4640 vbart    20   0   47180  28324     540 D   0.3  0.1  0:00.13 nginx
- 4641 vbart    20   0   47180  28324     540 D   0.3  0.1  0:00.13 nginx
- 4642 vbart    20   0   47180  28208     536 D   0.3  0.1  0:00.11 nginx
- 4643 vbart    20   0   47180  28276     536 D   0.3  0.1  0:00.29 nginx
- 4644 vbart    20   0   47180  28204     536 D   0.3  0.1  0:00.11 nginx
- 4645 vbart    20   0   47180  28204     536 D   0.3  0.1  0:00.17 nginx
- 4646 vbart    20   0   47180  28204     536 D   0.3  0.1  0:00.12 nginx
- 4647 vbart    20   0   47180  28208     532 D   0.3  0.1  0:00.17 nginx
- 4631 vbart    20   0   47180    756     252 S   0.0  0.1  0:00.00 nginx
- 4634 vbart    20   0   47180  28208     536 D   0.0  0.1  0:00.11 nginx&lt;
- 4648 vbart    20   0   25232   1956    1160 R   0.0  0.0  0:00.08 top
-25921 vbart    20   0  121956   2232    1056 S   0.0  0.0  0:01.97 sshd
-25923 vbart    20   0   40304   4160    2208 S   0.0  0.0  0:00.53 zsh
-</code></pre>
-
-<p>In this case the throughput is limited by the disk subsystem, while the CPU is idle most of the time. The results from <code>wrk</code> are also very low:</p>
-
-<pre><code>Running 1m test @ http://192.0.2.1:8000/1/1/1
-  12 threads and 50 connections
-  Thread Stats   Avg    Stdev     Max  +/- Stdev
-    Latency     7.42s  5.31s   24.41s   74.73%
-    Req/Sec     0.15    0.36     1.00    84.62%
-  488 requests in 1.01m, 2.01GB read
-Requests/sec:      8.08
-Transfer/sec:     34.07MB
-</code></pre>
-
-<p>And remember, this is for the file that should be served from memory! The excessively large latencies are because all the worker processes are busy with reading files from the drives to serve the random load created by 200 connections from the first client, and cannot handle our requests in good time.</p>
-
-<p>It’s time to put our thread pools in play. For this we just add the <code>[aio](http://nginx.org/en/docs/http/ngx_http_core_module.html#aio)</code> <code>threads</code> directive to the <code>location</code> block:</p>
-
-<pre><code>location / {
-    root /storage;
-    aio threads;
-}
-</code></pre>
-
-<p>and ask NGINX to reload its configuration.</p>
-
-<p>After that we repeat the test:</p>
-
-<pre><code>% ifstat -bi eth2
-eth2
-Kbps in  Kbps out
-60915.19  9.51e+06
-59978.89  9.51e+06
-60122.38  9.51e+06
-61179.06  9.51e+06
-61798.40  9.51e+06
-57072.97  9.50e+06
-56072.61  9.51e+06
-61279.63  9.51e+06
-61243.54  9.51e+06
-59632.50  9.50e+06
-</code></pre>
-
-<p>Now our server produces <strong>9.5 Gbps</strong>, compared to ~1 Gbps without thread pools!</p>
-
-<p>It probably could produce even more, but it has already reached the practical maximum network capacity, so in this test NGINX is limited by the network interface. The worker processes spend most of the time just sleeping and waiting for new events (they are in <code>S</code> state in <code>top</code>):</p>
-
-<pre><code>top - 10:43:17 up 11 days,  1:35,  1 user,  load average: 172.71, 93.84, 77.90
-Tasks: 376 total,  1 running, 375 sleeping,  0 stopped,  0 zombie
-%Cpu(s):  0.2 us,  1.2 sy,  0.0 ni, 34.8 id, 61.5 wa,  0.0 hi,  2.3 si,  0.0 st
-KiB Mem:  49453440 total, 49096836 used,   356604 free,    97236 buffers
-KiB Swap: 10474236 total,    22860 used, 10451376 free, 46836580 cached Mem
-
-  PID USER     PR  NI    VIRT    RES     SHR S  %CPU %MEM    TIME+ COMMAND
- 4654 vbart    20   0  309708  28844     596 S   9.0  0.1  0:08.65 nginx
- 4660 vbart    20   0  309748  28920     596 S   6.6  0.1  0:14.82 nginx
- 4658 vbart    20   0  309452  28424     520 S   4.3  0.1  0:01.40 nginx
- 4663 vbart    20   0  309452  28476     572 S   4.3  0.1  0:01.32 nginx
- 4667 vbart    20   0  309584  28712     588 S   3.7  0.1  0:05.19 nginx
- 4656 vbart    20   0  309452  28476     572 S   3.3  0.1  0:01.84 nginx
- 4664 vbart    20   0  309452  28428     524 S   3.3  0.1  0:01.29 nginx
- 4652 vbart    20   0  309452  28476     572 S   3.0  0.1  0:01.46 nginx
- 4662 vbart    20   0  309552  28700     596 S   2.7  0.1  0:05.92 nginx
- 4661 vbart    20   0  309464  28636     596 S   2.3  0.1  0:01.59 nginx
- 4653 vbart    20   0  309452  28476     572 S   1.7  0.1  0:01.70 nginx
- 4666 vbart    20   0  309452  28428     524 S   1.3  0.1  0:01.63 nginx
- 4657 vbart    20   0  309584  28696     592 S   1.0  0.1  0:00.64 nginx
- 4655 vbart    20   0  30958   28476     572 S   0.7  0.1  0:02.81 nginx
- 4659 vbart    20   0  309452  28468     564 S   0.3  0.1  0:01.20 nginx
- 4665 vbart    20   0  309452  28476     572 S   0.3  0.1  0:00.71 nginx
- 5180 vbart    20   0   25232   1952    1156 R   0.0  0.0  0:00.45 top
- 4651 vbart    20   0   20032    752     252 S   0.0  0.0  0:00.00 nginx
-25921 vbart    20   0  121956   2176    1000 S   0.0  0.0  0:01.98 sshd
-25923 vbart    20   0   40304   3840    2208 S   0.0  0.0  0:00.54 zsh
-</code></pre>
-
-<p>There are still plenty of CPU resources.</p>
-
-<p>The results of <code>wrk</code>:</p>
-
-<pre><code>Running 1m test @ http://192.0.2.1:8000/1/1/1
-  12 threads and 50 connections
-  Thread Stats   Avg      Stdev     Max  +/- Stdev
-    Latency   226.32ms  392.76ms   1.72s   93.48%
-    Req/Sec    20.02     10.84    59.00    65.91%
-  15045 requests in 1.00m, 58.86GB read
-Requests/sec:    250.57
-Transfer/sec:      0.98GB
-</code></pre>
-
-<p>The average time to serve a 4‑MB file has been reduced from 7.42 seconds to 226.32 milliseconds (33 times less), and the number of requests per second has increased by 31 times (250 vs 8)!</p>
-
-<p>The explanation is that our requests no longer wait in the events queue for processing while worker processes are blocked on reading, but are handled by free threads. As long as the disk subsystem is doing its job as best it can serving our random load from the first client machine, NGINX uses the rest of the CPU resources and network capacity to serve requests of the second client from memory.</p>
-
-<h2 id="toc_3">Still Not a Silver Bullet</h2>
-
-<p>After all our fears about blocking operations and some exciting results, probably most of you already are going to configure thread pools on your servers. Don’t hurry.</p>
-
-<p>The truth is that fortunately most read and send file operations do not deal with slow hard drives. If you have enough RAM to store the data set, then an operating system will be clever enough to cache frequently used files in a so‑called “page cache”.</p>
-
-<p>The page cache works pretty well and allows NGINX to demonstrate great performance in almost all common use cases. Reading from the page cache is quite quick and no one can call such operations “blocking.” On the other hand, offloading to a thread pool has some overhead.</p>
-
-<p>So if you have a reasonable amount of RAM and your working data set isn’t very big, then NGINX already works in the most optimal way without using thread pools.</p>
-
-<p>Offloading read operations to the thread pool is a technique applicable to very specific tasks. It is most useful where the volume of frequently requested content doesn’t fit into the operating system’s VM cache. This might be the case with, for instance, a heavily loaded NGINX‑based streaming media server. This is the situation we’ve simulated in our benchmark.</p>
-
-<p>It would be great if we could improve the offloading of read operations into thread pools. All we need is an efficient way to know if the needed file data is in memory or not, and only in the latter case should the reading operation be offloaded to a separate thread.</p>
-
-<p>Turning back to our sales analogy, currently the salesman cannot know if the requested item is in the store and must either always pass all orders to the delivery service or always handle them himself.</p>
-
-<p>The culprit is that operating systems are missing this feature. The first attempts to add it to Linux as the <a href="https://lwn.net/Articles/371538/"><code>fincore()</code></a> syscall were in 2010 but that didn’t happen. Later there were a number of attempts to implement it as a new <code>preadv2()</code> syscall with the <code>RWF_NONBLOCK</code> flag (see <a href="https://lwn.net/Articles/612483/">Nonblocking buffered file read operations</a> and <a href="https://lwn.net/Articles/636967/">Asynchronous buffered read operations</a> at LWN.net for details). The fate of all these patches is still unclear. The sad point here is that it seems the main reason why these patches haven’t been accepted yet to the kernel is continuous <a href="http://bikeshed.com/">bikeshedding</a>.</p>
-
-<p>On the other hand, users of FreeBSD don’t need to worry at all. FreeBSD already has a sufficiently good asynchronous interface for reading files, which you should use instead of thread pools.</p>
-
-<h2 id="toc_4">Configuring Thread Pools</h2>
-
-<p>So if you are sure that you can get some benefit out of using thread pools in your use case, then it’s time to dive deep into configuration.</p>
-
-<p>The configuration is quite easy and flexible. The first thing you should have is NGINX version 1.7.11 or later, compiled with the <code>--with-threads</code> argument to the <code>configure</code> command. NGINX Plus users need Release 7 or later. In the simplest case, the configuration looks very plain. All you need is to include the <a href="http://nginx.org/en/docs/http/ngx_http_core_module.html#aio"><code>aio</code></a> <code>threads</code> directive in the appropriate context:</p>
-
-<pre><code># in the &#39;http&#39;, &#39;server&#39;, or &#39;location&#39; context
-aio threads;
-</code></pre>
-
-<p>This is the minimal possible configuration of thread pools. In fact, it’s a short version of the following configuration:</p>
-
-<pre><code># in the &#39;main&#39; context
-thread_pool default threads=32 max_queue=65536;
-
-# in the &#39;http&#39;, &#39;server&#39;, or &#39;location&#39; context
-aio threads=default;
-</code></pre>
-
-<p>It defines a thread pool called <strong>default</strong> with 32 working threads and a maximum length for the task queue of 65536 tasks. If the task queue is overloaded, NGINX rejects the request and logs this error:</p>
-
-<pre><code>thread pool &quot;NAME&quot; queue overflow: N tasks waiting
-</code></pre>
-
-<p>The error means it’s possible that the threads aren’t able to handle the work as quickly as it is added to the queue. You can try increasing the maximum queue size, but if that doesn’t help, then it indicates that your system is not capable of serving so many requests.</p>
-
-<p>As you already noticed, with the <a href="http://nginx.org/en/docs/ngx_core_module.html#thread_pool"><code>thread_pool</code></a> directive you can configure the number of threads, the maximum length of the queue, and the name of a specific thread pool. The last implies that you can configure several independent thread pools and use them in different places of your configuration file to serve different purposes:</p>
-
-<pre><code># in the &#39;main&#39; context
-thread_pool one threads=128 max_queue=0;
-thread_pool two threads=32;
-
-http {
-    server {
-        location /one {
-            aio threads=one;
-        }
-
-        location /two {
-            aio threads=two;
-        }
-
-    }
-    # ...
-}
-</code></pre>
-
-<p>If the <code>max_queue</code> parameter isn’t specified, the value 65536 is used by default. As shown, it’s possible to set <code>max_queue</code> to zero. In this case the thread pool will only be able to handle as many tasks as there are threads configured; no tasks will wait in the queue.</p>
-
-<p>Now let’s imagine you have a server with three hard drives and you want this server to work as a “caching proxy” that caches all responses from your backends. The expected amount of cached data far exceeds the available RAM. It’s actually a caching node for your personal CDN. Of course in this case the most important thing is to achieve maximum performance from the drives.</p>
-
-<p>One of your options is to configure a RAID array. This approach has its pros and cons. Now with NGINX you can take another one:</p>
-
-<pre><code># We assume that each of the hard drives is mounted on one of these directories:
-# /mnt/disk1, /mnt/disk2, or /mnt/disk3
-
-# in the &#39;main&#39; context
-thread_pool pool_1 threads=16;
-thread_pool pool_2 threads=16;
-thread_pool pool_3 threads=16;
-
-http {
-    proxy_cache_path /mnt/disk1 levels=1:2 keys_zone=cache_1:256m max_size=1024G 
-                     use_temp_path=off;
-    proxy_cache_path /mnt/disk2 levels=1:2 keys_zone=cache_2:256m max_size=1024G 
-                     use_temp_path=off;
-    proxy_cache_path /mnt/disk3 levels=1:2 keys_zone=cache_3:256m max_size=1024G 
-                     use_temp_path=off;
-
-    split_clients $request_uri $disk {
-        33.3%     1;
-        33.3%     2;
-        *         3;
-    }
-
-    server {
-        # ...
-        location / {
-            proxy_pass http://backend;
-            proxy_cache_key $request_uri;
-            proxy_cache cache_$disk;
-            aio threads=pool_$disk;
-            sendfile on;
-        }
-    }
-}
-</code></pre>
-
-<p>In this configuration, the <code>thread_pool</code> directives define a dedicated, independent thread pool for each disk, and the <a href="http://nginx.org/en/docs/http/ngx_http_proxy_module.html#proxy_cache_path"><code>proxy_cache_path</code></a> directives define an dedicated, independent cache on each disk.</p>
-
-<p>The <a href="http://nginx.org/en/docs/http/ngx_http_split_clients_module.html"><code>split_clients</code></a> module is used for load balancing between the caches (and as a result between the disks), which perfectly fits this task.</p>
-
-<p>The <code>use_temp_path=off</code> parameter to the <code>proxy_cache_path</code> directive instructs NGINX to save temporary files into the same directories where the corresponding cache data is located. It is needed to avoid copying response data between the hard drives when updating our caches.</p>
-
-<p>All this together allows us to get maximum performance out of the current disk subsystem, because NGINX through separate thread pools interacts with the drives in parallel and independently. Each of the drives is served by 16 independent threads with a dedicated task queue for reading and sending files.</p>
-
-<p>I bet your clients like this custom‑tailored approach. Be sure that your hard drives like it too.</p>
-
-<p>This example is a good demonstration of how flexibly NGINX can be tuned specifically for your hardware. It’s like you are giving instructions to NGINX about the best way to interact with the machine and your data set. And by fine‑tuning NGINX in user space, you can ensure that your software, operating system, and hardware work together in the most optimal mode to utilize all the system resources as effectively as possible.</p>
-
-<h2 id="toc_5">Conclusion</h2>
-
-<p>Summing up, thread pools is a great feature that pushes NGINX to new levels of performance by eliminating one of its well‑known and long‑time enemies – blocking – especially when we are speaking about really large volumes of content.</p>
-
-<p>And there is even more to come. As previously mentioned, this brand‑new interface potentially allows offloading of any long and blocking operation without any loss of performance. NGINX opens up new horizons in terms of having a mass of new modules and functionality. Lots of popular libraries still do not provide an asynchronous nonblocking interface, which previously made them incompatible with NGINX. We may spend a lot of time and resources on developing our own nonblocking prototype of some library, but will it always be worth the effort? Now, with thread pools on board, it is possible to use such libraries relatively easily, making such modules without an impact on performance.</p>
-
-<p>Stay tuned.</p>
 
                         
                       </div>
@@ -536,7 +290,7 @@ http {
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/10/21</span>
+                    <span class="date">2019/2/17</span>
                     <span>posted in&nbsp;</span> 
           				  
           					    <span class="posted-in"><a href='RPC&NIO.html'>RPC&NIO</a></span>
@@ -629,31 +383,31 @@ http {
 	      
 		      
 			      <li class="post">
-			        <a href="15459058392039.html">Reliable Domain Events</a>
+			        <a href="15517999043443.html">The Art of Crafting Architectural Diagrams</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
+			        <a href="15517997955971.html">为什么说我们需要软件架构图？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
+			        <a href="15516128677869.html">DNS Servers That Offer Privacy and Filtering</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
+			        <a href="15516123108194.html">Airbnb's Migration from Monolith to Services</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
+			        <a href="15516097487470.html">Events As First-Class Citizens</a>
 			      </li>
 		     
 		  

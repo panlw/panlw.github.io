@@ -105,189 +105,138 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15281296238206.html">
+                <a class="clearlink" href="15290740608340.html">
                 
-                  <h1>SOFABoot 类隔离原理剖析</h1>
+                  <h1>RPC 代理（Proxy）配置</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p>林小树 <a href="https://zhuanlan.zhihu.com/p/37665305">https://zhuanlan.zhihu.com/p/37665305</a></p>
+<p><a href="https://github.com/eggjs/egg-sofa-rpc/wiki/RPC-%E4%BB%A3%E7%90%86%EF%BC%88Proxy%EF%BC%89%E9%85%8D%E7%BD%AE">https://github.com/eggjs/egg-sofa-rpc/wiki/RPC-%E4%BB%A3%E7%90%86%EF%BC%88Proxy%EF%BC%89%E9%85%8D%E7%BD%AE</a></p>
 </blockquote>
 
-<p><strong>原创声明</strong>：本文系作者原创，谢绝个人、媒体、公众号或网站未经授权转载，违者追究其法律责任。</p>
+<h2 id="toc_0">简介</h2>
 
-<blockquote>
-<p>SOFABoot 是蚂蚁金服中间件团队开源的基于 Spring Boot 的一个开发框架，其在 Spring Boot 基础能力之上，增加了类隔离能力，以更好地解决随着工程应用变得臃肿庞大后带来的包冲突问题。类隔离能力天生带来模块化能力，同样给协作开发带来便利。<br/>
-SOFABoot 的类隔离能力借助单独的组件 SOFAArk 实现，遵循 Spring Boot 依赖即服务的思想，只要工程中引入了 SOFAArk 组件依赖，类隔离能力即生效。<br/>
-在上一篇文章 <a href="https://zhuanlan.zhihu.com/p/36909393">《在 Spring Boot 中集成 SOFABoot 类隔离能力》</a>中，我们详细介绍了 SOFABoot 类隔离能力的使用背景及其使用方式。本文将介绍 SOFABoot 类隔离组件 SOFAArk 的实现原理。</p>
-</blockquote>
+<p>在作为 RPC 的调用方时，我们需要对我们调用的服务做一些预先申明，然后生成一些本地代理代码，然后你就可以像调用一个本地方法一样调用一个远程接口了。</p>
 
-<h2 id="toc_0"><strong>理解 SOFAArk 三要素</strong></h2>
+<p>在 eggjs 里面，我们约定这个客户端接口声明文件位于 <code>${app_root}/config/proxy.js</code>。</p>
 
-<p>SOFAArk 类隔离框架定义了三个概念，Ark Container，Ark Plugin，Ark Biz。</p>
+<h2 id="toc_1">一个简单的配置</h2>
 
-<p>在介绍这三个主角之前，我们先来介绍另一个管家：<strong>Ark 包</strong>。我们都知道一个标准的 Spring Boot 应用可以借助 Spring 官方提供的打包插件：</p>
+<p>我们先看一个简单的配置（如下），它的基本含义是：我需要调用 <code>sofarpc</code> 应用暴露的 <code>com.alipay.sofa.rpc.test.ProtoService</code> 这个服务。</p>
 
-<pre><code>&lt;plugin&gt;
-    &lt;groupId&gt;org.springframework.boot&lt;/groupId&gt;
-    &lt;artifactId&gt;spring-boot-maven-plugin&lt;/artifactId&gt;
-&lt;/plugin&gt;
+<pre><code class="language-js">&#39;use strict&#39;;
 
+module.exports = {
+  services: [{
+    appName: &#39;sofarpc&#39;,
+    api: {
+      ProtoService: &#39;com.alipay.sofa.rpc.test.ProtoService&#39;,
+    },
+  }],
+};
 </code></pre>
 
-<p>将应用打包成一个可执行 FatJar。相对应的，Ark 包则是 SOFABoot 官方提供的打包插件：</p>
+<p>配置好以后（确保已经将接口定义文件 *.proto 放置到了 <code>proto</code> 目录下），我们运行 <a href="https://github.com/eggjs/egg-rpc-generator">egg-rpc-generator</a> 工具就可以生成服务的调用代理文件：<code>${app_root}/app/proxy/ProxyService.js</code></p>
 
-<pre><code>&lt;plugin&gt;
-    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
-    &lt;artifactId&gt;sofa-ark-maven-plugin&lt;/artifactId&gt;
-&lt;/plugin&gt;
+<pre><code class="language-bash">$ egg-rpc-generator
 
+[EggRpcGenerator] framework: /egg-rpc-demo/node_modules/egg, baseDir: /egg-rpc-demo
+[ProtoRPCPlugin] found &quot;com.alipay.sofa.rpc.test.ProtoService&quot; in proto file
+[ProtoRPCPlugin] save all proto info into &quot;/egg-rpc-demo/run/proto.json&quot;
 </code></pre>
 
-<p>将应用打包成一个具有类隔离能力的可执行 FatJar，称之为 Ark 包。下图是粗略地对比两者的目录结构差别：</p>
+<h2 id="toc_2">完整的配置示例和详解</h2>
 
-<p><img src="https://pic3.zhimg.com/v2-096b7865cea9b432d6dee8990d2b2dc1_b.jpg" alt=""/><img src="https://pic3.zhimg.com/v2-096b7865cea9b432d6dee8990d2b2dc1_r.jpg" alt=""/></p>
+<pre><code class="language-js">&#39;use strict&#39;;
 
-<p>可以看到 Ark 包作为应用部署包的分发格式，它包含有 Ark Container，Ark Plugin 和 Ark Biz 三种格式模块。这里我们不对 Ark 包或者其他格式模块的目录结构作分析，感兴趣的同学可以点开文末附上的相关链接。我们重点介绍这三个角色的功能。</p>
+module.exports = {
+  errorAsNull: false,
+  responseTimeout: 3000,              
+  services: [{
+    appName: &#39;sofarpc&#39;,
+    api: {
+      ProtoService: {
+        interfaceName: &#39;com.alipay.sofa.rpc.test.ProtoService&#39;,
+        version: &#39;1.0&#39;,
+        group: &#39;SOFA&#39;,
+        errorAsNull: true,
+        responseTimeout: 5000,
+        method: {
+          echoObj: {
+            responseTimeout: 10000,
+          },
+        },
+      },
+    },
+  }],
+};
+</code></pre>
 
 <ul>
-<li>  Ark Container: Ark 容器，是组件 SOFAArk 的核心，运行 Ark 包时，Ark 容器会最先启动，负责应用运行时的管理，主要包括构建 Ark Plugin 和 Ark Biz 的类导入导出关系表、启动并初始化 Ark Plugin 和 Ark Biz、管理 Ark Plugin 服务的发布和引用等等。</li>
-<li>  Ark Plugin: SOFAArk 定义的一种模块格式，由若干个 Jar 包组成的一个 FatJar，开发人员可以借助官方提供的 maven 打包插件将若干 Jar 包打包成一个 Ark Plugin 供应用依赖。运行时，由独立的类加载器加载，因此有隔离需求的 Jar 包建议打包成 Ark Plugin 供应用依赖。</li>
-<li>  Ark Biz: SOFAArk 定义的一种模块格式，是应用及其依赖的所有三方包组成的一个 FatJar，需要注意的是，Ark Biz 不会包含应用依赖的 Ark Plugin。运行时，Ark Biz 由独立的类加载器加载，借助类导入导出关系表，Ark Biz 可以使用 Ark Plugin 的导出类和资源。</li>
+<li><code>errorAsNull</code> (可选)：是否将后台服务错误以 <code>null</code> 返回, 默认为 <code>false</code>，不处理，直接抛异常。该配置有两个层级，在根节点的是全局的，针对所有服务，下面的服务配置中可以覆盖全局配置</li>
+<li><code>responseTimeout</code> (可选)：服务的超时间隔，如果超过则会抛 <code>RpcSocketConnectTimeoutError</code> 异常。该配置也有三个层级，在根节点的是全局的，针对所有服务，下面的服务和方法配置中可以覆盖全局配置</li>
+<li><code>services</code>（必选）：RPC 依赖的服务列表，它是一个 Object 数组，每一个 item 代表一个服务提供者（应用）
+
+<ul>
+<li><code>appName</code>（必选）：RPC 服务提供者的应用名。这个为什么是必选参数，是为了方便我们在 <code>egg</code> 的配置文件 <code>${app_root}/config/config.{env}.js</code> 中，按照应用维度进行配置</li>
+<li>app.config[&#39;${appName}.rpc.service.enable&#39;]：为 true 时开启此服务，默认为 true</li>
+<li>app.config[&#39;${appName}.rpc.service.url&#39;]：直接配置 rpc 服务的地址（硬负载）。</li>
+<li>app.config[&#39;${appName}.rpc.service.timeout&#39;]：服务请求的超时时间（服务级别的），单位为 ms，默认为 3000
+它的默认 responseTimeout 是 antx[&#39;${appname}.tr.service.timeout&#39;]：服务请求的超时时间，单位为 ms，默认为 5000 </li>
+<li><code>api</code>（必选）：服务列表（key-value），其中 key 为生成 proxy 文件的名字，value 是服务接口名（interfaceName）。如果需要进行更加细粒度的配置，value 也支持以下对象格式：</li>
+<li><code>interfaceName</code>(必选)： 服务接口名</li>
+<li><code>version</code> (可选)：服务的默认版本号，如：1.0.0、1.0.0.daily。如果不填，默认值是 1.0</li>
+<li><code>group</code> (可选)：服务组别，默认是 SOFA</li>
+<li><code>responseTimeout</code>(可选)：覆盖上面的全局配置</li>
+<li><code>errorAsNull</code> (可选：覆盖上面的全局配置</li>
+<li><code>method</code>(可选)：方法级别配置（key-value 键值对），key 为方法名，value 是一个对象，结构如下：
+
+<ul>
+<li><code>responseTimeout</code>(可选)：覆盖上面的全局和服务配置 </li>
+</ul></li>
+</ul></li>
 </ul>
 
-<h2 id="toc_1"><strong>SOFAArk 运行时隔离</strong></h2>
+<h2 id="toc_3">几个配置之间的优先级</h2>
 
-<p>根据上一节的描述可以知道 SOFABoot 类隔离关键是理解 SOFAArk 定义的三个概念，Ark Container，Ark Plugin 和 Ark Biz。下图表示的是应用启动后，运行时 Ark Container，Ark Plugin，Ark Biz 的逻辑分层图：</p>
-
-<p><img src="https://pic3.zhimg.com/v2-27569011d5bddb7723b45797dc66758e_b.jpg" alt=""/><img src="https://pic3.zhimg.com/v2-27569011d5bddb7723b45797dc66758e_r.jpg" alt=""/></p>
-
-<p>我们将先以 Ark Plugin 入手来介绍 SOFABoot 类隔离的实现原理。</p>
-
-<h2 id="toc_2"><strong>Ark Plugin 隔离</strong></h2>
-
-<p>开发者借助 SOFABoot 官方提供的插件：</p>
-
-<pre><code>&lt;plugin&gt;
-    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
-    &lt;artifactId&gt;sofa-ark-plugin-maven-plugin&lt;/artifactId&gt;
-&lt;/plugin&gt;
-
-</code></pre>
-
-<p>可以将 Java 模块打包成一个 Ark Plugin，这里我们不讨论该打包插件的配置参数和使用方式，感兴趣的同学可以点开文末附上的相关链接以及学习 SOFABoot 类隔离能力使用篇。只需要知道，Ark Plugin 主要包含元信息有：插件启动器、导出类、导入类、导出资源、导入资源、优先级等，这些元信息保存在 Ark Plugin 中的 META-INF/MANIFEST.MF 中，一份典型的 MANIFEST.MF 文件样式如下：</p>
-
-<pre><code>Manifest-Version: 1.0
-groupId: com.alipay.sofa
-artifactId: sample-ark-plugin
-version: 0.3.0-SNAPSHOT
-priority: 1000
-pluginName: sample-ark-plugin
-activator: com.alipay.sofa.ark.sample.activator.SamplePluginActivator
-import-packages: 
-import-classes: 
-import-resources: 
-export-packages: com.alipay.sofa.ark.sample.common.*,com.alipay.sofa.ark.sample
-export-classes: com.alipay.sofa.ark.sample.facade.SamplePluginService
-export-resources: Sample_Resource_Exported
-
-</code></pre>
-
-<p>在上面我们提到，运行 Ark 包时，类隔离容器 Ark Container 会最先启动，然后 Ark Container 会接管整个应用的启动过程。针对 Ark Plugin 处理逻辑如下：</p>
+<p>上面配置中，我们看到好几次 <code>responseTimeout</code> 这个配置，如果都配了，它们的优先级是怎么样的呢？</p>
 
 <ul>
-<li>  首先解析 Ark 包中引入的所有 Ark Plugin，读取插件元信息，构建类 / 资源导入导出关系索引表。</li>
-<li>  提前生成所有插件类加载器，每个 Ark Plugin 都使用独立的类加载器，管理插件类加载逻辑，借助第一步生成的类导入导出关系表，突破 Java 原生的双亲委派模型，可以委托其他插件加载所需类，构建一个类 OSGi 的网状类加载模型。</li>
-<li>  根据插件优先级，依次调用插件启动器。在插件启动器中，插件开发者可以向容器注册服务以方便其他插件引用，也可以引用其他插件发布的服务，及插件启动所需的初始化操作。</li>
+<li>方法级别的优先级最高。下面 echoObj 方法超时时长为 10s</li>
 </ul>
 
-<p>需要明确一点，为了让类加载模型足够简单，Ark 容器在启动任何插件前，会把所有的插件类加载器提前构建完毕。Ark Plugin 可以相互委托加载，插件优先级只是影响插件的启动顺序，而且也不强制要求每个 Ark Plugin 都要有启动器。</p>
-
-<p>启动完所有插件后，Ark Container 则开始负责启动 Ark Biz 模块。</p>
-
-<h2 id="toc_3"><strong>Ark Biz 隔离</strong></h2>
-
-<p>Ark Container 在完成 Ark Plugin 的隔离和启动后，则开始准备 Ark Biz 的隔离和启动。</p>
-
-<p>在上文中提到，应用打成 Ark 包后，Ark 包会包含 Ark Plugin 模块和 Ark Biz 模块。实际上 Ark Biz 其实就是应用及其所有的三方依赖打成的 FatJar 包，Ark Biz 不会包含应用引入的 Ark Plugin。开发者借助 SOFABoot 官方提供的插件：</p>
-
-<pre><code>&lt;plugin&gt;
-    &lt;groupId&gt;com.alipay.sofa&lt;/groupId&gt;
-    &lt;artifactId&gt;sofa-ark-maven-plugin&lt;/artifactId&gt;
-&lt;/plugin&gt;
-
+<pre><code class="language-js">module.exports = {
+  responseTimeout: 3000,              
+  services: [{
+    appName: &#39;sofarpc&#39;,
+    api: {
+      ProtoService: {
+        interfaceName: &#39;com.alipay.sofa.rpc.test.ProtoService&#39;,
+        responseTimeout: 5000,
+        method: {
+          echoObj: {
+            responseTimeout: 10000,
+          },
+        },
+      },
+    },
+  }],
+};
 </code></pre>
 
-<p>可以将 Java（Spring Boot） 应用打包成一个 Ark Biz，这里我们不讨论该打包插件的配置参数和使用方式，感兴趣的同学可以点开文末附上的相关链接以及学习 SOFABoot 类隔离能力使用篇。只需要知道，Ark Biz 主要包含元信息有：应用启动入口、禁止导入类、禁止导入资源等。这些元信息保存在 Ark Biz 中的 META-INF/MANIFEST.MF 中，一份典型的 MANIFEST.MF 文件样式如下：</p>
+<ul>
+<li><code>egg</code> 的配置文件 <code>config/config.{env}.js</code> 里 <code>app.config[&#39;${appName}.rpc.service.timeout&#39;]</code> 优先级次之</li>
+</ul>
 
-<pre><code>Manifest-Version: 1.0
-Archiver-Version: Plexus Archiver
-Created-By: Apache Maven 3.2.5
-Build-Jdk: 1.8.0_101
-Built-By: qilong.zql
-Ark-Biz-Name: sofa-ark-sample-springboot-ark
-deny-import-resources:
-deny-import-packages:
-deny-import-classes:
-Main-Class: com.alipay.sofa.ark.sample.springbootdemo.SpringbootDemoApplication
-
+<pre><code class="language-js">// ${app_root}/config/config.{env}.js
+exports[&#39;sofarpc.rpc.service.timeout&#39;] = 6000; // sofarpc 这个应用的rpc超时时长为 6s，覆盖上面的配置 5s
 </code></pre>
 
-<p>Ark Biz 和 Ark Plugin 有很大的不同，最明显的则是 Ark Biz 单向依赖 Ark Plugin，即 Ark Biz 只能单向委托 Ark Plugin 加载类和资源，反之则不可以。实际上在运行时，Ark Biz 是运行在 Ark Plugin 之上，Ark Container 也是先启动所有 Ark Plugin 然后启动 Ark Biz。默认情况下，Ark Plugin 导出的所有类和资源都能被 Ark Biz 委托加载到，为了方便应用开发者能够自主控制类加载逻辑，允许在打包插件中配置禁止导入类和禁止导入资源，如此，对于配置的类和资源， Ark Biz 能够优先加载内部包含的类，而不会委托给 Ark Plugin 加载。Ark Container 针对 Ark Biz 处理逻辑如下：</p>
-
 <ul>
-<li>  首先解析 Ark 包中 Ark Biz 模块，读取元信息，构建类 / 资源导入导出关系索引表。</li>
-<li>  生成 Ark Biz 类加载器，管理 Ark Biz 类加载逻辑，借助第一步生成的类导入导出关系表，突破 Java 原生的双亲委派模型，可以委托 Ark Plugin 加载所需类和资源。</li>
-<li>  调用应用启动入口，启动应用。</li>
-</ul>
-
-<p>如此，Ark 包即完成整个启动过程。</p>
-
-<h2 id="toc_4"><strong>和 OSGi 对比</strong></h2>
-
-<p>作为开源界早负盛名的动态模块系统，基于 OSGi 规范的 Equinox、Felix 等同样具备类隔离能力，然而他们更多强调的是一种编程模型，面向模块化开发，有一整套模块生命周期的管理，定义模块通信机制以及复杂的类加载模型。作为专注于解决依赖冲突的隔离框架，SOFAArk 专注于类隔离，简化了类加载模型，因此显得更加轻量。</p>
-
-<p>其次在 OSGi 规范中，所有的模块定义成 Bundle 形式，作为应用开发者，他需要了解 OSGi 背后的工作原理，对开发者要求比较高。在 SOFAArk 中，定义了两层模块类型，Ark Plugin 和 Ark Biz，应用开发者只需要添加隔离的 Ark Plugin 依赖，对本身的开发没有任何影响，基本没有开发门槛。</p>
-
-<h2 id="toc_5"><strong>正在做的事</strong></h2>
-
-<p>全文读下来，你可能会产生这样的一个疑惑：如果在应用中引入其他应用打包的 Ark Biz 会如何呢？</p>
-
-<p>目前 SOFAArk 是可以启动多个 Ark Biz 的，比较遗憾的是，现在 Ark Biz 之间没法做到服务通信。如果你之前读完过上一篇 SOFABoot 类隔离使用篇及这篇原理篇，你也许会发现，虽然 SOFAArk 是一个纯粹的类隔离框架，但是基于 SOFAArk 之上，可以开发各具功能特色的 Ark Plugin，补充框架能力，供应用开发者按需依赖使用，比如已经推出的 SOFARPC Ark Plugin。回到上面的问题，为了解决多个 Ark Biz 合并部署的问题，我们正在开发一个新的 Ark Plugin，Jarslink2.0。</p>
-
-<p>在蚂蚁内部，多个应用合并部署在同一个 JVM 之上，是一件常见的事情。这样带来的主要优势如下：</p>
-
-<ul>
-<li>  无关应用合并部署：有些应用在独立部署时，相互之间没有服务依赖，而且这些应用承担业务体量都偏小，单独占有一台物理机部署比较浪费资源。这些应用合并部署，能够节省成本。</li>
-<li>  相关应用合并部署：多个应用之间存在服务依赖，独立部署时，各应用之间使用 RPC 调用，虽然使用了分布式架构，稳定性高，但依然存在网络抖动导致的延时性问题。这些应用合并部署，RPC 调用转为 JVM 内部调用，缩减调用开销。</li>
-</ul>
-
-<p>当然，作为蚂蚁内部非常重要的一项技术创新，合并部署在特定的业务背景下有着更为重要的意义，也远不止上面提到的两点优势，比如故障的隔离等等。</p>
-
-<p>说回到 Jarslink2.0，这个 SOFABoot 官方开发的 Ark Plugin，主要是为了解决多个 Ark Biz 运行时管理问题。我们知道，每个 Java(Spring Boot) 应用，都可以通过我们的 maven 插件打包成 Ark Biz 供其他应用依赖。目前 SOFAArk 框架只能做到隔离 Ark Biz，作为框架能力的补充，Jarslink2.0 插件专门管理多个 Ark Biz 的运行时。这里默认每个 Ark Biz 都是一个 SOAFBoot/Spring Boot 工程，Jarslink2.0 提供的能力如下：</p>
-
-<ul>
-<li>  动态安装、卸载 Ark Biz。</li>
-<li>  Ark Biz 之间使用注解和 xml 两种形式发布和引用 jvm 服务，解决多 Ark Biz 服务依赖问题。</li>
-<li>  Ark Biz 如果使用了 SOFARPC 能力，可以自动完成 RPC 转 JVM 内部调用。</li>
-</ul>
-
-<p>在这里特别感谢方腾飞， 蚂蚁内部花名 @清英 ，也是我们熟知的并发编程网 (<a href="https://link.zhihu.com/?target=http%3A//ifeve.com/">http://ifeve.com/</a>)创始人。清英在蚂蚁内部开发的 Jarslink1.0 在网商银行已经落地使用很长一段时间，Jarslink2.0 是在 Jarslink1.0 基础之上，结合 SOFABoot 类隔离框架，提供了更加通用的应用 (模块) 隔离和通信的实现方案，敬请期待！</p>
-
-<h2 id="toc_6">欢迎微博关注 @SOFAStack 与我们互动，相关传送门：</h2>
-
-<ul>
-<li>  Ark 包目录结构及其打包插件的使用
-<a href="https://link.zhihu.com/?target=https%3A//alipay.github.io/sofastack.github.io/docs/ark-jar.html">https://alipay.github.io/sofastack.github.io/docs/ark-jar.html</a></li>
-<li>  Ark Plugin 目录结构及其打包插件的使用
-<a href="https://link.zhihu.com/?target=https%3A//alipay.github.io/sofastack.github.io/docs/ark-plugin.html">https://alipay.github.io/sofastack.github.io/docs/ark-plugin.html</a></li>
-<li>  Ark Biz 目录结构及其打包插件的使用
-<a href="https://link.zhihu.com/?target=https%3A//alipay.github.io/sofastack.github.io/docs/ark-biz.html">https://alipay.github.io/sofastack.github.io/docs/ark-biz.html</a></li>
-<li>  Ark Plugin 的工程示例
-<a href="https://link.zhihu.com/?target=https%3A//github.com/alipay/sofa-ark/tree/master/sofa-ark-samples/sample-ark-plugin">https://github.com/alipay/sofa-ark/tree/master/sofa-ark-samples/sample-ark-plugin</a></li>
-<li>  Spring Boot <a href="https://link.zhihu.com/?target=https%3A//github.com/alipay/sofa-ark/tree/master/sofa-ark-samples/sample-springboot-ark">https://github.com/alipay/sofa-ark/tree/master/sofa-ark-samples/sample-springboot-ark</a></li>
+<li>服务级别的再次之（上面示例中的 5s）</li>
+<li>全局配置最低（上面示例中的 3s）</li>
 </ul>
 
                         
@@ -297,7 +246,7 @@ Main-Class: com.alipay.sofa.ark.sample.springbootdemo.SpringbootDemoApplication
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/6/5</span>
+                    <span class="date">2018/6/15</span>
                     <span>posted in&nbsp;</span> 
           				  
           					    <span class="posted-in"><a href='Microservice.html'>Microservice</a></span>
@@ -390,31 +339,31 @@ Main-Class: com.alipay.sofa.ark.sample.springbootdemo.SpringbootDemoApplication
 	      
 		      
 			      <li class="post">
-			        <a href="15459058392039.html">Reliable Domain Events</a>
+			        <a href="15517999043443.html">The Art of Crafting Architectural Diagrams</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
+			        <a href="15517997955971.html">为什么说我们需要软件架构图？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
+			        <a href="15516128677869.html">DNS Servers That Offer Privacy and Filtering</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
+			        <a href="15516123108194.html">Airbnb's Migration from Monolith to Services</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
+			        <a href="15516097487470.html">Events As First-Class Citizens</a>
 			      </li>
 		     
 		  

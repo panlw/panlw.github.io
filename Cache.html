@@ -105,134 +105,221 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15459021437244.html">
+                <a class="clearlink" href="15512418489211.html">
                 
-                  <h1>Reliable Delivery Pub/Sub Message Queues with Redis</h1>
+                  <h1>Redisson 实现 Redis 分布式锁的N种姿势</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p>原文地址 <a href="https://davidmarquis.wordpress.com/2013/01/03/reliable-delivery-message-queues-with-redis/">https://davidmarquis.wordpress.com/2013/01/03/reliable-delivery-message-queues-with-redis/</a></p>
+<p>原文地址 <a href="https://mp.weixin.qq.com/s/EcwPnD8jlZrBUzcADcRl6A">https://mp.weixin.qq.com/s/EcwPnD8jlZrBUzcADcRl6A</a></p>
 </blockquote>
 
-<p><img src="media/15459021437244/15459022953899.png" alt=""/></p>
+<p>来源：阿飞的博客</p>
 
-<p><u><strong>UPDATE</strong></u>_<strong>:</strong>_ I have open-sourced a Java implementation of the below principles called “<a href="https://github.com/davidmarquis/redisq">RedisQ</a>“. Enjoy!</p>
+<p>前几天发的一篇文章《<a href="https://mp.weixin.qq.com/s?__biz=MzU5ODUwNzY1Nw==&amp;mid=2247484155&amp;idx=1&amp;sn=0c73f45f2f641ba0bf4399f57170ac9b&amp;scene=21#wechat_redirect">Redlock：Redis 分布式锁最牛逼的实现</a>》，引起了一些同学的讨论，也有一些同学提出了一些疑问，这是好事儿。本文在讲解如何使用 Redisson 实现 Redis 普通分布式锁，以及 Redlock 算法分布式锁的几种方式的同时，也附带解答这些同学的一些疑问。</p>
 
-<p>Redis is a high performance key-value datastore that differs from other key-value solutions in the way it handles values. Instead of just storing values as simple strings, it recognizes multiple specific data types such as Lists, Sets, Hashes (maps), Strings or Numbers. Each data type has its own set of features to manipulate the data it contains in an atomic manner, making it an ideal tool for highly distributed system where concurrency is a potential issue.</p>
+<h2 id="toc_0">Redis 几种架构</h2>
 
-<p>Combining those features in creative ways allows for novel ways of doing “traditional” things differently. One particular combination has recently allowed my team and I to implement a moderately (read: good enough) reliable message delivery mechanism for multiple consumers consuming messages at their own pace.</p>
-
-<p>The solution has advantages and some caveats, but if your problem allows you to live with the possible drawbacks, it’s a nice lightweight solution to a problem that is usually answered using some more traditional (and more complex) tools, like *MQs.</p>
-
-<p>In a recent project, we ended up choosing Redis mostly because:</p>
-
-<ul>
-<li>  It was already part of our architecture and we had a simple inter-component messaging use case but didn’t want to introduce a new component in our architecture just for this.</li>
-<li>  Expected volume was low, which meant that our data set could fit in memory. <u>Note: although Redis requires everything you store in it to fit in memory, it supports persistence to disk.</u></li>
-<li>  Redis allowed for all of the implementation characteristics we were looking for, namely:
-
-<ul>
-<li>  <strong>Concurrency:</strong> Because all operations in Redis are atomic, supporting concurrency without too much of a hassle is straightforward.</li>
-<li>  <strong>Persistence:</strong> Configured properly, we can ensure persistence of our queues to disk using one of the supported Redis <a href="http://redis.io/topics/persistence" title="Redis persistence">persistence strategies</a>.</li>
-<li>  <strong>Lightweight:</strong> Using Redis from any language/platform is extremely simple and provisioning it / maintaining it on a production server is dead easy.</li>
-</ul></li>
-</ul>
-
-<p>In this post, I will go over the strategy we used with regards to Redis data structures and operations for handling the message publishing and consuming.</p>
-
-<p>The high-level strategy consists of the following:</p>
-
-<ul>
-<li>  When each consumer starts up and gets ready to consume messages, it registers by adding itself to a Set representing all consumers registered on a queue.</li>
-<li>  When a producers publishes a message on a queue, it:
-
-<ul>
-<li>  Saves the content of the message in a Redis key</li>
-<li>  Iterates over the set of consumers registered on the queue, and pushes the message ID in a List for each of the registered consumers</li>
-</ul></li>
-<li>  Each consumer continuously looks out for a new entry in its consumer-specific list and when one comes in, removes the entry, handles the message and passes on to the next message.</li>
-</ul>
-
-<p><strong>Why not use Redis Pub/Sub?</strong></p>
-
-<p>I already see you coming and asking why not using the <a href="http://redis.io/topics/pubsub">Pub/Sub semantics</a> supported out-of-the-box by Redis? The reason was two fold:</p>
+<p>Redis 发展到现在，几种常见的部署架构有：</p>
 
 <ol>
-<li> What Redis offers with Pub/Sub is a listener model, where each subscriber receives each messages when it is listening, but won’t receive them when not connected.</li>
-<li> In a clustered environment where you have multiple instances of your consumer component running at the same time, each instance would receive each message produced on the channel. We wanted to make sure any given message got consumed once per logical consumer, even when multiple instances of this component are running.</li>
+<li> 单机模式；</li>
+<li> 主从模式；</li>
+<li> 哨兵模式；</li>
+<li> 集群模式；</li>
 </ol>
 
-<p>Hence the name of this post “Reliable Delivery”, because we wanted to make sure every logical consumer eventually receives all messages produced on a queue once and only once, even when not connected – due to, for example, a deployment, a restart or a application failure/crash.</p>
+<p>我们首先基于这些架构讲解 Redisson 普通分布式锁实现，需要注意的是，只有充分了解普通分布式锁是如何实现的，才能更好的了解 Redlock 分布式锁的实现，因为 <strong>Redlock 分布式锁的实现完全基于普通分布式锁</strong>。</p>
 
-<p><strong>Detailed look at the strategy</strong></p>
+<h2 id="toc_1">普通分布式锁</h2>
 
-<p>Here’s a closer look at the different scenarios using a fictive example of an ordering system with multiple consumers interested in messages when new orders are created:</p>
+<p>Redis 普通分布式锁原理这个大家基本上都了解，本文不打算再过多的介绍，上一篇文章<strong>《</strong><a href="http://mp.weixin.qq.com/s?__biz=MzAxODcyNjEzNQ==&amp;mid=2247486873&amp;idx=2&amp;sn=f2c8133777098f77a111a5d2b715e1d0&amp;chksm=9bd0a001aca7291768f959249209557d21781880a24a67896bcc20fcc3c0bcc287d3726638ea&amp;scene=21#wechat_redirect"><strong>Redlock：Redis 分布式锁的实现</strong></a><strong>》</strong>也讲的很细，并且也说到了几个重要的注意点。如果你对 Redis 普通的分布式锁还有一些疑问，可以再回顾一下这篇文章。</p>
 
-<p><strong>Registering a consumer</strong><br/>
-<img src="media/15459021437244/15459023170786.jpg" alt=""/></p>
-
-<p>A “consumer” represents a logical entity of your architecture. You assign each concumer an identifier which it will use to register itself as a consumer on the queue.</p>
-
-<p>Registering a consumer is only a matter of adding a Set entry to a key that is crafted with the name of the queue in it.</p>
-
-<p>The semantics of a Set are helpful here: each consumer can just “add” an entry to the Set upon start up in a single operation, without the need to worry about any existing value.</p>
-
-<p><strong>Publishing a message</strong><br/>
-<img src="media/15459021437244/15459023263357.jpg" alt=""/></p>
-
-<p>On the Producer side, a few things need to happen when we’re publishing a message to a specific queue:</p>
-
-<ol>
-<li> The Producer increments a counter to get the next message ID using the INC command on key “orders.nextid”</li>
-<li> It then stores the message in a key containing the new message ID (“orders.messages.8” in our case). The actual format you store messages can be anything. We used a hash with some metadata information about each message, along with the actual payload. The payload can be serialized in JSON, XML or any format makes sense for your usage.</li>
-<li> Then for each consumer registered in key “orders.consumers”, it pushes the message ID using the <a href="http://redis.io/commands/rpush">RPUSH</a> command on lists for each consumers.</li>
-</ol>
-
-<p>To prevent duplication of message content in Redis, we store the content once and then only add references to the messages in consumer-specific lists. When a consumer consumes messages (more on that later), it will remove the ID from its list (its queue), then read the actual message content in a separate operation.</p>
-
-<p>But what happens when all consumers have read the message? If we stopped here, each message would end up being stored in Redis forever. An efficient solution to this problem is to use Redis’ ability to expire (clean up) keys after some time using the <a href="http://redis.io/commands/expire">EXPIRE</a> command. Using a reasonable amount of time for the expiration makes up for a cheap cleanup process.</p>
-
-<p>A slight variation, at a cost of message content duplication, would be to store the actual message content in each consumer-specific list. For simpler use cases where messages are small enough, this could be a compelling tradeoff.</p>
-
-<p><strong>Consuming messages</strong><br/>
-<img src="media/15459021437244/15459023359516.jpg" alt=""/></p>
-
-<p>Each consumer has a specific identifier and uses this identifier to “listen” on Lists stored in specially crafted Redis keys. Redis has this nice feature of “blocking pop”, which allows a client to remove the first or last element of a list, or wait until an element gets added.</p>
-
-<p>Leveraging this feature, each consumer creates a thread that will continuously loop and do the following:</p>
-
-<ol>
-<li> Use <a href="http://redis.io/commands/blpop">BLPOP</a> (blocking left pop) with a moderately small timeout to continuously “remove an element from the list or wait a bit”.</li>
-<li> When an element gets removed by the pop operation, read the message content and process it.</li>
-<li> When an element does not get removed (no message available), just wait and start over again.</li>
-</ol>
-
-<p>You can have multiple threads or processes consuming messages with the same “consumer identifier” and the solution still works. This allows for both stability and scalability:</p>
+<p>接下来直接 show you the code，毕竟 talk is cheap。</p>
 
 <ul>
-<li>  You can spawn multiple consumers consuming messages as the same logical entity, and ensure that if one goes down, the consumption of messages does not stop.</li>
-<li>  You can also spawn more consumers when needed for added horsepower.</li>
+<li>  redisson 版本</li>
 </ul>
 
-<p><strong>Caveats</strong></p>
+<p>本次测试选择 redisson 2.14.1 版本。</p>
+
+<h4 id="toc_2">单机模式</h4>
+
+<p>源码如下：</p>
+
+<pre><code class="language-java">// 构造redisson实现分布式锁必要的Config
+Config config = new Config();
+config.useSingleServer().setAddress(&quot;redis://172.29.1.180:5379&quot;).setPassword(&quot;a123456&quot;).setDatabase(0);
+// 构造RedissonClient
+RedissonClient redissonClient = Redisson.create(config);
+// 设置锁定资源名称
+RLock disLock = redissonClient.getLock(&quot;DISLOCK&quot;);
+boolean isLock;
+try {
+    //尝试获取分布式锁
+    isLock = disLock.tryLock(500, 15000, TimeUnit.MILLISECONDS);
+    if (isLock) {
+        //TODO if get lock success, do something;
+        Thread.sleep(15000);
+    }
+} catch (Exception e) {
+} finally {
+    // 无论如何, 最后都要解锁
+    disLock.unlock();
+}
+</code></pre>
+
+<p>通过代码可知，经过 Redisson 的封装，实现 Redis 分布式锁非常方便，我们再看一下 Redis 中的 value 是啥，和前文分析一样，hash 结构，key 就是资源名称，field 就是 UUID+threadId，value 就是重入值，在分布式锁时，这个值为 1（Redisson 还可以实现重入锁，那么这个值就取决于重入次数了）：</p>
+
+<pre><code class="language-sh">172.29.1.180:5379&gt; hgetall DISLOCK
+1) &quot;01a6d806-d282-4715-9bec-f51b9aa98110:1&quot;
+2) &quot;1&quot;
+</code></pre>
+
+<h4 id="toc_3">哨兵模式</h4>
+
+<p>即 sentinel 模式，实现代码和单机模式几乎一样，唯一的不同就是 Config 的构造：</p>
+
+<pre><code class="language-java">Config config = new Config();
+config.useSentinelServers().addSentinelAddress(
+        &quot;redis://172.29.3.245:26378&quot;,&quot;redis://172.29.3.245:26379&quot;, &quot;redis://172.29.3.245:26380&quot;)
+        .setMasterName(&quot;mymaster&quot;)
+        .setPassword(&quot;a123456&quot;).setDatabase(0);
+
+</code></pre>
+
+<h4 id="toc_4">集群模式</h4>
+
+<p>集群模式构造 Config 如下：</p>
+
+<pre><code class="language-java">Config config = new Config();
+config.useClusterServers().addNodeAddress(
+        &quot;redis://172.29.3.245:6375&quot;,&quot;redis://172.29.3.245:6376&quot;, &quot;redis://172.29.3.245:6377&quot;,
+        &quot;redis://172.29.3.245:6378&quot;,&quot;redis://172.29.3.245:6379&quot;, &quot;redis://172.29.3.245:6380&quot;)
+        .setPassword(&quot;a123456&quot;).setScanInterval(5000);
+</code></pre>
+
+<h4 id="toc_5">总结</h4>
+
+<p>普通分布式实现非常简单，无论是那种架构，向 Redis 通过 EVAL 命令执行 LUA 脚本即可。</p>
+
+<h2 id="toc_6">Redlock 分布式锁</h2>
+
+<p>那么 Redlock 分布式锁如何实现呢？以单机模式 Redis 架构为例，直接看实现代码：</p>
+
+<pre><code class="language-java">Config config1 = new Config();
+config1.useSingleServer().setAddress(&quot;redis://172.29.1.180:5378&quot;)
+        .setPassword(&quot;a123456&quot;).setDatabase(0);
+RedissonClient redissonClient1 = Redisson.create(config1);
+
+Config config2 = new Config();
+config2.useSingleServer().setAddress(&quot;redis://172.29.1.180:5379&quot;)
+        .setPassword(&quot;a123456&quot;).setDatabase(0);
+RedissonClient redissonClient2 = Redisson.create(config2);
+
+Config config3 = new Config();
+config3.useSingleServer().setAddress(&quot;redis://172.29.1.180:5380&quot;)
+        .setPassword(&quot;a123456&quot;).setDatabase(0);
+RedissonClient redissonClient3 = Redisson.create(config3);
+
+String resourceName = &quot;REDLOCK&quot;;
+RLock lock1 = redissonClient1.getLock(resourceName);
+RLock lock2 = redissonClient2.getLock(resourceName);
+RLock lock3 = redissonClient3.getLock(resourceName);
+
+RedissonRedLock redLock = new RedissonRedLock(lock1, lock2, lock3);
+boolean isLock;
+try {
+    isLock = redLock.tryLock(500, 30000, TimeUnit.MILLISECONDS);
+    System.out.println(&quot;isLock = &quot;+isLock);
+    if (isLock) {
+        //TODO if get lock success, do something;
+        Thread.sleep(30000);
+    }
+} catch (Exception e) {
+} finally {
+    // 无论如何, 最后都要解锁
+    System.out.println(&quot;&quot;);
+    redLock.unlock();
+}
+</code></pre>
+
+<p>最核心的变化就是<code>RedissonRedLock redLock = new RedissonRedLock(lock1, lock2, lock3);</code>，因为我这里是以三个节点为例。</p>
+
+<p>那么如果是哨兵模式呢？需要搭建 3 个，或者 5 个 sentinel 模式集群（具体多少个，取决于你）。<br/>
+那么如果是集群模式呢？需要搭建 3 个，或者 5 个 cluster 模式集群（具体多少个，取决于你）。</p>
+
+<h2 id="toc_7">实现原理</h2>
+
+<p>既然核心变化是使用了 <strong>RedissonRedLock</strong>，那么我们看一下它的源码有什么不同。这个类是 <strong>RedissonMultiLock</strong> 的子类，所以调用 tryLock 方法时，事实上调用了 <strong>RedissonMultiLock</strong> 的 tryLock 方法，精简源码如下：</p>
+
+<pre><code class="language-java">public boolean tryLock(long waitTime, long leaseTime, TimeUnit unit) throws InterruptedException {
+    // 实现要点之允许加锁失败节点限制（N-(N/2+1)）
+    int failedLocksLimit = failedLocksLimit();
+    List&lt;RLock&gt; acquiredLocks = new ArrayList&lt;RLock&gt;(locks.size());
+    // 实现要点之遍历所有节点通过EVAL命令执行lua加锁
+    for (ListIterator&lt;RLock&gt; iterator = locks.listIterator(); iterator.hasNext();) {
+        RLock lock = iterator.next();
+        boolean lockAcquired;
+        try {
+            // 对节点尝试加锁
+            lockAcquired = lock.tryLock(awaitTime, newLeaseTime, TimeUnit.MILLISECONDS);
+        } catch (RedisConnectionClosedException|RedisResponseTimeoutException e) {
+            // 如果抛出这类异常，为了防止加锁成功，但是响应失败，需要解锁
+            unlockInner(Arrays.asList(lock));
+            lockAcquired = false;
+        } catch (Exception e) {
+            // 抛出异常表示获取锁失败
+            lockAcquired = false;
+        }
+
+        if (lockAcquired) {
+            // 成功获取锁集合
+            acquiredLocks.add(lock);
+        } else {
+            // 如果达到了允许加锁失败节点限制，那么break，即此次Redlock加锁失败
+            if (locks.size() - acquiredLocks.size() == failedLocksLimit()) {
+                break;
+            }               
+        }
+    }
+    return true;
+}
+</code></pre>
+
+<p>很明显，这段源码就是上一篇文章<strong>《</strong><a href="http://mp.weixin.qq.com/s?__biz=MzAxODcyNjEzNQ==&amp;mid=2247486873&amp;idx=2&amp;sn=f2c8133777098f77a111a5d2b715e1d0&amp;chksm=9bd0a001aca7291768f959249209557d21781880a24a67896bcc20fcc3c0bcc287d3726638ea&amp;scene=21#wechat_redirect"><strong>Redlock：Redis 分布式锁的实现</strong></a><strong>》</strong>提到的 Redlock 算法的完全实现。</p>
+
+<p>以 sentinel 模式架构为例，如下图所示，有 sentinel-1，sentinel-2，sentinel-3 总计 3 个 sentinel 模式集群，如果要获取分布式锁，那么需要向这 3 个 sentinel 集群通过 EVAL 命令执行 LUA 脚本，需要 3/2+1=2，即至少 2 个 sentinel 集群响应成功，才算成功的以 Redlock 算法获取到分布式锁：</p>
+
+<p><img src="https://mmbiz.qpic.cn/mmbiz_png/4o22OFcmzHk1pgWlVxe0MAziaMeUwZwzyHAsAbIrZpJRk0F9XfamODSUickaFtZoZiaYic56RicoQY2lCjJDYq4ARSQ/640?wx_fmt=png" alt=""/>Redlock 分布式锁</p>
+
+<h2 id="toc_8">问题合集</h2>
+
+<p><img src="https://mmbiz.qpic.cn/mmbiz_png/4o22OFcmzHk1pgWlVxe0MAziaMeUwZwzyvqB06oXq6Z5IcicsicbGLicuIiayRz9zBtwMEHFdWR6g3cRjF3Liabdt2Ug/640?wx_fmt=png" alt=""/>image.png</p>
+
+<p>根据上面实现原理的分析，这位同学应该是对 Redlock 算法实现有一点点误解，假设我们用 5 个节点实现 Redlock 算法的分布式锁。那么<strong>要么是 5 个 redis 单实例，要么是 5 个 sentinel 集群，要么是 5 个 cluster 集群</strong>。而不是一个有 5 个主节点的 cluster 集群，然后向每个节点通过 EVAL 命令执行 LUA 脚本尝试获取分布式锁，如上图所示。</p>
 
 <ul>
-<li>  The solution as described above does not support retryability of messages in case of a failure to process on the consumer side. I could imagine a way to do it using Redis, but one has to wonder if Redis is still the right tool if such a characteristic is required by your use case.</li>
-<li>  The solution also does not guarantee that messages will be consumed in the order they were produced. If you have a single consumer instance you’re covered, but as soon as you have multiple consumer instances you cannot guarantee the ordering of messages. Maintaining a lock in a specific key for each consumer would enable this, at the cost of scalability (only 1 message can be consumed at any time throughout your consumer instances).</li>
-<li>  If your producers and consumers are using different languages, you must implement this strategy for each platform/language. Fortunately, there are Redis client for pretty much any popular platforms.</li>
+<li>  失效时间如何设置</li>
 </ul>
 
-<p><strong>Wrap up</strong></p>
+<p>这个问题的场景是，假设设置失效时间 10 秒，如果由于某些原因导致 10 秒还没执行完任务，这时候锁自动失效，导致其他线程也会拿到分布式锁。</p>
 
-<p>There are many ways Redis can be leveraged using the simple data structures and atomic operations it provides. Using a particular combination of those, we’ve been able to implement a simple system that allowed reliable message delivery to multiple consumers in a clustered environment without too much of a hassle.</p>
+<p>这确实是 Redis 分布式最大的问题，不管是普通分布式锁，还是 Redlock 算法分布式锁，都没有解决这个问题。也有一些文章提出了对失效时间续租，即延长失效时间，很明显这又提升了分布式锁的复杂度。另外就笔者了解，没有现成的框架有实现，如果有哪位知道，可以告诉我，万分感谢。</p>
 
-<p>Because Redis was already part of our architecture, it proved to be a natural choice. The efforts required to build up this solution outweighed the efforts required to provision and maintain an additional component to manage our queues.</p>
+<ul>
+<li>  redis 分布式锁的高可用</li>
+</ul>
 
-<p>It might not be the most appropriate choice for your case. Be thoughtful in your architectural choices!</p>
+<p>关于 Redis 分布式锁的安全性问题，在分布式系统专家 Martin Kleppmann 和 Redis 的作者 antirez 之间已经发生过一场争论。有兴趣的同学，搜索 &quot; <strong>基于 Redis 的分布式锁到底安全吗</strong> &quot; 就能得到你想要的答案，需要注意的是，有上下两篇（这应该就是传说中的神仙打架吧，哈）。</p>
 
-<p><u><strong>UPDATE</strong></u>_<strong>:</strong>_ I have open-sourced a Java implementation of the above principles called “<a href="https://github.com/davidmarquis/redisq">RedisQ</a>“. Enjoy!</p>
+<ul>
+<li>  zookeeper or redis</li>
+</ul>
+
+<p>没有绝对的好坏，只有更适合自己的业务。就性能而言，redis 很明显优于 zookeeper；就分布式锁实现的健壮性而言，zookeeper 很明显优于 redis。如何选择，取决于你的业务！</p>
 
                         
                       </div>
@@ -241,7 +328,7 @@
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/12/27</span>
+                    <span class="date">2019/2/27</span>
                     <span>posted in&nbsp;</span> 
           				  
           					    <span class="posted-in"><a href='Cache.html'>Cache</a></span>
@@ -334,31 +421,31 @@
 	      
 		      
 			      <li class="post">
-			        <a href="15459058392039.html">Reliable Domain Events</a>
+			        <a href="15517999043443.html">The Art of Crafting Architectural Diagrams</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
+			        <a href="15517997955971.html">为什么说我们需要软件架构图？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
+			        <a href="15516128677869.html">DNS Servers That Offer Privacy and Filtering</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
+			        <a href="15516123108194.html">Airbnb's Migration from Monolith to Services</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
+			        <a href="15516097487470.html">Events As First-Class Citizens</a>
 			      </li>
 		     
 		  

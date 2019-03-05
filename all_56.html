@@ -105,345 +105,321 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15358757119900.html">
+                <a class="clearlink" href="15412405379571.html">
                 
-                  <h1>Java 8 Concurrency Tutorial: Threads and Executors</h1>
+                  <h1>用 GitLab CI 进行持续集成</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
-                        	<blockquote>
-<p><a href="https://winterbe.com/posts/2015/04/07/java8-concurrency-tutorial-thread-executor-examples/">https://winterbe.com/posts/2015/04/07/java8-concurrency-tutorial-thread-executor-examples/</a></p>
+                        	<pre><code>2016.07.29 Scarletsky
+</code></pre>
+
+<blockquote>
+<p><a href="https://scarletsky.github.io/2016/07/29/use-gitlab-ci-for-continuous-integration/">https://scarletsky.github.io/2016/07/29/use-gitlab-ci-for-continuous-integration/</a></p>
 </blockquote>
 
-<p>Welcome to the first part of my Java 8 Concurrency tutorial. This guide teaches you <a href="http://en.wikipedia.org/wiki/Concurrent_computing">concurrent programming</a> in Java 8 with easily understood code examples. It&#39;s the first part out of a series of tutorials covering the Java Concurrency API. In the next 15 min you learn how to execute code in parallel via threads, tasks and executor services.</p>
+<h2 id="toc_0"><a href="#%E7%AE%80%E4%BB%8B" title="简介"></a>简介</h2>
+
+<p>从 GitLab 8.0 开始，GitLab CI 就已经集成在 GitLab 中，我们只要在项目中添加一个 <code>.gitlab-ci.yml</code> 文件，然后添加一个 Runner，即可进行持续集成。 而且随着 GitLab 的升级，GitLab CI 变得越来越强大，本文将介绍如何使用 GitLab CI 进行持续集成。</p>
+
+<h2 id="toc_1"><a href="#%E4%B8%80%E4%BA%9B%E6%A6%82%E5%BF%B5" title="一些概念"></a>一些概念</h2>
+
+<p>在介绍 GitLab CI 之前，我们先看看一些持续集成相关的概念。</p>
+
+<h3 id="toc_2"><a href="#Pipeline" title="Pipeline"></a>Pipeline</h3>
+
+<p>一次 Pipeline 其实相当于一次构建任务，里面可以包含多个流程，如安装依赖、运行测试、编译、部署测试服务器、部署生产服务器等流程。<br/>
+任何提交或者 Merge Request 的合并都可以触发 Pipeline，如下图所示：</p>
+
+<pre><code>+------------------+           +----------------+
+|                  |  trigger  |                |
+|   Commit / MR    +----------&gt;+    Pipeline    |
+|                  |           |                |
++------------------+           +----------------+
+</code></pre>
+
+<h3 id="toc_3"><a href="#Stages" title="Stages"></a>Stages</h3>
+
+<p>Stages 表示构建阶段，说白了就是上面提到的流程。<br/>
+我们可以在一次 Pipeline 中定义多个 Stages，这些 Stages 会有以下特点：</p>
 
 <ul>
-<li>  Part 1: Threads and Executors</li>
-<li>  Part 2: <a href="/posts/2015/04/30/java8-concurrency-tutorial-synchronized-locks-examples/">Synchronization and Locks</a></li>
-<li>  Part 3: <a href="/posts/2015/05/22/java8-concurrency-tutorial-atomic-concurrent-map-examples/">Atomic Variables and ConcurrentMap</a></li>
+<li>  所有 Stages 会按照顺序运行，即当一个 Stage 完成后，下一个 Stage 才会开始</li>
+<li>  只有当所有 Stages 完成后，该构建任务 (Pipeline) 才会成功</li>
+<li>  如果任何一个 Stage 失败，那么后面的 Stages 不会执行，该构建任务 (Pipeline) 失败</li>
 </ul>
 
-<p>The <a href="https://docs.oracle.com/javase/8/docs/api/java/util/concurrent/package-summary.html">Concurrency API</a> was first introduced with the release of Java 5 and then progressively enhanced with every new Java release. The majority of concepts shown in this article also work in older versions of Java. However my code samples focus on Java 8 and make heavy use of lambda expressions and other new features. If you&#39;re not yet familiar with lambdas I recommend reading my <a href="/posts/2014/03/16/java-8-tutorial/">Java 8 Tutorial</a> first.</p>
+<p>因此，Stages 和 Pipeline 的关系就是：</p>
 
-<h3 id="toc_0">Threads and Runnables<a href="#threads-and-runnables" title="Permalink to this section">#</a></h3>
-
-<p>All modern operating systems support concurrency both via <a href="http://en.wikipedia.org/wiki/Process_(computing)">processes</a> and <a href="http://en.wikipedia.org/wiki/Thread_%28computing%29">threads</a>. Processes are instances of programs which typically run independent to each other, e.g. if you start a java program the operating system spawns a new process which runs in parallel to other programs. Inside those processes we can utilize threads to execute code concurrently, so we can make the most out of the available cores of the CPU.</p>
-
-<p>Java supports <a href="https://docs.oracle.com/javase/8/docs/api/java/lang/Thread.html">Threads</a> since JDK 1.0. Before starting a new thread you have to specify the code to be executed by this thread, often called the <u>task</u>. This is done by implementing <code>Runnable</code> - a functional interface defining a single void no-args method <code>run()</code> as demonstrated in the following example:</p>
-
-<pre><code>Runnable task = () -&gt; {
-    String threadName = Thread.currentThread().getName();
-    System.out.println(&quot;Hello &quot; + threadName);
-};
-
-task.run();
-
-Thread thread = new Thread(task);
-thread.start();
-
-System.out.println(&quot;Done!&quot;);
-
+<pre><code>+--------------------------------------------------------+
+|                                                        |
+|  Pipeline                                              |
+|                                                        |
+|  +-----------+     +------------+      +------------+  |
+|  |  Stage 1  |----&gt;|   Stage 2  |-----&gt;|   Stage 3  |  |
+|  +-----------+     +------------+      +------------+  |
+|                                                        |
++--------------------------------------------------------+
 </code></pre>
 
-<p>Since <code>Runnable</code> is a functional interface we can utilize Java 8 lambda expressions to print the current threads name to the console. First we execute the runnable directly on the main thread before starting a new thread.</p>
+<h3 id="toc_4"><a href="#Jobs" title="Jobs"></a>Jobs</h3>
 
-<p>The result on the console might look like this:</p>
-
-<pre><code>Hello main
-Hello Thread-0
-Done!
-
-</code></pre>
-
-<p>Or that:</p>
-
-<pre><code>Hello main
-Done!
-Hello Thread-0
-
-</code></pre>
-
-<p>Due to concurrent execution we cannot predict if the runnable will be invoked before or after printing &#39;done&#39;. The order is non-deterministic, thus making concurrent programming a complex task in larger applications.</p>
-
-<p>Threads can be put to sleep for a certain duration. This is quite handy to simulate long running tasks in the subsequent code samples of this article:</p>
-
-<pre><code>Runnable runnable = () -&gt; {
-    try {
-        String name = Thread.currentThread().getName();
-        System.out.println(&quot;Foo &quot; + name);
-        TimeUnit.SECONDS.sleep(1);
-        System.out.println(&quot;Bar &quot; + name);
-    }
-    catch (InterruptedException e) {
-        e.printStackTrace();
-    }
-};
-
-Thread thread = new Thread(runnable);
-thread.start();
-
-</code></pre>
-
-<p>When you run the above code you&#39;ll notice the one second delay between the first and the second print statement. <code>TimeUnit</code> is a useful enum for working with units of time. Alternatively you can achieve the same by calling <code>Thread.sleep(1000)</code>.</p>
-
-<p>Working with the <code>Thread</code> class can be very tedious and error-prone. Due to that reason the <strong>Concurrency API</strong> has been introduced back in 2004 with the release of Java 5. The API is located in package <code>java.util.concurrent</code> and contains many useful classes for handling concurrent programming. Since that time the Concurrency API has been enhanced with every new Java release and even Java 8 provides new classes and methods for dealing with concurrency.</p>
-
-<p>Now let&#39;s take a deeper look at one of the most important parts of the Concurrency API - the executor services.</p>
-
-<h3 id="toc_1">Executors<a href="#executors" title="Permalink to this section">#</a></h3>
-
-<p>The Concurrency API introduces the concept of an <code>ExecutorService</code> as a higher level replacement for working with threads directly. Executors are capable of running asynchronous tasks and typically manage a pool of threads, so we don&#39;t have to create new threads manually. All threads of the internal pool will be reused under the hood for revenant tasks, so we can run as many concurrent tasks as we want throughout the life-cycle of our application with a single executor service.</p>
-
-<p>This is how the first thread-example looks like using executors:</p>
-
-<pre><code>ExecutorService executor = Executors.newSingleThreadExecutor();
-executor.submit(() -&gt; {
-    String threadName = Thread.currentThread().getName();
-    System.out.println(&quot;Hello &quot; + threadName);
-});
-
-// =&gt; Hello pool-1-thread-1
-
-</code></pre>
-
-<p>The class <code>Executors</code> provides convenient factory methods for creating different kinds of executor services. In this sample we use an executor with a thread pool of size one.</p>
-
-<p>The result looks similar to the above sample but when running the code you&#39;ll notice an important difference: the java process never stops! Executors have to be stopped explicitly - otherwise they keep listening for new tasks.</p>
-
-<p>An <code>ExecutorService</code> provides two methods for that purpose: <code>shutdown()</code> waits for currently running tasks to finish while <code>shutdownNow()</code> interrupts all running tasks and shut the executor down immediately.</p>
-
-<p>This is the preferred way how I typically shutdown executors:</p>
-
-<pre><code>try {
-    System.out.println(&quot;attempt to shutdown executor&quot;);
-    executor.shutdown();
-    executor.awaitTermination(5, TimeUnit.SECONDS);
-}
-catch (InterruptedException e) {
-    System.err.println(&quot;tasks interrupted&quot;);
-}
-finally {
-    if (!executor.isTerminated()) {
-        System.err.println(&quot;cancel non-finished tasks&quot;);
-    }
-    executor.shutdownNow();
-    System.out.println(&quot;shutdown finished&quot;);
-}
-
-</code></pre>
-
-<p>The executor shuts down softly by waiting a certain amount of time for termination of currently running tasks. After a maximum of five seconds the executor finally shuts down by interrupting all running tasks.</p>
-
-<h4 id="toc_2">Callables and Futures<a href="#callables-and-futures" title="Permalink to this section">#</a></h4>
-
-<p>In addition to <code>Runnable</code> executors support another kind of task named <code>Callable</code>. Callables are functional interfaces just like runnables but instead of being <code>void</code> they return a value.</p>
-
-<p>This lambda expression defines a callable returning an integer after sleeping for one second:</p>
-
-<pre><code>Callable&lt;Integer&gt; task = () -&gt; {
-    try {
-        TimeUnit.SECONDS.sleep(1);
-        return 123;
-    }
-    catch (InterruptedException e) {
-        throw new IllegalStateException(&quot;task interrupted&quot;, e);
-    }
-};
-
-</code></pre>
-
-<p>Callables can be submitted to executor services just like runnables. But what about the callables result? Since <code>submit()</code> doesn&#39;t wait until the task completes, the executor service cannot return the result of the callable directly. Instead the executor returns a special result of type <code>Future</code> which can be used to retrieve the actual result at a later point in time.</p>
-
-<pre><code>ExecutorService executor = Executors.newFixedThreadPool(1);
-Future&lt;Integer&gt; future = executor.submit(task);
-
-System.out.println(&quot;future done? &quot; + future.isDone());
-
-Integer result = future.get();
-
-System.out.println(&quot;future done? &quot; + future.isDone());
-System.out.print(&quot;result: &quot; + result);
-
-</code></pre>
-
-<p>After submitting the callable to the executor we first check if the future has already been finished execution via <code>isDone()</code>. I&#39;m pretty sure this isn&#39;t the case since the above callable sleeps for one second before returning the integer.</p>
-
-<p>Calling the method <code>get()</code> blocks the current thread and waits until the callable completes before returning the actual result <code>123</code>. Now the future is finally done and we see the following result on the console:</p>
-
-<pre><code>future done? false
-future done? true
-result: 123
-
-</code></pre>
-
-<p>Futures are tightly coupled to the underlying executor service. Keep in mind that every non-terminated future will throw exceptions if you shutdown the executor:</p>
-
-<pre><code>executor.shutdownNow();
-future.get();
-
-</code></pre>
-
-<p>You might have noticed that the creation of the executor slightly differs from the previous example. We use <code>newFixedThreadPool(1)</code> to create an executor service backed by a thread-pool of size one. This is equivalent to <code>newSingleThreadExecutor()</code> but we could later increase the pool size by simply passing a value larger than one.</p>
-
-<h4 id="toc_3">Timeouts<a href="#timeouts" title="Permalink to this section">#</a></h4>
-
-<p>Any call to <code>future.get()</code> will block and wait until the underlying callable has been terminated. In the worst case a callable runs forever - thus making your application unresponsive. You can simply counteract those scenarios by passing a timeout:</p>
-
-<pre><code>ExecutorService executor = Executors.newFixedThreadPool(1);
-
-Future&lt;Integer&gt; future = executor.submit(() -&gt; {
-    try {
-        TimeUnit.SECONDS.sleep(2);
-        return 123;
-    }
-    catch (InterruptedException e) {
-        throw new IllegalStateException(&quot;task interrupted&quot;, e);
-    }
-});
-
-future.get(1, TimeUnit.SECONDS);
-
-</code></pre>
-
-<p>Executing the above code results in a <code>TimeoutException</code>:</p>
-
-<pre><code>Exception in thread &quot;main&quot; java.util.concurrent.TimeoutException
-    at java.util.concurrent.FutureTask.get(FutureTask.java:205)
-
-</code></pre>
-
-<p>You might already have guessed why this exception is thrown: We specified a maximum wait time of one second but the callable actually needs two seconds before returning the result.</p>
-
-<h4 id="toc_4">InvokeAll<a href="#invokeall" title="Permalink to this section">#</a></h4>
-
-<p>Executors support batch submitting of multiple callables at once via <code>invokeAll()</code>. This method accepts a collection of callables and returns a list of futures.</p>
-
-<pre><code>ExecutorService executor = Executors.newWorkStealingPool();
-
-List&lt;Callable&lt;String&gt;&gt; callables = Arrays.asList(
-        () -&gt; &quot;task1&quot;,
-        () -&gt; &quot;task2&quot;,
-        () -&gt; &quot;task3&quot;);
-
-executor.invokeAll(callables)
-    .stream()
-    .map(future -&gt; {
-        try {
-            return future.get();
-        }
-        catch (Exception e) {
-            throw new IllegalStateException(e);
-        }
-    })
-    .forEach(System.out::println);
-
-</code></pre>
-
-<p>In this example we utilize Java 8 functional streams in order to process all futures returned by the invocation of <code>invokeAll</code>. We first map each future to its return value and then print each value to the console. If you&#39;re not yet familiar with streams read my <a href="/posts/2014/07/31/java8-stream-tutorial-examples/">Java 8 Stream Tutorial</a>.</p>
-
-<h4 id="toc_5">InvokeAny<a href="#invokeany" title="Permalink to this section">#</a></h4>
-
-<p>Another way of batch-submitting callables is the method <code>invokeAny()</code> which works slightly different to <code>invokeAll()</code>. Instead of returning future objects this method blocks until the first callable terminates and returns the result of that callable.</p>
-
-<p>In order to test this behavior we use this helper method to simulate callables with different durations. The method returns a callable that sleeps for a certain amount of time until returning the given result:</p>
-
-<pre><code>Callable&lt;String&gt; callable(String result, long sleepSeconds) {
-    return () -&gt; {
-        TimeUnit.SECONDS.sleep(sleepSeconds);
-        return result;
-    };
-}
-
-</code></pre>
-
-<p>We use this method to create a bunch of callables with different durations from one to three seconds. Submitting those callables to an executor via <code>invokeAny()</code> returns the string result of the fastest callable - in that case task2:</p>
-
-<pre><code>ExecutorService executor = Executors.newWorkStealingPool();
-
-List&lt;Callable&lt;String&gt;&gt; callables = Arrays.asList(
-    callable(&quot;task1&quot;, 2),
-    callable(&quot;task2&quot;, 1),
-    callable(&quot;task3&quot;, 3));
-
-String result = executor.invokeAny(callables);
-System.out.println(result);
-
-// =&gt; task2
-
-</code></pre>
-
-<p>The above example uses yet another type of executor created via <code>newWorkStealingPool()</code>. This factory method is part of Java 8 and returns an executor of type <code>ForkJoinPool</code> which works slightly different than normal executors. Instead of using a fixed size thread-pool <a href="https://docs.oracle.com/javase/8/docs/api/java/util/concurrent/ForkJoinPool.html">ForkJoinPools</a> are created for a given parallelism size which per default is the number of available cores of the hosts CPU.</p>
-
-<p>ForkJoinPools exist since Java 7 and will be covered in detail in a later tutorial of this series. Let&#39;s finish this tutorial by taking a deeper look at scheduled executors.</p>
-
-<h3 id="toc_6">Scheduled Executors<a href="#scheduled-executors" title="Permalink to this section">#</a></h3>
-
-<p>We&#39;ve already learned how to submit and run tasks once on an executor. In order to periodically run common tasks multiple times, we can utilize scheduled thread pools.</p>
-
-<p>A <code>ScheduledExecutorService</code> is capable of scheduling tasks to run either periodically or once after a certain amount of time has elapsed.</p>
-
-<p>This code sample schedules a task to run after an initial delay of three seconds has passed:</p>
-
-<pre><code>ScheduledExecutorService executor = Executors.newScheduledThreadPool(1);
-
-Runnable task = () -&gt; System.out.println(&quot;Scheduling: &quot; + System.nanoTime());
-ScheduledFuture&lt;?&gt; future = executor.schedule(task, 3, TimeUnit.SECONDS);
-
-TimeUnit.MILLISECONDS.sleep(1337);
-
-long remainingDelay = future.getDelay(TimeUnit.MILLISECONDS);
-System.out.printf(&quot;Remaining Delay: %sms&quot;, remainingDelay);
-
-</code></pre>
-
-<p>Scheduling a task produces a specialized future of type <code>ScheduledFuture</code> which - in addition to <code>Future</code> - provides the method <code>getDelay()</code> to retrieve the remaining delay. After this delay has elapsed the task will be executed concurrently.</p>
-
-<p>In order to schedule tasks to be executed periodically, executors provide the two methods <code>scheduleAtFixedRate()</code> and <code>scheduleWithFixedDelay()</code>. The first method is capable of executing tasks with a fixed time rate, e.g. once every second as demonstrated in this example:</p>
-
-<pre><code>ScheduledExecutorService executor = Executors.newScheduledThreadPool(1);
-
-Runnable task = () -&gt; System.out.println(&quot;Scheduling: &quot; + System.nanoTime());
-
-int initialDelay = 0;
-int period = 1;
-executor.scheduleAtFixedRate(task, initialDelay, period, TimeUnit.SECONDS);
-
-</code></pre>
-
-<p>Additionally this method accepts an initial delay which describes the leading wait time before the task will be executed for the first time.</p>
-
-<p>Please keep in mind that <code>scheduleAtFixedRate()</code> doesn&#39;t take into account the actual duration of the task. So if you specify a period of one second but the task needs 2 seconds to be executed then the thread pool will working to capacity very soon.</p>
-
-<p>In that case you should consider using <code>scheduleWithFixedDelay()</code> instead. This method works just like the counterpart described above. The difference is that the wait time period applies between the end of a task and the start of the next task. For example:</p>
-
-<pre><code>ScheduledExecutorService executor = Executors.newScheduledThreadPool(1);
-
-Runnable task = () -&gt; {
-    try {
-        TimeUnit.SECONDS.sleep(2);
-        System.out.println(&quot;Scheduling: &quot; + System.nanoTime());
-    }
-    catch (InterruptedException e) {
-        System.err.println(&quot;task interrupted&quot;);
-    }
-};
-
-executor.scheduleWithFixedDelay(task, 0, 1, TimeUnit.SECONDS);
-
-</code></pre>
-
-<p>This example schedules a task with a fixed delay of one second between the end of an execution and the start of the next execution. The initial delay is zero and the tasks duration is two seconds. So we end up with an execution interval of 0s, 3s, 6s, 9s and so on. As you can see <code>scheduleWithFixedDelay()</code> is handy if you cannot predict the duration of the scheduled tasks.</p>
-
-<p>This was the first part out of a series of concurrency tutorials. I recommend practicing the shown code samples by your own. You find all code samples from this article on <a href="https://github.com/winterbe/java8-tutorial">GitHub</a>, so feel free to fork the repo and <a href="https://github.com/winterbe/java8-tutorial/stargazers">give me star</a>.</p>
-
-<p>I hope you&#39;ve enjoyed this article. If you have any further questions send me your feedback in the comments below or via <a href="https://twitter.com/winterbe_">Twitter</a>.</p>
+<p>Jobs 表示构建工作，表示某个 Stage 里面执行的工作。<br/>
+我们可以在 Stages 里面定义多个 Jobs，这些 Jobs 会有以下特点：</p>
 
 <ul>
-<li>  Part 1: Threads and Executors</li>
-<li>  Part 2: <a href="/posts/2015/04/30/java8-concurrency-tutorial-synchronized-locks-examples/">Synchronization and Locks</a></li>
-<li>  Part 3: <a href="/posts/2015/05/22/java8-concurrency-tutorial-atomic-concurrent-map-examples/">Atomic Variables and ConcurrentMap</a></li>
+<li>  相同 Stage 中的 Jobs 会并行执行</li>
+<li>  相同 Stage 中的 Jobs 都执行成功时，该 Stage 才会成功</li>
+<li>  如果任何一个 Job 失败，那么该 Stage 失败，即该构建任务 (Pipeline) 失败</li>
 </ul>
+
+<p>所以，Jobs 和 Stage 的关系图就是：</p>
+
+<pre><code>+------------------------------------------+
+|                                          |
+|  Stage 1                                 |
+|                                          |
+|  +---------+  +---------+  +---------+   |
+|  |  Job 1  |  |  Job 2  |  |  Job 3  |   |
+|  +---------+  +---------+  +---------+   |
+|                                          |
++------------------------------------------+
+</code></pre>
+
+<h2 id="toc_5"><a href="#GitLab-Runner" title="GitLab Runner"></a>GitLab Runner</h2>
+
+<h3 id="toc_6"><a href="#%E7%AE%80%E4%BB%8B-1" title="简介"></a>简介</h3>
+
+<p>理解了上面的基本概念之后，有没有觉得少了些什么东西 —— 由谁来执行这些构建任务呢？<br/>
+答案就是 GitLab Runner 了！</p>
+
+<p>想问为什么不是 GitLab CI 来运行那些构建任务？<br/>
+一般来说，构建任务都会占用很多的系统资源 (譬如编译代码)，而 GitLab CI 又是 GitLab 的一部分，如果由 GitLab CI 来运行构建任务的话，在执行构建任务的时候，GitLab 的性能会大幅下降。</p>
+
+<p>GitLab CI 最大的作用是管理各个项目的构建状态，因此，运行构建任务这种浪费资源的事情就交给 GitLab Runner 来做拉！<br/>
+因为 GitLab Runner 可以安装到不同的机器上，所以在构建任务运行期间并不会影响到 GitLab 的性能~</p>
+
+<h3 id="toc_7"><a href="#%E5%AE%89%E8%A3%85" title="安装"></a>安装</h3>
+
+<p>安装 GitLab Runner 太简单了，按照着 <a href="https://gitlab.com/gitlab-org/gitlab-ci-multi-runner">官方文档</a> 的教程来就好拉！<br/>
+下面是 Debian/Ubuntu/CentOS 的安装方法，其他系统去参考官方文档：</p>
+
+<pre><code># For Debian/Ubuntu
+$ curl -L https://packages.gitlab.com/install/repositories/runner/gitlab-ci-multi-runner/script.deb.sh | sudo bash
+$ sudo apt-get install gitlab-ci-multi-runner
+# For CentOS
+$ curl -L https://packages.gitlab.com/install/repositories/runner/gitlab-ci-multi-runner/script.rpm.sh | sudo bash
+$ sudo yum install gitlab-ci-multi-runner
+</code></pre>
+
+<h3 id="toc_8"><a href="#%E6%B3%A8%E5%86%8C-Runner" title="注册 Runner"></a>注册 Runner</h3>
+
+<p>安装好 GitLab Runner 之后，我们只要启动 Runner 然后和 CI 绑定就可以了：</p>
+
+<ul>
+<li>  打开你 GitLab 中的项目页面，在项目设置中找到 runners</li>
+<li>  运行 <code>sudo gitlab-ci-multi-runner register</code></li>
+<li>  输入 CI URL</li>
+<li>  输入 Token</li>
+<li>  输入 Runner 的名字</li>
+<li>  选择 Runner 的类型，简单起见还是选 Shell 吧</li>
+<li>  完成</li>
+</ul>
+
+<p>当注册好 Runner 之后，可以用 <code>sudo gitlab-ci-multi-runner list</code> 命令来查看各个 Runner 的状态：</p>
+
+<pre><code>$ sudo gitlab-runner list
+Listing configured runners          ConfigFile=/etc/gitlab-runner/config.toml
+my-runner                           Executor=shell Token=cd1cd7cf243afb47094677855aacd3 URL=http://mygitlab.com/ci
+</code></pre>
+
+<h2 id="toc_9"><a href="#gitlab-ci-yml" title=".gitlab-ci.yml"></a>.gitlab-ci.yml</h2>
+
+<h3 id="toc_10"><a href="#%E7%AE%80%E4%BB%8B-2" title="简介"></a>简介</h3>
+
+<p>配置好 Runner 之后，我们要做的事情就是在项目根目录中添加 <code>.gitlab-ci.yml</code> 文件了。<br/>
+当我们添加了 <code>.gitlab-ci.yml</code> 文件后，每次提交代码或者合并 MR 都会自动运行构建任务了。</p>
+
+<p>还记得 Pipeline 是怎么触发的吗？Pipeline 也是通过提交代码或者合并 MR 来触发的！<br/>
+那么 Pipeline 和 <code>.gitlab-ci.yml</code> 有什么关系呢？<br/>
+其实 <code>.gitlab-ci.yml</code> 就是在定义 Pipeline 而已拉！</p>
+
+<h3 id="toc_11"><a href="#%E5%9F%BA%E6%9C%AC%E5%86%99%E6%B3%95" title="基本写法"></a>基本写法</h3>
+
+<p>我们先来看看 <code>.gitlab-ci.yml</code> 是怎么写的：</p>
+
+<pre><code class="language-yml"># 定义 stages
+stages:
+  - build
+  - test
+# 定义 job
+job1:
+  stage: test
+  script:
+    - echo &quot;I am job1&quot;
+    - echo &quot;I am in test stage&quot;
+# 定义 job
+job2:
+  stage: build
+  script:
+    - echo &quot;I am job2&quot;
+    - echo &quot;I am in build stage&quot;
+</code></pre>
+
+<p>写起来很简单吧！用 <code>stages</code> 关键字来定义 Pipeline 中的各个构建阶段，然后用一些非关键字来定义 jobs。<br/>
+每个 job 中可以可以再用 <code>stage</code> 关键字来指定该 job 对应哪个 stage。<br/>
+job 里面的 <code>script</code> 关键字是最关键的地方了，也是每个 job 中必须要包含的，它表示每个 job 要执行的命令。</p>
+
+<p>回想一下我们之前提到的 Stages 和 Jobs 的关系，然后猜猜上面例子的运行结果？</p>
+
+<pre><code>I am job2
+I am in build stage
+I am job1
+I am in test stage
+</code></pre>
+
+<p>根据我们在 <code>stages</code> 中的定义，<code>build</code> 阶段要在 <code>test</code> 阶段之前运行，所以 <code>stage:build</code> 的 jobs 会先运行，之后才会运行 <code>stage:test</code> 的 jobs。</p>
+
+<h3 id="toc_12"><a href="#%E5%B8%B8%E7%94%A8%E7%9A%84%E5%85%B3%E9%94%AE%E5%AD%97" title="常用的关键字"></a>常用的关键字</h3>
+
+<p>下面介绍一些常用的关键字，想要更加详尽的内容请前往 <a href="http://docs.gitlab.com/ce/ci/yaml/README.html">官方文档</a></p>
+
+<h4 id="toc_13"><a href="#stages" title="stages"></a>stages</h4>
+
+<p>定义 Stages，默认有三个 Stages，分别是 <code>build</code>, <code>test</code>, <code>deploy</code>。</p>
+
+<h4 id="toc_14"><a href="#types" title="types"></a>types</h4>
+
+<p><code>stages</code> 的别名。</p>
+
+<h4 id="toc_15"><a href="#before-script" title="before_script"></a>before_script</h4>
+
+<p>定义任何 Jobs 运行前都会执行的命令。</p>
+
+<h4 id="toc_16"><a href="#after-script" title="after_script"></a>after_script</h4>
+
+<blockquote>
+<p>要求 GitLab 8.7+ 和 GitLab Runner 1.2+</p>
+</blockquote>
+
+<p>定义任何 Jobs 运行完后都会执行的命令。</p>
+
+<h4 id="toc_17"><a href="#variables-amp-amp-Job-variables" title="variables &amp;&amp; Job.variables"></a>variables &amp;&amp; Job.variables</h4>
+
+<blockquote>
+<p>要求 GitLab Runner 0.5.0+</p>
+</blockquote>
+
+<p>定义环境变量。<br/>
+如果定义了 Job 级别的环境变量的话，该 Job 会优先使用 Job 级别的环境变量。</p>
+
+<h4 id="toc_18"><a href="#cache-amp-amp-Job-cache" title="cache &amp;&amp; Job.cache"></a>cache &amp;&amp; Job.cache</h4>
+
+<blockquote>
+<p>要求 GitLab Runner 0.7.0+</p>
+</blockquote>
+
+<p>定义需要缓存的文件。<br/>
+每个 Job 开始的时候，Runner 都会删掉 <code>.gitignore</code> 里面的文件。<br/>
+如果有些文件 (如 <code>node_modules/</code>) 需要多个 Jobs 共用的话，我们只能让每个 Job 都先执行一遍 <code>npm install</code>。<br/>
+这样很不方便，因此我们需要对这些文件进行缓存。缓存了的文件除了可以跨 Jobs 使用外，还可以跨 Pipeline 使用。</p>
+
+<p>具体用法请查看 <a href="http://docs.gitlab.com/ce/ci/yaml/README.html#cache">官方文档</a>。</p>
+
+<h4 id="toc_19"><a href="#Job-script" title="Job.script"></a>Job.script</h4>
+
+<p>定义 Job 要运行的命令，必填项。</p>
+
+<h4 id="toc_20"><a href="#Job-stage" title="Job.stage"></a>Job.stage</h4>
+
+<p>定义 Job 的 stage，默认为 <code>test</code>。</p>
+
+<h4 id="toc_21"><a href="#Job-artifacts" title="Job.artifacts"></a>Job.artifacts</h4>
+
+<p>定义 Job 中生成的附件。<br/>
+当该 Job 运行成功后，生成的文件可以作为附件 (如生成的二进制文件) 保留下来，打包发送到 GitLab，之后我们可以在 GitLab 的项目页面下下载该附件。<br/>
+注意，不要把 <code>artifacts</code> 和 <code>cache</code> 混淆了。</p>
+
+<h3 id="toc_22"><a href="#%E5%AE%9E%E7%94%A8%E4%BE%8B%E5%AD%90" title="实用例子"></a>实用例子</h3>
+
+<p>下面给出一个我自己在用的例子：</p>
+
+<pre><code class="language-yml">stages:
+  - install_deps
+  - test
+  - build
+  - deploy_test
+  - deploy_production
+cache:
+  key: ${CI_BUILD_REF_NAME}
+  paths:
+    - node_modules/
+    - dist/
+# 安装依赖
+install_deps:
+  stage: install_deps
+  only:
+    - develop
+    - master
+  script:
+    - npm install
+# 运行测试用例
+test:
+  stage: test
+  only:
+    - develop
+    - master
+  script:
+    - npm run test
+# 编译
+build:
+  stage: build
+  only:
+    - develop
+    - master
+  script:
+    - npm run clean
+    - npm run build:client
+    - npm run build:server
+# 部署测试服务器
+deploy_test:
+  stage: deploy_test
+  only:
+    - develop
+  script:
+    - pm2 delete app || true
+    - pm2 start app.js --name app
+# 部署生产服务器
+deploy_production:
+  stage: deploy_production
+  only:
+    - master
+  script:
+    - bash scripts/deploy/deploy.sh
+</code></pre>
+
+<p>上面的配置把一次 Pipeline 分成五个阶段：</p>
+
+<ul>
+<li>  安装依赖 (<code>install_deps</code>)</li>
+<li>  运行测试 (<code>test</code>)</li>
+<li>  编译 (<code>build</code>)</li>
+<li>  部署测试服务器 (<code>deploy_test</code>)</li>
+<li>  部署生产服务器 (<code>deploy_production</code>)</li>
+</ul>
+
+<p>设置 <code>Job.only</code> 后，只有当 develop 分支和 master 分支有提交的时候才会触发相关的 Jobs。<br/>
+注意，我这里用 GitLab Runner 所在的服务器作为测试服务器。</p>
+
+<h2 id="toc_23"><a href="#%E5%8F%82%E8%80%83%E8%B5%84%E6%96%99" title="参考资料"></a>参考资料</h2>
+
+<p><a href="https://about.gitlab.com/gitlab-ci/">https://about.gitlab.com/gitlab-ci/</a><br/>
+<a href="http://docs.gitlab.com/ce/ci/yaml/README.html">http://docs.gitlab.com/ce/ci/yaml/README.html</a><br/>
+<a href="http://docs.gitlab.com/ce/ci/variables/README.html">http://docs.gitlab.com/ce/ci/variables/README.html</a><br/>
+<a href="https://gitlab.com/gitlab-org/gitlab-ci-multi-runner">https://gitlab.com/gitlab-org/gitlab-ci-multi-runner</a><br/>
+<a href="https://gitlab.com/gitlab-org/gitlab-ci-multi-runner/issues/1232">https://gitlab.com/gitlab-org/gitlab-ci-multi-runner/issues/1232</a><br/>
+<a href="http://stackbox.cn/2016-02-gitlab-ci-conf/">http://stackbox.cn/2016-02-gitlab-ci-conf/</a></p>
 
                         
                       </div>
@@ -452,10 +428,10 @@ executor.scheduleWithFixedDelay(task, 0, 1, TimeUnit.SECONDS);
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/9/2</span>
+                    <span class="date">2018/11/3</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Java.html'>Java</a></span>
+          					    <span class="posted-in"><a href='Container.html'>Container</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -545,31 +521,31 @@ executor.scheduleWithFixedDelay(task, 0, 1, TimeUnit.SECONDS);
 	      
 		      
 			      <li class="post">
-			        <a href="15459058392039.html">Reliable Domain Events</a>
+			        <a href="15517999043443.html">The Art of Crafting Architectural Diagrams</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
+			        <a href="15517997955971.html">为什么说我们需要软件架构图？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
+			        <a href="15516128677869.html">DNS Servers That Offer Privacy and Filtering</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
+			        <a href="15516123108194.html">Airbnb's Migration from Monolith to Services</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
+			        <a href="15516097487470.html">Events As First-Class Citizens</a>
 			      </li>
 		     
 		  

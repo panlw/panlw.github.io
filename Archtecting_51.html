@@ -105,443 +105,185 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15290784953983.html">
+                <a class="clearlink" href="15340910961772.html">
                 
-                  <h1>swoole 协程初体验</h1>
+                  <h1>RocketMQ 4.3 正式发布，支持分布式事务</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p><a href="https://www.jianshu.com/p/745b0b3ffae7">https://www.jianshu.com/p/745b0b3ffae7</a><br/>
-2018-5-30 14:31:38</p>
+<p>原文地址 <a href="http://www.infoq.com/cn/news/2018/08/rocketmq-4.3-release">http://www.infoq.com/cn/news/2018/08/rocketmq-4.3-release</a></p>
 </blockquote>
 
-<p>折腾 swoole 协程有一段时间了, 总结一篇入门贴, 希望对新手有帮助.</p>
+<p>近日，Apache RocketMQ 社区正式发布 4.3 版本。此次发布不仅包括提升性能，减少内存使用等原有特性增强，还修复了部分社区提出的若干问题，更重要的是该版本开源了社区最为关心的分布式事务消息，而且实现了对外部组件的零依赖。接下来，本文将详细探秘 RocketMQ 事务消息的设计原理以及实现机制。</p>
 
-<p>内容概览:</p>
+<h2 id="toc_0"><strong>一</strong> <strong>需求缘起</strong></h2>
 
-<ul>
-<li>  协程的执行顺序: 初窥 swoole 中协程的调度</li>
-<li>  协程为什么快: 减少 IO 阻塞带来的性能损耗</li>
-<li>  swoole 协程和 go 协程对比: 单进程 vs 多线程</li>
-</ul>
+<p>在微服务架构中，随着服务的逐步拆分，数据库私有已经成为共识，这也导致所面临的分布式事务问题成为微服务落地过程中一个非常难以逾越的障碍，但是目前尚没有一个完整通用的解决方案。</p>
 
-<h2 id="toc_0">协程的执行顺序</h2>
+<p>其实不仅仅是在微服务架构中，随着用户访问量的逐渐上涨，数据库甚至是服务的分片、分区、水平拆分、垂直拆分已经逐渐成为较为常用的提升瓶颈的解决方案，因此越来越多的原子操作变成了跨库甚至是跨服务的事务操作。最终结果是在对高性能、高扩展性，高可用性的追求的道路上，我们开始逐渐放松对一致性的追求，但是在很多场景下，尤其是账务，电商等业务中，不可避免的存在着一致性问题，使得我们不得不去探寻一种机制，用以在分布式环境中保证事务的一致性。</p>
 
-<p>先来看看基础的例子:</p>
+<h2 id="toc_1"><strong>二</strong> <strong>理论基石</strong></h2>
 
-<pre><code class="language-go">go(function () {
-    echo &quot;hello go1 \n&quot;;
-});
+<p>微服务使得单体架构扩展为分布式架构，在扩展的过程中，逐渐丧失了单体架构中数据源单一，可以直接依赖于数据库进行事务操作的能力，而关系型数据库中，提供了强大的事务处理能力，可以满足 ACID（Atomicity，Consistency，Isolation，Durability）的特性，这种特性保证了数据操作的强一致性，这也是分布式环境中弱一致性以及最终一致性能够得以实现的基础。</p>
 
-echo &quot;hello main \n&quot;;
+<p>数据一致性分为三个种类型：强一致性，弱一致性以及最终一致性，正如上文所述，数据库实现的就是强一致性，能够保证在写入一份新的数据库，立即使其可见。最终一致性是弱一致性的强化版，系统保证在没有后续更新的前提下，系统最终返回上一次更新操作的值。在没有故障发生的前提下，不一致窗口的时间主要受通信延迟，系统负载和复制副本的个数影响。</p>
 
-go(function () {
-    echo &quot;hello go2 \n&quot;;
-});
+<p>然而，微服务作为分布式系统，同样受 CAP<sup>[1]</sup> 原理的制约，在 CAP 理论中， C：Consistency、A：Availability、P：Partition tolerance 三者不可同时满足，而服务化中，更多的是提升 A 以及 P，在这个过程中不可避免的会降低对 C 的要求，因此，BASE 理论随之而来。</p>
 
-</code></pre>
+<p>BASE<sup>[2]</sup> 理论来源于 ebay 在 2008 年 ACM 中发表的论文，BASE 理论的基本原则有三个：Basically Available，Soft state，Eventually consistent，主要目的是为了提升分布式系统的可伸缩性，论文同样阐述了如何对业务进行调整以及折中的手段，BASE 理论的提出为分布式事务的发展指出了一个方向。</p>
 
-<p><code>go()</code> 是 <code>\Co::create()</code> 的缩写, 用来创建一个协程, 接受 callback 作为参数, callback 中的代码, 会在这个新建的协程中执行.</p>
+<p>在最终一致性的实现过程中，最基本的操作就是保证事务参与者的幂等性，所谓的幂等性，就是业务方能够使用相关的手段，保证单个事务多次提交依然能够保证达到同样的目的。</p>
 
-<p><strong>备注</strong>: <code>\Swoole\Coroutine</code> 可以简写为 <code>\Co</code></p>
+<h2 id="toc_2"><strong>三</strong> <strong>当前解决方案</strong></h2>
 
-<p>上面的代码执行结果:</p>
+<h3 id="toc_3">1. 2PC/3PC</h3>
 
-<pre><code class="language-sh">root@b98940b00a9b /v/w/c/p/swoole# php co.php
-hello go1
-hello main
-hello go2
-</code></pre>
+<p>谈到分布式事务，首先要说的就是 2PC（two phase commit）方案，如下图所示 <sup>[3]</sup>：</p>
 
-<p>执行结果和我们平时写代码的顺序, 好像没啥区别. 实际执行过程:</p>
+<p><a href="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/14image001-1533615962474.png"><img src="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/14image001-1533615962474.png" alt=""/></a></p>
+
+<p>2PC 把事务的执行分为两个阶段，第一个阶段即 prepare 阶段，这个阶段实际上就是投票阶段，协调者向参与者确认是否可以共同提交，再得到全部参与者的所有回答后，协调者向所有的参与者发布共同提交或者共同回滚的指令，用以保证事务达到一致性。            </p>
+
+<p>但是分布式系统中的所有通信均存在着三种状态：成功，失败，超时。其中，超时状态的存在是我们在设计分布式系统时所面对的永远的痛，2PC 同样存在问题，尤其是在发送完可以提交的指令后，参与者在没有收到提交或者回滚的指令时，面对已经上锁的资源，面对已经写出去的 undo 或者 redo 日志，参与者会一时陷入手足无措的状态，为了解决这个问题，3PC 应运而生，如下图所示 [4]：</p>
+
+<p><a href="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/14image003-1533615963768.png"><img src="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/14image003-1533615963768.png" alt=""/></a></p>
+
+<p>3PC 在 commit 之前增加了 preCommit 的过程，使得在参与者在收不到确认时，依然可以从容 commit 或者 rollback，避免资源锁定太久导致浪费。但是 3PC 同样存在着很多问题。实现起来非常复杂，因为很难通过多次询问来解决系统间分歧问题，尤其是存在超时状态互不信任的分布式网络中，这也就是著名的拜占庭将军问题 <sup>[5]</sup>。</p>
+
+<p>总结一下，2PC 是几乎所有分布式事务算法的基础，后续的分布式事务算法几乎都由此改进而来，其优缺点非常明显：</p>
 
 <ul>
-<li>  运行此段代码, <strong>系统启动一个新进程</strong></li>
-<li>  遇到 <code>go()</code>, 当前进程中生成一个协程, 协程中输出 <code>heelo go1</code>, 协程退出</li>
-<li>  进程继续向下执行代码, 输出 <code>hello main</code></li>
-<li>  再生成一个协程, 协程中输出 <code>heelo go2</code>, 协程退出</li>
+<li>  优点：在于已经有较为成熟的实现方案，比如 XA。</li>
+<li>  缺点：XA 是一个阻塞协议。服务在投票后需要等待协调器的决定，此时服务会阻塞并锁定资源。由于其阻塞机制和最差时间复杂度高， 因此，这种设计不能适应随着事务涉及的服务数量增加而扩展的需要，很难用于并发较高以及子事务声明周期较长 (long-running transactions) 的分布式服务中。</li>
 </ul>
 
-<p><strong>运行此段代码, 系统启动一个新进程</strong>. 如果不理解这句话, 你可以使用如下代码:</p>
+<h3 id="toc_4">2. SAGA</h3>
 
-<pre><code class="language-php">// co.php
-&lt;?php
+<p>SAGA 算法 <sup>[6]</sup>于 1987 年提出，是一种异步的分布式事务解决方案，其理论基础在于，其假设所有事件按照顺序推进，总能达到系统的最终一致性，因此 saga 需要服务分别定义提交接口以及补偿接口，当某个事务分支失败时，调用其它的分支的补偿接口来进行回滚，saga 的具体实现分为两种：Choreography 以及 Orchestration，</p>
 
-sleep(100);
+<p>（1）   Choreography：如下图所示：</p>
 
-</code></pre>
+<p><a href="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/13image005-1533615965769.png"><img src="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/13image005-1533615965769.png" alt=""/></a></p>
 
-<p>执行并使用 <code>ps aux</code> 查看系统中的进程:</p>
+<p>这种模式下不存在协调器的概念，每个节点均对自己的上下游负责，在监听处理上游节点事件的同时，对下游节点发布事件。</p>
 
-<pre><code class="language-sh">root@b98940b00a9b /v/w/c/p/swoole# php co.php &amp;
-⏎
-root@b98940b00a9b /v/w/c/p/swoole# ps aux
-PID   USER     TIME   COMMAND
-    1 root       0:00 php -a
-   10 root       0:00 sh
-   19 root       0:01 fish
-  749 root       0:00 php co.php
-  760 root       0:00 ps aux
-⏎
+<p>（2）   Orchestration：存在中心节点的模式，如下图所示：</p>
 
-</code></pre>
+<p><a href="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/11image007-1533615966677.png"><img src="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/11image007-1533615966677.png" alt=""/></a></p>
 
-<p>我们来稍微改一改, 体验协程的调度:</p>
+<p>该中心节点，即协调器知道整个事务的分布状态，相比于无中心节点方式，该方式有着许多优点：</p>
 
-<pre><code class="language-go">use Co;
+<ol>
+<li> 能够避免事务之间的循环依赖关系。</li>
+<li> 参与者只需要执行命令 / 回复 (其实回复消息也是一种事件消息)，降低参与者的复杂性。</li>
+<li> 开发测试门槛低。</li>
+<li> 在添加新步骤时，事务复杂性保持线性，回滚更容易管理。因此大多数 saga 模型实现均采用了这种思路。</li>
+</ol>
 
-go(function () {
-    Co::sleep(1); // 只新增了一行代码
-    echo &quot;hello go1 \n&quot;;
-});
+<p>总结一下：SAGA 模型的优点在于其降低了事务粒度，使得事务扩展更加容易，同时采用了异步化方式提升性能。但是其缺点在于很多时候很难定义补偿接口，回滚代价高，而且由于 SAGA 在执行过程中采用了先提交后补偿的思路进行操作，所以单个子事务在并发提交时的隔离性很难保证。</p>
 
-echo &quot;hello main \n&quot;;
+<h3 id="toc_5">3. TCC</h3>
 
-go(function () {
-    echo &quot;hello go2 \n&quot;;
-});
+<p>TCC(Try-Confirm-Concel) 模型 <sup>[7]</sup> 同样是一种补偿性事务，主要分为 Try：检查、保留资源，Confirm：执行事务，Concel：释放资源三个阶段，如下图所示：</p>
 
-</code></pre>
+<p><a href="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/10image009-1533615965391.png"><img src="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/10image009-1533615965391.png" alt=""/></a></p>
 
-<p><code>\Co::sleep()</code> 函数功能和 <code>sleep()</code> 差不多, 但是它模拟的是 <strong>IO 等待</strong> (IO 后面会细讲). 执行的结果如下:</p>
+<p>其中，活动管理器记录了全局事务的推进状态以及各子事务的执行状态，负责推进各个子事务共同进行提交或者回滚。同时负责在子事务处理超时后不停重试，重试不成功后转手工处理，用以保证事务的最终一致性。</p>
 
-<pre><code>root@b98940b00a9b /v/w/c/p/swoole# php co.php
-hello main
-hello go2
-hello go1
+<p>总结一下，相比于 SAGA 模型，其优点在于尝试阶段仅仅只是对业务系统做检测，并保留业务资源，并没有真正提交，所以后续 SAGA 需要针对提交的事务做补偿，而 TCC 则仅仅需要释放保留资源，降低了补偿成本；并且，由于在 Try 阶段对资源进行了保留锁定，所以相比于 SAGA 模式，TCC 模式拥有更高的隔离性。</p>
 
-</code></pre>
+<p>缺点：相比于 SAGA 模式，TCC 模式多增加了一个状态，导致在业务开发过程中，复杂度上升，而且协调器与子事务的通信过程增加，状态轮转处理也更为复杂。</p>
 
-<p>怎么不是顺序执行的呢? 实际执行过程:</p>
+<h2 id="toc_6"><strong>四</strong> <strong>事务消息</strong></h2>
 
-<ul>
-<li>  运行此段代码, 系统启动一个新进程</li>
-<li>  遇到 <code>go()</code>, 当前进程中生成一个协程</li>
-<li>  协程中遇到 <strong>IO 阻塞</strong> (这里是 <code>Co::sleep()</code> 模拟出的 <strong>IO 等待</strong>), <strong>协程让出控制, 进入协程调度队列</strong></li>
-<li>  进程继续向下执行, 输出 <code>hello main</code></li>
-<li>  执行下一个协程, 输出 <code>hello go2</code></li>
-<li>  之前的协程准备就绪, 继续执行, 输出 <code>hello go1</code></li>
-</ul>
+<p>以购物场景为例，张三购买物品，账户扣款 100 元的同时，需要保证在下游的会员服务中给该账户增加 100 积分。由于数据库私有，所以导致在实际的操作过程中会出现很多问题，比如先发送消息，可能会因为扣款失败导致账户积分无故增加，如果先执行扣款，则有可能因服务宕机，导致积分不能增加，无论是先发消息还是先执行本地事务，都有可能导致出现数据不一致的结果。</p>
 
-<p>到这里, 已经可以看到 swoole 中 <strong>协程与进程的关系</strong>, 以及 <strong>协程的调度</strong>, 我们再改一改刚才的程序:</p>
+<p><a href="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/9image011-1533615967660.png"><img src="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/9image011-1533615967660.png" alt=""/></a></p>
 
-<pre><code class="language-go">go(function () {
-    Co::sleep(1);
-    echo &quot;hello go1 \n&quot;;
-});
+<p>事务消息的本质就是为了解决此类问题，解决本地事务执行与消息发送的原子性问题。目前，事务消息在多种分布式消息中间件种均有实现，但是其实现方式思路却各有不同。</p>
 
-echo &quot;hello main \n&quot;;
+<h3 id="toc_7">1. 传统事务消息实现</h3>
 
-go(function () {
-    Co::sleep(1);
-    echo &quot;hello go2 \n&quot;;
-});
+<p>传统事务消息实现，一种思路是依赖于 AMQP 协议用来确保消息发送成功，AMQP 模式下需要在发送在发送事务消息时进行两阶段提交，首先进行 tx_select 开启事务，然后再进行消息发送，最后进行消息的 commit 或者是 rollback。这个过程可以保证在消息发送成功的同时本地事务也一定成功执行，但事务粒度不好控制，而且会导致性能急剧下降，同时依然无法解决本地事务执行与消息发送的原子性问题。</p>
 
-</code></pre>
+<p>还有另外一种思路，就是通过保证多条消息的同时可见性来保证事务一致性。但是此类消息事务实现机制更多的是用到 consume-transform-produce 场景中，其本质还是用来保证消息自身事务，并没有把外部事务包含进来。</p>
 
-<p>我想你已经知道输出是什么样子了:</p>
+<h3 id="toc_8">2. RocketMQ 事务消息</h3>
 
-<pre><code class="language-sh">root@b98940b00a9b /v/w/c/p/swoole# php co.php
-hello main
-hello go1
-hello go2
-⏎
+<p>RocketMQ 事务消息设计则主要是为了解决 Producer 端的消息发送与本地事务执行的原子性问题，RocketMQ 的设计中 broker 与 producer 端的双向通信能力，使得 broker 天生可以作为一个事务协调者存在；而 RocketMQ 本身提供的存储机制，则为事务消息提供了持久化能力；RocketMQ 的高可用机制以及可靠消息设计，则为事务消息在系统在发生异常时，依然能够保证事务的最终一致性达成。</p>
 
-</code></pre>
+<p><strong>2.1 RocketMQ </strong><strong>事务消息设计</strong></p>
 
-<h2 id="toc_1">协程快在哪? 减少 IO 阻塞导致的性能损失</h2>
+<p>事务消息作为一种异步确保型事务， 将两个事务分支通过 MQ 进行异步解耦，RocketMQ 事务消息的设计流程同样借鉴了两阶段提交理论，整体交互流程如下图所示：</p>
 
-<p>大家可能听到使用协程的最多的理由, 可能就是 <strong>协程快</strong>. 那看起来和平时写得差不多的代码, 为什么就要快一些呢? 一个常见的理由是, <strong>可以创建很多个协程来执行任务, 所以快</strong>. 这种说法是对的, 不过还停留在表面.</p>
+<p><a href="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/8image013-1533615967005.png"><img src="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/8image013-1533615967005.png" alt=""/></a></p>
 
-<p>首先, 一般的计算机任务分为 2 种:</p>
+<ol>
+<li> 事务发起方首先发送 prepare 消息到 MQ。</li>
+<li> 在发送 prepare 消息成功后执行本地事务。</li>
+<li> 根据本地事务执行结果返回 commit 或者是 rollback。</li>
+<li> 如果消息是 rollback，MQ 将删除该 prepare 消息不进行下发，如果是 commit 消息，MQ 将会把这个消息发送给 consumer 端。</li>
+<li> 如果执行本地事务过程中，执行端挂掉，或者超时，MQ 将会不停的询问其同组的其它 producer 来获取状态。</li>
+<li> Consumer 端的消费成功机制有 MQ 保证。</li>
+</ol>
 
-<ul>
-<li>  CPU 密集型, 比如加减乘除等科学计算</li>
-<li>  IO 密集型, 比如网络请求, 文件读写等</li>
-</ul>
+<p><strong>2.2 RocketMQ</strong> <strong>事务消息实现</strong></p>
 
-<p>其次, 高性能相关的 2 个概念:</p>
+<p>RocketMQ 事务消息在实现上充分利用了 RocketMQ 本身机制，在实现零依赖的基础上，同样实现了高性能、可扩展、全异步等一系列特性。</p>
 
-<ul>
-<li>  并行: 同一个时刻, 同一个 CPU 只能执行同一个任务, 要同时执行多个任务, 就需要有多个 CPU 才行</li>
-<li>  并发: 由于 CPU 切换任务非常快, 快到人类可以感知的极限, 就会有很多任务 <strong>同时执行</strong> 的错觉</li>
-</ul>
-
-<p>了解了这些, 我们再来看协程, 协程适合的是 <strong>IO 密集型</strong> 应用, 因为协程在 <strong>IO 阻塞</strong> 时会自动调度, 减少 IO 阻塞导致的时间损失.</p>
-
-<p>我们可以对比下面三段代码:</p>
-
-<ul>
-<li>  普通版: 执行 4 个任务</li>
-</ul>
-
-<pre><code class="language-php">$n = 4;
-for ($i = 0; $i &lt; $n; $i++) {
-    sleep(1);
-    echo microtime(true) . &quot;: hello $i \n&quot;;
-};
-echo &quot;hello main \n&quot;;
-
-</code></pre>
-
-<pre><code class="language-sh">root@b98940b00a9b /v/w/c/p/swoole# time php co.php
-1528965075.4608: hello 0
-1528965076.461: hello 1
-1528965077.4613: hello 2
-1528965078.4616: hello 3
-hello main
-real    0m 4.02s
-user    0m 0.01s
-sys     0m 0.00s
-⏎
-
-</code></pre>
-
-<ul>
-<li>  单个协程版:</li>
-</ul>
-
-<pre><code class="language-php">$n = 4;
-go(function () use ($n) {
-    for ($i = 0; $i &lt; $n; $i++) {
-        Co::sleep(1);
-        echo microtime(true) . &quot;: hello $i \n&quot;;
-    };
-});
-echo &quot;hello main \n&quot;;
-
-</code></pre>
-
-<pre><code>root@b98940b00a9b /v/w/c/p/swoole# time php co.php
-hello main
-1528965150.4834: hello 0
-1528965151.4846: hello 1
-1528965152.4859: hello 2
-1528965153.4872: hello 3
-real    0m 4.03s
-user    0m 0.00s
-sys     0m 0.02s
-⏎
-
-</code></pre>
-
-<ul>
-<li>  多协程版: <strong>见证奇迹的时刻</strong></li>
-</ul>
-
-<pre><code class="language-php">$n = 4;
-for ($i = 0; $i &lt; $n; $i++) {
-    go(function () use ($i) {
-        Co::sleep(1);
-        echo microtime(true) . &quot;: hello $i \n&quot;;
-    });
-};
-echo &quot;hello main \n&quot;;
-
-</code></pre>
-
-<pre><code class="language-sh">root@b98940b00a9b /v/w/c/p/swoole# time php co.php
-hello main
-1528965245.5491: hello 0
-1528965245.5498: hello 3
-1528965245.5502: hello 2
-1528965245.5506: hello 1
-real    0m 1.02s
-user    0m 0.01s
-sys     0m 0.00s
-⏎
-
-</code></pre>
-
-<p>为什么时间有这么大的差异呢:</p>
-
-<ul>
-<li>  普通写法, 会遇到 <strong>IO 阻塞</strong> 导致的性能损失</li>
-<li>  单协程: 尽管 IO 阻塞 引发了协程调度, 但当前只有一个协程, 调度之后还是执行当前协程</li>
-<li>  多协程: 真正发挥出了协程的优势, 遇到 IO 阻塞 时发生调度, IO 就绪时恢复运行</li>
-</ul>
-
-<p>我们将多协程版稍微修改一下:</p>
-
-<ul>
-<li>  多协程版 2: CPU 密集型</li>
-</ul>
-
-<pre><code class="language-php">$n = 4;
-for ($i = 0; $i &lt; $n; $i++) {
-    go(function () use ($i) {
-        // Co::sleep(1);
-        sleep(1);
-        echo microtime(true) . &quot;: hello $i \n&quot;;
-    });
-};
-echo &quot;hello main \n&quot;;
-
-</code></pre>
-
-<pre><code class="language-sh">root@b98940b00a9b /v/w/c/p/swoole# time php co.php
-1528965743.4327: hello 0
-1528965744.4331: hello 1
-1528965745.4337: hello 2
-1528965746.4342: hello 3
-hello main
-real    0m 4.02s
-user    0m 0.01s
-sys     0m 0.00s
-⏎
-
-</code></pre>
-
-<p>只是将 <code>Co::sleep()</code> 改成了 <code>sleep()</code>, 时间又和普通版差不多了. 因为:</p>
-
-<ul>
-<li>  <code>sleep()</code> 可以看做是 CPU 密集型任务, 不会引起协程的调度</li>
-<li>  <code>Co::sleep()</code> 模拟的是 IO 密集型任务, 会引发协程的调度</li>
-</ul>
-
-<p><strong>这也是为什么, 协程适合 IO 密集型 的应用.</strong></p>
-
-<p>再来一组对比的例子: 使用 redis</p>
-
-<pre><code class="language-php">// 同步版, redis使用时会有 IO 阻塞
-$cnt = 2000;
-for ($i = 0; $i &lt; $cnt; $i++) {
-    $redis = new \Redis();
-    $redis-&gt;connect(&#39;redis&#39;);
-    $redis-&gt;auth(&#39;123&#39;);
-    $key = $redis-&gt;get(&#39;key&#39;);
-}
-
-// 单协程版: 只有一个协程, 并没有使用到协程调度减少 IO 阻塞
-go(function () use ($cnt) {
-    for ($i = 0; $i &lt; $cnt; $i++) {
-        $redis = new Co\Redis();
-        $redis-&gt;connect(&#39;redis&#39;, 6379);
-        $redis-&gt;auth(&#39;123&#39;);
-        $redis-&gt;get(&#39;key&#39;);
-    }
-});
-
-// 多协程版, 真正使用到协程调度带来的 IO 阻塞时的调度
-for ($i = 0; $i &lt; $cnt; $i++) {
-    go(function () {
-        $redis = new Co\Redis();
-        $redis-&gt;connect(&#39;redis&#39;, 6379);
-        $redis-&gt;auth(&#39;123&#39;);
-        $redis-&gt;get(&#39;key&#39;);
-    });
-}
-
-</code></pre>
-
-<p>性能对比:</p>
-
-<pre><code class="language-sh"># 多协程版
-root@0124f915c976 /v/w/c/p/swoole# time php co.php
-real    0m 0.54s
-user    0m 0.04s
-sys     0m 0.23s
-⏎
-
-# 同步版
-root@0124f915c976 /v/w/c/p/swoole# time php co.php
-real    0m 1.48s
-user    0m 0.17s
-sys     0m 0.57s
-⏎
-
-</code></pre>
-
-<h2 id="toc_2">swoole 协程和 go 协程对比: 单进程 vs 多线程</h2>
-
-<p>接触过 go 协程的 coder, 初始接触 swoole 的协程会有点 <strong>懵</strong>, 比如对比下面的代码:</p>
-
-<pre><code class="language-go">package main
-
-import (
-    &quot;fmt&quot;
-    &quot;time&quot;
-)
-
-func main() {
-    go func() {
-        fmt.Println(&quot;hello go&quot;)
-    }()
-
-    fmt.Println(&quot;hello main&quot;)
-
-    time.Sleep(time.Second)
-}
-
-</code></pre>
-
-<pre><code class="language-sh">&gt; 14:11 src $ go run test.go
-hello main
-hello go
-
-</code></pre>
-
-<p>刚写 go 协程的 coder, 在写这个代码的时候会被告知不要忘了 <code>time.Sleep(time.Second)</code>, 否则看不到输出 <code>hello go</code>, 其次, <code>hello go</code> 与 <code>hello main</code> 的顺序也和 swoole 中的协程不一样.</p>
-
-<p>原因就在于 swoole 和 go 中, <strong>实现协程调度的模型不同</strong>.</p>
-
-<p>上面 go 代码的执行过程:</p>
-
-<ul>
-<li>  运行 go 代码, 系统启动一个新进程</li>
-<li>  查找 <code>package main</code>, 然后执行其中的 <code>func mian()</code></li>
-<li>  <strong>遇到协程, 交给协程调度器执行</strong></li>
-<li>  继续向下执行, 输出 <code>hello main</code></li>
-<li>  如果不添加 <code>time.Sleep(time.Second)</code>, main 函数执行完, 程序结束, 进程退出, 导致调度中的协程也终止</li>
-</ul>
-
-<p>go 中的协程, 使用的 MPG 模型:</p>
-
-<ul>
-<li>  M 指的是 Machine, 一个 M 直接关联了一个内核线程</li>
-<li>  P 指的是 processor, 代表了 M 所需的上下文环境, 也是处理用户级代码逻辑的处理器</li>
-<li>  G 指的是 Goroutine, 其实本质上也是一种轻量级的线程</li>
-</ul>
-
-<p><img src="https://upload-images.jianshu.io/upload_images/567399-d400f4b192f3dc48.png" alt=""/></p>
-
-<p>而 swoole 中的协程调度使用 <strong>单进程模型</strong>, 所有协程都是在当前进程中进行调度, 单进程的好处也很明显 -- <strong>简单 / 不用加锁 / 性能也高</strong>.</p>
-
-<p>无论是 go 的 MPG 模型, 还是 swoole 的 单进程模型, 都是对 CSP 理论 的实现.</p>
-
-<blockquote>
-<p>CSP 通信方式, 在 1985 年时的论文就已经有了, 做理论研究的人, 如果没有能提前几年, 十几年甚至几十年的大胆假设, 可能很难提高了.</p>
-</blockquote>
-
-<h2 id="toc_3">写在最后</h2>
-
-<p>今天从 <code>go()</code> 出发, 得以一瞥协程世界, 协程的世界里还有很多很有意思的东西, 需要我们去发现. 比如:</p>
-
-<ul>
-<li>  我们普通版的代码是当前进程里执行的, 只是单个进程, 可我们现在可能有了很多协程, 会不会有什么奇遇呢?</li>
-</ul>
-
-<p>还有一个细节: swoole 中有 <code>Co::sleep()</code> 和 <code>sleep()</code> 2 个方法的, 而 go 中只有 <code>time.Sleep()</code> 一个方法?</p>
-
-<p>这是 swoole 协程需要经历的一个阶段 (毕竟 go 快 10 年了), 还不够 <strong>智能的判断 IO 阻塞</strong>, 所以上面也使用了相应的协程版 redis <code>co\Redis()</code> -- 你得使用配套协程版, 才能达到协程调度的效果.</p>
-
-<p>如果对协程的发展阶段感兴趣, 可以阅读下面这篇文章:</p>
-
-<ul>
-<li>  <a href="https://my.oschina.net/yyzybb/blog/1817226">Why c++ coroutine？Why libgo？</a>: 关于协程全景式的概述的, 推荐花时间读一读</li>
-</ul>
-
-<p>想解锁 swoole 协程的更多姿势:</p>
-
-<ul>
-<li>  <a href="https://segmentfault.com/a/1190000013239349">Swoole 2.1 正式版发布，协程 + 通道带来全新的 PHP 编程模式</a></li>
-<li>  <a href="https://segmentfault.com/a/1190000015291606">Swoole 4.0 正式版，面向生产环境的 PHP 协程引擎</a></li>
-<li>  <a href="https://github.com/ThinkDevelopers/PHPConChina/blob/master/PHPCON2018/Swoole4-%E5%85%A8%E6%96%B0%E7%9A%84PHP%E7%BC%96%E7%A8%8B%E6%A8%A1%E5%BC%8F_%E9%9F%A9%E5%A4%A9%E5%B3%B0_PHPCON2018.pdf">Swoole4 - 全新的 PHP 编程模式_韩天峰_PHPCON2018</a></li>
-</ul>
-
-<p>最后, <a href="https://gitee.com/daydaygo/coding/blob/master/php/swoole/co.php">本期示例代码可以从我的开源项目中获取, 请享用</a></p>
+<p>在具体实现上，RocketMQ 通过使用 Half Topic 以及 Operation Topic 两个内部队列来存储事务消息推进状态，如下图所示：</p>
+
+<p><a href="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/6image015-1533615967327.png"><img src="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/6image015-1533615967327.png" alt=""/></a></p>
+
+<p>其中，Half Topic 对应队列中存放着 prepare 消息，Operation Topic 对应的队列则存放了 prepare message 对应的 commit/rollback 消息，消息体中则是 prepare message 对应的 offset，服务端通过比对两个队列的差值来找到尚未提交的超时事务，进行回查。</p>
+
+<p>在具体实现上，事务消息作为普通消息的一个应用场景，在实现过程中进行了分层抽象，从而避免了对 RocketMQ 原有存储机制的修改，如下图所示：</p>
+
+<p><a href="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/4image017-1533615969003.png"><img src="https://res.infoq.com/news/2018/08/rocketmq-4.3-release/zh/resources/4image017-1533615969003.png" alt=""/></a></p>
+
+<p>从用户侧来说，用户需要分别实现本地事务执行以及本地事务回查方法，因此只需关注本地事务的执行状态即可；而在 service 层，则对事务消息的两阶段提交进行了抽象，同时针对超时事务实现了回查逻辑，通过不断扫描当前事务推进状态，来不断反向请求 Producer 端获取超时事务的执行状态，在避免事务挂起的同时，也避免了 Producer 端的单点故障。而在存储层，RocketMQ 通过 Bridge 封装了与底层队列存储的相关操作，用以操作两个对应的内部队列，用户也可以依赖其它存储介质实现自己的 service，RocketMQ 会通过 ServiceProvider 加载进来。</p>
+
+<p>从上述事务消息设计中可以看到，RocketMQ 事务消息较好的解决了事务的最终一致性问题，事务发起方仅需要关注本地事务执行以及实现回查接口给出事务状态判定等实现，而且在上游事务峰值高时，可以通过消息队列，避免对下游服务产生过大压力。</p>
+
+<p>事务消息不仅适用于上游事务对下游事务无依赖的场景，还可以与一些传统分布式事务架构相结合，而 MQ 的服务端作为天生的具有高可用能力的协调者，使得我们未来可以基于 RocketMQ 提供一站式轻量级分布式事务解决方案，用以满足各种场景下的分布式事务需求。</p>
+
+<h2 id="toc_9"><strong>五</strong> <strong>参考文献</strong></h2>
+
+<p>[1] <a href="https://en.wikipedia.org/wiki/Cap">https://en.wikipedia.org/wiki/Cap</a></p>
+
+<p>[2] <a href="https://dl.acm.org/citation.cfm?id=1394128">https://dl.acm.org/citation.cfm?id=1394128</a></p>
+
+<p>[3] <a href="https://en.wikipedia.org/wiki/Two-phase_commit_protocol">https://en.wikipedia.org/wiki/Two-phase_commit_protocol</a></p>
+
+<p>[4] <a href="https://en.wikipedia.org/wiki/Three-phase_commit_protocol">https://en.wikipedia.org/wiki/Three-phase_commit_protocol</a></p>
+
+<p>[5] <a href="https://people.eecs.berkeley.edu/%7Eluca/cs174/byzantine.pdf">https://people.eecs.berkeley.edu/~luca/cs174/byzantine.pdf</a></p>
+
+<p>[6] <a href="https://www.cs.cornell.edu/andru/cs711/2002fa/reading/sagas.pdf">https://www.cs.cornell.edu/andru/cs711/2002fa/reading/sagas.pdf</a></p>
+
+<p>[7] <a href="https://www.cloud.alipay.com/docs/2/69656">https://www.cloud.alipay.com/docs/2/69656</a></p>
+
+<h2 id="toc_10">作者介绍</h2>
+
+<p><strong>冯嘉</strong>，Apache RocketMQ 联合创始人，LInux OpenMessaging 标准创始人。阿里巴巴高级技术专家，带领团队、社区打造了中国分布式云计算领域第一个 Apache 顶级开源中间件项目，创立分布式消息领域的国际标准 OpenMessaging。 冯嘉作为阿里巴巴 RocketMQ 技术负责人，具有丰富的分布式软件架构、高并发网站设计、性能调优经验，拥有国内外多项分布式、推荐领域的专利授权。目前专注于大规模分布式系统、分布式消息引擎、流计算领域，关注 Hbase/Hadoop/Spark/Flink 等大数据技术栈。</p>
+
+<p><strong>杜恒</strong>，阿里巴巴技术专家，Apache RocketMQ 内核控，拥有多年分布式系统研发经验，对 Microservice, Messaging，Storage 等领域有深刻理解，拥有多年金融领域开发设计经验。目前专注 RocketMQ 内核优化以及 Messaging 生态建设。</p>
+
+<p><input type="hidden"></p>
+
+<p>相关内容</p>
+
+<h3 id="toc_11"><a href="http://www.infoq.com/cn/presentations/message-engine-under-the-flood-peak-of-trillions-of-data-apache-rocketmq?utm_source=infoq&amp;utm_medium=related_content_link&amp;utm_campaign=relatedContent_undefined_clk">万亿级数据洪峰下的消息引擎——Apache RocketMQ</a></h3>
+
+<h3 id="toc_12"><a href="http://www.infoq.com/cn/articles/rocketmq-incubation-in-apache?utm_source=infoq&amp;utm_medium=related_content_link&amp;utm_campaign=relatedContent_undefined_clk">RocketMQ Apache 顶级项目之路</a></h3>
+
+<h3 id="toc_13"><a href="http://www.infoq.com/cn/news/2018/08/kafka2.0-new-features?utm_source=infoq&amp;utm_medium=related_content_link&amp;utm_campaign=relatedContent_undefined_clk">Kafka 2.0 重磅发布，新特性独家解读</a></h3>
+
+<h3 id="toc_14"><a href="http://www.infoq.com/cn/articles/how-to-design-an-outstanding-microservice-framework?utm_source=infoq&amp;utm_medium=related_content_link&amp;utm_campaign=relatedContent_undefined_clk">如何设计一个优质的微服务框架：Apache ServiceComb 的开放性设计</a></h3>
+
+<h3 id="toc_15"><a href="http://www.infoq.com/cn/news/2018/04/apache-servicecomb?utm_source=infoq&amp;utm_medium=related_content_link&amp;utm_campaign=relatedContent_undefined_clk">Apache ServiceComb（incubating） 第一个版本发布</a></h3>
 
                         
                       </div>
@@ -550,10 +292,10 @@ hello go
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/6/16</span>
+                    <span class="date">2018/8/13</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Cocurrency.html'>Cocurrency</a></span>
+          					    <span class="posted-in"><a href='MQ.html'>MQ</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -643,31 +385,31 @@ hello go
 	      
 		      
 			      <li class="post">
-			        <a href="15459058392039.html">Reliable Domain Events</a>
+			        <a href="15517999043443.html">The Art of Crafting Architectural Diagrams</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
+			        <a href="15517997955971.html">为什么说我们需要软件架构图？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
+			        <a href="15516128677869.html">DNS Servers That Offer Privacy and Filtering</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
+			        <a href="15516123108194.html">Airbnb's Migration from Monolith to Services</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
+			        <a href="15516097487470.html">Events As First-Class Citizens</a>
 			      </li>
 		     
 		  

@@ -105,200 +105,88 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15277832551515.html">
+                <a class="clearlink" href="15319631527349.html">
                 
-                  <h1>【原创】分布式之redis复习精讲</h1>
+                  <h1>高可用Redis服务架构分析与搭建</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
                         	<blockquote>
-<p>原文地址 <a href="http://www.cnblogs.com/rjzheng/p/9096228.html">http://www.cnblogs.com/rjzheng/p/9096228.html</a></p>
+<p><a href="https://www.cnblogs.com/xuning/p/8464625.html">https://www.cnblogs.com/xuning/p/8464625.html</a></p>
 </blockquote>
 
-<h2 id="toc_0">引言</h2>
+<p>基于内存的 Redis 应该是目前各种 web 开发业务中最为常用的 key-value 数据库了，我们经常在业务中用其存储用户登陆态（Session 存储），加速一些热数据的查询（相比较 mysql 而言，速度有数量级的提升），做简单的消息队列（LPUSH 和 BRPOP）、订阅发布（PUB/SUB）系统等等。规模比较大的互联网公司，一般都会有专门的团队，将 Redis 存储以基础服务的形式提供给各个业务调用。</p>
 
-<h3 id="toc_1">为什么写这篇文章?</h3>
+<p>不过任何一个基础服务的提供方，都会被调用方问起的一个问题是：你的服务是否具有高可用性？最好不要因为你的服务经常出问题，导致我这边的业务跟着遭殃。最近我所在的项目中也自己搭了一套小型的 “高可用”Redis 服务，在此做一下自己的总结和思考。</p>
 
-<p>博主的<a href="http://www.cnblogs.com/rjzheng/p/8994962.html">《分布式之消息队列复习精讲》</a>得到了大家的好评，内心诚惶诚恐，想着再出一篇关于复习精讲的文章。但是还是要说明一下，复习精讲的文章偏面试准备，真正在开发过程中，还是脚踏实地，一步一个脚印，不要投机取巧。<br/>
-考虑到绝大部分写业务的程序员，在实际开发中使用 redis 的时候，只会 setvalue 和 getvalue 两个操作，对 redis 整体缺乏一个认知。又恰逢博主某个同事下周要去培训 redis，所以博主斗胆以 redis 为题材，对 redis 常见问题做一个总结，希望能够弥补大家的知识盲点。</p>
+<p>首先我们要定义一下对于 Redis 服务来说怎样才算是高可用，即在各种出现异常的情况下，依然可以正常提供服务。或者宽松一些，出现异常的情况下，只经过很短暂的时间即可恢复正常服务。所谓异常，应该至少包含了以下几种可能性：</p>
 
-<h3 id="toc_2">复习要点?</h3>
+<p>【异常 1】某个节点服务器的某个进程突然 down 掉（例如某开发手残，把一台服务器的 redis-server 进程 kill 了）</p>
 
-<p>本文围绕以下几点进行阐述<br/>
-1、为什么使用 redis<br/>
-2、使用 redis 有什么缺点<br/>
-3、单线程的 redis 为什么这么快<br/>
-4、redis 的数据类型，以及每种数据类型的使用场景<br/>
-5、redis 的过期策略以及内存淘汰机制<br/>
-6、redis 和数据库双写一致性问题<br/>
-7、如何应对缓存穿透和缓存雪崩问题<br/>
-8、如何解决 redis 的并发竞争问题</p>
+<p>【异常 2】某台节点服务器 down 掉，相当于这个节点上所有进程都停了（例如某运维手残，把一个服务器的电源拔了；例如一些老旧机器出现硬件故障）</p>
 
-<h2 id="toc_3">正文</h2>
+<p>【异常 3】任意两个节点服务器之间的通信中断了（例如某临时工手残，把用于两个机房通信的光缆挖断了）</p>
 
-<h3 id="toc_4">1、为什么使用 redis</h3>
+<p>其实以上任意一种异常都是小概率事件，而做到高可用性的基本指导思想就是：多个小概率事件同时发生的概率可以忽略不计。只要我们设计的系统可以容忍短时间内的单点故障，即可实现高可用性。</p>
 
-<p><strong>分析</strong>: 博主觉得在项目中使用 redis，主要是从两个角度去考虑: <strong>性能</strong>和<strong>并发</strong>。当然，redis 还具备可以做分布式锁等其他功能，但是如果只是为了分布式锁这些其他功能，完全还有其他中间件 (如 zookpeer 等) 代替，并不是非要使用 redis。因此，这个问题主要从性能和并发两个角度去答。<br/>
-<strong>回答</strong>: 如下所示，分为两点<br/>
-<strong>（一）性能</strong><br/>
-如下图所示，我们在碰到需要执行耗时特别久，且结果不频繁变动的 SQL，就特别适合将运行结果放入缓存。这样，后面的请求就去缓存中读取，使得请求能够<strong>迅速响应</strong>。<br/>
-<img src="https://images.cnblogs.com/cnblogs_com/rjzheng/1202350/o_redis1.png" alt=""/><br/>
-<strong>题外话：</strong>忽然想聊一下这个<strong>迅速响应</strong>的标准。其实根据交互效果的不同，这个响应时间没有固定标准。不过曾经有人这么告诉我:&quot; 在理想状态下，我们的页面跳转需要在<strong>瞬间</strong>解决，对于页内操作则需要在<strong>刹那</strong>间解决。另外，超过<strong>一弹指</strong>的耗时操作要有进度提示，并且可以随时中止或取消，这样才能给用户最好的体验。&quot;<br/>
-那么<strong>瞬间、刹那、一弹指</strong>具体是多少时间呢？<br/>
-根据《摩诃僧祗律》记载</p>
+<p>对于搭建高可用 Redis 服务，网上已有了很多方案，例如 Keepalived，Codis，Twemproxy，Redis Sentinel。其中 Codis 和 Twemproxy 主要是用于大规模的 Redis 集群中，也是在 Redis 官方发布 Redis Sentinel 之前 twitter 和豌豆荚提供的开源解决方案。我的业务中数据量并不大，所以搞集群服务反而是浪费机器了。最终在 Keepalived 和 Redis Sentinel 之间做了个选择，选择了官方的解决方案 Redis Sentinel。</p>
 
-<pre><code>一刹那者为一念，二十念为一瞬，二十瞬为一弹指，二十弹指为一罗预，二十罗预为一须臾，一日一夜有三十须臾。
-</code></pre>
+<p>Redis Sentinel 可以理解为一个监控 Redis Server 服务是否正常的进程，并且一旦检测到不正常，可以自动地将备份（slave）Redis Server 启用，使得外部用户对 Redis 服务内部出现的异常无感知。我们按照由简至繁的步骤，搭建一个最小型的高可用的 Redis 服务。</p>
 
-<p>那么，经过周密的计算，一<strong>瞬间</strong>为 0.36 秒, 一<strong>刹那</strong>有 0.018 秒. 一<strong>弹指</strong>长达 7.2 秒。<br/>
-<strong>（二）并发</strong><br/>
-如下图所示，在大并发的情况下，所有的请求直接访问数据库，数据库会出现连接异常。这个时候，就需要使用 redis 做一个缓冲操作，让请求先访问到 redis，而不是直接访问数据库。<br/>
-<img src="https://images.cnblogs.com/cnblogs_com/rjzheng/1202350/o_redis2.png" alt=""/></p>
+<p><strong>方案 1：单机版 Redis Server，无 Sentinel</strong></p>
 
-<h3 id="toc_5">2、使用 redis 有什么缺点</h3>
+<p><img src="https://images2018.cnblogs.com/blog/566097/201802/566097-20180224104757825-317365999.png" alt=""/></p>
 
-<p><strong>分析</strong>: 大家用 redis 这么久，这个问题是必须要了解的，基本上使用 redis 都会碰到一些问题，常见的也就几个。<br/>
-<strong>回答</strong>: 主要是四个问题<br/>
-(一) 缓存和数据库双写一致性问题<br/>
-(二) 缓存雪崩问题<br/>
-(三) 缓存击穿问题<br/>
-(四) 缓存的并发竞争问题<br/>
-这四个问题，我个人是觉得在项目中，比较常遇见的，具体解决方案，后文给出。</p>
+<p>一般情况下，我们搭的个人网站，或者平时做开发时，会起一个单实例的 Redis Server。调用方直接连接 Redis 服务即可，甚至 Client 和 Redis 本身就处于同一台服务器上。这种搭配仅适合个人学习娱乐，毕竟这种配置总会有单点故障的问题无法解决。一旦 Redis 服务进程挂了，或者服务器 1 停机了，那么服务就不可用了。并且如果没有配置 Redis 数据持久化的话，Redis 内部已经存储的数据也会丢失。</p>
 
-<h3 id="toc_6">3、单线程的 redis 为什么这么快</h3>
+<p><strong>方案 2：主从同步 Redis Server，单实例 Sentinel</strong></p>
 
-<p><strong>分析</strong>: 这个问题其实是对 redis 内部机制的一个考察。其实根据博主的面试经验，很多人其实都不知道 redis 是单线程工作模型。所以，这个问题还是应该要复习一下的。<br/>
-<strong>回答</strong>: 主要是以下三点<br/>
-(一) 纯内存操作<br/>
-(二) 单线程操作，避免了频繁的上下文切换<br/>
-(三) 采用了非阻塞 <strong>I/O 多路复用机制</strong></p>
+<p><img src="https://images2018.cnblogs.com/blog/566097/201802/566097-20180224104938975-2014456086.png" alt=""/></p>
 
-<p><strong>题外话：</strong>我们现在要仔细的说一说 I/O 多路复用机制，因为这个说法实在是太通俗了，通俗到一般人都不懂是什么意思。博主打一个比方：小曲在 S 城开了一家快递店，负责同城快送服务。小曲因为资金限制，雇佣了<strong>一批</strong>快递员，然后小曲发现资金不够了，只够买<strong>一辆</strong>车送快递。<br/>
-<strong>经营方式一</strong><br/>
-客户每送来一份快递，小曲就让一个快递员盯着，然后快递员开车去送快递。慢慢的小曲就发现了这种经营方式存在下述问题</p>
+<p>为了实现高可用，解决方案 1 中所述的单点故障问题，我们必须增加一个备份服务，即在两台服务器上分别各启动一个 Redis Server 进程，一般情况下由 master 提供服务，slave 只负责同步和备份。与此同时，在额外启动一个 Sentinel 进程，监控两个 Redis Server 实例的可用性，以便在 master 挂掉的时候，及时把 slave 提升到 master 的角色继续提供服务，这样就实现了 Redis Server 的高可用。这基于一个高可用服务设计的依据，即单点故障本身就是个小概率事件，而多个单点同时故障（即 master 和 slave 同时挂掉），可以认为是（基本）不可能发生的事件。</p>
 
-<ul>
-<li>  几十个快递员基本上时间都花在了抢车上了，大部分快递员都处在闲置状态，谁抢到了车，谁就能去送快递</li>
-<li>  随着快递的增多，快递员也越来越多，小曲发现快递店里越来越挤，没办法雇佣新的快递员了</li>
-<li>  快递员之间的协调很花时间</li>
-</ul>
+<p>对于 Redis 服务的调用方来说，现在要连接的是 Redis Sentinel 服务，而不是 Redis Server 了。常见的调用过程是，client 先连接 Redis Sentinel 并询问目前 Redis Server 中哪个服务是 master，哪些是 slave，然后再去连接相应的 Redis Server 进行操作。当然目前的第三方库一般都已经实现了这一调用过程，不再需要我们手动去实现（例如 Nodejs 的 ioredis，PHP 的 predis，Golang 的 go-redis/redis，JAVA 的 jedis 等）。</p>
 
-<p>综合上述缺点，小曲痛定思痛，提出了下面的经营方式<br/>
-<strong>经营方式二</strong><br/>
-小曲只雇佣一个快递员。然后呢，客户送来的快递，小曲按<strong>送达地点</strong>标注好，然后<strong>依次</strong>放在一个地方。最后，那个快递员<strong>依次</strong>的去取快递，一次拿一个，然后开着车去送快递，送好了就回来拿下一个快递。</p>
+<p>然而，我们实现了 Redis Server 服务的主从切换之后，又引入了一个新的问题，即 Redis Sentinel 本身也是个单点服务，一旦 Sentinel 进程挂了，那么客户端就没办法链接 Sentinel 了。所以说，方案 2 的配置并无法实现高可用性。</p>
 
-<p><strong>对比</strong><br/>
-上述两种经营方式对比，是不是明显觉得第二种，效率更高，更好呢。在上述比喻中:</p>
+<p><strong>方案 3：主从同步 Redis Server，双实例 Sentinel</strong></p>
 
-<ul>
-<li>  每个快递员 ------------------&gt; 每个线程</li>
-<li>  每个快递 --------------------&gt; 每个 socket(I/O 流)</li>
-<li>  快递的送达地点 --------------&gt;socket 的不同状态</li>
-<li>  客户送快递请求 --------------&gt; 来自客户端的请求</li>
-<li>  小曲的经营方式 --------------&gt; 服务端运行的代码</li>
-<li>  一辆车 ----------------------&gt;CPU 的核数</li>
-</ul>
+<p><img src="https://images2018.cnblogs.com/blog/566097/201802/566097-20180224105121774-2039349597.png" alt=""/></p>
 
-<p>于是我们有如下结论<br/>
-1、经营方式一就是传统的并发模型，每个 I/O 流 (快递) 都有一个新的线程 (快递员) 管理。<br/>
-2、经营方式二就是 I/O 多路复用。只有单个线程 (一个快递员)，通过跟踪每个 I/O 流的状态 (每个快递的送达地点)，来管理多个 I/O 流。</p>
+<p>为了解决方案 2 的问题，我们把 Redis Sentinel 进程也额外启动一份，两个 Sentinel 进程同时为客户端提供服务发现的功能。对于客户端来说，它可以连接任何一个 Redis Sentinel 服务，来获取当前 Redis Server 实例的基本信息。通常情况下，我们会在 Client 端配置多个 Redis Sentinel 的链接地址，Client 一旦发现某个地址连接不上，会去试图连接其他的 Sentinel 实例，这当然也不需要我们手动实现，各个开发语言中比较热门的 redis 连接库都帮我们实现了这个功能。我们预期是：即使其中一个 Redis Sentinel 挂掉了，还有另外一个 Sentinel 可以提供服务。</p>
 
-<p>下面类比到真实的 redis 线程模型，如图所示<br/>
-<img src="https://images.cnblogs.com/cnblogs_com/rjzheng/1202350/o_redis3.png" alt=""/><br/>
-参照上图，简单来说，就是。我们的 redis-client 在操作的时候，会产生具有不同事件类型的 socket。在服务端，有一段 I/0 多路复用程序，将其置入队列之中。然后，文件事件分派器，依次去队列中取，转发到不同的事件处理器中。<br/>
-需要说明的是，这个 I/O 多路复用机制，redis 还提供了 select、epoll、evport、kqueue 等多路复用函数库，大家可以自行去了解。</p>
+<p>然而，愿景是美好的，现实却是很残酷的。如此架构下，依然无法实现 Redis 服务的高可用。方案 3 示意图中，红线部分是两台服务器之间的通信，而我们所设想的异常场景（【异常 2】）是，某台服务器整体 down 机，不妨假设服务器 1 停机，此时，只剩下服务器 2 上面的 Redis Sentinel 和 slave Redis Server 进程。这时，Sentinel 其实是不会将仅剩的 slave 切换成 master 继续服务的，也就导致 Redis 服务不可用，因为 Redis 的设定是只有当超过 50% 的 Sentinel 进程可以连通并投票选取新的 master 时，才会真正发生主从切换。本例中两个 Sentinel 只有一个可以连通，等于 50% 并不在可以主从切换的场景中。</p>
 
-<h3 id="toc_7">4、redis 的数据类型，以及每种数据类型的使用场景</h3>
+<p>你可能会问，为什么 Redis 要有这个 50% 的设定？假设我们允许小于等于 50% 的 Sentinel 连通的场景下也可以进行主从切换。试想一下【异常 3】，即服务器 1 和服务器 2 之间的网络中断，但是服务器本身是可以运行的。如下图所示：</p>
 
-<p><strong>分析</strong>：是不是觉得这个问题很基础，其实我也这么觉得。然而根据面试经验发现，至少百分八十的人答不上这个问题。建议，在项目中用到后，再类比记忆，体会更深，不要硬记。基本上，一个合格的程序员，五种类型都会用到。<br/>
-<strong>回答</strong>：一共五种<br/>
-(一)String<br/>
-这个其实没啥好说的，最常规的 set/get 操作，value 可以是 String 也可以是数字。一般做<strong>一些复杂的计数功能的缓存。</strong><br/>
-(二)hash<br/>
-这里 value 存放的是结构化的对象，比较方便的就是操作其中的某个字段。博主在做<strong>单点登录</strong>的时候，就是用这种数据结构存储用户信息，以 cookieId 作为 key，设置 30 分钟为缓存过期时间，能很好的模拟出类似 session 的效果。<br/>
-(三)list<br/>
-使用 List 的数据结构，可以<strong>做简单的消息队列的功能</strong>。另外还有一个就是，可以利用 lrange 命令，<strong>做基于 redis 的分页功能</strong>，性能极佳，用户体验好。<br/>
-(四)set<br/>
-因为 set 堆放的是一堆不重复值的集合。所以可以做<strong>全局去重的功能</strong>。为什么不用 JVM 自带的 Set 进行去重？因为我们的系统一般都是集群部署，使用 JVM 自带的 Set，比较麻烦，难道为了一个做一个全局去重，再起一个公共服务，太麻烦了。<br/>
-另外，就是利用交集、并集、差集等操作，可以<strong>计算共同喜好，全部的喜好，自己独有的喜好等功能</strong>。<br/>
-(五)sorted set<br/>
-sorted set 多了一个权重参数 score, 集合中的元素能够按 score 进行排列。可以做<strong>排行榜应用，取 TOP N 操作</strong>。另外，参照另一篇<a href="https://www.cnblogs.com/rjzheng/p/8972725.html">《分布式之延时任务方案解析》</a>，该文指出了 sorted set 可以用来做<strong>延时任务</strong>。最后一个应用就是可以做<strong>范围查找</strong>。</p>
+<p><img src="https://images2018.cnblogs.com/blog/566097/201802/566097-20180224105223591-314651630.png" alt=""/></p>
 
-<h3 id="toc_8">5、redis 的过期策略以及内存淘汰机制</h3>
+<p>实际上对于服务器 2 来说，服务器 1 直接 down 掉和服务器 1 网络连不通是一样的效果，反正都是突然就无法进行任何通信了。假设网络中断时我们允许服务器 2 的 Sentinel 把 slave 切换为 master，结果就是你现在拥有了两个可以对外提供服务的 Redis Server。Client 做任何的增删改操作，有可能落在服务器 1 的 Redis 上，也有可能落在服务器 2 的 Redis 上（取决于 Client 到底连通的是哪个 Sentinel），造成数据混乱。即使后面服务器 1 和服务器 2 之间的网络又恢复了，那我们也无法把数据统一了（两份不一样的数据，到底该信任谁呢？），数据一致性完全被破坏。</p>
 
-<p><strong>分析</strong>: 这个问题其实相当重要，到底 redis 有没用到家，这个问题就可以看出来。比如你 redis 只能存 5G 数据，可是你写了 10G，那会删 5G 的数据。怎么删的，这个问题思考过么？还有，你的数据已经设置了过期时间，但是时间到了，内存占用率还是比较高，有思考过原因么?<br/>
-<strong>回答</strong>:<br/>
-redis 采用的是定期删除 + 惰性删除策略。<br/>
-<strong>为什么不用定时删除策略?</strong><br/>
-定时删除, 用一个定时器来负责监视 key, 过期则自动删除。虽然内存及时释放，但是十分消耗 CPU 资源。在大并发请求下，CPU 要将时间应用在处理请求，而不是删除 key, 因此没有采用这一策略.<br/>
-<strong>定期删除 + 惰性删除是如何工作的呢?</strong><br/>
-定期删除，redis 默认每个 100ms 检查，是否有过期的 key, 有过期 key 则删除。需要说明的是，redis 不是每个 100ms 将所有的 key 检查一次，而是随机抽取进行检查 (如果每隔 100ms, 全部 key 进行检查，redis 岂不是卡死)。因此，如果只采用定期删除策略，会导致很多 key 到时间没有删除。<br/>
-于是，惰性删除派上用场。也就是说在你获取某个 key 的时候，redis 会检查一下，这个 key 如果设置了过期时间那么是否过期了？如果过期了此时就会删除。<br/>
-<strong>采用定期删除 + 惰性删除就没其他问题了么?</strong><br/>
-不是的，如果定期删除没删除 key。然后你也没即时去请求 key，也就是说惰性删除也没生效。这样，redis 的内存会越来越高。那么就应该采用<strong>内存淘汰机制</strong>。<br/>
-在 redis.conf 中有一行配置</p>
+<p><strong>方案 4：主从同步 Redis Server，三实例 Sentinel</strong></p>
 
-<pre><code># maxmemory-policy volatile-lru
-</code></pre>
+<p><img src="https://images2018.cnblogs.com/blog/566097/201802/566097-20180224105313568-148145342.png" alt=""/></p>
 
-<p>该配置就是配内存淘汰策略的 (什么，你没配过？好好反省一下自己)<br/>
-1）noeviction：当内存不足以容纳新写入数据时，新写入操作会报错。<strong>应该没人用吧。</strong><br/>
-2）allkeys-lru：当内存不足以容纳新写入数据时，在键空间中，移除最近最少使用的 key。<strong>推荐使用，目前项目在用这种。</strong><br/>
-3）allkeys-random：当内存不足以容纳新写入数据时，在键空间中，随机移除某个 key。<strong>应该也没人用吧，你不删最少使用 Key, 去随机删。</strong><br/>
-4）volatile-lru：当内存不足以容纳新写入数据时，在设置了过期时间的键空间中，移除最近最少使用的 key。<strong>这种情况一般是把 redis 既当缓存，又做持久化存储的时候才用。不推荐</strong><br/>
-5）volatile-random：当内存不足以容纳新写入数据时，在设置了过期时间的键空间中，随机移除某个 key。<strong>依然不推荐</strong><br/>
-6）volatile-ttl：当内存不足以容纳新写入数据时，在设置了过期时间的键空间中，有更早过期时间的 key 优先移除。<strong>不推荐</strong><br/>
-ps：如果没有设置 expire 的 key, 不满足先决条件 (prerequisites); 那么 volatile-lru, volatile-random 和 volatile-ttl 策略的行为, 和 noeviction(不删除) 基本上一致。</p>
+<p>鉴于方案 3 并没有办法做到高可用，我们最终的版本就是上图所示的方案 4 了。实际上这就是我们最终搭建的架构。我们引入了服务器 3，并且在 3 上面又搭建起一个 Redis Sentinel 进程，现在由三个 Sentinel 进程来管理两个 Redis Server 实例。这种场景下，不管是单一进程故障、还是单个机器故障、还是某两个机器网络通信故障，都可以继续对外提供 Redis 服务。</p>
 
-<h3 id="toc_9">6、redis 和数据库双写一致性问题</h3>
+<p>实际上，如果你的机器比较空闲，当然也可以把服务器 3 上面也开启一个 Redis Server，形成 1 master + 2 slave 的架构，每个数据都有两个备份，可用性会提升一些。当然也并不是 slave 越多越好，毕竟主从同步也是需要时间成本的。</p>
 
-<p><strong>分析</strong>: 一致性问题是分布式常见问题，还可以再分为最终一致性和强一致性。数据库和缓存双写，就必然会存在不一致的问题。答这个问题，先明白一个前提。就是<strong>如果对数据有强一致性要求，不能放缓存。</strong>我们所做的一切，只能保证最终一致性。另外，我们所做的方案其实从根本上来说，只能说<strong>降低不一致发生的概率</strong>，无法完全避免。因此，有强一致性要求的数据，不能放缓存。<br/>
-<strong>回答</strong>:<a href="https://www.cnblogs.com/rjzheng/p/9041659.html">《分布式之数据库和缓存双写一致性方案解析》</a>给出了详细的分析，在这里简单的说一说。首先，采取正确更新策略，先更新数据库，再删缓存。其次，因为可能存在删除缓存失败的问题，提供一个补偿措施即可，例如利用消息队列。</p>
+<p>在方案 4 中，一旦服务器 1 和其他服务器的通信完全中断，那么服务器 2 和 3 会将 slave 切换为 master。对于客户端来说，在这么一瞬间会有 2 个 master 提供服务，并且一旦网络恢复了，那么所有在中断期间落在服务器 1 上的新数据都会丢失。如果想要部分解决这个问题，可以配置 Redis Server 进程，让其在检测到自己网络有问题的时候，立即停止服务，避免在网络故障期间还有新数据进来（可以参考 Redis 的 min-slaves-to-write 和 min-slaves-max-lag 这两个配置项）。</p>
 
-<h3 id="toc_10">7、如何应对缓存穿透和缓存雪崩问题</h3>
+<p>至此，我们就用 3 台机器搭建了一个高可用的 Redis 服务。其实网上还有更加节省机器的办法，就是把一个 Sentinel 进程放在 Client 机器上，而不是服务提供方的机器上。只不过在公司里面，一般服务的提供方和调用方并不来自同一个团队。两个团队共同操作同一个机器，很容易因为沟通问题导致一些误操作，所以出于这种人为因素的考虑，我们还是采用了方案 4 的架构。并且由于服务器 3 上面只跑了一个 Sentinel 进程，对服务器资源消耗并不多，还可以用服务器 3 来跑一些其他的服务。</p>
 
-<p><strong>分析</strong>: 这两个问题，说句实在话，一般中小型传统软件企业，很难碰到这个问题。如果有大并发的项目，流量有几百万左右。这两个问题一定要深刻考虑。<br/>
-<strong>回答</strong>: 如下所示<br/>
-<strong>缓存穿透</strong>，即黑客故意去请求缓存中不存在的数据，导致所有的请求都怼到数据库上，从而数据库连接异常。<br/>
-<strong>解决方案</strong>:<br/>
-(一) 利用互斥锁，缓存失效的时候，先去获得锁，得到锁了，再去请求数据库。没得到锁，则休眠一段时间重试<br/>
-(二) 采用异步更新策略，无论 key 是否取到值，都直接返回。value 值中维护一个缓存失效时间，缓存如果过期，异步起一个线程去读数据库，更新缓存。需要做<strong>缓存预热</strong> (项目启动前，先加载缓存) 操作。<br/>
-(三) 提供一个能迅速判断请求是否有效的拦截机制，比如，利用布隆过滤器，内部维护一系列合法有效的 key。迅速判断出，请求所携带的 Key 是否合法有效。如果不合法，则直接返回。<br/>
-<strong>缓存雪崩</strong>，即缓存同一时间大面积的失效，这个时候又来了一波请求，结果请求都怼到数据库上，从而导致数据库连接异常。<br/>
-<strong>解决方案</strong>:<br/>
-(一) 给缓存的失效时间，加上一个随机值，避免集体失效。<br/>
-(二) 使用互斥锁，但是该方案吞吐量明显下降了。<br/>
-(三) 双缓存。我们有两个缓存，缓存 A 和缓存 B。缓存 A 的失效时间为 20 分钟，缓存 B 不设失效时间。自己做缓存预热操作。然后细分以下几个小点</p>
+<p><strong>易用性：像使用单机版 Redis 一样使用 Redis Sentinel</strong></p>
 
-<ul>
-<li>  I 从缓存 A 读数据库，有则直接返回</li>
-<li>  II A 没有数据，直接从 B 读数据，直接返回，并且异步启动一个更新线程。</li>
-<li>  III 更新线程同时更新缓存 A 和缓存 B。</li>
-</ul>
+<p>作为服务的提供方，我们总是会讲到用户体验问题。在上述方案当中始终有一个让 Client 端用的不是那么舒服的地方。对于单机版 Redis，Client 端直接连接 Redis Server，我们只需要给一个 ip 和 port，Client 就可以使用我们的服务了。而改造成 Sentinel 模式之后，Client 不得不采用一些支持 Sentinel 模式的外部依赖包，并且还要修改自己的 Redis 连接配置，这对于 “矫情” 的用户来讲显然是不能接收的。有没有办法还是像在使用单机版的 Redis 那样，只给 Client 一个固定的 ip 和 port 就可以提供服务呢？</p>
 
-<h3 id="toc_11">8、如何解决 redis 的并发竞争 key 问题</h3>
+<p><img src="https://images2018.cnblogs.com/blog/566097/201802/566097-20180224105513939-1484357459.png" alt=""/></p>
 
-<p><strong>分析</strong>: 这个问题大致就是，同时有多个子系统去 set 一个 key。这个时候要注意什么呢？大家思考过么。需要说明一下，博主提前百度了一下，发现答案基本都是推荐用 redis 事务机制。博主<strong>不推荐使用 redis 的事务机制。</strong>因为我们的生产环境，基本都是 redis 集群环境，做了数据分片操作。你一个事务中有涉及到多个 key 操作的时候，这多个 key 不一定都存储在同一个 redis-server 上。因此，<strong>redis 的事务机制，十分鸡肋。</strong><br/>
-<strong>回答:</strong> 如下所示<br/>
-(1) 如果对这个 key 操作，<strong>不要求顺序</strong><br/>
-这种情况下，准备一个分布式锁，大家去抢锁，抢到锁就做 set 操作即可，比较简单。<br/>
-(2) 如果对这个 key 操作，<strong>要求顺序</strong><br/>
-假设有一个 key1, 系统 A 需要将 key1 设置为 valueA, 系统 B 需要将 key1 设置为 valueB, 系统 C 需要将 key1 设置为 valueC.<br/>
-期望按照 key1 的 value 值按照 valueA--&gt;valueB--&gt;valueC 的顺序变化。这种时候我们在数据写入数据库的时候，需要保存一个时间戳。假设时间戳如下</p>
+<p>答案当然是肯定的。这可能就要引入虚拟 IP（Virtual IP，VIP），如上图所示。我们可以把虚拟 IP 指向 Redis Server master 所在的服务器，在发生 Redis 主从切换的时候，会触发一个回调脚本，回调脚本中将 VIP 切换至 slave 所在的服务器。这样对于 Client 端来说，他仿佛在使用的依然是一个单机版的高可用 Redis 服务。</p>
 
-<pre><code>系统A key 1 {valueA  3:00}
-系统B key 1 {valueB  3:05}
-系统C key 1 {valueC  3:10}
-</code></pre>
+<p><strong>结语</strong></p>
 
-<p>那么，假设这会系统 B 先抢到锁，将 key1 设置为 {valueB 3:05}。接下来系统 A 抢到锁，发现自己的 valueA 的时间戳早于缓存中的时间戳，那就不做 set 操作了。以此类推。</p>
-
-<p>其他方法，比如利用队列，将 set 方法变成串行访问也可以。总之，灵活变通。</p>
-
-<h2 id="toc_12">总结</h2>
-
-<p>本文对 redis 的常见问题做了一个总结。大部分是博主自己在工作中遇到，以及以前面试别人的时候，爱问的一些问题。另外，<strong>不推荐大家临时抱佛脚</strong>，真正碰到一些有经验的工程师，其实几下就能把你问懵。最后，希望大家有所收获吧。</p>
+<p>搭建任何一个服务，做到 “能用” 其实是非常简单的，就像我们运行一个单机版的 Redis。不过一旦要做到“高可用”，事情就会变得复杂起来。业务中使用了额外的两台服务器，3 个 Sentinel 进程 + 1 个 Slave 进程，只是为了保证在那小概率的事故中依然做到服务可用。在实际业务中我们还启用了 supervisor 做进程监控，一旦进程意外退出，会自动尝试重新启动。</p>
 
                         
                       </div>
@@ -307,7 +195,7 @@ ps：如果没有设置 expire 的 key, 不满足先决条件 (prerequisites); �
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/6/1</span>
+                    <span class="date">2018/7/19</span>
                     <span>posted in&nbsp;</span> 
           				  
           					    <span class="posted-in"><a href='Cache.html'>Cache</a></span>
@@ -334,7 +222,7 @@ ps：如果没有设置 expire 的 key, 不满足先决条件 (prerequisites); �
 			  </div>
 			  <div class="large-6 columns">
 			<p class="text-right" style="padding-top:25px;">
-			
+			 <a href="Cache_6.html">&raquo; Next Page</a> 
 			</p>
 			  </div>
 			</div>
@@ -400,31 +288,31 @@ ps：如果没有设置 expire 的 key, 不满足先决条件 (prerequisites); �
 	      
 		      
 			      <li class="post">
-			        <a href="15459058392039.html">Reliable Domain Events</a>
+			        <a href="15517999043443.html">The Art of Crafting Architectural Diagrams</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
+			        <a href="15517997955971.html">为什么说我们需要软件架构图？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
+			        <a href="15516128677869.html">DNS Servers That Offer Privacy and Filtering</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
+			        <a href="15516123108194.html">Airbnb's Migration from Monolith to Services</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
+			        <a href="15516097487470.html">Events As First-Class Citizens</a>
 			      </li>
 		     
 		  

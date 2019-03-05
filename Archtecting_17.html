@@ -105,164 +105,136 @@
 		<div class="markdown-body home-categories">
 		
 			<div class="article">
-                <a class="clearlink" href="15389167880127.html">
+                <a class="clearlink" href="15476537234880.html">
                 
-                  <h1>Authentication and Authorization: OpenID vs OAuth2 vs SAML</h1>
+                  <h1>我说分布式事务之消息最终一致性事务（一）：原理及实现</h1>
                   <div class="a-content">
                       
                       <div class="a-content-text">
                         
-                        	<blockquote>
-<p><a href="https://spin.atomicobject.com/2016/05/30/openid-oauth-saml/">https://spin.atomicobject.com/2016/05/30/openid-oauth-saml/</a></p>
+                        	<pre><code>SnoWalker  程序猿DD  2019-01-09
+</code></pre>
+
+<blockquote>
+<p>原文地址 <a href="https://mp.weixin.qq.com/s/gL3LSkxzZ7I97zXvPs6r6Q">https://mp.weixin.qq.com/s/gL3LSkxzZ7I97zXvPs6r6Q</a></p>
 </blockquote>
 
-<p>My current project at AO has provided a lot of opportunity to learn about web security and what’s going on when you click that ubiquitous “Sign in with Google/Facebook” button. As both a computer developer and an end user, I want applications that are secure without being too difficult to use.</p>
+<p>在之前的文章中，我们已经学习总结了分布式事务的两种解决方案。</p>
 
-<p>Looking for an option to fit both our application and our customer’s security policies, we investigated <a href="http://openid.net">OpenID</a>, <a href="http://oauth.net/2">OAuth2</a>, and <a href="https://wiki.oasis-open.org/security/FrontPage">SAML</a>.</p>
+<ul>
+<li><p><a href="http://mp.weixin.qq.com/s?__biz=MzAxODcyNjEzNQ==&amp;mid=2247486503&amp;idx=2&amp;sn=dc399f739638bcde958a5e8b4f08cb06&amp;chksm=9bd0a1bfaca728a95303998df4f52e58565f8aa0974e4f1d649939027f0faee7b7131cbba0e6&amp;scene=21#wechat_redirect">我说分布式事务之 TCC</a></p></li>
+<li><p><a href="http://mp.weixin.qq.com/s?__biz=MzAxODcyNjEzNQ==&amp;mid=2247486519&amp;idx=2&amp;sn=76c3c8f0bc1fd40986d68b8c45110a17&amp;chksm=9bd0a1afaca728b932eb2947866ac8651bf20700bd3be8f206491ae7d89f408e1f388da00495&amp;scene=21#wechat_redirect">我说分布式事务之最大努力通知型事务</a></p></li>
+</ul>
 
-<h2 id="toc_0">Authorization &amp; Authentication Basics</h2>
+<p>本文我们将学习到另一种常见的柔性事务解决方案：消息一致性事务方案。</p>
 
-<p>Our project, a single-page application, will be a public-facing website. We want to restrict access to registered users only. Furthermore, we want to tailor each user’s experience, and the amount and type of data that they can view, to their individual roles and access levels.</p>
+<p>对于 TCC 型事务，跨系统的调用均是基于服务间的直接调用，即很大程度上是同步调用。基于 TCC 方案能够保证主子事务同时成功，同时失败。</p>
 
-<p>In other words, we want to be able to <u>authenticate</u> and <u>authorize</u> each user. Authentication means verifying that someone is indeed who they claim to be. Authorization means deciding which resources a certain user should be able to access, and what they should be allowed to do with those resources. Oftentimes, as in our case, an application will require a little bit of both.</p>
+<p>但实际开发中，由于多方面的考虑，我们会将服务拆分为异步方式，一般是基于 MQ 进行服务间的解耦，服务发起方执行完本地业务操作后发送一条消息给到消息中间件（比如：RocketMQ、RabbitMQ、Kafka、ActiveMQ 等），被动方服务从 MQ 中消费该消息并进行业务处理，从而形成业务上的闭环。</p>
 
-<p>With sites like Facebook or Google, a user can log in to one application with a set of credentials. This same set of credentials can then be used to log in to related websites or applications (like websites that ask you, “Sign up with Facebook or Google account?”).</p>
+<p>这种场景下，我们还是希望异步的多个业务操作同时成功，同时失败，基于 TCC 的同步型事务解决方案就不可行了，这时就需要祭出可靠消息最终一致性方案。</p>
 
-<p>Likewise, a business may have an internal-facing employee portal with links to intranet sites regarding timesheets, health insurance, or company news. Rather than requiring an employee to log in at each website, a better solution would be to have the employee log in at a portal, and have that portal automatically authenticate the user with the other intranet sites. This idea, called single sign-on (SSO), allows a user to enter one username and password in order to access multiple applications.</p>
+<h2 id="toc_0">实现可靠消息服务</h2>
 
-<p>The benefits are pretty nice for the user. The use of linked identities means they have to manage only one username and password for the related websites. The user experience is better for them, as they can avoid multiple logins. A user’s (single set of) credentials will be stored in one database, rather than multiple credentials stored across multiple databases (with, let’s be honest, likely repeated passwords). This also means that developers of the various applications don’t have to store passwords. Instead, they can accept proof of identity or authorization from a trusted source.</p>
+<p>首先按照惯例我们先看一下该方案的简略的结构图，如下</p>
 
-<p>There are multiple solutions for implementing SSO. The three most common web security protocols (at the time of this writing) are OpenID, OAuth, and SAML. Implementations and libraries exist in multiple languages already, and going with a standardized protocol allows better interoperability than a custom solution.</p>
+<p><img src="https://mmbiz.qpic.cn/mmbiz_png/R3InYSAIZkHGYqZ3fCnFjDyZHjhyc1ibEAfYgkSceZjMsK5niaybTbBLuQ3Zia75vlMUXdFDTgibLbJYtbFibdJEIyg/640?wx_fmt=png" alt=""/></p>
 
-<h2 id="toc_1">OpenID</h2>
+<h3 id="toc_1"><strong>核心流程 1：上游投递消息</strong></h3>
 
-<p>OpenID is an open standard for authentication, promoted by the non-profit OpenID Foundation. As of March 2016, there are over a billion OpenID-enabled accounts on the internet, and organizations such as Google, WordPress, Yahoo, and PayPal use OpenId to authenticate users.</p>
+<p>基于上图，我们分析一下如果要实现一个可靠消息一致性的服务，需要实现哪些功能，要走哪些流程。</p>
 
-<p>A <u>user</u> must obtain an OpenID account through an OpenID <u>identity provider</u> (for example, Google). The user will then use that account to sign into any website (the <u>relying party</u>) that accepts OpenID authentication (think YouTube or another site that accepts a Google account as a login). The OpenID standard provides a framework for the communication that must take place between the identity provider and the relying party.</p>
+<p>调用开始，业务主动方（之后称为主动方）预先发送一条消息到消息服务（图中中间的部分）中，消息中包含后续的业务操作所必须的业务参数，消息服务接收到该消息后存储消息到消息存储中，并设置消息状态为 <strong>“待确认”</strong>。</p>
 
-<p>This exchange can be compared to a border crossing.  Imagine that Alice is a Canadian citizen who wants to visit the US. At the border, the US asks for proof of identity (her passport). Because the US government trusts the Canadian government to accurately provide identification for its citizens, the US accepts Alice’s passport as reliable proof of her identity, and thus, lets her enter the US. In this example, Alice is the end user, the US is the relying party, and Canada is the identity provider.</p>
+<p>如果消息存储失败则直接返回消息持久化失败，本次业务操作结束。</p>
 
-<p>This exchange works because Alice can provide proof of identity to the US that originates from an entity that the US trusts. Similarly, the relying party (or website that a user is trying to log in to) must trust the OpenID identity provider that will verify the user’s identity.</p>
-
-<p>On a website, the exchange looks like this:<br/>
-<img src="media/15389167880127/15389172254087.png" alt="" style="width:295px;"/></p>
-
-<p>Let’s return to Alice, who wants to log in to her MyBlogger account (the relying party). She navigates to the login screen, where she is offered a “Sign in with Google” option. She clicks that, and MyBlogger initiates association with Google and requests and receives an association handle. MyBlogger then forwards Alice to the Google login page. She enters her credentials, and Google validates them. She is then redirected back to MyBlogger, along with a token stating that Google believes she is who she claims to be (Alice). MyBlogger trusts this token and creates a session for her.</p>
-
-<p><u>Notes:</u></p>
+<p>当主动方接收到消息存储结果后，开始执行本地的业务操作，根据本地事务提交的结果，调用消息服务的接口。这里分为两种状态：</p>
 
 <ol>
-<li> <u>OpenID is technically a URL that a user owns (e.g. alice2016.openid.com), so some websites offer the option to manually enter an OpenID.</u></li>
-<li> <u>The latest version of OpenID is OpenID Connect, which combines OpenID authentication and OAuth2 authorization</u></li>
-<li> <img src="media/15389167880127/15389172519177.png" alt=""/>
-<u>Facebook previously used OpenID but has since moved to Facebook Connect.</u></li>
+<li><p>如果本地事务执行成功，就调用消息服务确认消息状态，更新为 <strong>待发送</strong>。</p></li>
+<li><p>如果本地事务执行失败，就调用消息服务删除消息（一般是逻辑删除，更新消息状态为 <strong>已回滚</strong>）</p></li>
 </ol>
 
-<h2 id="toc_2">OAuth2</h2>
-
-<p><img src="media/15389167880127/15389197462631.png" alt=""/></p>
-
 <blockquote>
-<p><a href="https://www.mutuallyhuman.com/blog/2013/05/09/choosing-an-sso-strategy-saml-vs-oauth2/">https://www.mutuallyhuman.com/blog/2013/05/09/choosing-an-sso-strategy-saml-vs-oauth2/</a></p>
+<p>当状态为第 1 种，消息服务就将该消息发送到 MQ 中，并更新消息状态为 <strong>“已发送”</strong>。</p>
 </blockquote>
 
-<p>By contrast, OAuth2 is an open standard for authorization. Confusingly, OAuth2 is also the basis for OpenID Connect, which provides OpenID (authentication) on top of OAuth2 (authorization) for a more complete security solution. OpenID Connect (OIDC) was created in early 2014. This primer will instead focus on OAuth2 by itself, not as a part of OIDC.</p>
+<p><strong>注意</strong>：对于消息状态的更新和投递消息到 MQ 中间件的操作应在同一个方法中，并开启本地事务。为什么要这么做呢？</p>
 
-<p>OAuth2 provides secure delegated access, meaning that an application, called a <u>client</u>, can take actions or access resources on a resource server on the behalf of a <u>user</u>, without the user sharing their credentials with the application. OAuth2 does this by allowing tokens to be issued by an identity provider to these third-party applications, with the approval of the user. The client then uses the token to access the resource server on behalf of the user.</p>
+<p>因为我们的目的是：保证消息发送和本地事务同时成功同时失败。</p>
 
-<p>Yet Twitter’s <a href="https://dev.twitter.com/oauth/overview/faq">OAuth guide</a> says that OAuth2 is an authentication standard. So what gives? As it turns out, authorization can be used as a form of pseudo-authentication.</p>
+<p>这里还是有两种情况：</p>
 
-<p>An authorization use case of OAuth2 might be as follows: Alice is leaving town and she wants her friend Bob to house-sit. Alice gives Bob the house key, and he now has access to enter the house. The key gives him authorization to enter the house, as authorization relates to which resources a user should have access to, and what they can do with those resources. In this metaphor, the homeowner is the user, Bob is the client, the door lock is the identity provider, and the house is the resource server.</p>
-
-<p>This can be twisted into a pseudo-authentication use case by assuming that the person who has the house key is the homeowner. However, as we can see with Bob house-sitting for Alice, this is not always the case.</p>
-
-<p>Online, an OAuth2 use case might look like this:  Alice signs up for a new account at NewApp and is offered the option to see which of her friends already use NewApp so she can connect with them. There’s a button labeled “import contacts from Facebook.” Alice clicks that button, and she is redirected to Facebook to log in. Alice successfully logs in and is asked if she wants to share her Facebook friend list with NewApp. She clicks yes, and is forwarded back to NewApp along with a token. NewApp now has permission (with the token) to access Alice’s friend list, without her sharing her credentials directly with NewApp. This eliminates the risk of NewApp logging into Facebook on Alice’s behalf and doing things she wouldn’t want (posting status updates, changing her password, etc.).</p>
-
-<h2 id="toc_3">SAML</h2>
-
-<p><img src="media/15389167880127/15389197704524.png" alt=""/></p>
+<ol>
+<li><p>如果更新消息状态失败，则应当抛出异常回滚事务，不投递消息到 MQ 中。</p></li>
+<li><p>如果投递 MQ 失败，（需要捕获异常），需要主动抛出异常触发本地事务回滚。</p></li>
+<li><p>1.2 要同时成功同时失败</p></li>
+</ol>
 
 <blockquote>
-<p><a href="https://www.mutuallyhuman.com/blog/2013/05/09/choosing-an-sso-strategy-saml-vs-oauth2/">https://www.mutuallyhuman.com/blog/2013/05/09/choosing-an-sso-strategy-saml-vs-oauth2/</a></p>
+<p>当状态是第 2 种，即本地事务执行失败</p>
 </blockquote>
 
-<p>SAML is the oldest standard of the three, originally developed in 2001, with its most recent major update in 2005. SAML, pronounced “sam-el,” stands for Security Assertion Markup Language. It’s an open standard that provides both authentication and authorization.</p>
+<p>业务主动方需要调用可靠消息事务的删除消息操作，消息服务从消息持久化存储中删除该消息（设置消息状态为<strong>已回滚</strong>）</p>
 
-<p>Similar to the terminology of the other two standards, SAML defines a <u>principal</u>, which is the end user trying to access a resource. There is a <u>service provider</u>, which is the web server that the principal is trying to access. And there is an <u>identity provider</u>, which is the server that holds the principal’s identities and credentials.</p>
+<h3 id="toc_2"><strong>核心流程 2：被动方应用接收消息</strong></h3>
 
-<p>The US/Canada metaphor can be used here, as well. Alice wishes to enter the US from Canada. The US, wishing to verify her identity or other information about her–perhaps whether she has a valid driver’s license that will allow her to drive in the US)–makes a request to Canada for authentication and/or authorization information regarding Alice. Canada responds by sending the requested information to the requested address, along with some proof that Canada was indeed the sender of the message. All metaphors break down eventually, but this proof might take the form of a passport, as before, or official government documents or visas (where authorization requests are involved). And, as before, the system is predicated on US trust that Canada is issuing driver’s licenses, visas, etc. properly.</p>
+<p>被动方服务订阅主题后只需要等待 MQ 投递消息即可。</p>
 
-<p>In our example, Alice is the principal, the US is the service provider, and Canada is once again the identity provider. The request made to Canada by the US is analogous to an XML message that states what information is being requested, who is asking, and to whom the response should be returned. Canada’s response would be called an <u>assertion</u>, in SAML terms (similar to a token for OpenID or OAuth2). This assertion can contain statements about authentication, authorization, and/or attributes (specific information about a user, such as email or phone number).</p>
+<p>当消息投递，被动方服务消费该消息并执行本地业务操作，当本地业务执行成功，被动方服务调用消息服务，返回本地业务执行成功。</p>
 
-<p>The SAML 2.0 specification defines <u>assertions</u> (as discussed above); <u>protocols</u>, which are assertion requests and responses; <u>bindings</u>, or how these requests and responses happen between the service provider and identity provider, using standard communication methods (e.g. HTTP POST); and <u>profiles</u>, which are combinations of assertions, protocols and bindings for various use cases, like SSO.</p>
+<p>可靠消息服务根据业务唯一参数（订单号结合消息 id）设置消息状态为 <strong>“已完成”</strong></p>
 
-<p>An SSO use case might look like this: Alice is a manager at Acme Corp. She accesses Acme Corp’s intranet portal, where she logs in with her credentials. After logging in, she can click on a number of links that may be of interest to her (payroll, company news, Salesforce, etc.). She clicks on the Salesforce link, which contains a SAML assertion about Alice. She is forwarded to Salesforce, which receives the SAML assertion. Salesforce trusts Acme Corp, and thus trusts the assertion. Using information in the token, Alice is automatically logged in, and the appropriate data is shown to her based on attributes in the assertion.</p>
+<p>整个过程中，作为被动方服务需要尽最大努力将业务向最终状态推进，最终成功或者失败并通知消息服务置消息状态为完成的终态。</p>
 
-<h2 id="toc_4">Summary</h2>
+<h3 id="toc_3"><strong>1. 如何保证消息不丢失–即保证消息可靠投递</strong></h3>
 
-<p>These three options are summarized in the table.  Our application implements <a href="https://identityserver.github.io/Documentation/">IdentityServer</a>, a .NET framework that implements both OAuth2 and OpenID Connect.</p>
+<p>这里分为多种情况进行讨论。</p>
 
-<table>
-<thead>
-<tr>
-<th>Features</th>
-<th><strong>OAuth2</strong></th>
-<th><strong>OpenId</strong></th>
-<th><strong>SAML</strong></th>
-</tr>
-</thead>
+<p>开始阶段，主动方应用提交 <strong>待确认</strong> 消息时出错，此时主动方会直接感知到提交失败，业务直接返回失败，不处理后续的流程</p>
 
-<tbody>
-<tr>
-<td><strong>Token (or assertion) format</strong></td>
-<td>JSON or SAML2</td>
-<td>JSON</td>
-<td>XML</td>
-</tr>
-<tr>
-<td><strong>Authorization?</strong></td>
-<td>Yes</td>
-<td>No</td>
-<td>Yes</td>
-</tr>
-<tr>
-<td><strong>Authentication?</strong></td>
-<td>Pseudo-authentication</td>
-<td>Yes</td>
-<td>Yes</td>
-</tr>
-<tr>
-<td><strong>Year created</strong></td>
-<td>2005</td>
-<td>2006</td>
-<td>2001</td>
-</tr>
-<tr>
-<td><strong>Current version</strong></td>
-<td>OAuth2</td>
-<td>OpenID Connect</td>
-<td>SAML 2.0</td>
-</tr>
-<tr>
-<td><strong>Transport</strong></td>
-<td>HTTP</td>
-<td>HTTP GET and HTTP POST</td>
-<td>HTTP Redirect (GET) binding, SAML SOAP binding, HTTP POST binding, and others</td>
-</tr>
-<tr>
-<td><strong>Security Risks</strong></td>
-<td>Phishing OAuth 2.0 does not support signature, encryption, channel binding, or client verification.  Instead, it relies completely on TLS for confidentiality.</td>
-<td>Phishing Identity providers have a log of OpenID logins, making a compromised account a bigger privacy breach</td>
-<td><a href="https://www.usenix.org/system/files/conference/usenixsecurity12/sec12-final91.pdf">XML Signature Wrapping</a> to impersonate any user</td>
-</tr>
-<tr>
-<td><strong>Best suited for</strong></td>
-<td>API authorization</td>
-<td>Single sign-on for consumer apps</td>
-<td>Single sign-on for enterprise Note:  not well suited for mobile</td>
-</tr>
-</tbody>
-</table>
+<p>主动方应用执行完成本地事务之后，通知可靠消息服务确认或者删除消息阶段，出了问题：例如通知可靠消息服务失败、本地业务执行异常、可靠消息接收到提交请求后投递消息到 MQ 中失败等问题，如何解决？</p>
+
+<blockquote>
+<p>这类情况即出现业务卡在中间态，其实没关系，因为此时消息持久化状态会一直处于 <strong>“待确认”</strong> 状态。</p>
+</blockquote>
+
+<p>对于这种情况，我们只需要在可靠消息服务后台开启一个定时任务，定时扫描 <strong>“待确认”</strong> 状态的中间状态消息，当消息处于 <strong>“待确认”</strong> 状态，表明主动方应用已经开始执行本地业务操作，但业务状态未知，因此我们需要对主动方本地业务执行进行回查操作。</p>
+
+<p>这个阶段我们要在主动方应用中暴露一个回调查询接口，可靠消息服务会调用该接口，根据消息中的业务参数回查本地事务执行状态。如果主动方业务返回执行成功，则表明当前消息可以投递，此时可靠消息服务更新消息状态为 <strong>“待发送”</strong>，同时投递消息到 MQ，并更新消息状态为 <strong>已发送</strong>。</p>
+
+<p>如果，可靠消息服务（通过回查接口）询问主动方业务执行结果，返回执行失败，那么可靠消息服务需要删除该消息（逻辑删除，设置消息状态为<strong>已回滚</strong>）。</p>
+
+<p>通过上述的流程，我们可以保证可靠消息服务一定会努力尝试完成消息到 MQ 的投递过程，即主动方业务执行与消息发送一定同时成功，同时失败。</p>
+
+<h3 id="toc_4"><strong>2. 如何保证消息不丢失–业务被动方对消息 100% 接收成功</strong></h3>
+
+<p>如果消息投递成功，但业务被动方消费消息出现问题，如：消费失败、未收到消息投递（传说中的丢消息）等，该如何处理呢？</p>
+
+<p>因为 “未收到消息投递” 的情况在消息服务高可用的情况下机会不会出现，而消费失败是业务级别的异常，因此我们同样可以采用在可靠消息服务后台起定时任务的方式，检查消息状态。</p>
+
+<p>对长时间处于 <strong>“已发送”</strong> 未变更状态为 <strong>“已完成”</strong> 的消息进行重新投递操作，这个扫描的时间我们要根据业务执行时间自行调整，比如：1min。</p>
+
+<p>对这类型消息重新投递到 MQ 之后，MQ 会推送消息给消费方重新进行业务的处理操作。这个过程要在业务层实现消费的 <strong>幂等性</strong>，保证同一条消息在多次投递之后，只会进行一次完整的业务逻辑处理。关于幂等性，可以参考这篇文章 <strong><a href="http://mp.weixin.qq.com/s?__biz=MzAxODcyNjEzNQ==&amp;mid=2247486580&amp;idx=1&amp;sn=7b97af5b67ae020ef285be3b76c630a3&amp;chksm=9bd0a1ecaca728facb97015874ee4f4b34303545870eed544ad29caa6dde9b2acb17ce8baa5d&amp;scene=21#wechat_redirect">幂等的实现方案</a></strong>, 后续我也会针对业务层的幂等性写一篇文章出来。</p>
+
+<blockquote>
+<p>整个流程中，从消息的发送，到消息的消费阶段都能保证消息与本地事务执行状态一致，即使上下游会有短暂的状态不一致，在经过一个处理的时间窗口之后，在全局上，数据能够实现最终一致性。</p>
+</blockquote>
+
+<h2 id="toc_5">阶段小结</h2>
+
+<p>在上文，我从原理及业务上，分析了如何基于已有的消息中间件实现可靠消息服务，并实现基于可靠消息的最终一致性。</p>
+
+<p>整个流程中，我们能保证：</p>
+
+<ol>
+<li><p>业务主动方本地事务提交失败，业务被动方不会收到消息的投递。</p></li>
+<li><p>只要业务主动方本地事务执行成功，那么消息服务一定会投递消息给下游的业务被动方，并最终保证业务被动方一定能成功消费该消息（消费成功或失败，即最终一定会有一个最终态）。</p></li>
+</ol>
+
+<p>这个机制就是基于消息中间件的异步流程中的最终一致性保证方案。</p>
+
+<p><strong>·END·</strong></p>
 
                         
                       </div>
@@ -271,10 +243,10 @@
                 <div class="read-more clearfix">
                   <div class="more-left left">
                   
-                    <span class="date">2018/10/7</span>
+                    <span class="date">2019/1/16</span>
                     <span>posted in&nbsp;</span> 
           				  
-          					    <span class="posted-in"><a href='Authn&Authz.html'>Authn&Authz</a></span>
+          					    <span class="posted-in"><a href='DTx.html'>DTx</a></span>
           				   
                   </div>
                   <div class="more-right right">
@@ -364,31 +336,31 @@
 	      
 		      
 			      <li class="post">
-			        <a href="15459058392039.html">Reliable Domain Events</a>
+			        <a href="15517999043443.html">The Art of Crafting Architectural Diagrams</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459049161482.html">Transaction Synchronization and Spring Application Events: Understanding @TransactionalEventListener</a>
+			        <a href="15517997955971.html">为什么说我们需要软件架构图？</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15459021437244.html">Reliable Delivery Pub/Sub Message Queues with Redis</a>
+			        <a href="15516128677869.html">DNS Servers That Offer Privacy and Filtering</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456691642791.html">Spring の Cache Abstraction で、複数の CacheManager を合わせる CompositeCacheManager を使う</a>
+			        <a href="15516123108194.html">Airbnb's Migration from Monolith to Services</a>
 			      </li>
 		     
 		  
 		      
 			      <li class="post">
-			        <a href="15456638361570.html">Spring boot metrics monitoring using TICK stack</a>
+			        <a href="15516097487470.html">Events As First-Class Citizens</a>
 			      </li>
 		     
 		  
